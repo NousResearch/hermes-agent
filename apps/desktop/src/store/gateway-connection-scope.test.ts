@@ -49,7 +49,8 @@ const {
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway,
-  setPrimaryGatewayConnectionId
+  setPrimaryGatewayConnectionId,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 const { setApiRequestConnection } = await import('@/hermes')
@@ -128,6 +129,15 @@ describe('primary gateway registry scope', () => {
 })
 
 describe('pruneSecondaryGateways with registry-scoped entries', () => {
+  // The min-lifetime grace (#94769) spares a freshly opened idle socket for
+  // one prune tick, so reclamation assertions age the socket past the grace
+  // window first; spare assertions are unaffected by aging.
+  const pruneAged = (keep?: Set<string>) => {
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
+    pruneSecondaryGateways(keep ?? new Set())
+    vi.useRealTimers()
+  }
+
   it('keeps the previous source socket open when Sessions switches backends', async () => {
     await ensureGatewayForAgent('work', 'default')
     await ensureGatewayForAgent('homelab', 'default')
@@ -143,7 +153,7 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     // LOCAL source has live work; that must not pin homelab's socket.
     await openGatewayForAgent('homelab', 'default')
 
-    pruneSecondaryGateways(new Set(['default']))
+    pruneAged(new Set(['default']))
 
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=default'])
   })
@@ -171,11 +181,11 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
   it('still keeps a local (profile-keyed) secondary via its bare profile name', async () => {
     await openGatewayForAgent(null, 'research')
 
-    pruneSecondaryGateways(new Set(['research']))
+    pruneAged(new Set(['research']))
 
     expect(gatewayMocks.closed).toEqual([])
 
-    pruneSecondaryGateways(new Set())
+    pruneAged()
 
     expect(gatewayMocks.closed).toHaveLength(1)
   })
@@ -188,7 +198,7 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     await openGatewayForAgent(null, 'default')
     await openGatewayForAgent('homelab', 'default')
 
-    pruneSecondaryGateways(new Set(['conn:homelab::default']))
+    pruneAged(new Set(['conn:homelab::default']))
 
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?token=t'])
   })

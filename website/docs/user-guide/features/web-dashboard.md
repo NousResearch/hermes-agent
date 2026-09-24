@@ -9,7 +9,7 @@ description: "Browser-based administration panel for managing configuration, API
 The web dashboard is a browser-based UI for managing your Hermes Agent installation. Instead of editing YAML files or running CLI commands, you can configure settings, manage API keys, and monitor sessions from a clean web interface.
 
 :::tip
-Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](/integrations/nous-portal).
+Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](../../integrations/nous-portal.md).
 :::
 
 ## Quick Start
@@ -63,6 +63,12 @@ worker dashboard
 # → already running: opens the browser at ?profile=worker
 # → not running:     starts the machine dashboard with "worker" preselected
 ```
+
+A dashboard started this way keeps `worker` as its fallback scope for the
+whole server lifetime: a deep link that omits `?profile=` (for example a
+`/chat?resume=<id>` link) still opens under `worker`, so the embedded chat
+sees that profile's MCP servers, model and skills. An explicit `?profile=`
+in the URL always wins.
 
 Pass `--isolated` to opt out and run a dedicated server scoped to that
 profile (the pre-unification behavior — useful if you deliberately expose
@@ -136,10 +142,13 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 - Keystrokes travel to the PTY; ANSI output streams back to the browser
 - xterm.js's WebGL renderer paints each cell to an integer-pixel grid; mouse tracking (SGR 1006), wide characters (Unicode 11), and box-drawing glyphs all render natively
 - Resizing the browser window resizes the TUI via the `@xterm/addon-fit` addon
+- A quiet PTY socket sends a small resize keepalive every 20 seconds, so reverse proxies with idle timeouts (nginx, Caddy) don't drop a chat that is merely waiting; proxies that cap a connection's total lifetime (some tunnels close a socket after ~30 seconds regardless of traffic) still close it, and the chat reattaches to the same session automatically; automatic reconnects pause while the browser tab is hidden or you are on another dashboard page, and resume when you come back
 
 **Resume an existing session:** from the **Sessions** tab, click the play icon (▶) next to any session. That jumps to `/chat?resume=<id>` and launches the TUI with `--resume`, loading the full history.
 
 **Session switcher (right rail):** the Chat tab carries its own ChatGPT-style conversation list in a thin right rail beside the terminal, so you can swap conversations without leaving the page. The rail stacks the model picker on top and the session list directly below it; the terminal takes up most of the screen. The list shows your most recent sessions for the active profile — title (falling back to a message preview), relative last-active time, message count, and the source channel for non-CLI sessions. Click any row to resume it in place (the terminal respawns with that conversation's history); the active session is highlighted. **New chat** starts a fresh session, and a refresh control re-pulls the list. The rail is read-only for switching — delete, rename, export, and bulk cleanup still live on the **Sessions** tab. On narrow screens it folds into a slide-over panel.
+
+**Workspace picker:** a fresh chat starts wherever the dashboard process was launched — useless when you are driving Hermes from a phone and want it in `~/code/foo`. The rail's **workspace** selector lists the same directories the Desktop sidebar knows: your explicit projects (`hermes projects`) and every discovered git repository (session-derived plus the `desktop.repo_scan_roots` scan), most recently active first, with an **Other path…** entry for anything else. The choice is remembered per profile and applies to the next **New chat** (a resumed session keeps its own working directory); the rescan button re-walks the discovery roots on the host, so a repo you just cloned over SSH shows up without a restart. A path that no longer exists is refused with an error instead of silently starting in the launch directory. Backed by `GET /api/chat/workspaces` and the `cwd` parameter of the `/api/pty` WebSocket.
 
 **Prerequisites:**
 
@@ -173,7 +182,17 @@ Set a username and password, then run the dashboard bound to a reachable address
 EnvironmentFile=%h/.hermes/.env
 ExecStart=/path/to/venv/bin/python -m hermes_cli.main dashboard \
     --host 0.0.0.0 --port 9119 --no-open
+Restart=always
+RestartSec=10
+# Exit 78 (EX_CONFIG) is a deliberate refusal ("this host is already served by PID … on
+# another port"); parking on it beats an infinite restart loop with nothing listening.
+RestartPreventExitStatus=78
 ```
+
+One backend serves a whole host, so when `hermes dashboard` finds a live backend it cannot
+serve your typed `--host`/`--port` with, it refuses with exit 78 and names the owner. Stop that
+backend, or give the service its own dedicated server with `--isolated`. The Desktop app's own
+loopback backends never claim host ownership, so the two can coexist without either flag.
 
 with `~/.hermes/.env` containing:
 
@@ -340,7 +359,7 @@ prompt for them inline; the values go to `.env`. This is the same catalog
 
 ### Webhooks
 
-Manage dynamic [webhook subscriptions](/user-guide/messaging/webhooks). The
+Manage dynamic [webhook subscriptions](../messaging/webhooks.md). The
 webhook platform must be enabled in messaging settings first; the page shows a
 hint when it isn't.
 
@@ -374,7 +393,7 @@ the API server and webhook endpoints) with its live connection status.
 - **Configure** — open a per-platform form with exactly the fields that channel needs (bot token, app token, server URL, allowlist, etc.). Secrets render as password inputs and are stored redacted; leaving a field blank keeps the existing value. Required fields are marked and validated. A "Setup guide" link points to the platform's credential docs.
 - **Enable / disable** — toggle a channel on or off. The credential stays on disk; only the active state changes.
 - **Test** — check whether the channel is configured, enabled, and reporting a live connection from the gateway.
-- **Restart gateway** — credentials are written to `~/.hermes/.env` and the enabled flag to `config.yaml`; the gateway connects each enabled channel on its next restart, which you can trigger right from the page.
+- **Restart gateway** — credentials are written to `~/.hermes/.env` and the enabled flag to `config.yaml`; the gateway connects each enabled channel on its next restart, which you can trigger right from the page. On a system-scope install (`hermes gateway install --system`) the dashboard runs the restart under `sudo -n`, so the dashboard user needs passwordless sudo; without it the request fails immediately instead of reporting a restart that the CLI then refuses.
 
 ![Channels admin page — every messaging platform with status, enable toggles, and per-platform setup forms](/img/dashboard/admin-channels.png)
 
@@ -458,6 +477,10 @@ Both collectors are fail-safe: any sampling error degrades the block to
 `{"pressure": "unknown"}` instead of failing the status endpoint. The numbers
 are coarse (whole MB, whole-percent) since `/api/status` is public.
 
+### GET /api/chat/workspaces
+
+Directories a fresh Chat-tab session may start in: the profile's projects (with folders) and discovered git repositories (`root`, `label`, `sessions`, `last_active`), plus `default_cwd` (where a chat lands when nothing is picked) and `home`. `?scan=1` rescans `desktop.repo_scan_roots` on the host first. Pair with `/api/pty?cwd=<path>`, which fails closed on a missing directory.
+
 ### GET /api/sessions
 
 Returns the 20 most recent sessions with metadata (model, token counts, timestamps, preview).
@@ -526,7 +549,9 @@ profile's exclusive `gateway.lock`. While that profile's gateway is running they
 `409` with `Exclusive maintenance refused: Gateway runtime already owns profile <home>.
 Drain and stop the gateway, then retry.` and change nothing. Stop the gateway
 (`hermes gateway stop`), run the maintenance call, then start it again. `dry_run` prune
-and every read endpoint keep working against a live gateway.
+and every read endpoint keep working against a live gateway. The Desktop's one-shot legacy
+owner backfill treats this `409` as the steady state of an attached gateway (like a backend
+without the route) and does not retry it on every sidebar refresh.
 
 ### GET /api/logs
 
@@ -1108,7 +1133,7 @@ The dashboard's React StatusPage shows the same fields under "Web server". A sid
 
 ## Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
+Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](../desktop.md) page.)
 
 You protect the remote dashboard with one of the bundled auth providers, and the desktop app signs in against whichever one the backend advertises. For a backend reachable beyond your own machine — a VPS, a public host, anything internet-facing — the recommended provider is **OAuth (Nous Portal)** (register it with [`hermes dashboard register`](#registering-a-dashboard) and sign in with *Sign in with Nous Research*). The bundled [username/password provider](#usernamepassword-provider-no-oauth-idp) is the quickest option when the backend is on a trusted LAN or reachable only over a VPN, but is **not suitable for direct public-internet exposure**. Binding the dashboard to a non-loopback address engages its auth gate; once signed in, Desktop reuses the session for the chat WebSocket automatically — there is no token to copy or paste.
 

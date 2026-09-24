@@ -16,9 +16,16 @@ class EditPeer(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.requests.append(request)
-        tool = not any(m['role'] == 'tool' for m in request.get('messages', []))
+        # write_file refuses to replace an existing file this task never read in full
+        # (stale-overwrite guard), so the scripted model reads first, then edits.
+        seen = sum(1 for m in request.get('messages', []) if m['role'] == 'tool')
+        tool = seen < 2
         message = {'role': 'assistant', 'content': 'EDITOR_FINISHED'}
-        if tool:
+        if seen == 0:
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'owned-read', 'type': 'function', 'function': {
+                    'name': 'read_file', 'arguments': json.dumps({'path': str(self.server.target)})}}]}
+        elif seen == 1:
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'owned-edit', 'type': 'function', 'function': {
                     'name': 'write_file', 'arguments': json.dumps({

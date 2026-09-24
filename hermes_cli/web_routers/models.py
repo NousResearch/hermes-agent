@@ -12,12 +12,13 @@ from fastapi import APIRouter, HTTPException
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _AUX_TASK_SLOTS, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _prepare_main_assignment,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -136,7 +137,7 @@ def _nous_recommended_default() -> dict:
 
 
 @router.get("/api/model/recommended-default")
-def get_recommended_default_model(provider: str = ""):
+def get_recommended_default_model(provider: str = "", profile: Optional[str] = None):
     """Recommended default model for a freshly-authenticated provider, mirroring
     ``hermes model``'s curation so GUI onboarding lands on a sensible default.
     Nous honors the user's free/paid tier. Any other provider gets the preferred
@@ -158,7 +159,10 @@ def get_recommended_default_model(provider: str = ""):
         from hermes_cli.inventory import build_models_payload, load_picker_context
         from hermes_cli.models import pick_silent_default_model
 
-        payload = build_models_payload(load_picker_context())
+        # build_models_payload -> list_authenticated_providers -> _save_discovered_models_to_config:
+        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too.
+        with _config_profile_scope(profile):
+            payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = [str(m) for m in (row.get("models") or [])]
@@ -188,6 +192,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
             tasks.append({
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
+                "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
                 # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
                 "local_endpoint": is_local_endpoint(base_url),
             })
@@ -233,7 +238,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
-        with _profile_scope(body.profile or profile):
+        # load→mutate→save runs on a worker thread (sync-def endpoint); the
+        # desktop's debounced PUT /api/config autosave races it, so the whole
+        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
+        with config_write_scope(body.profile or profile):
             cfg = load_config()
             if body.presets:
                 raw = {
@@ -254,9 +262,13 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
             # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819.
-            cfg.setdefault("moa", {}).update(normalized)
-            save_config(cfg)
+            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
+            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
+            # every other section too, so a Desktop MoA autosave could wipe a chain another
+            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
+            moa_section = dict(cfg.get("moa") or {})
+            moa_section.update(normalized)
+            save_config({"moa": moa_section}, merge_existing=True)
             return {"ok": True, **normalized}
 
 
@@ -288,8 +300,19 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 return {"ok": False, "scope": scope, "provider": provider, "model": model,
                         "confirm_required": True, "confirm_message": warning.message}
 
+        reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
+
         def _apply_assignment():
+            # Same RMW span as PUT /api/config: applyMainModel fires this while the
+            # settings-page autosave is in flight — hold the mutation lock. switch_model's
+            # catalog fetches / endpoint probes are network I/O, so they run BEFORE the lock;
+            # only load→apply→save holds it.
             with _profile_scope(body.profile or profile):
-                return _apply_model_assignment_sync(scope, provider, model, task, base_url, api_key)
+                prepared = (_prepare_main_assignment(load_config(), provider, model, base_url, api_key)
+                            if scope == "main" else None)
+                with _CONFIG_MUTATION_LOCK:
+                    return _apply_model_assignment_sync(
+                        scope, provider, model, task, base_url, api_key,
+                        reasoning_effort=reasoning_effort, prepared=prepared)
 
         return await asyncio.to_thread(_apply_assignment)

@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -25,6 +26,7 @@ from gateway.session import (
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.warning_notifications import diagnostic_wake_muted
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -43,6 +45,7 @@ class GatewayTurnPersistenceMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+        persist_user_display_kind: Optional[str] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -58,17 +61,31 @@ class GatewayTurnPersistenceMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
-
-        # "(empty)" = the model produced no visible content after exhausting all retries.
-        if response == "(empty)" and not _intentional_silence:
-            response = (
-                "⚠️ The model returned no response after processing tool results. This can happen "
-                "with some models — try again or rephrase your question."
+        # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
+        # opened the chain: an internal follow-up may go silent, a human one must not.
+        from gateway.response_filters import is_machinery_display_kind
+        from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
+        _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+            logger.warning(
+                "silence marker rejected on a user turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
             )
+            _intentional_silence = False
+            response = _UNEXPECTED_SILENCE_REPLY
+
+        # "(empty)" = the model produced no visible content after exhausting all retries. One
+        # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
+        # reads the same words on every surface.
+        if response == "(empty)" and not _intentional_silence:
+            from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
+
+            _model = str(agent_result.get("model") or "").strip() or "The model"
+            response = "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=_model)
         agent_messages = agent_result.get("messages", [])
         logger.info(
-            "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-            _platform_name, source.chat_id or "unknown",
+            "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
+            _platform_name, source.chat_id or "unknown", session_key or "unknown",
             time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
 
@@ -167,6 +184,8 @@ class GatewayTurnPersistenceMixin:
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                requested_model=agent_result.get("requested_model"),
+                served_model=agent_result.get("served_model"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -200,13 +219,8 @@ class GatewayTurnPersistenceMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _FAILED_TURN_NOTICE = (
-        "Your request was not processed. Send it again if you still want me to carry it out."
-    )
-    _PARTIAL_FAILED_TURN_NOTICE = (
-        "This turn did not complete. Some actions may already have run; verify their effects "
-        "before resending."
-    )
+    # One owner for the boundary copy (agent/turn_failure_copy.py): the core closer in
+    # agent/conversation_loop.py writes the same row on the paths that never reach this layer.
 
     def _hmwa_add_failed_turn_notice(self, response, notice):
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
@@ -226,8 +240,8 @@ class GatewayTurnPersistenceMixin:
             or (message.get("role") == "assistant" and message.get("tool_calls"))
             for message in turn_messages
         ):
-            return self._PARTIAL_FAILED_TURN_NOTICE
-        return self._FAILED_TURN_NOTICE
+            return PARTIAL_FAILED_TURN_NOTICE
+        return FAILED_TURN_NOTICE
 
     async def _hmwa_close_failed_turn(self, session_id, notice):
         """Append the gateway-owned assistant boundary iff the durable tail is an open user row.
@@ -239,7 +253,7 @@ class GatewayTurnPersistenceMixin:
         if await self.async_session_store.transcript_tail_role(session_id) != "user":
             return
         await self.async_session_store.append_to_transcript(session_id, {
-            "role": "assistant", "content": notice, "timestamp": time.time(),
+            "role": "assistant", "content": notice, "timestamp": time.time(), "display_kind": FAILED_TURN_DISPLAY_KIND,
         })
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
@@ -446,12 +460,14 @@ class GatewayTurnPersistenceMixin:
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
+        if diagnostic_wake_muted(event):
+            return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
 
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
@@ -464,7 +480,9 @@ class GatewayTurnPersistenceMixin:
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
-            if response and adapter:
+            # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
+            # would upload every file a second time.
+            if response and adapter and not agent_result.get("media_already_delivered"):
                 await self._deliver_media_from_response(response, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
@@ -480,10 +498,13 @@ class GatewayTurnPersistenceMixin:
 
         return response
 
+    # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
+    # sign-in, `{relogin}` the profile-aware host equivalent, filled from the turn's agent provider).
     _STATUS_HINTS = {
-        401: " Check your API key or run `claude /login` to refresh OAuth credentials.",
-        402: " Your API balance or quota is exhausted. Check your provider dashboard.",
-        529: " The API is temporarily overloaded. Please try again shortly.",
+        401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
+              "Use /login here, or run `{relogin}` on the host."),
+        402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
+        529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }
 
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
@@ -496,10 +517,8 @@ class GatewayTurnPersistenceMixin:
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
-            return (
-                "⚠️ Session too large for the model's context window.\nUse /compact to "
-                "compress the conversation, or /reset to start fresh."
-            )
+            from gateway.run import _CONTEXT_OVERFLOW_REPLY
+            return _CONTEXT_OVERFLOW_REPLY
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -511,12 +530,17 @@ class GatewayTurnPersistenceMixin:
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
                 # Tool effects are unknown after an exception.
-                await self._hmwa_close_failed_turn(session_entry.session_id, self._PARTIAL_FAILED_TURN_NOTICE)
+                await self._hmwa_close_failed_turn(session_entry.session_id, PARTIAL_FAILED_TURN_NOTICE)
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
         status_hint = self._STATUS_HINTS.get(status_code, "")
-        if status_code == 429:
+        if status_code == 401:
+            from agent.turn_failure_copy import relogin_command_hint
+
+            _turn_agent = getattr(self._session_state(session_key).turn, "agent", None)
+            status_hint = status_hint.format(relogin=relogin_command_hint(getattr(_turn_agent, "provider", None)))
+        elif status_code == 429:
             # Plan usage limit (resets on a schedule) vs a transient rate limit
             _err_json = {}
             with suppress(Exception):
@@ -532,11 +556,12 @@ class GatewayTurnPersistenceMixin:
             else:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
         elif status_code == 400:
-            status_hint = " The request was rejected by the API."
+            status_hint = " The AI model service rejected the request."
         return self._hmwa_add_failed_turn_notice(
-            f"Sorry, I encountered an unexpected error.{status_hint}\n"
-            "Try again or use /reset to start a fresh session.",
-            self._PARTIAL_FAILED_TURN_NOTICE,
+            f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
+            "Use /retry to try again, or /new to start a fresh conversation. "
+            "Technical details are in the gateway log (`hermes logs`).",
+            PARTIAL_FAILED_TURN_NOTICE,
         )
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
@@ -545,4 +570,4 @@ class GatewayTurnPersistenceMixin:
             "Discarding stale agent result for %s — generation %d is no longer current",
             _quick_key or "?", run_generation,
         )
-        self._pop_post_delivery_callback(self._adapter_for_source(source), _quick_key, run_generation)
+        self._pop_post_delivery_callback(self._delivery_adapter_for(source), _quick_key, run_generation)

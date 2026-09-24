@@ -77,7 +77,7 @@ class TestContinuationRepetitionGuard:
 
         assert result["completed"] is False
         assert result["partial"] is True
-        assert "Repetition" in (result["final_response"] or "")
+        assert echo not in (result["final_response"] or "")
         # The pathological fragment must NOT be appended to the history.
         assert not any(
             isinstance(m, dict) and m.get("_length_continuation_fragment")

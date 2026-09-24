@@ -1,10 +1,9 @@
 import asyncio
 import concurrent.futures
+import datetime
 import json
 import threading
-import time
 
-from hermes_cli import mcp_startup
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
 
@@ -122,35 +121,6 @@ def test_ws_disconnect_releases_wake_word_owner(monkeypatch):
 
 
 
-def test_ws_starts_mcp_discovery_before_ready(monkeypatch):
-    import tui_gateway.entry as entry
-
-    calls = []
-    events = []
-
-    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-    monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: calls.append("mcp"))
-
-    class FakeWS:
-        async def accept(self):
-            events.append("accept")
-
-        async def send_text(self, line):
-            if '"gateway.ready"' in line:
-                events.append(f"ready_after_{len(calls)}")
-
-        async def receive_text(self):
-            raise ws_mod._WebSocketDisconnect()
-
-        async def close(self):
-            pass
-
-    asyncio.run(ws_mod.handle_ws(FakeWS()))
-
-    # Discovery moved to profile-aware agent construction. WebSocket transport
-    # should not start MCP discovery before a profile has been bound.
-    assert calls == []
-    assert events == ["accept", "ready_after_0"]
 
 
 def test_ws_ready_advertises_heartbeat_and_ping_is_inline(monkeypatch):
@@ -232,6 +202,42 @@ def test_ws_transport_serializes_concurrent_sends():
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_transport_replies_with_error_for_unserializable_response(caplog):
+    """#92506: an unserializable payload (datetime from profile.yaml ui_meta) must surface as a
+    JSON-RPC error frame with the original id plus a log line — on both the worker-thread
+    ``write`` and the loop-side ``write_async`` twin — and leave the transport open, instead of
+    killing the pool worker silently so the client waits forever."""
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+    bad = {"jsonrpc": "2.0", "id": "profiles", "result": {"created": datetime.datetime(2026, 8, 22)}}
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="serialization-test")
+        assert transport.write(bad) is True
+        assert transport.write({"jsonrpc": "2.0", "id": "next", "result": {}}) is True
+        assert asyncio.run_coroutine_threadsafe(transport.write_async(bad), loop).result(5) is True
+        assert transport.closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+    assert [m.get("id") for m in sent] == ["profiles", "next", "profiles"]
+    for frame in (sent[0], sent[2]):
+        assert frame["error"]["code"] == -32603
+        assert frame["error"]["message"].startswith("response serialization error")
+        assert "datetime" in frame["error"]["message"]
+    assert sent[1] == {"jsonrpc": "2.0", "id": "next", "result": {}}
+    assert caplog.text.count("frame serialization failed") == 2
 
 
 def test_ws_transport_preserves_cross_batch_order():

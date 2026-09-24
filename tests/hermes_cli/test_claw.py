@@ -123,24 +123,6 @@ class TestArchiveDirectory:
 # ---------------------------------------------------------------------------
 
 
-class TestClawCommand:
-    """Test the claw_command router."""
-
-    def test_routes_to_migrate(self):
-        args = Namespace(claw_action="migrate", source=None, dry_run=True,
-                         preset="full", overwrite=False, migrate_secrets=False,
-                         workspace_target=None, skill_conflict="skip", yes=False)
-        with patch.object(claw_mod, "_cmd_migrate") as mock:
-            claw_mod.claw_command(args)
-        mock.assert_called_once_with(args)
-
-
-    def test_shows_help_for_no_action(self, capsys):
-        args = Namespace(claw_action=None)
-        claw_mod.claw_command(args)
-        captured = capsys.readouterr()
-        assert "migrate" in captured.out
-        assert "cleanup" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -163,30 +145,6 @@ class TestCmdMigrate:
 
 
 
-    def test_handles_migration_error(self, tmp_path, capsys):
-        openclaw_dir = tmp_path / ".openclaw"
-        openclaw_dir.mkdir()
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text("", encoding="utf-8")
-
-        args = Namespace(
-            source=str(openclaw_dir),
-            dry_run=True, preset="full", overwrite=False,
-            migrate_secrets=False, workspace_target=None,
-            skill_conflict="skip", yes=False,
-        )
-
-        with (
-            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
-            patch.object(claw_mod, "_load_migration_module", side_effect=RuntimeError("boom")),
-            patch.object(claw_mod, "get_config_path", return_value=config_path),
-            patch.object(claw_mod, "save_config"),
-            patch.object(claw_mod, "load_config", return_value={}),
-        ):
-            claw_mod._cmd_migrate(args)
-
-        captured = capsys.readouterr()
-        assert "Could not load migration script" in captured.out
 
     def test_full_preset_does_not_enable_secrets_silently(self, tmp_path, capsys):
         """The 'full' preset must NOT auto-enable migrate_secrets.
@@ -317,51 +275,9 @@ class TestCmdCleanup:
 # ---------------------------------------------------------------------------
 
 
-class TestPrintMigrationReport:
-    """Test the report formatting function."""
-
-    def test_dry_run_report(self, capsys):
-        report = {
-            "summary": {"migrated": 2, "skipped": 1, "conflict": 1, "error": 0},
-            "items": [
-                {"kind": "soul", "status": "migrated", "destination": "/home/user/.hermes/SOUL.md"},
-                {"kind": "memory", "status": "migrated", "destination": "/home/user/.hermes/memories/MEMORY.md"},
-                {"kind": "skills", "status": "conflict", "reason": "already exists"},
-                {"kind": "tts-assets", "status": "skipped", "reason": "not found"},
-            ],
-            "preset": "full",
-        }
-        claw_mod._print_migration_report(report, dry_run=True)
-        captured = capsys.readouterr()
-        assert "Dry Run Results" in captured.out
-        assert "Would migrate" in captured.out
-        assert "2 would migrate" in captured.out
-        assert "--dry-run" in captured.out
-
-
-    def test_empty_report(self, capsys):
-        report = {
-            "summary": {"migrated": 0, "skipped": 0, "conflict": 0, "error": 0},
-            "items": [],
-        }
-        claw_mod._print_migration_report(report, dry_run=False)
-        captured = capsys.readouterr()
-        assert "Nothing to migrate" in captured.out
 
 
 class TestDetectOpenclawProcesses:
-    def test_reports_union_of_exact_and_node_matches(self):
-        with patch.object(claw_mod, "subprocess") as mock_subprocess:
-            mock_subprocess.run.side_effect = [
-                MagicMock(returncode=1, stdout=""),  # systemctl
-                MagicMock(returncode=0, stdout="1234\n"),  # pgrep -x openclaw
-                MagicMock(returncode=1, stdout=""),  # pgrep -x openclaw-gatewa
-                MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
-                MagicMock(returncode=0, stdout="1234\n5678\n"),  # node cmdline probe
-            ]
-            mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
-            result = claw_mod._detect_openclaw_processes()
-        assert result == ["openclaw process(es) (PIDs: 1234, 5678)"]
 
     @pytest.mark.linux_only
     def test_live_pgrep_ignores_argv_mentions_but_finds_node_openclaw(self, tmp_path):

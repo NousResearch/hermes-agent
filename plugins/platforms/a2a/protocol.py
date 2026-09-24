@@ -5,6 +5,7 @@ Stdlib only. ``extract_text`` stays tolerant of v0.3 peers."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -127,6 +128,12 @@ def new_context_id() -> str:
     return "ctx-" + uuid.uuid4().hex[:16]
 
 
+def message_context_id(scope: str, message_id: str) -> str:
+    """The context a first message without a ``contextId`` opens. Named by the message, so a retry
+    of that send after a timeout reopens the same context instead of a fresh one."""
+    return "ctx-" + hashlib.sha256(f"{scope}\0{message_id}".encode()).hexdigest()[:16]
+
+
 def text_part(text: str) -> dict:
     """v1.0 text Part (member-presence discriminated, no ``kind``)."""
     return {"text": text, "mediaType": "text/plain"}
@@ -174,6 +181,12 @@ def extract_text(message_or_params: dict) -> str:
         elif (data := part.get("data")) is not None:
             chunks.append(f"[data ({part.get('mediaType') or 'application/json'})]\n{_json_or_str(data)}")
     return "\n".join(chunks).strip()
+
+
+def extract_message_id(params: dict) -> str:
+    """v1.0 puts messageId inside the Message; a peer retrying a send repeats it."""
+    msg = params.get("message") or {}
+    return str(msg.get("messageId") or "") if isinstance(msg, dict) else ""
 
 
 def extract_context_id(params: dict) -> str:
@@ -456,9 +469,11 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     for line in lines:
         if line.strip():
             try:
-                out.append(json.loads(line))
+                entry = json.loads(line)
             except json.JSONDecodeError:
-                pass
+                continue
+            if isinstance(entry, dict):
+                out.append(entry)
     return out[-limit:]
 
 

@@ -55,6 +55,18 @@ def _session_auth_user_id(session: dict | None) -> str | None:
     return _transport_auth_user_id(session.get("transport"))
 
 
+def _session_client_answers_requests(sid: str) -> bool:
+    """Whether a server→client request for *sid* can be answered: False only when every live WebSocket
+    client attached to the session is a build that never sent ``client.capabilities`` (Desktop / dashboard
+    update separately from this backend; the stdio TUI ships with it). No attached client is still True — the
+    question waits in ``open_requests`` for the reconnect replay. Compute-host relays and other non-client
+    transports never count."""
+    from tui_gateway import server_requests
+    from tui_gateway.ws import WSTransport
+    clients = [peer for peer in _session_live_transports(_sessions.get(sid)) if isinstance(peer, WSTransport)]
+    return not clients or any(server_requests.answers_requests(peer) for peer in clients)
+
+
 def _warn_foreign_login(session: dict, transport) -> None:
     """Ownership is not enforced; a second login sharing a session is only logged, and the agent keeps the
     creator's user id."""

@@ -207,6 +207,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'runtime_revision', 'id'),
             ('+', 'runtime_generation', 'runtime_revision'),
         )),
+        ('28 2026-09-19T00:10Z 922a0c3c87', (('+', 'transport_profile', 'profile_name'),)),
         ),
     ),
     "messages": _TableHistory(

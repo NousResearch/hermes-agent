@@ -205,7 +205,7 @@ from hermes_state_errors import CompressionSessionBusyError, SessionCompressionI
 _LOCK_ROW_SQL = _COMPRESSION_LOCK_ROW_SQL
 
 
-def archive_on_connection(db, conn, session_id: str, compacted_messages: List[Dict[str, Any]], model_config_patch: Optional[Dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0):
+def archive_on_connection(db, conn, session_id: str, compacted_messages: List[Dict[str, Any]], model_config_patch: Optional[Dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0, carried_messages: Optional[List[Dict[str, Any]]]=None):
     if lock_holder is not None:
         lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
         if lock_row is None or lock_row['holder'] != lock_holder or float(lock_row['expires_at']) <= time.time():
@@ -213,11 +213,13 @@ def archive_on_connection(db, conn, session_id: str, compacted_messages: List[Di
     patch = model_config_patch is not None
     patched_model_config = db._merge_model_config_json(conn, session_id, model_config_patch, on_missing='raise') if patch else None
     tail_ids, tail_tool_calls = ([], 0) if watermark is None else db._tail_rows_after_watermark(conn, 'SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id', (session_id, int(watermark)))
-    rewind_ids: list[int] = []
+    # Same rewind set as SessionDB.archive_and_compact: carried originals (#118900), then the tail.
+    rewind_ids: list[int] = db._resolve_carried_row_ids(conn, session_id, carried_messages or [])
     if tail_count > 0:
         bound = watermark is not None
-        rewind_ids = [int(row['id']) for row in conn.execute(f"SELECT id FROM messages WHERE session_id = ? AND active = 1{(' AND id <= ?' if bound else '')} ORDER BY id DESC LIMIT ?", (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
+        rewind_ids += [int(row['id']) for row in conn.execute(f"SELECT id FROM messages WHERE session_id = ? AND active = 1{(' AND id <= ?' if bound else '')} ORDER BY id DESC LIMIT ?", (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
     rewind_ids += tail_ids
+    rewind_ids = list(dict.fromkeys(rewind_ids))
     if rewind_ids:
         placeholders = _placeholders(rewind_ids)
         conn.execute(f'UPDATE messages SET active = 0, compacted = 0 WHERE session_id = ? AND id IN ({placeholders})', [session_id, *rewind_ids])
@@ -238,7 +240,7 @@ def publish_on_connection(db, conn, *, parent_session_id: str, child_session_id:
     lock_row = conn.execute(_LOCK_ROW_SQL, (parent_session_id,)).fetchone()
     if require_compression_lease and (lock_row is None or not compression_lock_holder or lock_row['holder'] != compression_lock_holder or (float(lock_row['expires_at']) <= time.time())):
         raise CompressionSessionBusyError(f'Compression lease lost before publication: {parent_session_id}')
-    parent = conn.execute('SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,\n                          user_id, session_key, chat_id, chat_type,\n                          thread_id, display_name, origin_json, profile_name\n                   FROM sessions WHERE id = ?', (parent_session_id,)).fetchone()
+    parent = conn.execute('SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,\n                          user_id, session_key, chat_id, chat_type,\n                          thread_id, display_name, origin_json, profile_name, tool_names\n                   FROM sessions WHERE id = ?', (parent_session_id,)).fetchone()
     if parent is None:
         raise RuntimeError(f'Compression parent not found: {parent_session_id}')
     if parent['ended_at'] is not None:
@@ -291,17 +293,24 @@ def _watermarks(payload):
 
 def worker_archive(db, conn, sid, payload):
     from hermes_state_worker_context import SIDECAR_KEYS
-    _fields(payload, ('messages', 'model_config_patch', 'watermark', 'lock_holder', 'tail_count'))
+    _fields(payload, ('messages', 'model_config_patch', 'watermark', 'lock_holder', 'tail_count'),
+            optional=('carried_messages',))
     _handoff_messages(conn, sid, payload['messages'])
+    carried = payload.get('carried_messages') or []
+    if not isinstance(carried, list) or any(not isinstance(m, dict) for m in carried):
+        raise RuntimeStoreError('invalid_params')
     _watermarks(payload)
-    _text(payload['lock_holder'])
+    # Micro-compaction and proactive prune archive in place without a lease, like the owner path.
+    if payload['lock_holder'] is not None:
+        _text(payload['lock_holder'])
     patch = payload['model_config_patch']
     if patch is not None and (not isinstance(patch, dict) or set(patch) - SIDECAR_KEYS):
         raise RuntimeStoreError('invalid_params')
     if type(payload['tail_count']) is not int or payload['tail_count'] < 0:
         raise RuntimeStoreError('invalid_params')
     value = archive_on_connection(db, conn, sid, payload['messages'], model_config_patch=patch,
-        watermark=payload['watermark'], lock_holder=payload['lock_holder'], tail_count=payload['tail_count'])
+        watermark=payload['watermark'], lock_holder=payload['lock_holder'], tail_count=payload['tail_count'],
+        carried_messages=carried)
     return {'value': value, 'row_ids': [message['_row_id'] for message in payload['messages']]}
 
 
@@ -413,7 +422,7 @@ from hermes_state_common import _ENDED_ROW_SQL, _ended_by_compression
 def reopen_on_connection(db, conn, session_id):
     if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
         return False
-    child = conn.execute('\n                SELECT 1\n                FROM sessions\n                WHERE parent_session_id = ?\n                ' + db._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias='') + '\n                LIMIT 1\n                ', (session_id, session_id, session_id)).fetchone()
+    child = conn.execute('\n                SELECT 1\n                FROM sessions\n                WHERE parent_session_id = ?\n                ' + db._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias='') + '\n                LIMIT 1\n                ', (session_id,) * 4).fetchone()
     if child is not None:
         return False
     now = time.time()

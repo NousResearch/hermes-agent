@@ -14,6 +14,73 @@ logger = logging.getLogger("tools.skill_manager_tool")
 _BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
 _BATCH_MAX_OPS = 20
 
+# --- Per-op argument shape (checked before any effect) ---------------------------------
+# action -> (arg, is_missing, error) checks run before the handler.
+_MISSING, _IS_NONE = (lambda v: not v), (lambda v: v is None)
+_REQUIRED_ARGS = {
+    "create": [("content", _MISSING,
+                "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).")],
+    "edit": [("content", _MISSING,
+              "content is required for a full rewrite. Provide the full updated SKILL.md text.")],
+    "write_file": [
+        ("file_path", _MISSING, "file_path is required for 'write_file'. Example: 'references/api-guide.md'"),
+        ("file_content", _IS_NONE, "file_content is required for 'write_file'.")],
+    "remove_file": [("file_path", _MISSING, "file_path is required for 'remove_file'.")]}
+# A bare "required" error is a dead end: the model retries blindly and often escapes to
+# action='write_file', clobbering the whole file.
+_PATCH_NEEDS_OLD_STRING = (
+    "old_string is required for 'patch' and must be the EXACT text currently in the file. "
+    "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
+    "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
+    "action='write_file' — that rewrites the entire file and destroys unrelated content.")
+_PATCH_NEEDS_NEW_STRING = "new_string is required for 'patch'. Use an empty string to delete matched text."
+_PATCH_EITHER_OR = ("Pass EITHER content (full SKILL.md rewrite) OR old_string/new_string "
+                    "(targeted replacement), not both.")
+# Text-slot keys a model confuses: key -> the action that reads it. A 27B model that just
+# used write_file's file_content re-emits it on create/patch and then replays the identical
+# payload when the error only says the right key is "required" — the hint has to name where
+# the text actually landed so the retry can move it.
+_TEXT_SLOT_OWNER = {"content": "create (and a full-rewrite patch)",
+                    "new_string": "a targeted patch (with old_string)",
+                    "file_content": "write_file"}
+# action -> (text slots it reads, where misfiled text belongs)
+_TEXT_SLOT_FOR = {
+    "create": (("content",), "'content'"),
+    "edit": (("content",), "'content'"),
+    "patch": (("content", "new_string"), "old_string/new_string (targeted) or 'content' (full rewrite, last resort)"),
+    "write_file": (("file_content",), "'file_content'")}
+
+
+def _misplaced_text_hint(action: str, args: dict) -> str:
+    """Sentence naming the text-slot key(s) this op carries that ``action`` never reads, or ''."""
+    if action not in _TEXT_SLOT_FOR:
+        return ""  # delete/remove_file/unknown: no text slot, so no destination to point at
+    reads, destination = _TEXT_SLOT_FOR[action]
+    stray = [k for k in _TEXT_SLOT_OWNER if k not in reads and args.get(k) is not None]
+    if not stray:
+        return ""
+    carried = " and ".join(f"'{k}' (that key is for {_TEXT_SLOT_OWNER[k]})" for k in stray)
+    return f" Note: this op carries {carried} — move that text to {destination}."
+
+
+def _op_shape_error(action: str, args: dict):
+    """Argument-shape error text for one op, or None. Only shape misses carry the misplaced-text
+    hint: a patch whose real problem is an unmatched old_string must not be steered to a full
+    rewrite. Pure function so the batch can reject a misfiled op BEFORE any sibling is applied."""
+    for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
+        if missing(args.get(arg)):
+            return message + _misplaced_text_hint(action, args)
+    if action == "patch":
+        # Every patch shape miss is decided here, not in the handler, so a batch never applies
+        # op[0] only to roll it back over op[1]'s missing new_string or content+old_string mix.
+        if args.get("content") and (args.get("old_string") or args.get("new_string") is not None):
+            return _PATCH_EITHER_OR
+        if not args.get("old_string") and not args.get("content"):
+            return _PATCH_NEEDS_OLD_STRING + _misplaced_text_hint(action, args)
+        if not args.get("content") and args.get("new_string") is None:
+            return _PATCH_NEEDS_NEW_STRING
+    return None
+
 
 def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
@@ -31,6 +98,10 @@ def _validate_batch_ops(operations, default_name, tool_error):
         nm = op.get("name") or default_name
         if not nm:
             return fail(i, " needs a 'name' (the skill it targets).")
+        # Reject a misfiled op here, before any sibling is applied: a runtime failure on
+        # op[1] would first apply op[0] and then roll the whole batch back.
+        if (shape_err := _op_shape_error(act, op)) is not None:
+            return fail(i, f" ({act} on '{nm}'): {shape_err}")
         names.append(nm)
         if act == "create" and nm in names[:-1]:
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")
@@ -110,6 +181,9 @@ def _rollback(snapshots, find_skill):
     return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
 
 
+_ADVISORY_KEYS = ("lint_warnings", "lint_hint", "org_sharing")
+
+
 def _skill_manage_batch(operations, default_name: str = None, task_id: str = None,
                         session_id: str = None) -> str:
     """Apply operations atomically: every touched skill is snapshotted first and any
@@ -144,45 +218,53 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged
-    snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
-    snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
-    if snap_err is not None:
-        shutil.rmtree(snap_root, ignore_errors=True)
-        return tool_error(snap_err, success=False)
-    # Single-op path with the gate bypassed (the batch already cleared/staged it).
-    results = []
-    rollback_failed = False
-    token = _smt._skill_gate_bypass.set(True)
-    try:
-        for i, op in enumerate(operations):
-            raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
-                                          task_id=task_id, session_id=session_id)
-            try:
-                parsed = json.loads(raw)
-            except Exception:  # noqa: BLE001
-                parsed = {"success": False, "error": "unparseable op result"}
-            if not parsed.get("success"):
-                note, rollback_failed = _rollback(snapshots, _smt._find_skill)
-                fail = {  # key order is wire-visible
-                    "success": False,
-                    "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
-                              f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."),
-                    "failed_index": i, "completed_before_failure": i}
-                # Carry the failing op's teaching payload (patch's file_preview /
-                # fuzzy-match hints) through — without it the model recovers blind.
-                for k, v in parsed.items():
-                    if k not in ("success", "error") and v is not None:
-                        fail.setdefault(k, v)
-                return json.dumps(fail, ensure_ascii=False)
-            results.append({"name": names[i], "action": op["action"],
-                            "file_path": op.get("file_path"), "success": True})
-    finally:
-        _smt._skill_gate_bypass.reset(token)
-        if rollback_failed:
-            # Keep the snapshots so the operator can still recover by hand.
-            logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
-        else:
+    # Every target's lock is held from the snapshot through commit or rollback; the per-op
+    # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
+    # between the snapshot and a rollback would be silently reverted.
+    with _smt._skill_mutation_locks(names):
+        snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
+        snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
+        if snap_err is not None:
             shutil.rmtree(snap_root, ignore_errors=True)
+            return tool_error(snap_err, success=False)
+        # Single-op path with the gate bypassed (the batch already cleared/staged it).
+        results = []
+        rollback_failed = False
+        token = _smt._skill_gate_bypass.set(True)
+        try:
+            for i, op in enumerate(operations):
+                raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
+                                              task_id=task_id, session_id=session_id)
+                try:
+                    parsed = json.loads(raw)
+                except Exception:  # noqa: BLE001
+                    parsed = {"success": False, "error": "unparseable op result"}
+                if not parsed.get("success"):
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill)
+                    fail = {  # key order is wire-visible
+                        "success": False,
+                        "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
+                                  f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."),
+                        "failed_index": i, "completed_before_failure": i}
+                    # Carry the failing op's teaching payload (patch's file_preview /
+                    # fuzzy-match hints) through — without it the model recovers blind.
+                    for k, v in parsed.items():
+                        if k not in ("success", "error") and v is not None:
+                            fail.setdefault(k, v)
+                    return json.dumps(fail, ensure_ascii=False)
+                entry = {"name": names[i], "action": op["action"],
+                         "file_path": op.get("file_path"), "success": True}
+                # Advisory payloads (linter findings, org-sharing note) ride on the op result; the
+                # compact success row otherwise hides them and the model never sees a finding.
+                entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
+                results.append(entry)
+        finally:
+            _smt._skill_gate_bypass.reset(token)
+            if rollback_failed:
+                # Keep the snapshots so the operator can still recover by hand.
+                logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
+            else:
+                shutil.rmtree(snap_root, ignore_errors=True)
     # utf-8-sig + errors="replace": SKILL.md files are user-authored and sometimes carry a Notepad BOM or
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms
     # — falling back to the machine locale (cp1252/GBK) would make the same skill render differently per

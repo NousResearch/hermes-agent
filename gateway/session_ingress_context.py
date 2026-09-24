@@ -138,7 +138,12 @@ def _binding(runner, source, profile):
     if relay:
         transport, connector = _relay_connector(adapter, source)
     else:
-        connector = runner._adapter_credential_fingerprint(adapter)
+        # The connector pins "the same credential still serves this route" across a restart. A
+        # plugin platform with no discoverable credential (in-memory / socket-only adapters) is
+        # still one registered adapter; it binds by platform + owning profile rather than being
+        # refused as not_found.
+        connector = (runner._adapter_credential_fingerprint(adapter)
+                     or f'adapter:{source.platform.value}:{profile or ""}')
     if connector is None:
         raise RuntimeStoreError('not_found')
     provenance = {'transport_home': str(home), 'runtime_home': str(runtime_home),
@@ -189,7 +194,9 @@ async def reauthorize_roles(runner, source, provenance):
     if provenance is None or source.delivered_via_upstream_relay:
         raise RuntimeStoreError('invalid_params')
     restore_provenance(runner, source, provenance)
-    adapter = runner._adapter_for_source(source)
+    adapter = runner._intake_adapter_for(source)
+    if adapter is None:
+        raise RuntimeStoreError('not_found')
     if runner._is_user_authorized_for_source(source, allow_adapter_delegation=False):
         return True  # Direct allowlist/pairing remains an independent grant.
     check = getattr(type(adapter), 'reauthorize_native_roles', None)
@@ -200,7 +207,7 @@ async def reauthorize_roles(runner, source, provenance):
         allowed = await check(adapter, source)
     # A registry/profile/credential change during SDK I/O cannot borrow its result.
     restore_provenance(runner, source, provenance)
-    if runner._adapter_for_source(source) is not adapter:
+    if runner._intake_adapter_for(source) is not adapter:
         raise RuntimeStoreError('not_found')
     if allowed is not True:
         raise RuntimeStoreError('permission_denied')

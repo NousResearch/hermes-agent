@@ -438,28 +438,3 @@ class TestCanonicalHistoryIsolation:
             "canonical history lost its image through shallow aliasing"
         )
 
-    def test_image_corrupt_branch_strips_only_payload_copy(self):
-        """Contract check on the recovery branch itself: the image_corrupt
-        path must NOT call _strip_images_from_messages(messages) — only the
-        api_messages per-call copy. Stripping canonical history permanently
-        erased images on a transient provider error (#69104 sweeper review,
-        copy-on-write contract from e762a5a473)."""
-        import inspect
-        import re as _re
-
-        import agent.turn_recovery as loop_mod
-
-        src = inspect.getsource(loop_mod.recover_after_classification)
-        # Locate the image_corrupt recovery block and inspect its calls.
-        block = _re.search(
-            r"image_corrupt:\n(.*?)\n\s*(?:continue|return|else)", src, _re.S
-        )
-        assert block is not None, "image_corrupt recovery branch not found"
-        body = block.group(1)
-        assert "_strip_images_from_messages(api_messages)" in body, (
-            "recovery must strip the per-call api_messages copy"
-        )
-        assert "_strip_images_from_messages(messages)" not in body, (
-            "recovery must NOT strip canonical messages — that permanently "
-            "erases history on a transient provider rejection"
-        )

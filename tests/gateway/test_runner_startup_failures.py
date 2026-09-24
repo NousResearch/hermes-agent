@@ -8,6 +8,22 @@ from gateway.run import GatewayRunner
 from gateway.status import read_runtime_status
 
 
+@pytest.fixture(autouse=True)
+def _host_attach_gate_is_not_under_test(monkeypatch):
+    """These tests exercise the STARTUP path, not the host-attach gate that now runs in front of it.
+
+    Without the stub they pass only while the shared rendezvous dir happens to be empty: any record
+    there makes ``start_gateway`` attach and return before reaching the code under test. The host
+    role claimed along the way is released afterwards, so one test's owner is not the next one's.
+    """
+    monkeypatch.setattr("gateway.run._host_attach_or_none", AsyncMock(return_value=None))
+    yield
+    from gateway import host_rendezvous as hr
+
+    hr.release_host_lock(hr.ROLE_GATEWAY)
+    hr.clear_record(hr.ROLE_GATEWAY)
+
+
 @pytest.mark.parametrize(
     "code, expected",
     [
@@ -594,7 +610,8 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
         assert runner.exit_code is None
         assert set(runner._failed_platforms) == {Platform.DISCORD}
         state = read_runtime_status()
-        assert state["gateway_state"] == "running"
+        # Alive, but Telegram is parked fatal: a serving-with-a-parked-platform boot is degraded.
+        assert state["gateway_state"] == "degraded"
         assert state["platforms"]["telegram"]["state"] == "fatal"
         assert state["platforms"]["discord"]["state"] == "retrying"
     finally:

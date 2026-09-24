@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -273,6 +274,8 @@ class A2AAdapter(BasePlatformAdapter):
         self._pending_order: Dict[str, deque[str]] = {}
         # Request ownership outlives reply Futures and also covers synchronous profile forwards.
         self._active_tasks: set[str] = set()
+        # Admission ids this process already forwarded; a resend of one is a retry, not a new turn.
+        self._forwarded_inputs: "OrderedDict[str, None]" = OrderedDict()
         self._pending_lock = threading.Lock()
 
     @property
@@ -463,6 +466,18 @@ class A2AAdapter(BasePlatformAdapter):
         with self._pending_lock:
             self._active_tasks.add(task_id)
 
+    _MAX_FORWARDED_INPUTS = 1000
+
+    def _note_forwarded_input(self, input_id: str) -> bool:
+        """Record a forwarded admission id; True when this process already sent it (a retry)."""
+        with self._pending_lock:
+            seen = input_id in self._forwarded_inputs
+            self._forwarded_inputs[input_id] = None
+            self._forwarded_inputs.move_to_end(input_id)
+            while len(self._forwarded_inputs) > self._MAX_FORWARDED_INPUTS:
+                self._forwarded_inputs.popitem(last=False)
+        return seen
+
     def _pop_pending(self, task_id: str) -> None:
         with self._pending_lock:
             self._active_tasks.discard(task_id)
@@ -502,9 +517,20 @@ class A2AAdapter(BasePlatformAdapter):
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
         agent = agent or self._agents[""]
         text = protocol.extract_text(params)
-        context_id = protocol.extract_context_id(params) or protocol.new_context_id()
+        forwarded = not agent.get("local", True)
+        message_id = protocol.extract_message_id(params) if forwarded else ""
+        context_id = protocol.extract_context_id(params)
+        if not context_id:
+            # A retry of a first send repeats the messageId and omits the contextId it never received.
+            scope = "\0".join((*self._scope_for_agent(agent), peer))
+            context_id = protocol.message_context_id(scope, message_id) if message_id else protocol.new_context_id()
+        # A retry after a timeout must find its accepted work, not queue a second turn.
+        input_id = ("a2a-msg:" + hashlib.sha256(f"{context_id}\0{message_id}".encode()).hexdigest()
+                    if message_id else None)
+        retry = input_id is not None and self._note_forwarded_input(input_id)
         task_id = protocol.new_task_id()
-        turn = self._turns.track(context_id)
+        # The owner answers a resend from the accepted admission; it is not another turn of the loop.
+        turn = 0 if retry else self._turns.track(context_id)
         max_turns = protocol.max_pingpong_turns()
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
         if turn > max_turns:
@@ -516,13 +542,14 @@ class A2AAdapter(BasePlatformAdapter):
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)
-        protocol.persist_message(context_id, "user", text, task_id)
-        protocol.metrics.inbound_total += 1
+        if not retry:
+            protocol.persist_message(context_id, "user", text, task_id)
+            protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
-        if not agent.get("local", True):
+        if forwarded:
             self._activate_task(task_id)
             try:
-                reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=task_id)
+                reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=input_id or task_id)
                 self._record_outcome(task_id, context_id, peer, state, reply)
                 return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
             finally:
@@ -800,10 +827,18 @@ class A2AAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Resolve the task future when processing ends without a reply send (failures,
-        cancellations, empty runs) so the HTTP thread returns promptly."""
+        cancellations, empty runs, or a reply the gateway already streamed to the user) so the
+        HTTP thread returns promptly."""
         task_id = str(getattr(event, "message_id", "") or "")
         if task_id:
+            # A streamed turn never calls send() with notify=True (the gateway suppresses the
+            # normal final send once streaming delivered the body), so the SUCCESS default must
+            # not resolve with "" — that strands every A2A streaming reply as an empty completed
+            # task (#116944). _streamed_final_response is the same stash _final_text_for_post_turn_hooks
+            # reads for /goal and /loop.
+            _streamed = getattr(event, "_streamed_final_response", "")
+            default = (protocol.STATE_COMPLETED, _streamed if isinstance(_streamed, str) else "")
             self._resolve_task(task_id, *{
                 ProcessingOutcome.FAILURE: (protocol.STATE_FAILED, "[agent processing failed]"),
                 ProcessingOutcome.CANCELLED: (protocol.STATE_CANCELED, ""),
-            }.get(outcome, (protocol.STATE_COMPLETED, "")))
+            }.get(outcome, default))

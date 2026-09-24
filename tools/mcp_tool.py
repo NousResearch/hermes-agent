@@ -240,8 +240,9 @@ _PARKED_RETRY_INTERVAL = 300
 # Bounded wait for a respawned stdio child when a call finds it dead (gateway restarts kill
 # every MCP child); bounded so a broken server still parks via run()'s rapid-drop budget.
 _STDIO_RESPAWN_WAIT_SEC = 15.0
-# The client MUST ping faster than the server's idle-session TTL (short-TTL servers need a
-# smaller configured ``keepalive_interval``); the floor stops a tiny interval busy-looping.
+# Remote clients MUST ping faster than the server's idle-session TTL (short-TTL servers need a
+# smaller configured ``keepalive_interval``); stdio only opts in explicitly because local pipes
+# have no remote session TTL. The floor stops a tiny interval busy-looping.
 _DEFAULT_KEEPALIVE_INTERVAL, _MIN_KEEPALIVE_INTERVAL = 180, 5
 # One bounded cancellation cycle at final shutdown so resistant tasks cannot hang exit.
 _MCP_LOOP_DRAIN_TIMEOUT = 3.0
@@ -316,7 +317,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback")
+        "_ever_connected", "_sse_fallback", "_park_reason", "_last_park_line")
 
     def __init__(self, name: str):
         self.name = name
@@ -347,8 +348,16 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._ever_connected: bool = False
         # Latched when the Streamable HTTP -> SSE fallback connects: reconnects reuse SSE directly.
         self._sse_fallback: bool = False
+        # Status/URL/body of the last HTTP rejection the Streamable HTTP client saw; names the real
+        # cause when the SDK reports only ``Server returned an error response``.
+        self._http_rejection: dict = {}
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
+        # Why the server is parked (the revival_reason handed to _park), None once healthy again.
+        # Lets cron preflight tell a network-blip park (recovering) from a permanent-error park
+        # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
+        self._park_reason: Optional[str] = None
+        self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a
@@ -637,13 +646,19 @@ def _update_death_supervisor(verb: str, pgids) -> None:
 
 
 def _mcp_registry_scope() -> Optional[str]:
-    """Registry scope for MCP registrations: a profile overlay under a multiplexer, else None."""
+    """Registry scope for MCP registrations: the session's own tool scope when one is bound, else a
+    profile overlay when this process serves profiles, else None. Under ``gateway.multiplex_profiles``
+    every turn runs scoped; a process that serves a routed profile through the HERMES_HOME override
+    (dashboard/desktop backend, per-profile cron ticker) is a multiplexer too, even with the flag
+    off — keying its connections by the bare name would hand one profile's credentialed connection
+    to every other served profile (#111151). Single-profile processes (no override, or an override
+    naming their own home) keep bare names."""
     from tools.registry import current_session_tool_scope
     session_scope = current_session_tool_scope()
     if session_scope is not None:
         return session_scope
-    from agent.secret_scope import is_multiplex_active
-    if not is_multiplex_active():
+    from agent.secret_scope import serves_routed_profile
+    if not serves_routed_profile():
         return None
     from tools.registry import registry
     return registry.current_scope_key()
@@ -671,8 +686,16 @@ def _server_visible_in_scope(key, scope: Optional[str]) -> bool:
 # See issue #62771.
 _LOCK_UNAVAILABLE: Any = object()  # sentinel: locking broken/unavailable
 _MCP_DISCOVERY_LOCK_PATH: Optional[str] = None  # resolved lazily
-# Bounded wait when another process holds the lock.
-_MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 240, 0.5
+# A discovery pass (bounded gathers, one 120 s budget per wave) may legitimately
+# run past the 120 s a scatter completes in. The waiter must outlast the worst
+# legitimate holder (pass ceiling + slack), or it fails over at 120 s, discovers
+# unguarded beside a still-connecting holder, and spawns duplicate stdio trees.
+# See #117373: the concurrency cap made the old 120 s waiter budget stale.
+_MCP_DISCOVERY_PASS_MAX_SEC = 300          # overall pass ceiling
+_MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 0.5
+# Waiter budget (max_retries * delay) must outlast the pass ceiling: 320 s > 300 s.
+_MCP_DISCOVERY_LOCK_MAX_RETRIES = int(
+    _MCP_DISCOVERY_PASS_MAX_SEC / _MCP_DISCOVERY_LOCK_RETRY_DELAY_S) + 20
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

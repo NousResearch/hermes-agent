@@ -19,7 +19,7 @@ def local_identity(profile_id, principal_id, request_id):
 def local_adapter_map(authority):
     """The adapter map a LOCAL session of *authority* lives in: ``runner.adapters`` for the launch
     profile, ``runner._profile_adapters[name]`` for a served secondary (its routed home, so
-    ``_adapter_for_source`` / ``_adapters_for_profile`` resolve the right transport)."""
+    ``_delivery_adapter_for`` / ``_adapters_for_profile`` resolve the right transport)."""
     runner = authority.runner
     registry = getattr(runner, 'session_authorities', None)
     name = registry.profile_name(authority) if registry is not None else None

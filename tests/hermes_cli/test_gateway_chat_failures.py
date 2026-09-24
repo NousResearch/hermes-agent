@@ -11,7 +11,7 @@ def test_direct_query_alias_survives_noninteractive_launch(monkeypatch):
     from hermes_cli import gateway_chat_startup
     seen = []
 
-    async def run(args):
+    async def run(args, emitter=None):
         seen.append(args.q)
         return 0
 
@@ -57,3 +57,50 @@ async def test_oneshot_matches_own_terminal_receipt_not_neighbor(capsys):
     view = GatewayChatView(Peer(), {"stored_session_id": "stored"}, quiet=True)
     assert await asyncio.wait_for(view.run("query", oneshot=True), 2) == 1
     assert capsys.readouterr().out == "mine\n"
+
+
+@pytest.mark.asyncio
+async def test_oneshot_refuses_unknown_blocked_session_before_submitting(capsys):
+    """After a SIGKILL mid-turn the head admission is ``unknown``; a new -q admission would queue
+    behind it forever. One-shot refuses BEFORE submitting (exit 3) and names the discard remedy."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    class Peer:
+        events = asyncio.Queue()
+        async def rpc(self, method, **params):
+            raise AssertionError(f"nothing may be submitted behind an unknown row: {method}")
+
+    lost = "admission-unknown-0123456789abcdef"
+    snapshot = {"stored_session_id": "stored", "pending": [{"admission_id": lost, "status": "unknown", "execution_generation": 4}]}
+    assert await asyncio.wait_for(GatewayChatView(Peer(), snapshot, quiet=True).run("pong", oneshot=True), 2) == 3
+    err = capsys.readouterr().err
+    assert f"/discard {lost}" in err and "prompt.resolve_unknown" in err and "nothing was submitted" in err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", ["unknown_row", "approval_prompt"])
+async def test_stream_json_oneshot_always_closes_with_a_result_record(capsys, blocker):
+    """``--format stream-json`` consumers parse stdout: every exit-3 detach (unknown row refused,
+    approval needed) must end the JSONL with a failed ``result`` record carrying exit_code 3."""
+    import json
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_cli.stream_json import StreamJsonEmitter
+
+    class Peer:
+        events = asyncio.Queue()
+        async def rpc(self, method, **params):
+            assert blocker == "approval_prompt" and method == "prompt.submit"
+            self.events.put_nowait({"method": "event", "params": {
+                "type": "approval.request", "session_id": "stored", "admission_id": "mine",
+                "payload": {"prompt_id": "p1", "kind": "approval", "command": "rm -rf /", "choices": ["yes", "no"],
+                            "execution_generation": 1}}})
+            return {"admission_id": "mine"}
+
+    pending = [{"admission_id": "lost", "status": "unknown", "execution_generation": 4}] if blocker == "unknown_row" else []
+    emitter = StreamJsonEmitter(model="m", session_id="stored")
+    view = GatewayChatView(Peer(), {"stored_session_id": "stored", "pending": pending}, emitter=emitter)
+    assert await asyncio.wait_for(view.run("pong", oneshot=True), 2) == 3
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert records[0]["type"] == "system" and records[-1]["type"] == "result", records
+    assert records[-1]["exit_code"] == 3 and records[-1]["error"], records[-1]
+    assert sum(r["type"] == "result" for r in records) == 1

@@ -16,6 +16,10 @@ export function isMissingRpcMethod(error: unknown): boolean {
   return /method not found|-32601|unknown method|no such method/i.test(message)
 }
 
+export function isOutOfSyncRpcParams(error: Error | string): boolean {
+  return /out of sync \(different versions\)/i.test(error.toString())
+}
+
 /** REST twin of isMissingRpcMethod: the route does not exist on this backend.
  *  Matches the backend catch-all ('404: {"detail":"No such API endpoint: …}'),
  *  FastAPI's bare 404 on headless serve — directly, or wrapped as "Error
@@ -32,6 +36,20 @@ export function isMissingRestEndpoint(error: unknown): boolean {
     /endpoint is likely missing/i.test(message) ||
     /(?:^\s*|error:\s*)404\b/i.test(message)
   )
+}
+
+/** True when the backend refused a request because it owns the profile and the
+ *  call is offline-only maintenance (`web_server_sessions.py::_with_session_maintenance`
+ *  → HTTP 409 "Exclusive maintenance refused"). The refusal is the steady state
+ *  for as long as that gateway runs, so callers treat it as terminal, not
+ *  transient. Only the anchored `409: {...}` status marker — bare, or wrapped as
+ *  "Error invoking remote method 'hermes:api': Error: 409: …" by the IPC bridge —
+ *  counts; a `409` token inside a message body ("Query returned 409 rows", "4096")
+ *  never does. */
+export function isOfflineMaintenance(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /(?:^\s*|error:\s*)409:/i.test(message)
 }
 
 /** True when a prompt response raced a backend-side timeout / completion. */

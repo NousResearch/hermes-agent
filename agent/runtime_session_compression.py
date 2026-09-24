@@ -52,11 +52,14 @@ class RuntimeSessionCompressionMixin:
         return self._apply('compression.watermark', {})['value']
 
     def archive_and_compact(self, session_id, compacted_messages, model_config_patch=None,
-                            watermark=None, lock_holder=None, tail_count=0):
+                            watermark=None, lock_holder=None, tail_count=0, carried_messages=None):
         self._session(session_id)
+        # A carried message names an exact durable original (its _row_id) to rewind rather than
+        # archive (#118900); the owner resolves identities against its own store.
+        carried = [dict(m) for m in carried_messages or [] if isinstance(m, dict)]
         result = self._apply('compression.archive', dict(messages=compacted_messages,
             model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
-            tail_count=tail_count))
+            tail_count=tail_count, carried_messages=carried))
         for message, row_id in zip(compacted_messages, result['row_ids'], strict=True):
             message['_row_id'] = row_id
         return result['value']

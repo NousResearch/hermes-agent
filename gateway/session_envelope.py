@@ -59,8 +59,8 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
     restored_source.is_bot = source.is_bot
     if provenance is not None:
         restore_provenance(runner, restored_source, provenance)
-    adapter = runner._adapter_for_source(source)
-    if adapter is None or runner._adapter_for_source(restored_source) is not adapter:
+    adapter = runner._intake_adapter_for(source)
+    if adapter is None or runner._intake_adapter_for(restored_source) is not adapter:
         raise RuntimeStoreError('not_found')
     return encoded_source
 
@@ -91,7 +91,7 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False):
                 'timestamp': event.timestamp.isoformat()}
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
-        adapter = runner._adapter_for_source(event.source)
+        adapter = runner._intake_adapter_for(event.source)
         if provenance is None:
             raise RuntimeStoreError('permission_denied')
         delivery = snapshot_destination(adapter, adapter._delivery_info.get(event.source.chat_id))
@@ -206,7 +206,7 @@ def _validate_native_route(runner, payload, session_id, available_source, adapte
     entry = store.lookup_by_session_key(route)
     if entry is None or entry.session_id != session_id:
         raise RuntimeStoreError('admission_conflict')
-    if adapter is None or runner._adapter_for_source(event.source) is not adapter:
+    if adapter is None or runner._intake_adapter_for(event.source) is not adapter:
         raise RuntimeStoreError('not_found')
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, validate_destination

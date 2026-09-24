@@ -524,7 +524,7 @@ export function slashStatusText(command: string, output: string): string {
  *   because it needs transcript replacement)
  * - `session.status`:   { output: "<multi-line plain text>" }
  * - `session.save`:     { file: "<absolute path>" }
- * - `session.usage`:    { calls, input, output, total, credits_lines? }
+ * - `session.usage`:    { calls, input, output, total, account_lines?, credits_lines? }
  * - `session.steer`:    { status: 'queued' | 'rejected', text }
  * - `process.stop`:     { killed: boolean }
  * - `agents.list`:      { processes: [{ session_id, command, status, uptime }] }
@@ -583,7 +583,7 @@ export function renderRpcResult(response: unknown, name: string): string {
     return r.output
   }
 
-  // session.usage — { calls, input, output, total, credits_lines? }
+  // session.usage — { calls, input, output, total, account_lines?, credits_lines? }
   if ('total' in r || 'input' in r || 'output' in r || 'calls' in r) {
     const calls = Number(r.calls ?? 0)
     const input = Number(r.input ?? 0)
@@ -594,10 +594,13 @@ export function renderRpcResult(response: unknown, name: string): string {
       `Usage: ${calls.toLocaleString()} calls · ${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`
     ]
 
-    if (Array.isArray(r.credits_lines)) {
-      for (const credit of r.credits_lines) {
-        if (typeof credit === 'string' && credit.trim()) {
-          lines.push(credit.trim())
+    // Provider account limits (e.g. Codex quota windows) first, then Nous credits — same order as CLI /usage.
+    for (const extra of [r.account_lines, r.credits_lines]) {
+      if (Array.isArray(extra)) {
+        for (const line of extra) {
+          if (typeof line === 'string' && line.trim()) {
+            lines.push(line.trim())
+          }
         }
       }
     }

@@ -121,7 +121,7 @@ def build_profile_terminal_scope(
     file is unreadable.
 
     *env_overlay* is a TRUSTED ``TERMINAL_*`` mapping captured from the launch process before
-    multiplexing began (``tui_gateway/launch_terminal_policy.py``): the launch profile's
+    multiplexing began (``tui_gateway/launch_profile_policy.py``): the launch profile's
     env-only policy (``TERMINAL_ENV=ssh`` from systemd, ``op run``, a launcher bridge) has no
     file to rebuild it from, and reading live ``os.environ`` here is the leak this module
     closes. It sits where the process env sits in the standalone bridge — explicit YAML keys
@@ -151,11 +151,11 @@ def build_profile_terminal_scope(
     except Exception as exc:
         raise TerminalPolicyUnavailable(f"cannot resolve terminal config in {home}: {exc}") from exc
     if config_exists:
-        from hermes_cli.config import fast_safe_load
+        from utils import load_yaml_file_readonly
 
         try:
-            with open(config_path, encoding="utf-8") as f:
-                raw = fast_safe_load(f)
+            # Signature-cached: a scope is rebuilt per routed turn/poll, the file rarely changes.
+            raw = load_yaml_file_readonly(config_path)
         except Exception as exc:
             raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None

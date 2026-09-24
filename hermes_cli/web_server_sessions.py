@@ -7,16 +7,25 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
+
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
-_DESCENDANTS_SQL = """
+_DESCENDANTS_SQL = f"""
             WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
                 SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
                 UNION
                 SELECT s.id, s.parent_session_id, s.started_at
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                -- Continuation edges only (same predicate as the session list's chain CTE): a subagent run,
+                -- a /branch fork, a /new reset child or a tool-owned row is its own conversation, and resuming
+                -- INTO one parks the user's chat in a row the sidebar never lists (#115092).
+                WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
+                  AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
+                  AND NOT ({_RESET_CHILD_SQL.format(a='s')})
+                  AND COALESCE(s.source, '') != 'tool'
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """
@@ -255,8 +264,31 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _last_auto_archive_check[key] = now
 
         from hermes_cli.config import load_config as _load_full_config
-        cfg = (_load_full_config().get("sessions") or {})
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        # The config that governs a store is the one in that store's OWN home. A zero-arg
+        # load_config() resolves through the PROCESS HERMES_HOME, so the dashboard swept every
+        # profile's sessions with the launch profile's sessions.auto_archive/auto_archive_days —
+        # one profile's retention silently decided another's.
+        profile_home = _session_db_path_for_profile(profile).parent
+        _home_token = set_hermes_home_override(str(profile_home))
+        try:
+            cfg = (_load_full_config().get("sessions") or {})
+        finally:
+            reset_hermes_home_override(_home_token)
         if not cfg.get("auto_archive", False):
+            return
+        from hermes_cli.profiles import _check_gateway_running
+
+        # A live gateway owns this profile's store and runs the same sweep on its own
+        # housekeeping tick ("state.db maintenance tick" in gateway/run.py, profile-scoped so a
+        # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes
+        # serve` adds a second writer to a database another process is already archiving,
+        # for zero extra coverage (#110405). `_check_gateway_running` is the canonical
+        # per-profile predicate (`_maybe_run_skill_maintenance` below uses it): its
+        # multiplexer rung catches a served secondary, which owns no gateway.pid or lock
+        # of its own and a bare lock-file probe would report stopped.
+        if _check_gateway_running(profile_home):
             return
         db = _open_session_db_for_profile(profile, read_only=False)
         try:

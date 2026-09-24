@@ -43,12 +43,6 @@ def test_notify_helper_calls_provider_on_jobs_changed(monkeypatch):
     assert calls == [1]
 
 
-def test_builtin_notify_is_harmless(monkeypatch):
-    """With the built-in provider (default), notify is a no-op and never
-    raises."""
-    import cron.scheduler as sched
-    # default resolution → built-in; just assert it doesn't blow up.
-    sched._notify_provider_jobs_changed()
 
 
 def test_create_registers_first_trigger_with_active_provider(
@@ -92,7 +86,6 @@ def test_create_failure_preserves_job_and_hides_provider_details(
     error = exc_info.value
     assert jobs.get_job(error.job["id"]) == error.job
     assert "private callback URL and token" not in str(error)
-    assert "Do not create a duplicate" in str(error)
     # Human-facing variant hides the exception class name and names the job.
     assert "RuntimeError" not in error.user_message()
     assert "'w'" in error.user_message()

@@ -58,6 +58,31 @@ def emit_terminal_post_tool_call(
         pass
 
 
+def apply_transform_tool_result(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    effective_task_id: str,
+    tool_call_id: Optional[str],
+    duration_ms: int = 0,
+) -> Any:
+    """Apply ``transform_tool_result`` to an inline-dispatched tool's result.
+
+    Registry tools get this inside ``handle_function_call``; inline executors never
+    reach it, so the agent paths call the same helper (after the terminal
+    ``post_tool_call``) to keep the hook's "every tool" contract. Fail-open."""
+    try:
+        from model_tools import _CallIds, _apply_transform_tool_result_hook
+        return _apply_transform_tool_result_hook(
+            function_name, function_args, result, duration_ms,
+            _CallIds(**tool_hook_ids(agent, effective_task_id, tool_call_id)),
+        )
+    except Exception:
+        return result
+
+
 @dataclass
 class InlineToolContext:
     """Per-call state an inline executor may need beyond its arguments."""
@@ -105,7 +130,8 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
-            ("detail", "detail", "adaptive"),
+            ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
+            ("exclude_session_ids", "exclude_session_ids"),
         ),
         db=session_db, current_session_id=agent.session_id,
     )
@@ -150,6 +176,61 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _handle_preview(args)
 
 
+def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The GUI callback lives on the agent; registry dispatch never forwards it.
+    from tools.connectors import manage_connections
+    from tools.connectors.gateway import config as gateway_config
+
+    result = manage_connections(
+        args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        connection_callback=getattr(agent, "connection_callback", None),
+        connectors_available=gateway_config.connectors_available,
+    )
+    _scope_in_connected_mcp_servers(agent, result)
+    return result
+
+
+def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
+    """Add the MCP servers this call connected to the agent's toolset selection.
+
+    ``tool_describe``/``tool_call`` resolve names inside that selection, and it was fixed when the
+    agent was built, so a server registered a moment ago is otherwise "not found" for the rest of
+    the turn the result calls it available in. Only the selection changes; ``agent.tools`` does
+    not, so the sent tool schema bytes stay the same."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    if enabled is None or "no_mcp" in enabled:  # None already means every toolset
+        return
+    try:
+        targets = json.loads(result).get("targets") or []
+    except (AttributeError, TypeError, ValueError):
+        return
+    connected = [str(t.get("name")) for t in targets if isinstance(t, dict)
+                 and t.get("kind") == "mcp" and t.get("state") == "connected" and t.get("tools")]
+    added = [name for name in connected if name not in enabled]
+    if added:
+        agent.enabled_toolsets = [*enabled, *added]
+
+
+def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The card callback lives on the agent; only a desktop chat draws catalog rows.
+    from tools.connectors.catalog_tool import manage_catalog
+
+    return manage_catalog(
+        args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        connection_callback=getattr(agent, "connection_callback", None),
+        card_surface=getattr(agent, "platform", None) == "desktop",
+    )
+
+
+def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # Replay shim for conversations whose cached prompt still names setup_mcp.
+    # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
+    return _manage_connections(agent, {
+        "action": args.get("action", "install"),
+        "connectors": [{"name": args.get("server", ""), "mcp": True}],
+    }, ctx)
+
+
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
 INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
@@ -192,10 +273,9 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
     ),
-    "setup_mcp": _callback_tool(
-        "tools.setup_mcp_tool", "setup_mcp_tool", "setup_mcp_callback",
-        ("server", "server", ""), ("action", "action", "install"), ("reason", "reason", ""),
-    ),
+    "manage_connections": _manage_connections,
+    "manage_catalog": _manage_catalog,
+    "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
 }
 

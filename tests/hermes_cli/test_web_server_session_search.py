@@ -49,6 +49,7 @@ class _FakeSessionDB:
                 "source": "cli",
                 "model": "claude",
                 "started_at": 100,
+                "last_active": 150,
             }
         ]
         return [
@@ -125,6 +126,8 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
         "results": [
             {
                 "id": "20260603_090200_exact",
+                "profile": "default",
+                "is_default_profile": True,
                 "session_id": "20260603_090200_exact",
                 "lineage_root": "20260603_090200_exact",
                 "snippet": "ID match preview",
@@ -132,9 +135,13 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "cli",
                 "model": "claude",
                 "session_started": 100,
+                # Row recency rides on id-match rows (sessions table)...
+                "last_active": 150,
             },
             {
                 "id": "content_session",
+                "profile": "default",
+                "is_default_profile": True,
                 "session_id": "content_session",
                 "lineage_root": "content_session",
                 "snippet": "content hit",
@@ -142,7 +149,29 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "desktop",
                 "model": "gpt",
                 "session_started": 200,
+                # ...while FTS hits have none and leave it null.
+                "last_active": None,
             },
         ]
     }
     assert _FakeSessionDB.opened_read_only is True
+
+
+def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):
+    monkeypatch.setattr(
+        _rt_sessions, "_cron_profile_home", lambda profile: (profile, None)
+    )
+    monkeypatch.setattr(
+        _rt_sessions,
+        "_open_session_db_for_profile",
+        lambda profile, *, read_only: _FakeSessionDB(read_only=read_only),
+    )
+
+    response = asyncio.run(
+        _rt_sessions.search_sessions(q="20260603", limit=2, profile="worker")
+    )
+
+    assert {
+        (row["profile"], row["is_default_profile"])
+        for row in response["results"]
+    } == {("worker", False)}

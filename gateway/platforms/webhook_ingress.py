@@ -18,12 +18,17 @@ async def producer_scope(adapter, event):
     if not registered or home is None:
         raise RuntimeStoreError('profile_mismatch')
     source = event.source
+    # Identity is pinned through the runner's single canonicalization seam (a secondary's own
+    # bot, or the primary's routed profile); a rejected primary route is refused downstream.
     if profile:
-        runner._stamp_event_profile(event, profile)
-    elif not source.profile and not runner._stamp_routed_profile(source):
-        source.profile_route_rejected = True
+        runner._canonicalize(source, transport_profile=profile)
+        runtime_home = runner._resolve_profile_home_for_source(source) if source.profile else home
+    else:
+        runtime_home = runner._admit_primary_source(source, home)
+        if runtime_home is None:
+            source.profile_route_rejected = True
+            runtime_home = home
     source._authorization_profile_home = home
-    runtime_home = runner._resolve_profile_home_for_source(source) if source.profile else home
     # The routed profile's own ledger admits the delivery; an unserved route is refused.
     authority = authority_for_home(runner, runtime_home)
     if authority is None:
@@ -119,9 +124,10 @@ async def recover_webhook_finalizations(authority):
             entry = authority.runner.session_store.lookup_by_session_key(envelope['route'])
             if entry is None or authority.logical_owner(entry.session_id) != sid:
                 raise RuntimeStoreError('admission_conflict')
-            adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
+            source = authority.runner._restored_source(entry)
+            adapter = authority.runner._delivery_adapter_for(source)
             target = authority.physical_target(SessionRef(authority.profile_id, sid))
-            await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
+            await check_native_route(authority.runner, row['payload'], target, source, adapter)
             results[sid] = 'finalized' if finalize_webhook(
                 authority, authority._receipt(row)) else 'unchanged'
         except (KeyError, RuntimeStoreError):

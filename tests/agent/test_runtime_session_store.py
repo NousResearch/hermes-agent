@@ -102,8 +102,12 @@ def test_worker_store_persists_and_restores_the_tools_prefix_pin(tmp_path):
             tools = [{'type': 'function', 'function': {'name': n, 'parameters': {}}}
                      for n in ('terminal', 'tool_search', 'tool_describe', 'tool_call')]
             persist_agent_tool_names(SimpleNamespace(_session_db=store, session_id='owned', tools=tools))
-            assert json.loads(db.get_session('owned')['tool_names']) == ['terminal', 'tool_search', 'tool_describe', 'tool_call']
-            assert json.loads(store.get_session('owned')['tool_names']) == ['terminal', 'tool_search', 'tool_describe', 'tool_call']
+            db.create_session('direct', 'cli', system_prompt='prefix')
+            persist_agent_tool_names(SimpleNamespace(_session_db=db, session_id='direct', tools=tools))
+            # The same pin the direct store writes (the RPC canonicalizes key order for its receipt
+            # digest): a worker-pinned session rebuilt in-process reads back version + tools intact.
+            assert json.loads(db.get_session('owned')['tool_names']) == json.loads(db.get_session('direct')['tool_names'])
+            assert json.loads(store.get_session('owned')['tool_names'])['tools'] == tools
             with pytest.raises(WorkerPersistenceError, match='permission_denied'):
                 store.update_session_tool_names('foreign', ['terminal'])
             with pytest.raises(Exception, match='invalid_params'):

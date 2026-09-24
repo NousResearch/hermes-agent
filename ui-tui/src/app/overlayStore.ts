@@ -24,6 +24,7 @@ const buildOverlayState = (): OverlayState => ({
   billing: null,
   clarify: null,
   confirm: null,
+  connection: null,
   ambient: [],
   widget: null,
   journey: false,
@@ -49,6 +50,7 @@ export const $isBlocked = computed(
     billing,
     clarify,
     confirm,
+    connection,
     journey,
     modelPicker,
     pager,
@@ -68,6 +70,7 @@ export const $isBlocked = computed(
       billing ||
       clarify ||
       confirm ||
+      connection ||
       journey ||
       modelPicker ||
       pager ||
@@ -163,6 +166,9 @@ export const resetOverlayState = () => $overlayState.set(buildOverlayState())
  * shouldn't vanish when a turn ends.  Called from turnController.idle() on
  * every turn completion / interrupt; the old "reset everything" behaviour
  * silently closed /agents the moment delegation finished.
+ *
+ * `connection` is preserved too: the card belongs to a backend operation that outlives the turn's
+ * idle edge, and only the operation's own settlement may close it.
  */
 export const resetFlowOverlays = () =>
   $overlayState.set({
@@ -170,6 +176,7 @@ export const resetFlowOverlays = () =>
     agents: $overlayState.get().agents,
     agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
     ambient: $overlayState.get().ambient,
+    connection: $overlayState.get().connection,
     widget: $overlayState.get().widget,
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,

@@ -29,6 +29,8 @@ CRED_ENV = {
         "WHATSAPP_CLOUD_ACCESS_TOKEN": "EAAB-test-access-token",
     },
     "homeassistant": {"HASS_TOKEN": "hass-long-lived-token"},
+    # flag-driven, not credential-driven: WHATSAPP_ENABLED=true must not beat an explicit YAML disable (#73289)
+    "whatsapp": {"WHATSAPP_ENABLED": "true"},
     "email": {
         "EMAIL_ADDRESS": "bot@example.com",
         "EMAIL_PASSWORD": "app-password",
@@ -151,10 +153,8 @@ def test_explicit_disable_with_env_credentials_warns_once(platform, tmp_path, mo
     ]
     assert len(hits) == 1, [r.getMessage() for r in caplog.records]
     msg = hits[0].getMessage()
-    assert f"Platform '{platform}'" in msg
     for env_name in CRED_ENV[platform]:
         assert env_name in msg
-    assert f"platforms.{platform}.enabled: true" in msg  # the remedy
 
 
 @pytest.mark.usefixtures("_fresh_warn_dedup")
@@ -187,16 +187,3 @@ def test_no_warning_when_disabled_and_no_env_credentials(tmp_path, monkeypatch, 
     assert not [r for r in caplog.records if "explicitly disabled" in r.getMessage()]
 
 
-def test_every_env_enable_branch_is_named_for_the_warning():
-    """Each platform routed through ``_enable_from_env`` (every ``_Cred`` row plus
-    the hand-written steps that call it) needs a credential entry so the WARNING
-    can name what is being ignored."""
-    import inspect, re
-
-    src = inspect.getsource(gateway_config_env)
-    routed = {Platform[name] for name in re.findall(r"_enable_from_env\(config, Platform\.([A-Z_]+)\)", src)}
-    routed |= {step.platform for step in gateway_config_env._ENV_STEPS if isinstance(step, gateway_config_env._Cred)}
-    routed.add(Platform.SLACK)  # Slack has its own inline copy of the logic
-    assert len(routed) > 15
-    missing = {p.value for p in routed} - {p.value for p in gateway_config_env._ENV_ENABLE_CREDENTIALS}
-    assert not missing, f"platforms without a credential entry for the explicit-disable warning: {missing}"

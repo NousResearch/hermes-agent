@@ -223,6 +223,10 @@ To enable container mode, add one line:
 Container mode auto-enables `virtualisation.docker.enable` via `mkDefault`. If you use Podman instead, set `container.backend = "podman"` and `virtualisation.docker.enable = false`.
 :::
 
+:::note Cron on a native install needs a lingering service user
+Scheduled cron jobs are launched in a transient `systemd-run --user --scope` so a gateway restart cannot kill a running job. That needs a systemd user manager for the service uid, which a system service only gets when the uid lingers. With `createUser = true` the module sets `users.users.<user>.linger = true` (nixpkgs ≥ 25.05), orders the gateway after `linger-users.service`, and waits briefly for `/run/user/<uid>/bus` before starting. If you declare the user yourself (`createUser = false`), set `linger = true` on it or run `sudo loginctl enable-linger <user>` once; otherwise cron degrades to unscoped workers (or fails closed under `cron.require_restart_safe_scope: true`).
+:::
+
 ---
 
 ## Configuration
@@ -804,8 +808,8 @@ services.hermes-agent.extraDependencyGroups = [ "messaging" ];
 ```nix
 # Enable a memory provider
 services.hermes-agent = {
-  extraDependencyGroups = [ "hindsight" ];
-  settings.memory.provider = "hindsight";
+  extraDependencyGroups = [ "honcho" ];
+  settings.memory.provider = "honcho";
 };
 ```
 
@@ -824,12 +828,13 @@ This is resolved by uv alongside core dependencies — no PYTHONPATH patching, n
 | `bedrock` | AWS Bedrock (boto3) |
 | `azure-identity` | Azure Entra ID auth |
 | `honcho` | Honcho memory provider |
-| `hindsight` | Hindsight memory provider |
 | `modal` | Modal terminal backend |
 | `daytona` | Daytona terminal backend |
 | `exa` | Exa web search |
 | `firecrawl` | Firecrawl web search |
 | `fal` | FAL image generation |
+
+Memory providers that live in the [plugin catalog](../user-guide/features/plugins.md) rather than in the Hermes tree (e.g. Hindsight) are not extras. Install them like any catalog plugin with `hermes plugins install hindsight`, or declaratively via [`extraPlugins`](#directory-plugins-extraplugins) pointing at the plugin's source tree.
 
 Or use the pre-built `#messaging` or `#full` flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
 
@@ -865,7 +870,7 @@ External flakes can override the package directly:
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
     # Then:
     #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "hindsight" ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "honcho" ]; }
   };
 }
 ```
@@ -1012,7 +1017,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
-| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["hindsight"]`). Resolved by uv — no collisions |
+| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["honcho"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
 | `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
 
@@ -1140,7 +1145,7 @@ Same layout, mounted into the container:
 | `/nix/store` | `/nix/store` | `ro` | Hermes binary + all Nix deps |
 | `/data` | `/var/lib/hermes` | `rw` | All state, config, workspace |
 | `/home/hermes` | `${stateDir}/home` | `rw` | Persistent agent home — `pip install --user`, tool caches |
-| `/usr`, `/usr/local`, `/tmp` | (writable layer) | `rw` | `apt`/`pip`/`npm` installs — persists across restarts, lost on recreation |
+| `/usr`, `/usr/local`, `/tmp` | (writable layer) | `rw` | `apt`/`pip`/`npm` installs — persists across restarts, lost on recreation | <!-- no-tmp: ok — documents the container's own writable layer -->
 
 ---
 

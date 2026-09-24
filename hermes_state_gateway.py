@@ -13,13 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
-    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS_SQL, _sql_json_extract, _sql_session_last_active)
+    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
+    _sql_session_last_active)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
 
 # Recursive CTE naming a session plus its compression ancestors (rows a
-# resume must keep on one routing peer); branch/delegate/tool rows stop it.
+# resume must keep on one routing peer); branch/delegate/tool/reset rows stop it
+# (same membership rule as get_compression_lineage / _CHAIN_STEP_SQL, #114271).
 _COMPRESSION_LINEAGE_CTE = f"""
                     WITH RECURSIVE compression_lineage(id) AS (
                         SELECT ?
@@ -31,6 +33,7 @@ _COMPRESSION_LINEAGE_CTE = f"""
                         WHERE parent.end_reason = 'compression'
                           AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                           AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                          AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                           AND COALESCE(child.source, '') != 'tool'
                     )
                 """
@@ -46,9 +49,18 @@ _PEER_SELECT_HEAD = """
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
 """
+# A row a *completed handoff* owns stays recoverable whatever end_reason it carries: the source
+# interface's teardown runs AFTER ownership moved to the destination and can stamp a terminal reason
+# (``cli_close``) before the destination's first reply — the row must survive that race or the
+# handed-off leg is orphaned and a fresh empty session is minted in its place. A later DELIBERATE
+# close is still fenced the ordinary way: a reset-boundary row ended after this row's last activity
+# blocks recovery (the NOT EXISTS below). ``pending``/``failed``/NULL handoffs are untouched, so this
+# is strictly "ownership was transferred", never "a handoff was attempted".
+_HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
 _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
                   AND s.source = ?
-                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
+                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
+                       OR {_HANDOFF_OWNED_ROW_SQL})
                   AND NOT EXISTS (
                       SELECT 1 FROM sessions b
                       WHERE b.session_key = s.session_key
@@ -68,7 +80,8 @@ _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
                   AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
-                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
+                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
+                       OR {_HANDOFF_OWNED_ROW_SQL})
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
                   ))
@@ -128,6 +141,28 @@ _ORPHAN_CONTIGUITY_DONORS_SQL = f"""
                         ORDER BY last_active DESC
                         LIMIT 2
                         """
+_OPTIONAL_TABLE_NAMES = (
+    "telegram_dm_topic_mode", "telegram_dm_topic_bindings", "delivery_obligations")
+
+
+def _optional_table_columns(conn) -> Dict[str, Set[str]]:
+    """Live column sets of the lazily-created tables that exist (``{}`` when none do).
+
+    ``apply_telegram_topic_migration`` runs only on explicit ``/topic`` opt-in, so a store
+    can hold supported v1/v2 tables without ``profile_name`` for its whole life; likewise the
+    delivery ledger adds ``delivery_obligations.adapter_profile`` only when a gateway opens
+    it. Identity settlement must gate its column SQL on the column actually being there
+    rather than on table existence, and must not force those migrations (#113757).
+    """
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?)",
+        _OPTIONAL_TABLE_NAMES)}
+    return {
+        table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+        for table in _OPTIONAL_TABLE_NAMES if table in existing
+    }
+
+
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
 
 
@@ -191,7 +226,8 @@ class SessionGatewayMixin:
     def record_gateway_session_peer(
         self, session_id: str, *, source: str, user_id: str = None, session_key: str = None,
         chat_id: str = None, chat_type: str = None, thread_id: str = None, display_name: str = None,
-        origin_json: str = None, include_compression_ancestors: bool = False) -> None:
+        origin_json: str = None, include_compression_ancestors: bool = False,
+        transport_profile: str = None) -> None:
         """Persist the gateway routing peer for an existing session row. ``display_name`` / ``origin_json``:
         ``None`` leaves the stored value untouched (consumers read routing data from state.db, not
         sessions.json). ``include_compression_ancestors`` keeps a compression lineage on one routing peer
@@ -205,7 +241,9 @@ class SessionGatewayMixin:
         """
         if not session_id or not session_key:
             return
-        identity = (session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json)
+        identity = (
+            session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json,
+            transport_profile)
         ancestors = include_compression_ancestors
         query_params = [session_id, *identity] if ancestors else [*identity, session_id]
         def _do(conn):
@@ -215,7 +253,8 @@ class SessionGatewayMixin:
                    SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
                        chat_type = ?, thread_id = ?,
                        display_name = COALESCE(?, display_name),
-                       origin_json = COALESCE(?, origin_json)
+                       origin_json = COALESCE(?, origin_json),
+                       transport_profile = COALESCE(?, transport_profile)
                    {"WHERE id IN (SELECT id FROM compression_lineage)" if ancestors else "WHERE id = ?"}""",
                 query_params,
             )
@@ -227,20 +266,21 @@ class SessionGatewayMixin:
                     """INSERT INTO sessions (
                                id, source, user_id, session_key, chat_id,
                                chat_type, thread_id, display_name, origin_json,
-                               profile_name, started_at
+                               profile_name, transport_profile, started_at
                            )
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(id) DO UPDATE SET
                                session_key = COALESCE(sessions.session_key, excluded.session_key),
                                chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
                                chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                                thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                                display_name = COALESCE(sessions.display_name, excluded.display_name),
-                               origin_json = COALESCE(sessions.origin_json, excluded.origin_json)""",
+                               origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
+                               transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile)""",
                     # Same ownership stamp as _insert_session_row: an unowned (NULL) row
                     # vanishes from profile-keyed consumers.
                     (session_id, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
-                     origin_json, self._own_profile_name(), time.time()),
+                     origin_json, self._own_profile_name(), transport_profile, time.time()),
                 )
         self._execute_write(_do)
 
@@ -287,6 +327,10 @@ class SessionGatewayMixin:
         That is exactly the shape of a leaked test fixture (#82770) — and also of a chat that was routed but
         never answered.
         """
+        if older_than_days < 0:
+            raise ValueError(
+                f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
+                "retention builds a future cutoff that matches every never-active keyed row.")
         cutoff = time.time() - (float(older_than_days) * 86400.0)
         rows = self._read_all(
             """
@@ -314,6 +358,18 @@ class SessionGatewayMixin:
             (cutoff,),
         )
         return [dict(r) for r in rows]
+
+    def gateway_routing_entry_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The routing entry (any scope) whose current owner is *session_id*, or None. The id lives
+        only inside ``entry_json``, so matching is done in Python; an archived/rotated row has none."""
+        for row in self._read_all("SELECT entry_json FROM gateway_routing"):
+            try:
+                entry = json.loads(row["entry_json"] or "{}")
+            except Exception:
+                continue
+            if isinstance(entry, dict) and entry.get("session_id") == session_id:
+                return entry
+        return None
 
     def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
         """Drop ``gateway_routing`` rows pointing at any of *session_ids*; the target id
@@ -536,6 +592,187 @@ class SessionGatewayMixin:
             return
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
+    def rekey_profile_state(self, old_name: str, new_name: str) -> Dict[str, int]:
+        """Atomically rewrite exact profile identity in this state database."""
+        old, new = (old_name or "").strip(), (new_name or "").strip()
+        counts: Dict[str, int] = {}
+        if not old or not new or old == new:
+            return counts
+        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        ns_len = len(old_ns)
+
+        def _do(conn):
+            existing = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            topic_columns = _optional_table_columns(conn)
+            collision = conn.execute(
+                "SELECT old.scope, ? || substr(old.session_key, ?) "
+                "FROM gateway_routing AS old JOIN gateway_routing AS target "
+                "ON target.scope = old.scope "
+                "AND target.session_key = ? || substr(old.session_key, ?) "
+                "WHERE substr(old.session_key, 1, ?) = ? LIMIT 1",
+                (new_ns, ns_len + 1, new_ns, ns_len + 1, ns_len, old_ns),
+            ).fetchone()
+            if collision is not None:
+                raise ValueError(
+                    f"profile routing collision in scope {collision[0]!r}: {collision[1]!r}")
+            for table, columns in (
+                ("telegram_dm_topic_mode", ("chat_id",)),
+                ("telegram_dm_topic_bindings", ("chat_id", "thread_id")),
+            ):
+                if "profile_name" not in topic_columns.get(table, set()):
+                    continue
+                equality = " AND ".join(
+                    f"target.{column} = old.{column}" for column in columns)
+                collision = conn.execute(
+                    f"SELECT 1 FROM {table} AS old JOIN {table} AS target "
+                    f"ON target.profile_name = ? AND {equality} "
+                    "WHERE old.profile_name = ? LIMIT 1", (new, old)).fetchone()
+                if collision is not None:
+                    raise ValueError(f"profile identity collision in {table}")
+
+            counts["sessions_profile_name"] = conn.execute(
+                "UPDATE sessions SET profile_name = ? WHERE profile_name = ?", (new, old)).rowcount
+            counts["gateway_heartbeats_profile"] = conn.execute(
+                "UPDATE gateway_heartbeats SET profile = ? WHERE profile = ?", (new, old)).rowcount
+            counts["sessions_session_key"] = conn.execute(
+                "UPDATE sessions SET session_key = ? || substr(session_key, ?) "
+                "WHERE substr(session_key, 1, ?) = ?",
+                (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
+
+            origin_count = 0
+            for session_id, origin_json in conn.execute(
+                    "SELECT id, origin_json FROM sessions WHERE origin_json IS NOT NULL").fetchall():
+                try:
+                    payload = json.loads(origin_json)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("profile") == old:
+                    payload["profile"] = new
+                    conn.execute("UPDATE sessions SET origin_json = ? WHERE id = ?",
+                                 (json.dumps(payload, ensure_ascii=False), session_id))
+                    origin_count += 1
+            counts["sessions_origin_json"] = origin_count
+
+            if "delivery_obligations" in existing:
+                if "adapter_profile" in topic_columns.get("delivery_obligations", set()):
+                    counts["delivery_obligations_adapter_profile"] = conn.execute(
+                        "UPDATE delivery_obligations SET adapter_profile = ? WHERE adapter_profile = ?",
+                        (new, old)).rowcount
+                counts["delivery_obligations_session_key"] = conn.execute(
+                    "UPDATE delivery_obligations SET session_key = ? || substr(session_key, ?) "
+                    "WHERE substr(session_key, 1, ?) = ?",
+                    (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
+            for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings"):
+                if "profile_name" in topic_columns.get(table, set()):
+                    counts[f"{table}_profile_name"] = conn.execute(
+                        f"UPDATE {table} SET profile_name = ? WHERE profile_name = ?",
+                        (new, old)).rowcount
+            if "session_key" in topic_columns.get("telegram_dm_topic_bindings", set()):
+                counts["telegram_dm_topic_bindings_session_key"] = conn.execute(
+                    "UPDATE telegram_dm_topic_bindings "
+                    "SET session_key = ? || substr(session_key, ?) "
+                    "WHERE substr(session_key, 1, ?) = ?",
+                    (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
+
+            routing = conn.execute(
+                "SELECT rowid, session_key, entry_json FROM gateway_routing "
+                "WHERE substr(session_key, 1, ?) = ?", (ns_len, old_ns)).fetchall()
+            for rowid, session_key, entry_json in routing:
+                new_session_key = new_ns + session_key[ns_len:]
+                new_json = entry_json
+                if entry_json:
+                    try:
+                        payload = json.loads(entry_json)
+                    except (ValueError, TypeError):
+                        payload = None
+                    if isinstance(payload, dict):
+                        if isinstance(payload.get("session_key"), str) and payload["session_key"].startswith(old_ns):
+                            payload["session_key"] = new_ns + payload["session_key"][ns_len:]
+                        origin = payload.get("origin")
+                        if isinstance(origin, dict) and origin.get("profile") == old:
+                            origin["profile"] = new
+                        new_json = json.dumps(payload, ensure_ascii=False)
+                conn.execute(
+                    "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
+                    (new_session_key, new_json, rowid))
+            counts["gateway_routing"] = len(routing)
+
+        self._execute_write(_do)
+        return counts
+
+    def purge_profile_state(self, profile: str) -> Dict[str, int]:
+        """Delete exact profile identity from this state database (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_state`: a rename must rekey a profile's identity, a
+        delete must purge it. ``agent:<name>:*`` routing keys, ``gateway_heartbeats.profile``,
+        ``delivery_obligations`` and the telegram topic tables are bookkeeping for a profile that
+        no longer exists — left behind, every inbound event on a chat keyed to the deleted name
+        enters the routing index, resolves a profile whose directory is gone, and logs
+        ``Profile '<name>' does not exist`` on each event for the life of the store.
+
+        What each store gets, and why:
+
+        * Routing keys and heartbeat rows are hard-deleted — pure bookkeeping for a dead name.
+        * ``delivery_obligations`` rows are **terminalized** (``state='abandoned'``), not deleted:
+          a pending obligation is delivery state that should not vanish silently, and the ledger's
+          own retention prunes abandoned rows. Delivered history is left as it was.
+        * ``sessions`` rows are not deleted here: this helper settles identity, not history, and it
+          does not decide what a delete leaves of a profile's conversation record — ``delete_profile``
+          removes the profile's own home, ``state.db`` included, with the directory. Rows in a shared
+          store keep whatever ownership they had; re-binding or archiving them belongs to the flow
+          that recreates the name, not to this purge.
+
+        Idempotent.
+        """
+        name = (profile or "").strip()
+        counts: Dict[str, int] = {}
+        if not name:
+            return counts
+        ns, ns_len = f"agent:{name}:", len(f"agent:{name}:")
+
+        def _do(conn):
+            existing = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            topic_columns = _optional_table_columns(conn)
+            if "gateway_routing" in existing:
+                counts["gateway_routing"] = conn.execute(
+                    "DELETE FROM gateway_routing WHERE substr(session_key, 1, ?) = ?",
+                    (ns_len, ns)).rowcount
+            if "gateway_heartbeats" in existing:
+                counts["gateway_heartbeats"] = conn.execute(
+                    "DELETE FROM gateway_heartbeats WHERE profile = ?", (name,)).rowcount
+            if "delivery_obligations" in existing:
+                # Terminalize, never hard-delete: a pending obligation is delivery state someone may
+                # still care about, and the ledger's own retention prunes abandoned rows. Only
+                # non-terminal rows are touched — delivered history is left exactly as it was.
+                # A ledger created before ``adapter_profile`` existed matches on namespace alone.
+                by_profile = ("adapter_profile = ? OR "
+                              if "adapter_profile" in topic_columns.get("delivery_obligations", set())
+                              else "")
+                params = (time.time(), name, ns_len, ns) if by_profile else (time.time(), ns_len, ns)
+                counts["delivery_obligations"] = conn.execute(
+                    "UPDATE delivery_obligations SET state='abandoned', updated_at=? "
+                    f"WHERE ({by_profile}substr(session_key, 1, ?) = ?) "
+                    "AND state NOT IN ('delivered', 'abandoned')", params).rowcount
+            if "profile_name" in topic_columns.get("telegram_dm_topic_mode", set()):
+                counts["telegram_dm_topic_mode"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_mode WHERE profile_name = ?", (name,)).rowcount
+            binding_columns = topic_columns.get("telegram_dm_topic_bindings", set())
+            if "session_key" in binding_columns:
+                # A rename rewrites a binding's session_key namespace as well as its profile_name
+                # (:meth:`rekey_profile_state`), so matching on one alone leaves the other behind.
+                # Legacy v1/v2 bindings have no profile_name but keep the ``agent:<name>:`` namespace
+                # in session_key, so the namespace match alone is the exact cleanup there.
+                by_profile = "profile_name = ? OR " if "profile_name" in binding_columns else ""
+                params = (name, ns_len, ns) if by_profile else (ns_len, ns)
+                counts["telegram_dm_topic_bindings"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings "
+                    f"WHERE {by_profile}substr(session_key, 1, ?) = ?", params).rowcount
+
+        self._execute_write(_do)
+        return counts
+
     @staticmethod
     def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Read the persisted runtime route off a session row dict (``model_config`` as
@@ -655,6 +892,10 @@ class SessionGatewayMixin:
             "UPDATE sessions SET handoff_state = 'running' WHERE id = ? AND handoff_state = 'pending'",
             (session_id,),
         ) > 0
+
+    def has_pending_handoffs(self) -> bool:
+        """Bounded existence probe for the handoff watcher's idle gate (the gate fails open on error)."""
+        return self._read_one("SELECT 1 FROM sessions WHERE handoff_state = 'pending' LIMIT 1") is not None
 
     def complete_handoff(self, session_id: str) -> None:
         """Mark a handoff as completed."""

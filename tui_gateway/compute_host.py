@@ -96,6 +96,11 @@ class ComputeHost:
     def close(self) -> None:
         self._closed.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
+        # Every caller hard-exits next (os._exit skips atexit): a foreground command still
+        # running in its own process group would outlive the host.
+        with contextlib.suppress(Exception):
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes()
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
         """Drain in-flight turns, then finalize every session.
@@ -190,7 +195,9 @@ class ComputeHost:
         self._guarded(frame, "interrupt.ack", body, applied=False)
 
     def _handle_respond(self, frame: dict[str, Any]) -> None:
-        """Resolve an interactive request in the host-owned pending registry."""
+        """Resolve a server→client request this host owns: ``params.frame`` is the client's JSON-RPC response
+        frame relayed by the parent; ``params.lock`` is one batch-clarify lock (answered with ``clarify.lock``'s
+        result so the parent can ack the client)."""
         def body(server: Any, sid: str, request_id: Any) -> None:
             params = frame.get("params")
             error = ("session not found" if sid not in server._sessions
@@ -198,7 +205,13 @@ class ComputeHost:
             if error:
                 self._reply("respond.error", sid, request_id, message=error)
                 return
-            response = server._methods["clarify.respond"](request_id, params)
+            from tui_gateway import server_requests
+            if isinstance(params.get("lock"), dict):
+                response = server._methods["clarify.lock"](request_id, params["lock"])
+            else:
+                response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
+                resolved = server_requests.resolve_response(response_frame)
+                response = {"jsonrpc": "2.0", "id": request_id, "result": {"status": "ok" if resolved else "expired"}}
             self._reply("respond.ack", sid, request_id, response=response)
         self._guarded(frame, "respond.error", body)
 
@@ -211,6 +224,12 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            # #101416: the parent already holds this session's active-session lease (claimed in
+            # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
+            # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own
+            # registry entry ("already has a live owner"). Unknown flag (parent predates the field):
+            # no borrow, legacy self-claim path, unchanged behaviour.
+            server._install_borrowed_lease(sid, session, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
             with session["history_lock"]:
@@ -234,7 +253,9 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
+                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
+                display_metadata=(frame.get("display_metadata")
+                                  if isinstance(frame.get("display_metadata"), dict) else None))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -304,9 +325,17 @@ class ComputeHost:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
                 from hermes_state_registry import acquire
                 home_token = set_hermes_home_override(profile_home)
-                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                # External sources first (1Password / Bitwarden / secrets.command): this isolated
+                # turn process never ran the launch dotenv path for the routed profile, so without
+                # hydration the scope is built on an empty external snapshot and a vault-only
+                # provider key fails closed. Same order as gateway/run.py::_load_profile_secret_scope
+                # and tui_gateway/model_switch.py::_profile_runtime_scope_tokens (#119521).
+                hydrate_profile_secret_sources(Path(profile_home))
+                secret_token = set_secret_scope(
+                    build_profile_secret_scope(Path(profile_home)), profile_home=profile_home)
                 # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
                 session_db = acquire(Path(profile_home) / "state.db")
@@ -316,6 +345,7 @@ class ComputeHost:
                 reasoning_config_override=frame.get("reasoning_config_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
+                cwd_override=str(frame.get("cwd") or "") or None,
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
                 session_db=session_db, auth_user_id=frame.get("auth_user_id"))
@@ -432,7 +462,7 @@ class ComputeHost:
         else:
             output = server._mirror_slash_side_effects(sid, session, command) if command else ""
             with session["history_lock"]:
-                messages = server._history_to_messages(list(session.get("history") or []))
+                messages = server._history_to_messages(list(session.get("history") or []), profile_home=session.get("profile_home"))
                 ack = {"output": output, **_history_meta(session), "messages": messages}
         ack["session_info"] = server._session_info(session.get("agent"), session)
         return ack

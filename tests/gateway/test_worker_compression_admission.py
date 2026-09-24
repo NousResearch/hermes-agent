@@ -29,7 +29,11 @@ class OverflowModel(BaseHTTPRequestHandler):
         if body.get('messages'):
             self.server.requests.append(body)
         if body.get('model') == 'original' and len(json.dumps(body.get('messages', []))) > 50000:
-            payload = json.dumps({'error': {'message': 'maximum context length exceeded',
+            # Quote the server's own measurement the way real providers do: a rejection with no
+            # count that sits far below the known window is treated as transient (another request
+            # holding a single-slot server), never as a reason to compress (#114644).
+            payload = json.dumps({'error': {'message': "This model's maximum context length is 64000 tokens. "
+                                                       'However, your messages resulted in 70000 tokens.',
                                          'type': 'invalid_request_error', 'code': 'context_length_exceeded'}}).encode()
             self.send_response(400)
             self.send_header('Content-Type', 'application/json')

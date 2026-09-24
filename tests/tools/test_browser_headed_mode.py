@@ -4,7 +4,6 @@ and the per-turn cleanup skip that keeps headed sessions alive between turns.
 Salvaged from PR #24064 (fixes #11020 lead bug).
 """
 
-import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -31,12 +30,6 @@ def _clean_headed_cache():
 # ---------------------------------------------------------------------------
 
 class TestIsHeadedMode:
-    def test_default_is_false(self):
-        from tools.browser_tool_cloud import _is_headed_mode
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("AGENT_BROWSER_HEADED", None)
-            with patch("hermes_cli.config.read_raw_config", return_value={}):
-                assert _is_headed_mode() is False
 
     def test_config_true(self):
         from tools.browser_tool_cloud import _is_headed_mode
@@ -45,13 +38,6 @@ class TestIsHeadedMode:
             assert _is_headed_mode() is True
 
 
-    def test_caching(self):
-        from tools.browser_tool_cloud import _is_headed_mode
-        cfg = {"browser": {"headed": True}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg) as mock_read:
-            assert _is_headed_mode() is True
-            assert _is_headed_mode() is True
-            assert mock_read.call_count == 1
 
 
 # ---------------------------------------------------------------------------

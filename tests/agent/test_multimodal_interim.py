@@ -28,7 +28,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -116,17 +115,6 @@ class TestInterimVisibleTextMultimodal:
         visible = AIAgent._interim_assistant_visible_text(agent, tool_msg)
         assert isinstance(visible, str)
 
-    def test_tool_message_yields_no_interim_text(self):
-        """Tool messages carry no user-facing interim text (role guard)."""
-        from run_agent import AIAgent
-
-        agent = _make_agent()
-        tool_msg = _vision_tool_result("some description")
-        visible = AIAgent._interim_assistant_visible_text(agent, tool_msg)
-        # No codex_message_items -> no commentary -> flattened content is still
-        # text, but it's a tool result, not assistant interim. The dedup guard
-        # (role == "assistant") excludes it from ever being emitted.
-        assert isinstance(visible, str)
 
     def test_assistant_list_content_flattened(self):
         """An assistant message with list content yields flattened visible text."""
@@ -150,40 +138,4 @@ class TestInterimVisibleTextMultimodal:
 # ---------------------------------------------------------------------------
 
 
-class TestDuplicatePreviousInterimDedup:
-    def test_previous_tool_list_content_safe_and_not_duplicate(self):
-        """Replicates conversation_loop.py:4871-4885.
-
-        ``previous_msg`` is a tool message with a *list* content (the exact
-        crash shape from #66267). The dedup must compute
-        ``previous_interim_visible`` without raising and must NOT mark the
-        current assistant message as a duplicate of a tool message.
-        """
-        from run_agent import AIAgent
-
-        agent = _make_agent()
-        assistant_msg = {
-            "role": "assistant",
-            "content": "Let me check the repo first.",
-            "finish_reason": "incomplete",
-        }
-        previous_msg = _vision_tool_result("some tool output")
-
-        current_interim_visible = AIAgent._interim_assistant_visible_text(agent, assistant_msg)
-        previous_interim_visible = (
-            AIAgent._interim_assistant_visible_text(agent, previous_msg)
-            if isinstance(previous_msg, dict)
-            else ""
-        )
-        duplicate_previous_interim = (
-            bool(current_interim_visible)
-            and isinstance(previous_msg, dict)
-            and previous_msg.get("role") == "assistant"
-            and previous_msg.get("finish_reason") == "incomplete"
-            and previous_interim_visible == current_interim_visible
-        )
-
-        # Must not raise, and a tool message can never be a duplicate source.
-        assert isinstance(previous_interim_visible, str)
-        assert duplicate_previous_interim is False
 

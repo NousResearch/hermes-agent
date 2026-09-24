@@ -17,6 +17,10 @@ platform-gated features are supported), see **[Platform Support](./platform-supp
 ### With the Hermes Desktop installer on macOS or Windows (recommended)
 To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
 
+:::note
+The macOS installer is **Apple Silicon only**. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).
+:::
+
 ### Without Hermes Desktop:
 For a command-line only install without Hermes Desktop, run:
 
@@ -73,7 +77,7 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 ```
 
 :::tip Fastest path: Nous Portal
-One subscription covers 300+ models plus the [Tool Gateway](/user-guide/features/tool-gateway) (web search, image generation, TTS, cloud browser). Skip the per-tool key juggling:
+One subscription covers 300+ models plus the [Tool Gateway](../user-guide/features/tool-gateway.md) (web search, image generation, TTS, cloud browser). Skip the per-tool key juggling:
 
 ```bash
 hermes setup --portal
@@ -83,7 +87,7 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 :::
 
 :::tip Already running Hermes on another machine?
-You don't need to rebuild your setup from scratch. Restore a full backup with `hermes import` (see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine)), or bring over a single agent with `hermes profile import` (see [Moving a single profile to another machine](/reference/faq#moving-a-single-profile-to-another-machine)). Note that a profile export excludes credentials by design, so an export alone is not a full backup — [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export) explains which to use.
+You don't need to rebuild your setup from scratch. Restore a full backup with `hermes import` (see [Exporting Hermes to another machine](../reference/faq.md#exporting-hermes-to-another-machine)), or bring over a single agent with `hermes profile import` (see [Moving a single profile to another machine](../reference/faq.md#moving-a-single-profile-to-another-machine)). Note that a profile export excludes credentials by design, so an export alone is not a full backup — [`hermes backup` vs `hermes profile export`](../reference/faq.md#hermes-backup-vs-hermes-profile-export) explains which to use.
 :::
 
 ---
@@ -155,7 +159,7 @@ Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service
    sudo loginctl enable-linger <service-user>
    ```
 
-   See [Messaging Gateway](/user-guide/messaging/) for the service setup itself.
+   See [Messaging Gateway](../user-guide/messaging/index.md) for the service setup itself.
 
 The same pattern works on Arch (the installer uses pacman with the same sudo-detection logic), Fedora/RHEL, and openSUSE — those distros don't support `--with-deps` at all, so an administrator always installs the system libraries separately. The relevant `dnf`/`zypper` commands are printed by the installer.
 

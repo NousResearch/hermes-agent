@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Optional
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
@@ -71,8 +73,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
-    CommandDef("branch", "Branch the current session (explore a different path)", "Session",
-               aliases=("fork",), args_hint="[name]"),
+    CommandDef("branch", "Branch the current session (new thread on Discord/Telegram/Slack/Matrix; --here stays here)",
+               "Session", aliases=("fork",), args_hint="[--here] [name]"),
     CommandDef("worktree", "Show, list, create, or prune isolated git worktrees", "Session",
                cli_only=True, args_hint="[new [name]|list|prune [--dry-run]]",
                subcommands=("new", "list", "prune")),
@@ -106,8 +108,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("journey", "Open the learning journey timeline",
                "Session", aliases=("learning", "memory-graph"), cli_only=True,
                args_hint="[list|delete <id>|edit <id>]", subcommands=("list", "delete", "edit")),
-    CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
-               aliases=("q",), args_hint="<prompt>", busy_policy="dispatch", busy_handler="queue"),
+    CommandDef("queue", "Queue a prompt for the next turn, or list/edit/rm/move/clear queued prompts", "Session",
+               aliases=("q",), args_hint="[<prompt>|list|edit N <prompt>|rm N|move A B|clear]",
+               subcommands=("list", "edit", "rm", "move", "clear", "add"),
+               busy_policy="dispatch", busy_handler="queue"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
@@ -151,7 +155,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True, desktop="terminal"),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--global|--session] [--refresh]",
+               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",), args_hint="[auto|codex_app_server]",
@@ -185,8 +189,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("manual", "smart", "off")),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide|full|clamp] [--global]",
-               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global"),
-               desktop="advanced"),
+               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
     CommandDef("fast", "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)", "Configuration",
                args_hint="[normal|fast|auto|cold|status] [--global]",
                subcommands=("normal", "fast", "auto", "cold", "status", "on", "off", "--global"),
@@ -325,8 +328,12 @@ def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
     return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
 
 
-def desktop_surface_registry() -> dict[str, str]:
-    """``/name`` (and every alias) -> ``desktop`` disposition, for each command that has one.
+def desktop_surface_registry() -> dict[str, str | None]:
+    """``/name`` (and every alias) -> ``desktop`` disposition for EVERY registry command.
+
+    Offered built-ins (no ``desktop=`` value) map to ``None``: the desktop needs their names
+    too, or offline it cannot tell ``/context`` from a skill command and files it under
+    Skills / routes it down the extension path until the live catalog warms up.
 
     The desktop app reads this live from ``commands.catalog``; the copy committed at
     ``apps/desktop/src/lib/desktop-slash-registry.json`` (``scripts/dump_desktop_slash_registry.py``)
@@ -334,9 +341,8 @@ def desktop_surface_registry() -> dict[str, str]:
     command's desktop disposition is authored. A test on each side fails when the two drift.
     """
     return {
-        f"/{key}": cmd.desktop
+        f"/{key}": cmd.desktop or None
         for cmd in COMMAND_REGISTRY
-        if cmd.desktop
         for key in (cmd.name, *cmd.aliases)
     }
 
@@ -458,12 +464,20 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return cmd.name in overrides
 
 
-def gateway_help_lines() -> list[str]:
-    """Generate gateway help text lines from the registry."""
+def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
+    """Generate gateway help text lines from the registry.
+
+    ``allowed`` (canonical names) restricts the catalog to what the caller may run -- the
+    gateway passes a non-admin's slash-access floor + ``user_allowed_commands`` so /help never
+    advertises admin-only commands the dispatcher would then refuse.
+    """
     overrides = _resolve_config_gates()
+    allowed_set = None if allowed is None else set(allowed)
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if allowed_set is not None and cmd.name not in allowed_set:
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         # Skip internal aliases like reload_mcp (underscore variant of the name).

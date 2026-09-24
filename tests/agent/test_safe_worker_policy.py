@@ -18,7 +18,7 @@ def run_worker(tmp_path, body, mode="safe"):
         env.pop(key, None)
     root = Path(__file__).resolve().parents[2]
     script = home / "worker_probe.py"
-    script.write_text(f"import sys; sys.path.insert(0, {str(root)!r})\n" + textwrap.dedent(body))
+    script.write_text(f"import sys; sys.path.insert(0, {str(root)!r})\n" + textwrap.dedent(body), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, str(script)], env=env,
         cwd=root, stdin=subprocess.DEVNULL,
@@ -47,7 +47,7 @@ def test_worker_config_is_frozen_before_any_profile_read(tmp_path, mode):
         from hermes_cli.config import load_config, load_config_readonly, read_raw_config, read_raw_config_readonly, DEFAULT_CONFIG
         from hermes_cli import env_loader
         callbacks = []
-        env_loader._apply_managed_env = lambda: callbacks.append("managed")
+        env_loader._apply_managed_env = lambda **kw: callbacks.append("managed")
         env_loader._apply_external_secret_sources = lambda home: callbacks.append("secrets")
         env_loader._reapply_terminal_config_bridge = lambda home: callbacks.append("terminal")
         env_loader.load_hermes_dotenv()

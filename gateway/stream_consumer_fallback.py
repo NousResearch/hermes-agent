@@ -51,7 +51,21 @@ class StreamFallbackMixin:
         """Return only the part of final_text the user has not already seen."""
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
-            return final_text[len(prefix):].lstrip()
+            cut = len(prefix)
+            # ``prefix`` is whatever the last successful edit put on screen. Edits
+            # fire on a throttle tick, not at a word boundary, so that prefix can
+            # end inside a word.  Back the cut up to the last space or newline so
+            # the continuation re-sends the broken word's tail and reads as an
+            # ordinary continuation.  A prefix with no boundary (one very long
+            # token) keeps the original cut rather than re-sending the whole reply.
+            if cut < len(final_text):
+                boundary = max(
+                    final_text.rfind(" ", 0, cut),
+                    final_text.rfind("\n", 0, cut),
+                )
+                if boundary >= 0:
+                    cut = boundary + 1
+            return final_text[cut:].lstrip()
         return final_text
 
     @staticmethod
@@ -216,6 +230,9 @@ class StreamFallbackMixin:
             retry_delay = self._fallback_flood_retry_delay(result)
             if attempt or retry_delay is None:
                 break  # non-flood error, long flood wait, or second failure
+            raw = getattr(result, "raw_response", None)
+            if isinstance(raw, dict) and raw.get("partial_overflow"):
+                break  # split head already on screen: re-sending the whole content duplicates it
             logger.debug(retry_log, retry_delay)
             await asyncio.sleep(retry_delay)
         return result
@@ -288,6 +305,8 @@ class StreamFallbackMixin:
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Before a segment reset, send the unseen tail as a new message (and best-effort
         strip the stuck cursor from the partial)."""
+        if getattr(self, "_egress_declined", False):
+            return  # a new message is exactly the re-addressing the egress guard refused
         if not self._fallback_final_send:
             await self._try_strip_cursor()
         visible = self._fallback_prefix or self._visible_prefix()
@@ -374,8 +393,8 @@ class StreamFallbackMixin:
     # completed response (#71643/#95382 content-vs-flag contract).
     async def _suppress_silence_marker(self) -> None:
         """Retract any streamed preview when the final reply is a bare silence marker.  Flags
-        stay False: the gateway's whole-response filter turns the marker into "" so no
-        fallback send happens either."""
+        stay False so the gateway's whole-response filter owns what goes out next: "" for a
+        machinery turn, the visible fallback for a human one."""
         # A native-stream bubble isn't a deletable message — close an open one
         # (e.g. from an eager re-seed) with an empty finalize so it doesn't hang.
         if self._native_stream_opened:

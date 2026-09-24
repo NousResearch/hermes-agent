@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -62,15 +61,6 @@ def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"
 # ---------------------------------------------------------------------------
 
 
-class TestProviderSupportsVisionToolMessages:
-    def test_xiaomi_returns_false(self):
-        agent = _make_agent("xiaomi", "mimo-v2.5")
-        assert agent._provider_supports_vision_tool_messages() is False
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +79,17 @@ class TestToolResultContentProactiveDowngrade:
 
         assert isinstance(content, str)
         assert "screenshot captured" in content
+
+    def test_openrouter_xiaomi_route_downgrades_to_text_summary(self):
+        """OpenRouter must not bypass Xiaomi's list-type tool-message veto."""
+        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
+        result = _multimodal_result(text="aggregated screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("browser_screenshot", result)
+
+        assert isinstance(content, str)
+        assert "aggregated screenshot captured" in content
 
     def test_xiaomi_non_multimodal_passes_through(self):
         """Non-multimodal results should pass through unchanged."""
@@ -130,24 +131,5 @@ class TestToolResultContentProactiveDowngrade:
 # ProviderProfile.supports_vision_tool_messages field
 # ---------------------------------------------------------------------------
 
-
-class TestProviderProfileField:
-    def test_default_is_true(self):
-        from providers.base import ProviderProfile
-        # ProviderProfile uses __init__ with defaults; check via a minimal instance
-        # by reading the class-level default from a dataclass-like field
-        import dataclasses
-        if dataclasses.is_dataclass(ProviderProfile):
-            fields = {f.name: f.default for f in dataclasses.fields(ProviderProfile)}
-            assert fields.get("supports_vision_tool_messages", True) is True
-        else:
-            # Class-level attribute default
-            assert getattr(ProviderProfile, "supports_vision_tool_messages", True) is True
-
-    def test_xiaomi_profile_has_false(self):
-        from providers import get_provider_profile
-        profile = get_provider_profile("xiaomi")
-        assert profile is not None
-        assert profile.supports_vision_tool_messages is False
 
 

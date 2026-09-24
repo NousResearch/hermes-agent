@@ -12,7 +12,7 @@ import threading
 
 MAX_FRAME = 4 * 1024 * 1024
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
-                    'safe_mode', 'ignore_user_config'}
+                    'turn_author', 'safe_mode', 'ignore_user_config'}
 
 
 def read_frame(stream):
@@ -46,6 +46,10 @@ def validate_bootstrap(frame):
             or type(frame['safe_mode']) is not bool or type(frame['ignore_user_config']) is not bool
             or (frame['safe_mode'] and not frame['ignore_user_config'])
             or (frame['api_key'] is not None and not isinstance(frame['api_key'], str))):
+        raise ValueError('invalid_managed_worker_bootstrap')
+    from agent.turn_author import parse_turn_author
+    if frame['turn_author'] is not None and (not isinstance(frame['turn_author'], dict)
+                                            or parse_turn_author(frame['turn_author']) is None):
         raise ValueError('invalid_managed_worker_bootstrap')
     return frame
 
@@ -233,6 +237,10 @@ def execute(frame, channel):
             result = run_worker_turns(agent, frame, history)
             retire_agent(agent)
             agent = None
+            # The auto-title thread bills through this store from a daemon thread; a title landing
+            # after execution.finish is a stale_generation write that fails the close-time flush.
+            from agent.title_generator import wait_for_title_upgrades
+            wait_for_title_upgrades()
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
                 result['final_response'] = ''

@@ -5,27 +5,36 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_envelope import _preflight_native_route, _validate_native_route, check_native_route
 from hermes_state_runtime import RuntimeStoreError
 
 
+class Runner(GatewayAuthorizationMixin):
+    @property
+    def adapters(self):
+        return {self.state.platform: self.state.adapter} if self.state.adapter else {}
+
+    def _is_user_authorized_for_source(self, candidate, allow_adapter_delegation=False):
+        return self.state.direct or (allow_adapter_delegation and self.state.role)
+
+
 @pytest.fixture
 def route(monkeypatch):
     source = SessionSource(Platform.DISCORD, 'channel', chat_type='group', user_id='member')
     adapter = object()
-    state = SimpleNamespace(direct=True, role=True, checks=0, adapter=adapter, entry='sid')
+    state = SimpleNamespace(direct=True, role=True, checks=0, adapter=adapter,
+                            platform=Platform.DISCORD, entry='sid')
     store = SimpleNamespace(
         _generate_session_key=lambda candidate: 'route' if candidate.chat_id == 'channel' else 'other',
         lookup_by_session_key=lambda key: SimpleNamespace(session_id=state.entry) if key == 'route' else None,
     )
-    runner = SimpleNamespace(
-        config=SimpleNamespace(multiplex_profiles=False), session_store=store,
-        _adapter_for_source=lambda candidate: state.adapter,
-        _is_user_authorized_for_source=lambda candidate, allow_adapter_delegation=False:
-            state.direct or (allow_adapter_delegation and state.role),
-    )
+    runner = Runner()
+    runner.state = state
+    runner.config = SimpleNamespace(multiplex_profiles=False)
+    runner.session_store = store
     # The connector's asynchronous role check is the only network seam; production
     # restoration, sender validation, physical route and adapter checks remain real.
     async def reauthorize(runner, candidate, provenance):
@@ -106,6 +115,7 @@ async def test_webhook_receipt_rechecks_destination_and_live_route(route):
     adapter = SimpleNamespace(_routes={'fixture': {'deliver': 'log'}},
                               _reload_dynamic_routes=lambda: None)
     state.adapter = adapter
+    state.platform = Platform.WEBHOOK
     runner.session_store._generate_session_key = lambda candidate: (
         'route' if candidate.chat_id == source.chat_id else 'other')
     payload['native_text_v1'].update(

@@ -55,7 +55,10 @@ def test_native_room_service_local_member_and_restart(tmp_path):
         'auxiliary': {'title_generation': {'enabled': False}},
         'terminal': {'cwd': str(home)},
     }))
-    (target / 'config.yaml').write_text((home / 'config.yaml').read_text())
+    # The named profile runs its own gateway beside the host: `gateway.standalone: true` is the
+    # opt-out (`multiplex_profiles: false` is retired and rewritten to true at boot).
+    (target / 'config.yaml').write_text(json.dumps(json.loads((home / 'config.yaml').read_text())
+                                                   | {'gateway': {'standalone': True}}))
     env = child_env() | dict(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
         PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, PYTHONUNBUFFERED='1')
     members = [{'member_id': 'one', 'profile': 'default', 'handle': 'one'},
@@ -128,7 +131,10 @@ def test_room_unknown_discard_releases_only_its_followers(tmp_path):
         'auxiliary': {'title_generation': {'enabled': False}},
         'terminal': {'cwd': str(home)},
     }))
-    (target / 'config.yaml').write_text((home / 'config.yaml').read_text())
+    # The named profile runs its own gateway beside the host: `gateway.standalone: true` is the
+    # opt-out (`multiplex_profiles: false` is retired and rewritten to true at boot).
+    (target / 'config.yaml').write_text(json.dumps(json.loads((home / 'config.yaml').read_text())
+                                                   | {'gateway': {'standalone': True}}))
     env = child_env() | dict(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
         PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, PYTHONUNBUFFERED='1')
     members = [{'member_id': 'one', 'profile': 'default', 'handle': 'one'},

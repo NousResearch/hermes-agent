@@ -6,8 +6,11 @@ credentials}.py``; import them from there."""
 
 import logging
 import math
+import os
 import re
+import shutil
 import subprocess
+from collections.abc import Iterable
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
@@ -88,7 +91,6 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
 _MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
-_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-8", "opus-4.8", "opus-5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -192,11 +194,11 @@ def _forbids_sampling_params(model: str) -> bool:
 
 
 def _supports_fast_mode(model: str) -> bool:
-    """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5, Claude API only). Explicit
-    allowlist, not a version floor: Opus 4.6 had fast mode and lost it (requests silently run and
-    bill at standard speed), Opus 4.7 hard-400s on the param. Dedicated ``...-fast`` ids select
-    fast inference via the model field and must NOT also receive the speed parameter."""
-    return "-fast" not in model and any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+    """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5 / Opus 5.5, Claude API only).
+    The list lives in ``agent.model_metadata`` so the wire gate and the ``/fast`` toggle agree."""
+    from agent.model_metadata import is_anthropic_fast_mode_model
+
+    return is_anthropic_fast_mode_model(model)
 
 
 # Beta headers safe on ordinary/native Anthropic requests. GA on Claude 4.6+ (harmless no-op
@@ -218,10 +220,44 @@ _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
+# Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
+# LaunchAgents) inherit the bare ``/usr/bin:/bin:/usr/sbin:/sbin``, which carries none of these,
+# so a PATH-only lookup finds nothing there even with the CLI installed — detection then returns
+# the stale fallback and Anthropic 400s with "Claude Code X does not support this model".
+# These are additive: on Windows none resolve to a file and detection falls back to the PATH
+# lookup (which handles PATHEXT), leaving current behaviour there unchanged.
+_CLAUDE_CODE_PREFIXES = (
+    "~/.local/bin", "~/.claude/local", "~/bin", "~/.npm-global/bin", "~/.bun/bin",
+    "~/.volta/bin", "/opt/homebrew/bin", "/usr/local/bin",
+)
+
+
+_CLAUDE_CODE_NAMES = ("claude", "claude-code")
+
+
+def _claude_code_candidates() -> List[str]:
+    """Executable paths to try, deduped and filtered to files that exist.
+
+    Two passes: every PATH hit first (what the user's shell would run), then the
+    well-known install prefixes. A single nested loop would probe a stale prefix
+    ``claude`` before a current PATH ``claude-code``.
+    """
+    seen: Dict[str, None] = {}
+    for name in _CLAUDE_CODE_NAMES:
+        hit = shutil.which(name)
+        if hit:
+            seen.setdefault(hit)
+    for prefix in _CLAUDE_CODE_PREFIXES:
+        for name in _CLAUDE_CODE_NAMES:
+            path = os.path.join(os.path.expanduser(prefix), name)
+            if os.path.isfile(path):
+                seen.setdefault(path)
+    return list(seen)
+
 
 def _detect_claude_code_version() -> str:
     """Installed Claude Code version (``claude --version``), else the static fallback."""
-    for cmd in ("claude", "claude-code"):
+    for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
                 [cmd, "--version"],
@@ -338,12 +374,24 @@ def _build_anthropic_client_with_bearer_hook(
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
-    headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
-    return _new_sdk_client(sdk, kwargs, headers)
+    betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
+    from agent.anthropic_credentials import anthropic_route_is_oauth
+    if anthropic_route_is_oauth(base_url, token_provider):
+        # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
+        # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
+        # static "oauth" style in build_anthropic_client.
+        headers = _beta_header(betas + _OAUTH_ONLY_BETAS)
+        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["x-app"] = "cli"
+    else:
+        headers = _beta_header(betas)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
-def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
+def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route: str = None):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
+    ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
+    keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
 
     The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
     ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.hermes/.env) and then sends dual
@@ -356,9 +404,26 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
         merged["Authorization"] = sdk.Omit()
     elif "auth_token" in kwargs and "api_key" not in kwargs:
         merged["X-Api-Key"] = sdk.Omit()
+    # Per-provider ``custom_providers[].extra_headers`` last: the most specific config level wins
+    # over the SDK User-Agent and the attribution/beta sets above, on every builder path (init,
+    # /model switch, rebuild, auxiliary) — the OpenAI-wire clients already do this (#24293, #9721).
+    merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)
+
+
+def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
+    """``extra_headers`` of the ``custom_providers`` entry routed at *base_url*, else ``{}``.
+    SECURITY: values routinely carry credentials (Cloudflare Access tokens) — never log them."""
+    if not base_url:
+        return {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        return get_custom_provider_extra_headers(str(base_url))
+    except Exception:
+        logger.debug("custom-provider extra_headers skipped for Anthropic client", exc_info=True)
+        return {}
 
 
 def _auth_style(api_key, base_url, normalized_base_url) -> str:
@@ -409,7 +474,7 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
-    return _new_sdk_client(sdk, kwargs, headers)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
 def build_anthropic_bedrock_client(region: str):
@@ -467,9 +532,14 @@ def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
 
 
 _OAUTH_SYSTEM_REPLACEMENTS = (
-    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"),
-    ("hermes-agent", "claude-code"), ("Nous Research", "Anthropic"),
+    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
 )
+# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
+# or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
+# ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
+# dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
+# identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -486,6 +556,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
             text = block.get("text", "")
             for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
                 text = text.replace(old, new)
+            text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
         if "name" in tool:
@@ -624,6 +695,21 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
     return api_kwargs
 
 
+def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None) -> None:
+    """Retry knob for a malformed fine-grained tool-JSON stream (#107830): the beta streams tool
+    args unvalidated, so a model that emits ``{"names": cronjob_manage}`` breaks the SDK parser
+    and an identical retry breaks identically. ``eager_input_streaming: false`` per tool restores
+    Anthropic's buffered, validated args for the rest of this turn (the flag lives on the turn's
+    kwargs, so a later retry of the same turn keeps it; the changed ``tools`` block costs one
+    prompt-cache miss, cheaper than a dead turn). Off the happy path on purpose:
+    buffering a large payload is a zero-event gap the stale-stream detector kills. No-op on
+    endpoints that never get the beta (MiniMax) rather than sending them an unknown field."""
+    if _TOOL_STREAMING_BETA not in _common_betas_for_base_url(base_url):
+        return
+    for tool in api_kwargs.get("tools") or ():
+        tool["eager_input_streaming"] = False
+
+
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
@@ -647,7 +733,16 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # returns the accumulated snapshot. TimeoutError is the caller's deadline seam: the host
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
-        for event in stream if callable(on_stream_event) else ():
+        # Some SDK versions drop optional message_delta metadata from the final snapshot.
+        # Non-iterable shims (get_final_message-only) skip straight to the snapshot.
+        stop_details = None
+        for event in (stream if isinstance(stream, Iterable) else ()):
+            if getattr(event, "type", None) == "message_delta":
+                details = getattr(getattr(event, "delta", None), "stop_details", None)
+                if details is not None:
+                    stop_details = details
+            if not callable(on_stream_event):
+                continue
             try:
                 on_stream_event(event)
             except TimeoutError:
@@ -657,7 +752,10 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
                 raise
             except Exception:
                 logger.debug("%son_stream_event callback failed", log_prefix, exc_info=True)
-        return stream.get_final_message()
+        message = stream.get_final_message()
+        if stop_details is not None:
+            message.stop_details = stop_details
+        return message
 
 
 def create_anthropic_message(

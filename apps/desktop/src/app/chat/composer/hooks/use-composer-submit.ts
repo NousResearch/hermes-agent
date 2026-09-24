@@ -8,7 +8,7 @@ import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
-import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
+import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -235,10 +235,9 @@ export function useComposerSubmit({
       void skipClarifyRequest(sessionId)
     }
 
-    // Same deal for a pending MCP setup card: the agent is blocked on
-    // mcp.setup.respond, so a typed message declines the card and rides on.
-    if (payloadPresent && !queueEdit && hasMcpSetupRequest(sessionId)) {
-      void skipMcpSetupRequest(sessionId)
+    // Same for a pending connection card: typing declines every target.
+    if (payloadPresent && !queueEdit && hasConnectionRequest(sessionId)) {
+      void skipConnectionRequest(sessionId)
     }
 
     // Approval / sudo / secret prompts also park the turn inside a tool batch,
@@ -314,21 +313,27 @@ export function useComposerSubmit({
 
     const submittedScope = activeQueueSessionKeyRef.current
 
-    const restore = () => {
-      loadIntoComposer(text, [])
-      stashAt(submittedScope, text, [])
+    // The draft is already cleared, so a refused or failed redirect must keep the only copy
+    // (#68927): the canonical queue when the server owns it, the local queue otherwise, or the
+    // composer itself when there is no queue yet (a new chat busy before its first session).
+    const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
+    const keep = () => {
+      if (!activeQueueSessionKey) {
+        loadIntoComposer(text, [])
+        stashAt(submittedScope, text, [])
+      } else if (canonical) {
+        dispatchSubmit(text, [], undefined, { fromQueue: true, sessionId: sessionId ?? null, storedSessionId: activeQueueSessionKey })
+      } else {
+        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      }
     }
 
-    const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
     void Promise.resolve().then(() => onSteer(text, mode)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        if (canonical) {
-          dispatchSubmit(text, [], undefined, { fromQueue: true, sessionId: sessionId ?? null, storedSessionId: activeQueueSessionKey })
-        } else {
-          enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
-        }
+      if (!accepted) {
+        keep()
       }
-    }).catch(restore)
+    }).catch(keep)
+
   }
 
   const queueDraft = () => {

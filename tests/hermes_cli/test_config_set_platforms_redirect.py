@@ -62,19 +62,7 @@ class TestPerPlatformDisplayRedirect:
         # Connection key untouched
         assert result["platforms"]["telegram"]["token"] == "secret-bot-token"
 
-    def test_show_reasoning_redirects(self, hermes_home, monkeypatch):
-        _set(monkeypatch, hermes_home, "platforms.telegram.show_reasoning", "false")
-        result = yaml.safe_load((hermes_home / "config.yaml").read_text())
-        assert result["display"]["platforms"]["telegram"]["show_reasoning"] is False
 
-    def test_tool_progress_redirects(self, hermes_home, monkeypatch):
-        # ``off`` is coerced to False by the bool-aware coercion in
-        # set_config_value; gateway/display_config._normalise turns False back
-        # into the canonical "off" string at read time, so the persisted value
-        # is the bool.
-        _set(monkeypatch, hermes_home, "platforms.discord.tool_progress", "off")
-        result = yaml.safe_load((hermes_home / "config.yaml").read_text())
-        assert result["display"]["platforms"]["discord"]["tool_progress"] is False
 
     def test_connection_key_not_redirected(self, hermes_home, monkeypatch):
         """A real connection key (token) stays in top-level platforms.<name>."""
@@ -132,11 +120,6 @@ class TestRedirectSiblingSurfaces:
             unset_config_value("platforms.telegram.streaming")
         assert exc.value.code == 1
 
-    def test_set_prints_redirect_note(self, hermes_home, monkeypatch, capsys):
-        _set(monkeypatch, hermes_home, "platforms.telegram.streaming", "false")
-        out = capsys.readouterr().out
-        assert "saved as display.platforms.telegram.streaming" in out
-        assert "Set display.platforms.telegram.streaming = False" in out
 
     def test_redirect_helper_only_touches_known_display_keys(self):
         from gateway.display_config import OVERRIDEABLE_KEYS

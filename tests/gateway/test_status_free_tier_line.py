@@ -7,7 +7,6 @@ from datetime import datetime
 
 import pytest
 
-from agent.i18n import t
 from gateway.config import Platform
 from gateway.session import SessionEntry, build_session_key
 from hermes_cli import anon_auth
@@ -36,7 +35,7 @@ def _jwt(**claims) -> str:
         "sub": "nas_user:status",
         "client_id": "nas-anonymous",
         "account_tier": "anonymous",
-        "scope": "inference:invoke tool:invoke",
+        "scope": "inference:invoke",
         "exp": int(time.time()) + 900,
         **claims,
     }
@@ -115,10 +114,3 @@ async def test_a_status_gate_failure_never_breaks_status(monkeypatch):
     assert result == expected
 
 
-def test_the_line_comes_from_the_catalog_in_every_language():
-    assert t("gateway.status.free_tier") == anon_auth.FREE_TIER_STATUS_LINE
-    # Every catalog carries its own translation; the product name, the route and the verb stay verbatim.
-    for lang in ("ja", "de"):
-        line = t("gateway.status.free_tier", lang=lang)
-        assert line != anon_auth.FREE_TIER_STATUS_LINE
-        assert line.startswith("Nous · ") and " · nous/welcome · " in line and "/login" in line

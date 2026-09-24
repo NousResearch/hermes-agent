@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type * as routing from './routing'
 import type { RosterRow } from './types'
 
-const routeMock = vi.fn<() => { connectionId: string; profile: string } | null>(() => null)
+const routeMock = vi.fn<() => { connectionId: string; profile: string; targetProfile?: string } | null>(() => null)
 
 vi.mock('@hermes/plugin-sdk', () => ({
   host: { requestProfile: vi.fn() },
@@ -25,7 +25,7 @@ vi.mock('./routing', async importOriginal => {
     const route = routeMock()
 
     return route
-      ? { status: 'resolved', route: { ...route, mode: 'remote', targetProfile: route.profile } }
+      ? { status: 'resolved', route: { ...route, mode: 'remote', targetProfile: route.targetProfile ?? route.profile } }
       : actual.resolveBotConnectionRoute(bot)
   }
 
@@ -44,9 +44,9 @@ vi.mock('./routing', async importOriginal => {
   }
 })
 
-import { host } from '@hermes/plugin-sdk'
+import { host, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
 
-import { displayRequest, isEventForBotScreen } from './screen-connection'
+import { displayRequest, isEventForBotScreen, resolveScreenWsUrl } from './screen-connection'
 
 const bot = { name: 'ops' } as RosterRow
 const orphan = { name: 'ops', remoteSource: true } as RosterRow
@@ -84,5 +84,21 @@ describe('displayRequest', () => {
 
     await expect(displayRequest(orphan, 'display.status')).rejects.toThrow(/no connection owner/)
     expect(host.requestProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveScreenWsUrl', () => {
+  it('uses the route target profile for an aliased bot screen', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'launch', targetProfile: 'home-ops' })
+    vi.mocked(resolveSiblingWsUrl).mockResolvedValue('wss://gateway.example/api/display/ws')
+
+    await expect(resolveScreenWsUrl(bot, 'ticket-123')).resolves.toBe(
+      'wss://gateway.example/api/display/ws?display_ticket=ticket-123'
+    )
+    expect(resolveSiblingWsUrl).toHaveBeenCalledWith(
+      { connectionId: 'conn-a', profile: 'home-ops' },
+      '/api/display/ws',
+      { stripGatewayCredential: true }
+    )
   })
 })

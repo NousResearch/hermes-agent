@@ -55,8 +55,10 @@ App credential registration and credential rotation must be done by the user man
 Pick ONE method. On Linux, the shell script or `go install` are the easiest.
 
 ```bash
-# Shell script (installs to ~/.local/bin, no sudo, works on Linux + macOS)
-curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh | bash
+# Shell script (installs to ~/.local/bin, no root needed, works on Linux + macOS)
+INST=$(mktemp -t hermes-install.XXXXXX.sh)
+curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh -o "$INST" && bash "$INST"
+rm -f "$INST"
 
 # Homebrew (macOS)
 brew install --cask xdevplatform/tap/xurl

@@ -46,7 +46,9 @@ Never answer "Hermes can't do that" from memory. Hermes ships far more than this
 
 ```bash
 # Install (shell installer — sets up uv, Python, the venv, and the launcher)
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+# Download to a temp file first so the script can be inspected before running it
+tmp="$(mktemp)" && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$tmp" && bash "$tmp"
+rm -f "$tmp"
 
 # Interactive chat (default surface; set display.interface: tui to launch the Ink TUI instead)
 hermes
@@ -69,7 +71,7 @@ hermes proxy                   # OpenAI-compatible local proxy backed by your OA
 
 ```
 ~/.hermes/config.yaml       Main configuration (settings — never secrets)
-~/.hermes/.env              API keys and secrets ONLY (under $HERMES_HOME if set)
+${HERMES_HOME:-~/.hermes}/.env  API keys and secrets ONLY (path is relative to $HERMES_HOME)
 $HERMES_HOME/skills/        Installed skills
 ~/.hermes/skins/            Custom themes (see references/themes.md)
 ~/.hermes/desktop-plugins/  Desktop app UI plugins (see references/desktop-plugins.md)

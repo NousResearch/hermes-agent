@@ -282,6 +282,10 @@ const puppeteer = require('puppeteer');
 async function captureFrames(htmlPath, outputDir, options) {
   const browser = await puppeteer.launch({
     headless: true,
+    // Standard headless-Chrome CI combo. The 2nd flag trips skills_guard's
+    // setuid_setgid pattern as a false positive (it is a Chrome sandbox flag,
+    // not a setuid binary); tracked in #121700, related: #85975. Kept as a
+    // whole literal — splitting it to dodge the scanner would be concealment.
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
   const page = await browser.newPage();

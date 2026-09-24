@@ -25,7 +25,7 @@ hermes-agent/
 └── website/              # Docusaurus docs site
 ```
 
-Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.
+Config: `~/.hermes/config.yaml` (settings), `${HERMES_HOME:-~/.hermes}/.env` (API keys) — both live under `$HERMES_HOME` when it is set.
 
 ### Adding a Tool
 

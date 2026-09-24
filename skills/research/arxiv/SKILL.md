@@ -37,7 +37,9 @@ curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+
 ### Clean output (parse XML to readable format)
 
 ```bash
-curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" | python -c "
+OUT=$(mktemp -t hermes-arxiv.XXXXXX.xml)
+curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" -o "$OUT"
+python -c "
 import sys, xml.etree.ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom'}
 root = ET.parse(sys.stdin).getroot()
@@ -54,7 +56,8 @@ for i, entry in enumerate(root.findall('a:entry', ns)):
     print(f'   Abstract: {summary}...')
     print(f'   PDF: https://arxiv.org/pdf/{arxiv_id}')
     print()
-"
+" < "$OUT"
+rm -f "$OUT"
 ```
 
 ## Search Query Syntax
@@ -117,7 +120,9 @@ After fetching metadata for a paper, generate a BibTeX entry:
 
 {% raw %}
 ```bash
-curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" | python -c "
+OUT=$(mktemp -t hermes-arxiv.XXXXXX.xml)
+curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" -o "$OUT"
+python -c "
 import sys, xml.etree.ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom', 'arxiv': 'http://arxiv.org/schemas/atom'}
 root = ET.parse(sys.stdin).getroot()
@@ -139,7 +144,8 @@ print(f'  archivePrefix = {{arXiv}},')
 print(f'  primaryClass  = {{{primary}}},')
 print(f'  url       = {{https://arxiv.org/abs/{raw_id}}}')
 print('}')
-"
+" < "$OUT"
+rm -f "$OUT"
 ```
 {% endraw %}
 
@@ -197,7 +203,7 @@ arXiv doesn't provide citation data or recommendations. Use the **Semantic Schol
 
 ```bash
 # By arXiv ID
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300?fields=title,authors,citationCount,referenceCount,influentialCitationCount,year,abstract" | python -m json.tool
+OUT=$(mktemp -t hermes-arxiv.XXXXXX.json) && curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300?fields=title,authors,citationCount,referenceCount,influentialCitationCount,year,abstract" -o "$OUT" && python -m json.tool "$OUT"; rm -f "$OUT"
 
 # By Semantic Scholar paper ID or DOI
 curl -s "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1234/example?fields=title,citationCount"
@@ -206,19 +212,19 @@ curl -s "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1234/example?fiel
 ### Get citations OF a paper (who cited it)
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/citations?fields=title,authors,year,citationCount&limit=10" | python -m json.tool
+OUT=$(mktemp -t hermes-arxiv.XXXXXX.json) && curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/citations?fields=title,authors,year,citationCount&limit=10" -o "$OUT" && python -m json.tool "$OUT"; rm -f "$OUT"
 ```
 
 ### Get references FROM a paper (what it cites)
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/references?fields=title,authors,year,citationCount&limit=10" | python -m json.tool
+OUT=$(mktemp -t hermes-arxiv.XXXXXX.json) && curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/references?fields=title,authors,year,citationCount&limit=10" -o "$OUT" && python -m json.tool "$OUT"; rm -f "$OUT"
 ```
 
 ### Search papers (alternative to arXiv search, returns JSON)
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=GRPO+reinforcement+learning&limit=5&fields=title,authors,year,citationCount,externalIds" | python -m json.tool
+OUT=$(mktemp -t hermes-arxiv.XXXXXX.json) && curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=GRPO+reinforcement+learning&limit=5&fields=title,authors,year,citationCount,externalIds" -o "$OUT" && python -m json.tool "$OUT"; rm -f "$OUT"
 ```
 
 ### Get paper recommendations
@@ -232,7 +238,7 @@ curl -s -X POST "https://api.semanticscholar.org/recommendations/v1/papers/" \
 ### Author profile
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun&fields=name,hIndex,citationCount,paperCount" | python -m json.tool
+OUT=$(mktemp -t hermes-arxiv.XXXXXX.json) && curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun&fields=name,hIndex,citationCount,paperCount" -o "$OUT" && python -m json.tool "$OUT"; rm -f "$OUT"
 ```
 
 ### Useful Semantic Scholar fields

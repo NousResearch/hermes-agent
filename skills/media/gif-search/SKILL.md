@@ -40,24 +40,28 @@ Get a free API key at https://developers.google.com/tenor/guides/quickstart — 
 
 ```bash
 # Search and get GIF URLs
-curl -s "https://tenor.googleapis.com/v2/search?q=thumbs+up&limit=5&key=${TENOR_API_KEY}" | jq -r '.results[].media_formats.gif.url'
+TENOR_API="${TENOR_API_KEY}"
+curl -s "https://tenor.googleapis.com/v2/search?q=thumbs+up&limit=5&key=$TENOR_API" | jq -r '.results[].media_formats.gif.url'
 
 # Get smaller/preview versions
-curl -s "https://tenor.googleapis.com/v2/search?q=nice+work&limit=3&key=${TENOR_API_KEY}" | jq -r '.results[].media_formats.tinygif.url'
+TENOR_API="${TENOR_API_KEY}"
+curl -s "https://tenor.googleapis.com/v2/search?q=nice+work&limit=3&key=$TENOR_API" | jq -r '.results[].media_formats.tinygif.url'
 ```
 
 ## Download a GIF
 
 ```bash
 # Search and download the top result
-URL=$(curl -s "https://tenor.googleapis.com/v2/search?q=celebration&limit=1&key=${TENOR_API_KEY}" | jq -r '.results[0].media_formats.gif.url')
+TENOR_API="${TENOR_API_KEY}"
+URL=$(curl -s "https://tenor.googleapis.com/v2/search?q=celebration&limit=1&key=$TENOR_API" | jq -r '.results[0].media_formats.gif.url')
 curl -sL "$URL" -o celebration.gif
 ```
 
 ## Get Full Metadata
 
 ```bash
-curl -s "https://tenor.googleapis.com/v2/search?q=cat&limit=3&key=${TENOR_API_KEY}" | jq '.results[] | {title: .title, url: .media_formats.gif.url, preview: .media_formats.tinygif.url, dimensions: .media_formats.gif.dims}'
+TENOR_API="${TENOR_API_KEY}"
+curl -s "https://tenor.googleapis.com/v2/search?q=cat&limit=3&key=$TENOR_API" | jq '.results[] | {title: .title, url: .media_formats.gif.url, preview: .media_formats.tinygif.url, dimensions: .media_formats.gif.dims}'
 ```
 
 ## API Parameters

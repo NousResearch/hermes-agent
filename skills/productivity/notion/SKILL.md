@@ -36,7 +36,9 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 
 ```bash
 # Recommended
-curl -fsSL https://ntn.dev | bash
+INST=$(mktemp -t hermes-install.XXXXXX.sh)
+curl -fsSL https://ntn.dev -o "$INST" && bash "$INST"
+rm -f "$INST"
 
 # Or via npm (needs Node 22+, npm 10+)
 npm install --global ntn

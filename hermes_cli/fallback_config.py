@@ -8,8 +8,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_MODEL_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+:~-]*$")
+_PROVIDER_SHORTHAND_RE = re.compile(r"^(?:custom:)?[A-Za-z0-9][A-Za-z0-9._-]*$")
+_MODEL_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9@._/+:~-]*$")
 
 _FALLBACK_HALT_MESSAGE = (
     "🛑 Provider fallback is disabled by fallback_policy.halt; "
@@ -28,7 +28,16 @@ def _parse_string_entry(entry: str) -> dict[str, str] | None:
     model — model ids with colons (``qwen/qwen3.6-plus``, ``glm-5.3-flash``) stay intact.
     """
     text = str(entry).strip()
-    provider, sep, model = text.partition(":")
+    if "://" in text:
+        return None
+    if text.startswith("custom:"):
+        custom_parts = text.split(":", 2)
+        if len(custom_parts) != 3:
+            return None
+        provider, model = ":".join(custom_parts[:2]), custom_parts[2]
+        sep = ":"
+    else:
+        provider, sep, model = text.partition(":")
     if not sep:
         return None
     provider, model = provider.strip(), model.strip()

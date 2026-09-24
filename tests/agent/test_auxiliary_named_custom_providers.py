@@ -23,6 +23,23 @@ def _write_config(tmp_path, config_dict):
     config_path.write_text(yaml.dump(config_dict))
 
 
+def test_quarantined_fallback_log_redacts_candidate_and_exception(caplog):
+    from agent.auxiliary_client import _quarantine_fallback_candidate
+
+    secret = "CANARY_AUX_FALLBACK_117816"
+    with caplog.at_level("WARNING", logger="agent.auxiliary_client"):
+        _quarantine_fallback_candidate(
+            "compression",
+            f"label-{secret}",
+            f"provider-{secret}",
+            RuntimeError(f"credential failure {secret}"),
+            base_url=f"https://{secret}.invalid/v1",
+        )
+
+    assert "fallback candidate has stale/unrefreshable credentials" in caplog.text
+    assert secret not in caplog.text
+
+
 def test_halt_blocks_auxiliary_main_fallback_chain(tmp_path):
     _write_config(tmp_path, {
         "model": {"default": "primary-model", "provider": "primary"},

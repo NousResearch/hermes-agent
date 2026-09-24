@@ -1930,7 +1930,9 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)
-        logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
+        logger.warning(
+            "Fallback entry is not locally usable; suppressing it for this session"
+        )
         return True
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
     # are owned by agent.backend_identity — do not re-implement comparisons here.
@@ -1941,9 +1943,7 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
     fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
     if should_skip_candidate(fb_ident, current_ident):
-        logger.warning(
-            "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
-            fb_provider, fb_model, current_ident.base_url or current_ident.provider)
+        logger.warning("Fallback entry resolves to the same backend as the current route; skipping it")
         return True
     return False
 

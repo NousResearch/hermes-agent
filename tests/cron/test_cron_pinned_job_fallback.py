@@ -127,6 +127,27 @@ def test_resolve_job_runtime_walks_the_chain_for_an_unpinned_job():
     assert (runtime["provider"], model) == ("openrouter", "z-ai/glm-5.2")
 
 
+def test_failed_cron_fallback_log_does_not_expose_route_or_exception(caplog):
+    secret = "CANARY_CRON_FALLBACK_117816"
+    jc = _CronJobConfig(
+        cfg={"fallback_providers": [{"provider": "custom", "model": f"model-{secret}"}]},
+        model="gpt-5.6-sol", model_cfg={}, cron_default_provider="",
+    )
+
+    with (
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=AuthError(f"credential error {secret}"),
+        ),
+        caplog.at_level("DEBUG", logger="cron.scheduler"),
+        pytest.raises(RuntimeError),
+    ):
+        _resolve_job_runtime(_job(), "redaction-job", jc)
+
+    assert "a fallback entry failed (AuthError)" in caplog.text
+    assert secret not in caplog.text
+
+
 @pytest.mark.parametrize("pin", PINS)
 def test_pinned_job_agent_gets_no_runtime_fallback_ladder(tmp_path, pin):
     success, error, _requested, agent_kwargs = _run(tmp_path, _job(**pin))

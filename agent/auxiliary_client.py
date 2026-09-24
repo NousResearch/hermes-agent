@@ -4044,9 +4044,11 @@ def _quarantine_fallback_candidate(
     _mark_provider_unhealthy(
         fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
         base_url=base_url, reason=reason or "stale fallback credential")
-    why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
-    logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
-                   task or "call", tag, fb_label, why, fb_err)
+    why = "out of capacity" if reason else "stale/unrefreshable credentials"
+    logger.warning(
+        "Auxiliary %s: fallback candidate has %s (%s) — skipping to the next fallback",
+        task or "call", why, type(fb_err).__name__,
+    )
 
 
 def _plan_fallback_auth_retry(

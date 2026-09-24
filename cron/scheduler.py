@@ -1758,11 +1758,14 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         if chain:
             halt_active, halt_message = fallback_halt_active()
             if halt_active:
-                logger.warning("Job '%s': %s Primary provider error: %s", job_id, halt_message, resolve_exc)
+                logger.warning(
+                    "Job '%s': %s Primary provider error: %s",
+                    job_id, halt_message, type(resolve_exc).__name__,
+                )
                 raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
         logger.warning(
             "Job '%s': primary provider resolve failed (%s: %s), %s",
-            job_id, "auth" if is_auth else "transient network", resolve_exc,
+            job_id, "auth" if is_auth else "transient network", type(resolve_exc).__name__,
             "trying fallback" if chain else (
                 "not falling back: the job is pinned" if _job_route_pinned(job) else "no fallback configured"))
         for entry in chain:
@@ -1796,7 +1799,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                     model, runtime.get("provider"), fb_model)
                 return runtime, fb_model
             except Exception as fb_exc:
-                logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
+                logger.debug(
+                    "Job '%s': a fallback entry failed (%s)", job_id, type(fb_exc).__name__
+                )
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
 

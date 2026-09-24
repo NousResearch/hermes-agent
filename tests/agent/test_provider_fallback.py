@@ -173,6 +173,25 @@ class TestFallbackChainAdvancement:
         assert "Failed to activate a fallback entry" in caplog.text
         assert secret not in caplog.text
 
+    def test_local_rejection_logs_no_route_or_reason_values(self, caplog):
+        secret = "CANARY_LOCAL_SKIP_117816"
+        agent = _make_agent(fallback_model=[{
+            "provider": "custom",
+            "model": f"model-{secret}",
+            "base_url": f"https://{secret}.invalid/v1",
+        }])
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=f"local rejection {secret}",
+            ),
+            caplog.at_level(logging.DEBUG, logger="run_agent"),
+        ):
+            assert AIAgent._try_activate_fallback(agent) is False
+
+        assert "not locally usable" in caplog.text
+        assert secret not in caplog.text
+
     def test_resolves_key_env_for_fallback_provider(self):
         fbs = [
             {

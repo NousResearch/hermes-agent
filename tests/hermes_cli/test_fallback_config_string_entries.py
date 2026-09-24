@@ -27,6 +27,16 @@ def test_string_shorthand_is_shared_by_config_and_agent_parsers():
     }) == expected
 
 
+def test_string_shorthand_supports_named_custom_providers_and_openrouter_presets():
+    assert _iter_fallback_entries([
+        "custom:local:qwen-2.5",
+        "openrouter:@preset/team",
+    ]) == [
+        {"provider": "custom:local", "model": "qwen-2.5"},
+        {"provider": "openrouter", "model": "@preset/team"},
+    ]
+
+
 def test_every_dropped_shape_warns_without_logging_values(caplog):
     secrets = (
         "FAKE_STRING_SECRET_SENTINEL_e0d4",

@@ -8,16 +8,16 @@ export interface OnboardingScope {
 }
 
 /** Capture both halves once. An absent connection keeps legacy per-profile
- * routing; it must not acquire a different ambient registry owner later. */
+ * routing; it must not acquire a different ambient registry owner later.
+ * A blank profile is normalized to null: REST writes then carry no profile
+ * (the backend's launch home), and readiness must omit it the same way. */
 export function captureOnboardingScope(scope?: ProfileScope): OnboardingScope {
-  if (scope && typeof scope === 'object') {
-    return { ...scope }
-  }
+  const captured =
+    scope && typeof scope === 'object'
+      ? scope
+      : { connectionId: getApiRequestConnection(), profile: scope === undefined ? getApiRequestProfile() : scope }
 
-  return {
-    connectionId: getApiRequestConnection(),
-    profile: scope === undefined ? getApiRequestProfile() : scope
-  }
+  return { connectionId: captured.connectionId ?? null, profile: captured.profile?.trim() || null }
 }
 
 /** Desktop profile keys can be SSH aliases. Only shared descriptors interpret
@@ -27,6 +27,7 @@ export async function requestOnboardingGateway<T>(
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<T> {
+  // `default` is only the Desktop routing key for the launch home here.
   const profile = scope.profile || 'default'
   const desktop = window.hermesDesktop
 
@@ -46,8 +47,8 @@ export async function requestOnboardingGateway<T>(
 
   delete routedParams.profile
 
-  if (connection.sharedPrimary || connection.sharedRemote) {
-    routedParams.profile = profile
+  if (scope.profile && (connection.sharedPrimary || connection.sharedRemote)) {
+    routedParams.profile = scope.profile
   }
 
   return requestGatewayForAgent<T>(scope.connectionId ?? null, profile, method, routedParams)

@@ -64,7 +64,7 @@ export {
 } from './providers'
 
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
-import { requestOnboardingGateway } from '@/store/onboarding-scope'
+import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -215,7 +215,7 @@ export function DesktopOnboardingOverlay({
   const connectionId = activeGatewayConnectionId()
 
   const scope = useMemo(
-    () => onboarding.targetScope ?? { connectionId, profile },
+    () => onboarding.targetScope ?? captureOnboardingScope({ connectionId, profile }),
     [onboarding.targetScope, profile, connectionId]
   )
 

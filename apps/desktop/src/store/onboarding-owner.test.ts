@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import { setEnvVar } from '@/api/config'
 import type { HermesApiRequest } from '@/global'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 
@@ -15,7 +16,14 @@ import {
   startProviderOAuth,
   submitOnboardingCode
 } from './onboarding'
-import { captureOnboardingScope } from './onboarding-scope'
+import { captureOnboardingScope, requestOnboardingGateway } from './onboarding-scope'
+
+const gatewayMocks = vi.hoisted(() => ({ requestGatewayForAgent: vi.fn(async () => ({ ok: true })) }))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestGatewayForAgent: gatewayMocks.requestGatewayForAgent
+}))
 
 const owner = { connectionId: 'athena', profile: 'leverage-ai' }
 const requests: HermesApiRequest[] = []
@@ -175,9 +183,36 @@ it('preserves explicit local and untagged legacy routes instead of filling ambie
     connectionId: 'local',
     profile: 'default'
   })
-  expect(captureOnboardingScope({ profile: 'legacy' })).toEqual({ profile: 'legacy' })
+  expect(captureOnboardingScope({ profile: 'legacy' })).toEqual({ connectionId: null, profile: 'legacy' })
   setApiRequestConnection(null)
   const legacy = captureOnboardingScope('legacy')
   setApiRequestConnection('athena')
   expect(legacy).toEqual({ connectionId: null, profile: 'legacy' })
+})
+
+// A setup owner without a profile writes REST settings to the backend's launch
+// home (no ?profile=). Readiness on a shared backend must target that same home,
+// not a hard-coded `default` profile that may be a different one.
+it('keeps readiness on the same profile as REST writes when the owner has none', async () => {
+  const getConnectionFor = vi.fn(async () => ({ sharedRemote: true }))
+  Object.assign(window.hermesDesktop, { getConnection: vi.fn(), getConnectionFor })
+  setApiRequestProfile(null)
+  const scope = captureOnboardingScope()
+
+  expect(scope).toEqual({ connectionId: 'athena', profile: null })
+  expect(captureOnboardingScope({ connectionId: 'athena', profile: '  ' })).toEqual(scope)
+
+  await setEnvVar('OPENAI_API_KEY', 'fixture', scope)
+  expect(requests.at(-1)).toMatchObject({ connectionId: 'athena' })
+  expect(requests.at(-1)).not.toHaveProperty('profile')
+
+  await requestOnboardingGateway(scope, 'setup.runtime_check', { provider: 'custom' })
+  expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith('athena', 'default', 'setup.runtime_check', {
+    provider: 'custom'
+  })
+
+  await requestOnboardingGateway(owner, 'setup.runtime_check', {})
+  expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith('athena', 'leverage-ai', 'setup.runtime_check', {
+    profile: 'leverage-ai'
+  })
 })

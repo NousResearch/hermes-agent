@@ -90,3 +90,31 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
     with pytest.raises(sqlite3.OperationalError):
         with _common.corrupt_store_as_status(db_path):
             raise sqlite3.OperationalError("database is locked")
+
+    # Sibling route: GET /api/sessions and the session-id resolver used to let the same
+    # RuntimeError family fall through to a generic 500.
+    from hermes_cli.web_routers import sessions
+
+    class _RetiredDb:
+        db_path = str(tmp_path / "state.db")
+
+        def resolve_session_id(self, session_id):
+            raise DeletedWalGenerationError("retired WAL held by pid 4242")
+
+        def list_sessions_rich(self, **kwargs):
+            raise DeletedWalGenerationError("retired WAL held by pid 4242")
+
+        def close(self):
+            pass
+
+    with pytest.raises(HTTPException) as info:
+        sessions._resolve_session_id(_RetiredDb(), "abc")
+    assert (info.value.status_code, info.value.detail["error"]) == (503, "state_db_deleted_wal")
+
+    monkeypatch.setattr(sessions, "_maybe_auto_archive_for_profile", lambda profile: None)
+    monkeypatch.setattr(sessions, "_session_db_path_for_profile", lambda profile: db_path)
+    monkeypatch.setattr(sessions, "_open_session_db_for_profile", lambda profile, read_only: _RetiredDb())
+    app = FastAPI()
+    app.include_router(sessions.list_router)
+    resp = TestClient(app, raise_server_exceptions=False).get("/api/sessions")
+    assert (resp.status_code, resp.json()["detail"]["error"]) == (503, "state_db_deleted_wal")

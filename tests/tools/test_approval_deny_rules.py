@@ -263,3 +263,54 @@ class TestDenyOrdering:
         result = mod.check_dangerous_command("ls -la", "local")
         assert result["approved"] is True
 
+
+# A package runner names the PACKAGE; the deny floor must fold the runner's pin and flag spellings back to
+# the rule's. Each entry: (rule the user wrote, spelling that used to run under --yolo unblocked).
+_PACKAGE_RUNNER_PIN_BYPASSES = [
+    ("npx sketchy-tool *", "npx sketchy-tool@1.2.3 run"),
+    ("npx sketchy-tool *", "npx sketchy-tool@latest run"),
+    ("npx sketchy-tool *", "npx -y sketchy-tool@2 run"),
+    ("npx sketchy-tool *", "npx --yes --quiet sketchy-tool run"),
+    ("npx sketchy-tool", "npx -y sketchy-tool@1"),
+    ("npx -p sketchy-tool *", "npx -p sketchy-tool@1.2.3 -c 'sketchy-tool run'"),
+    ("npx @scope/sketchy-tool *", "npx @scope/sketchy-tool@1 run"),
+    ("pnpm dlx sketchy-tool *", "pnpm dlx sketchy-tool@3 run"),
+    ("yarn dlx sketchy-tool *", "yarn dlx sketchy-tool@1 run"),
+    ("bunx sketchy-tool *", "bunx sketchy-tool@1 run"),
+    ("uvx evil-pkg *", "uvx evil-pkg==1.0 run"),
+    ("uvx evil-pkg *", "uvx --isolated 'evil-pkg[extra]>=2' run"),
+    ("uvx --from evil-pkg *", "uvx --from evil-pkg==1.0 evil run"),
+    ("pipx run evil-pkg *", "pipx run evil-pkg==1.0 run"),
+    # stacked with the wrappers the floor already peels
+    ("npx sketchy-tool *", "sudo npx -y sketchy-tool@1 run"),
+    ("npx sketchy-tool *", "true && /usr/local/bin/npx sketchy-tool@1 run"),
+]
+
+
+@pytest.mark.parametrize("rule,command", _PACKAGE_RUNNER_PIN_BYPASSES)
+def test_deny_folds_package_runner_pins_and_flags(deny_config, clean_env, monkeypatch, rule, command):
+    """A version pin or a runner flag is not a way around a deny rule (same class as quoting tricks)."""
+    deny_config([rule])
+    assert approval_floors._match_user_deny_rule(command) == rule
+    monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
+    for guard in (mod.check_dangerous_command, mod.check_all_command_guards):
+        result = guard(command, "local")
+        assert result.get("user_deny") is True, (rule, command, result)
+        assert result["approved"] is False
+
+
+def test_deny_package_runner_projection_keeps_argv_data(deny_config):
+    """Only the package operand and runner options fold; the package's own argv and other names stay literal."""
+    deny_config(["npx sketchy-tool *"])
+    for command in (
+        "npx other-tool@1 run",            # a different package
+        "npx sketchy-tool-extra@1 run",    # a longer name is a different package
+        "npm install sketchy-tool@1",      # not a runner: nothing to fold
+        'echo "npx sketchy-tool@1 run"',   # prose
+    ):
+        assert approval_floors._match_user_deny_rule(command) is None, command
+    # The package's own arguments are data: a rule that names them must still see them verbatim.
+    deny_config(["npx sketchy-tool --email a@b.c"])
+    assert approval_floors._match_user_deny_rule("npx -y sketchy-tool@1 --email a@b.c")
+    deny_config(["npx sketchy-tool --email a@b.c --pin x==1"])
+    assert approval_floors._match_user_deny_rule("npx sketchy-tool --email a@b.c --pin x==1")

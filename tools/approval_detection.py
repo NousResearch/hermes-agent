@@ -12,6 +12,8 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.approval_package_runners import canonical_package_runner_argv
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -1383,6 +1385,14 @@ def _deny_command_variants(command: str):
                 yield candidate
                 # Apply the existing text matching semantics only AFTER locating
                 # executable positions; never parse its rewritten quotes again.
+                yield _normalize_command_for_detection(candidate)
+            # Package runners name the PACKAGE, so fold its version pin and the runner's boolean
+            # flags: `npx -y tool@1.2.3 run` must meet the rule written as `npx tool *`.
+            runner_tokens = _shell_segment_tokens(segment, 0)
+            canonical = canonical_package_runner_argv(runner_tokens) if runner_tokens else None
+            if canonical:
+                candidate = shlex.join(canonical)
+                yield candidate
                 yield _normalize_command_for_detection(candidate)
             if os.path.basename(executable) == "env":
                 tokens = _shell_segment_tokens(segment, 0)

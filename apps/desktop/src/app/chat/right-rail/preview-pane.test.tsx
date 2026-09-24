@@ -232,7 +232,40 @@ describe('PreviewPane console state', () => {
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
   })
 
-  it('continues comment numbering in one conversation and resets it when the conversation changes', async () => {
+  it('keeps the webview and its console binding when the preview target URL changes', async () => {
+
+    const tabId = 'url:http://localhost:5174'
+
+    const initialTarget = {
+      kind: 'url' as const,
+      label: 'Preview',
+      source: 'http://localhost:5174',
+      url: 'http://localhost:5174'
+    }
+
+    const nextTarget = { ...initialTarget, source: 'http://localhost:5174/dashboard', url: 'http://localhost:5174/dashboard' }
+
+    forgetPreviewConsole(tabId)
+
+    const rendered = render(<PreviewPane tabId={tabId} target={initialTarget} />)
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const loadURL = vi.fn(async () => undefined)
+    Object.assign(webview, { loadURL })
+
+    await act(async () => rendered.rerender(<PreviewPane tabId={tabId} target={nextTarget} />))
+
+    await waitFor(() => expect(loadURL).toHaveBeenCalledWith(nextTarget.url))
+    expect(rendered.container.querySelector('webview')).toBe(webview)
+
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('console-message'), { level: 0, message: 'still attached' }))
+    })
+    expect(previewConsoleState(tabId).$logs.get().filter(entry => entry.message === 'still attached')).toHaveLength(1)
+
+    forgetPreviewConsole(tabId)
+  })
+
+  it('continues comment numbering in one conversation and clears page annotations on navigation or conversation changes', async () => {
     $selectedStoredSessionId.set('session-one')
     const selectedCrop = 'data:image/png;base64,c2VsZWN0ZWQ='
     const scrolledCrop = 'data:image/png;base64,ZGlmZmVyZW50LXZpc2libGU='
@@ -297,6 +330,12 @@ describe('PreviewPane console state', () => {
       releaseNextPick?.({ rect: { ...savedRect, y: 80 }, type: 'pick-area' })
     })
     expect(await rendered.findByRole('form', { name: 'Comment 2' })).toBeTruthy()
+
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: 'http://localhost:5174/next' }))
+    })
+    await waitFor(() => expect(rendered.queryByRole('form', { name: 'Comment 2' })).toBeNull())
+    expect(rendered.queryByRole('button', { name: 'Add 1 comment' })).toBeNull()
 
     act(() => {
       $selectedStoredSessionId.set('session-two')

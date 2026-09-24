@@ -678,6 +678,48 @@ class TestGitEnvIsolation:
 class TestErrorResilience:
 
 
+    def test_run_git_missing_workdir_is_not_an_error(
+        self, tmp_path, caplog,
+    ):
+        """A snapshot aimed at a directory that does not exist is a deliberate skip.
+
+        Checkpointing is best-effort and the workdir is often created later in the same
+        turn, so the skip must not be logged at ERROR: errors.log is monitored, and an
+        ERROR there is a false alarm. The caller still receives ok=False.
+        """
+        missing = tmp_path / "not-created-yet"
+
+        with caplog.at_level(logging.WARNING, logger="tools.checkpoint_manager"):
+            ok, stdout, stderr = _run_git(["add", "-A"], tmp_path / "store", str(missing))
+
+        assert ok is False
+        assert stdout == ""
+        assert "working directory not found" in stderr
+        assert [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+    def test_run_git_workdir_vanishing_before_spawn_is_not_an_error(
+        self, tmp_path, caplog, monkeypatch,
+    ):
+        """The same condition as a race (directory gone between the guard and the spawn)."""
+        work = tmp_path / "work"
+        work.mkdir()
+
+        def vanishing(*args, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory")
+
+        monkeypatch.setattr("tools.checkpoint_manager._git_subprocess", vanishing)
+
+        with caplog.at_level(logging.WARNING, logger="tools.checkpoint_manager"):
+            ok, stdout, stderr = _run_git(["add", "-A"], tmp_path / "store", str(work))
+
+        assert ok is False
+        assert "working directory not found" in stderr
+        assert [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):
         def broken_run_git(*args, **kwargs):
             raise OSError("git exploded")

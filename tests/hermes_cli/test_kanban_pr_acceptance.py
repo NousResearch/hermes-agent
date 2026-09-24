@@ -322,28 +322,89 @@ def test_restore_between_spawn_and_registration_stops_unregistered_worker(github
         event_id = conn.execute(
             "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
         ).fetchone()[0]
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
+        spawned = threading.Event()
+        release_spawn = threading.Event()
+        restore_started = threading.Event()
+        restoration = []
+        restored_marker = Path(os.environ["HERMES_HOME"]) / "restoration-returned"
+        marker = Path(os.environ["HERMES_HOME"]) / "unsafe-publish"
+        processes = []
         try:
             def spawn(task, workspace, board=None):
                 assert task.id == child and task.current_run_id is not None
-                assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
-                                                completion_contract="acme/repo", reason="acceptance missing")
+                proc = subprocess.Popen([sys.executable, "-c",
+                                         "import pathlib, sys, time\n"
+                                         "while not pathlib.Path(sys.argv[1]).exists(): time.sleep(0.01)\n"
+                                         "pathlib.Path(sys.argv[2]).write_text('published')",
+                                         str(restored_marker), str(marker)],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
+                processes.append(proc)
+                spawned.set()
+                assert release_spawn.wait(5)
                 return proc.pid
 
-            result = dispatch.dispatch_once(conn, spawn_fn=spawn)
-            assert not result.spawned
-            assert proc.wait(timeout=10) is not None
+            def restore():
+                with connect() as other:
+                    restore_started.set()
+                    restoration.append(kb.restore_archived_task(
+                        other, root, archive_event_id=event_id,
+                        completion_contract="acme/repo", reason="acceptance missing"))
+                    restored_marker.touch()
+
+            def dispatch_worker():
+                with connect() as other:
+                    dispatch.dispatch_once(other, spawn_fn=spawn)
+
+            dispatch_thread = threading.Thread(target=dispatch_worker)
+            dispatch_thread.start()
+            assert spawned.wait(5)
+            thread = threading.Thread(target=restore)
+            thread.start()
+            assert restore_started.wait(5)
+            # Hold PID registration past the restorer's entry. A return here
+            # lets the unregistered process publish before late CAS kills it.
+            assert not restored_marker.exists()
+            assert not marker.exists()
+            thread.join(timeout=2)
+            assert thread.is_alive(), "restoration returned before the unregistered spawn was reconciled"
+            assert not restoration
+            release_spawn.set()
+            dispatch_thread.join(timeout=10)
+            thread.join(timeout=10)
+            assert restoration == [True]
+            assert processes[0].wait(timeout=10) is not None
+            assert not marker.exists()
             fenced = kb.get_task(conn, child)
             assert fenced.status == "todo" and fenced.worker_pid is None
             assert fenced.current_run_id is None and fenced.claim_lock is None
             assert kb.latest_run(conn, child).outcome == "reclaimed"
             assert kb.get_task(conn, root).status == "blocked"
-            assert not any(e.kind == "spawned" for e in kb.list_events(conn, child))
-            assert any(e.kind == "spawn_claim_lost" and e.payload["terminated"]
+            assert any(e.kind == "spawned" for e in kb.list_events(conn, child))
+            assert any(e.kind == "archive_restore_worker_termination" and e.payload["terminated"]
                        for e in kb.list_events(conn, child))
         finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+            release_spawn.set()
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+
+def test_restore_with_unknown_claimed_worker_fails_closed(github):
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="release", parents=[root])
+        assert kb.archive_task(conn, root)
+        assert kb.claim_task(conn, child) is not None
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
+        ).fetchone()[0]
+        with pytest.raises(RuntimeError, match="could not be stopped"):
+            kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                     completion_contract="acme/repo", reason="acceptance missing")
+        assert kb.get_task(conn, root).status == "blocked"
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.latest_run(conn, child).outcome == "reclaimed"
+        assert any(e.kind == "archive_restore_worker_termination"
+                   for e in kb.list_events(conn, child))

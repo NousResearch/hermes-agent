@@ -1458,14 +1458,15 @@ def _record_task_failure(
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *,
                     expected_run_id: Optional[int] = None,
-                    expected_claim_lock: Optional[str] = None) -> bool:
+                    expected_claim_lock: Optional[str] = None,
+                    allow_nested: bool = False) -> bool:
     """Record the spawned child's pid + its restart-stable fingerprint (``_process_fingerprint``), and
     emit a ``spawned`` event carrying them. The fingerprint is what lets every later liveness/kill
     decision tell OUR worker from a process that recycled the PID after a reboot. A failed capture is
     persisted as ``UNVERIFIED_WORKER_FINGERPRINT``, never NULL: NULL is the legacy pre-fingerprint row
     whose bare-PID kill authority a new spawn must not inherit."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
-    with _kb.write_txn(conn):
+    with _kb.write_txn(conn, allow_nested=allow_nested):
         # Direct callers may omit the expected identity, but the dispatcher MUST pass
         # the identity captured before spawn_fn released the database lock.
         if expected_run_id is None and expected_claim_lock is None:
@@ -1493,7 +1494,7 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *,
     termination = _terminate_reclaimed_worker(
         int(pid), expected_claim_lock, started_at=started_at,
     )
-    with _kb.write_txn(conn):
+    with _kb.write_txn(conn, allow_nested=allow_nested):
         _kb._append_event(conn, task_id, "spawn_claim_lost",
                           {"run_id": expected_run_id, **termination}, run_id=expected_run_id)
     if not termination["terminated"]:
@@ -2101,25 +2102,38 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
-    try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
-    except Exception as exc:
+    # Restoration must never return successfully while a claimed worker has
+    # spawned but its PID is still unknown. Serialize spawn and registration
+    # against the restoration write transaction; the worker is visible to the
+    # restorer before it can commit, or restoration wins before spawn.
+    spawn_error = None
+    registered = True
+    with _kb.write_txn(conn):
+        try:
+            pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn,
+                                 claimed, str(workspace), board)
+        except Exception as exc:
+            spawn_error = exc
+            pid = None
+        if spawn_error is None and pid:
+            registered = _set_worker_pid(
+                conn, claimed.id, int(pid), expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock, allow_nested=True,
+            )
+    if spawn_error is not None:
         from tools.process_registry import RestartSafeScopeUnavailable
 
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        infrastructure = isinstance(spawn_error, RestartSafeScopeUnavailable)
         if infrastructure:
-            _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
+            _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, spawn_error)
         if _record_task_failure(
-            conn, claimed.id, str(exc),
+            conn, claimed.id, str(spawn_error),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
             infrastructure=infrastructure,
         ):
             result.auto_blocked.append(claimed.id)
         return False
-    if pid and not _set_worker_pid(
-        conn, claimed.id, int(pid), expected_run_id=claimed.current_run_id,
-        expected_claim_lock=claimed.claim_lock,
-    ):
+    if not registered:
         return False
     if not pid and _kb._current_run_id(conn, claimed.id) != claimed.current_run_id:
         return False

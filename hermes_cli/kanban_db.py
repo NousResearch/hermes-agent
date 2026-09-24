@@ -3933,6 +3933,7 @@ def restore_archived_task(conn: sqlite3.Connection, task_id: str, *, archive_eve
     if not reason.strip() or not completion_contract or archive_event_id <= 0:
         return False
     terminations = []
+    unregistered_workers = []
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, completion_contract FROM tasks WHERE id = ?", (task_id,),
@@ -3974,6 +3975,11 @@ def restore_archived_task(conn: sqlite3.Connection, task_id: str, *, archive_eve
             if child["status"] == "running":
                 run_id = _end_run(conn, child["id"], outcome="reclaimed", status="todo",
                                   summary=f"archived ancestor {task_id} restored")
+                if child["worker_pid"] is None:
+                    # A manually claimed run (or legacy dispatcher) may have a
+                    # worker in flight that cannot be identified or stopped.
+                    # Never report this restoration as successfully fenced.
+                    unregistered_workers.append(child["id"])
                 terminations.append((child["id"], run_id, child["worker_pid"],
                                      child["claim_lock"], child["worker_started_at"]))
             conn.execute(
@@ -3994,11 +4000,11 @@ def restore_archived_task(conn: sqlite3.Connection, task_id: str, *, archive_eve
         if pid and not termination["terminated"]:
             unverified_workers.append(child_id)
     recompute_ready(conn)
-    if unverified_workers:
+    if unverified_workers or unregistered_workers:
         # The restoration is already committed and no claim can be renewed,
         # but an unverified/remote worker may still perform external writes.
         raise RuntimeError("Archive restored, but descendant workers could not be stopped: "
-                           + ", ".join(unverified_workers))
+                           + ", ".join(unverified_workers + unregistered_workers))
     return True
 
 

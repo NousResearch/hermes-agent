@@ -28,6 +28,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.platforms.api_server_runs import _RunStream
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
 
@@ -580,7 +581,7 @@ class TestRunEvents:
     @pytest.mark.asyncio
     async def test_tool_completed_event_includes_redacted_bounded_result_preview(self, adapter):
         loop = asyncio.get_running_loop()
-        adapter._run_streams["run_tool"] = asyncio.Queue()
+        adapter._run_streams["run_tool"] = _RunStream()
         callback = adapter._make_run_event_callback("run_tool", loop)
 
         callback(
@@ -592,7 +593,8 @@ class TestRunEvents:
                 "output": "x" * 600,
             },
         )
-        event = await adapter._run_streams["run_tool"].get()
+        await asyncio.sleep(0)  # the callback hops onto the loop via call_soon_threadsafe
+        _, event = adapter._run_streams["run_tool"].backlog[-1]
 
         assert event["error"] is True
         assert "BLOCKED: approval required" in event["preview"]
@@ -844,9 +846,9 @@ class TestSteerRun:
         app = _create_runs_app(adapter)
         agent = MagicMock()
         agent.steer.return_value = True
-        queue = asyncio.Queue()
+        stream = _RunStream()
         adapter._active_run_agents["run_123"] = agent
-        adapter._run_streams["run_123"] = queue
+        adapter._run_streams["run_123"] = stream
         adapter._set_run_status("run_123", "running")
         _claim_run(adapter, "run_123")
 
@@ -862,7 +864,7 @@ class TestSteerRun:
         }
         agent.steer.assert_called_once_with("tighten the ending")
         assert adapter._run_statuses["run_123"]["last_event"] == "run.steered"
-        event = queue.get_nowait()
+        _, event = stream.backlog[-1]
         assert event["event"] == "run.steered"
         assert event["run_id"] == "run_123"
         assert event["accepted"] is True

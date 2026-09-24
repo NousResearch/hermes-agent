@@ -82,6 +82,11 @@ logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
 
+# How long to wait before re-requesting a missing megolm room key for the
+# same (room, session). Guards against a request loop when the sender never
+# answers the m.room_key_request (see _dispatch_sync).
+_ROOM_KEY_REQUEST_TTL = 5 * 60
+
 
 def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
     """Run ffmpeg/ffprobe with captured output and no stdin."""
@@ -851,6 +856,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._store_dir: Optional[Path] = None  # pinned per profile in connect()
         self._sync_task: Optional[asyncio.Task] = None
+        self._sas_verification: Any = None  # verification.SasVerificationHandler
+        # TTL cache for room-key requests: (room_id, session_id) -> timestamp.
+        # Prevents re-requesting the same missing megolm session on every sync
+        # cycle when the sender never answers (request-loop guard).
+        self._room_key_requested: Dict[tuple, float] = {}
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
@@ -1348,6 +1358,23 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
+
+        # Interactive SAS (emoji) verification: lets a human user verify this
+        # bot's device from any Matrix client (Element Web/X, ...). Only active
+        # when E2EE is enabled, since it needs the OlmMachine.
+        if self._encryption and getattr(client, "crypto", None) is not None:
+            try:
+                from .verification import SasVerificationHandler
+
+                self._sas_verification = SasVerificationHandler(self, client, client.crypto)
+                self._sas_verification.register()
+            except Exception as exc:
+                logger.warning(
+                    "Matrix: SAS verification handler could not be enabled: %s", exc
+                )
+                self._sas_verification = None
+        else:
+            self._sas_verification = None
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
@@ -1358,6 +1385,21 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("Matrix: initial key share failed: %s", exc)
         self._sync_task = asyncio.create_task(self._sync_loop())
+
+        def _sync_loop_watchdog(task: asyncio.Task) -> None:
+            """Never let a dead sync loop pass silently."""
+            if task.cancelled():
+                logger.warning("Matrix: sync loop task cancelled")
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.error(
+                    "Matrix: sync loop task died with exception: %r", exc,
+                )
+            else:
+                logger.warning("Matrix: sync loop task ended unexpectedly (no exception)")
+
+        self._sync_task.add_done_callback(_sync_loop_watchdog)
         self._mark_connected()
         self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
         return True
@@ -1841,6 +1883,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _sync_loop(self) -> None:
         client = self._client
+        # Resume token from the initial sync + heartbeat clock.
+        _heartbeat_ts = time.time()
         next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
         while not self._closing:
             try:
@@ -1850,6 +1894,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
+                    # Heartbeat: prove the loop is alive at least every 60s.
+                    _now = time.time()
+                    if _now - _heartbeat_ts >= 60.0:
+                        _heartbeat_ts = _now
+                        logger.info(
+                            "Matrix: sync loop heartbeat (rooms=%d)",
+                            len(self._joined_rooms),
+                        )
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -1889,9 +1941,130 @@ class MatrixAdapter(BasePlatformAdapter):
         client = self._client
         if not client or not hasattr(client, "handle_sync"):
             return
+        # Dedupe m.room_key_request (missing megolm sessions): send at most
+        # ONE request per (room, session) per TTL window, even when several
+        # events of the same session appear within one sync response — and
+        # don't re-request on every sync cycle if the sender never answers.
+        _now = time.time()
+        _requested_keys: set = set()
+        # --- Missing megolm session: actively request room keys ---
+        # Element X encrypts in-room verification (MSC 2241) as megolm room
+        # events. If the bot lacks the session (m.room_key never arrived), it
+        # cannot read the verification. The standard mechanism is asking the
+        # sender for the keys via m.room_key_request. mautrix never does this
+        # on its own, so we do it here, deduped per (room, session).
+        try:
+            crypto = getattr(client, "crypto", None)
+            if crypto is not None:
+                from mautrix.types import EventType as _MtxEventType2
+                _join_rooms = (sync_data or {}).get("rooms", {}).get("join", {}) or {}
+                for _room_id, _room_data in _join_rooms.items():
+                    _tl = (_room_data.get("timeline") or {}).get("events") or []
+                    for _e in _tl:
+                        if str(_e.get("type") or "") != "m.room.encrypted":
+                            continue
+                        _content = _e.get("content") or {}
+                        if str(_content.get("algorithm") or "").startswith("m.megolm"):
+                            _sid = _content.get("session_id") or ""
+                            _skey = _content.get("sender_key") or ""
+                            _sender = _e.get("sender") or ""
+                            if not _sid or not _skey:
+                                continue
+                            _dup_key = (str(_room_id), _sid)
+                            if _dup_key in _requested_keys:
+                                continue
+                            _has = await crypto.crypto_store.has_group_session(
+                                _room_id, _sid
+                            )
+                            if _has:
+                                continue
+                            # Keys missing -> request them (fire-and-forget,
+                            # timeout=0). Backoff: skip if we already asked
+                            # within the TTL window (default 5 min) so a
+                            # non-answering sender doesn't trigger a request
+                            # loop on every sync cycle.
+                            _last_req = self._room_key_requested.get(_dup_key, 0.0)
+                            if _now - _last_req < _ROOM_KEY_REQUEST_TTL:
+                                _requested_keys.add(_dup_key)
+                                continue
+                            _requested_keys.add(_dup_key)
+                            self._room_key_requested[_dup_key] = _now
+                            _devs = await crypto.crypto_store.get_devices(_sender) or {}
+                            try:
+                                await crypto.request_room_key(
+                                    _room_id, _skey, _sid,
+                                    from_devices={_sender: list(_devs.keys())},
+                                    timeout=0,
+                                )
+                                logger.info(
+                                    "Matrix: requested room key for %s from %s (%d devices)",
+                                    _sid[:12], _sender, len(_devs),
+                                )
+                            except Exception as _exc:
+                                logger.warning(
+                                    "Matrix: room key request failed for %s: %s", _sid, _exc,
+                                )
+        except Exception as _exc:
+            logger.warning("Matrix: room key request scan failed: %s", _exc)
+        # --- Olm to_device: decrypt & re-dispatch (SAS verification fix) ---
+        # Element X encrypts SAS verification as Olm to_device events. The
+        # mautrix OlmMachine (handle_to_device_event) decrypts them but only
+        # processes room keys and discards everything else — verification
+        # events would disappear. We decrypt them ourselves here and dispatch
+        # the decrypted events to the event handlers (Class.TO_DEVICE).
+        _all_tasks = []
+        try:
+            crypto = getattr(client, "crypto", None)
+            if crypto is not None:
+                from mautrix.client.syncer import SyncStream
+                from mautrix.types import EventType as _MtxEventType, ToDeviceEvent
+                _td_raw = (sync_data or {}).get("to_device") or {}
+                _raw_events = _td_raw.get("events") or []
+                if _raw_events:
+                    _new_events = []
+                    for _raw in _raw_events:
+                        if str(_raw.get("type") or "") == "m.room.encrypted":
+                            try:
+                                _olm_evt = ToDeviceEvent.deserialize(_raw)
+                                logger.debug(
+                                    "Matrix: decrypting olm to_device from %s (ciphertext for %d keys)",
+                                    _raw.get("sender"),
+                                    len((_raw.get("content") or {}).get("ciphertext", {})),
+                                )
+                                _dec = await crypto._decrypt_olm_event(_olm_evt)
+                            except Exception as _exc:
+                                # Not decryptable -> pass through, the OlmMachine tries anyway.
+                                logger.debug(
+                                    "Matrix: olm to_device decrypt failed for %s: %s",
+                                    _raw.get("sender"), _exc,
+                                )
+                                _new_events.append(_raw)
+                                continue
+                            if _dec.type == _MtxEventType.ROOM_KEY:
+                                await crypto._receive_room_key(_dec)
+                            elif _dec.type == _MtxEventType.FORWARDED_ROOM_KEY:
+                                await crypto._receive_forwarded_room_key(_dec)
+                            else:
+                                # Dispatch the decrypted event (e.g. m.key.verification.*).
+                                logger.debug(
+                                    "Matrix: decrypted to_device type=%s sender=%s",
+                                    _dec.type, _dec.sender,
+                                )
+                                _all_tasks += client.dispatch_event(
+                                    _dec, source=SyncStream.TO_DEVICE
+                                )
+                        else:
+                            _new_events.append(_raw)
+                    _td_raw["events"] = _new_events
+        except Exception as _exc:
+            logger.warning("Matrix: olm to_device preprocessing failed: %s", _exc)
         tasks = client.handle_sync(sync_data)
         if inspect.isawaitable(tasks):
             tasks = await tasks
+        if _all_tasks:
+            # handle_sync may return None when there is nothing to dispatch;
+            # never let list(None) abort the whole sync dispatch.
+            tasks = list(tasks or []) + _all_tasks
         if tasks:
             # return_exceptions=True: one failing handler must not drop its SIBLING events.
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -2133,6 +2306,35 @@ class MatrixAdapter(BasePlatformAdapter):
         relates_to: dict) -> None:
         body = source_content.get("body", "") or ""
         if not body:
+            return
+        # Bot-initiated SAS (emoji) verification: "!verify" in a DM starts
+        # an in-room verification request (MSC 2241) that Element X shows
+        # as a prompt — this works even when Element X refuses to send
+        # to-device requests to us (stale device-key cache, #6174).
+        if self._sas_verification is not None and body.strip().lower() in (
+            "!verify", "verify", "!verify device",
+        ):
+            try:
+                started = await self._sas_verification.start_verification(sender, room_id)
+                if started:
+                    await self._send_room_message(room_id, {
+                        "msgtype": "m.notice",
+                        "body": "🔐 **Device verification started!**\n\n"
+                                "Check your Element client — a verification request "
+                                "should appear. Choose **Emoji comparison** and confirm "
+                                "when the emojis match.",
+                    })
+                else:
+                    await self._send_room_message(room_id, {
+                        "msgtype": "m.notice",
+                        "body": "Verification could not be started (no DM room found).",
+                    })
+            except Exception as exc:
+                logger.warning("Matrix: !verify failed: %s", exc)
+                await self._send_room_message(room_id, {
+                    "msgtype": "m.notice",
+                    "body": f"Verification failed: {exc}",
+                })
             return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)

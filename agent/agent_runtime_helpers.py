@@ -1086,9 +1086,32 @@ def drop_thinking_only_and_merge_users(
     reasoning-only interims and a tool result rather than next to the user's message."""
     if not messages:
         return messages
+    # A Codex continuation nudge is normally control text that must not cross
+    # to a Chat Completions provider.  It can, however, be the sole remaining
+    # user row after a tool round or interrupted stream.  Dropping it in that
+    # shape leaves an assistant/tool-only payload, which Ollama's renderer
+    # rejects as having no query.  Retain the latest existing nudge instead of
+    # fabricating a new user message; normal histories still omit the nudge.
+    user_rows = [
+        index for index, message in enumerate(messages)
+        if message.get("role") == "user"
+    ]
+    nudge_to_keep = None
+    if drop_nudge_marker is not None and user_rows:
+        non_nudge_user_rows = [
+            index for index in user_rows
+            if messages[index].get("content") != drop_nudge_marker
+        ]
+        if not non_nudge_user_rows:
+            nudge_to_keep = user_rows[-1]
     kept = [
-        m for m in messages
-        if not (drop_nudge_marker is not None and m.get("role") == "user" and m.get("content") == drop_nudge_marker)
+        m for index, m in enumerate(messages)
+        if not (
+            drop_nudge_marker is not None
+            and index != nudge_to_keep
+            and m.get("role") == "user"
+            and m.get("content") == drop_nudge_marker
+        )
         and not _ra().AIAgent._is_thinking_only_assistant(m, drop_codex_reasoning_items=drop_codex_reasoning_items)
     ]
     dropped = len(messages) - len(kept)

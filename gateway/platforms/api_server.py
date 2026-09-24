@@ -2192,6 +2192,34 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key)
         return model, session_override, request_model, request_provider
 
+    def _ensure_mcp_tools_registered(self, profile: Optional[str] = None) -> None:
+        """Register *profile*'s ``mcp_servers`` before this request builds an agent.
+
+        An agent freezes its tool registry at construction, and the api_server agent entry
+        points are the only ones that never ensure discovery first — cron's ``run_job``
+        (#4219), the CLI/TUI/ACP surfaces via ``hermes_cli.mcp_startup`` and the gateway's own
+        ``_discover_gateway_mcp_tools`` (#95518) all do. They lean on startup discovery plus the
+        housekeeping reconcile instead, so a run that arrives before those catch up is served
+        without the profile's tools: a profile created while the multiplexer runs is discovered
+        by the ``rescan-profiles`` reconcile (up to ``_PROFILE_RESCAN_INTERVAL_SECS`` later, and
+        an API-created profile fires no control verb at all), and an ``mcp_servers`` edit on a
+        served profile waits for the next ``_mcp_config_reconciler`` tick.
+
+        Cheap to repeat: ``discover_mcp_tools`` reads the scoped config and skips anything
+        connected, connecting, lazy or inside its connect backoff, so a warm profile pays a
+        cached config read. It blocks, so callers on the event loop hand it to an executor
+        (#16856), and interactive OAuth is suppressed for the same reason gateway startup
+        suppresses it — nobody is watching this process's stdout. Failure is non-fatal: a
+        broken MCP server must not take the run with it.
+        """
+        try:
+            from tools.mcp_oauth import suppress_interactive_oauth
+            from tools.mcp_tool_discovery import discover_mcp_tools
+            with self._profile_scope(profile), suppress_interactive_oauth():
+                discover_mcp_tools()
+        except Exception as exc:
+            logger.debug("MCP tool discovery failed for profile '%s': %s", profile or "default", exc)
+
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
@@ -4003,6 +4031,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         def _run():
             from gateway.session_context import clear_session_vars
+            self._ensure_mcp_tools_registered(request_profile)
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",

@@ -911,6 +911,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
+        await _submit_api_worker(loop, lambda: self._ensure_mcp_tools_registered(run.request_profile))
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),

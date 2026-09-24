@@ -649,8 +649,8 @@ class TestRunEvents:
                 victim_run = (await victim_resp.json())["run_id"]
                 attacker_run = (await attacker_resp.json())["run_id"]
 
-                victim_ready.wait(timeout=3.0)
-                attacker_ready.wait(timeout=3.0)
+                await asyncio.to_thread(victim_ready.wait, 3.0)
+                await asyncio.to_thread(attacker_ready.wait, 3.0)
                 assert auth_adapter._run_approval_sessions[victim_run] == victim_run
                 assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
                 assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
@@ -798,7 +798,7 @@ class TestSteerRun:
 
                 start_resp = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await start_resp.json())["run_id"]
-                assert run_started.wait(timeout=3.0)
+                assert await asyncio.to_thread(run_started.wait, 3.0)
 
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
                 assert stop_resp.status == 200
@@ -919,7 +919,7 @@ class TestRunLifecycleSweep:
                 start_resp = await cli.post("/v1/runs", json={"input": "hello"})
                 assert start_resp.status == 202
                 run_id = (await start_resp.json())["run_id"]
-                assert agent_ready.wait(timeout=3.0)
+                assert await asyncio.to_thread(agent_ready.wait, 3.0)
 
                 task = adapter._active_run_tasks[run_id]
                 assert isinstance(task, asyncio.Task)
@@ -1086,7 +1086,7 @@ class TestStopRun:
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await resp.json())["run_id"]
-                assert started.wait(timeout=3)
+                assert await asyncio.to_thread(started.wait, 3)
 
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
                 assert stop_resp.status == 200
@@ -1124,7 +1124,7 @@ class TestStopRun:
                 run_id = data["run_id"]
 
                 # Wait for agent to start running in the thread
-                agent_ready.wait(timeout=3.0)
+                await asyncio.to_thread(agent_ready.wait, 3.0)
                 await asyncio.sleep(0.1)
 
                 # Verify agent ref is stored
@@ -1166,7 +1166,7 @@ class TestStopRun:
                 data = await resp.json()
                 run_id = data["run_id"]
 
-                agent_ready.wait(timeout=3.0)
+                await asyncio.to_thread(agent_ready.wait, 3.0)
                 await asyncio.sleep(0.1)
 
                 # Subscribe to events in background
@@ -1324,7 +1324,10 @@ class TestRunIdempotency:
                 assert first.status == second.status == 202
                 assert (await first.json())["run_id"] == (await second.json())["run_id"]
                 assert second.headers["Idempotency-Replayed"] == "true"
-                await asyncio.sleep(0.1)
+                for _ in range(100):
+                    if calls:
+                        break
+                    await asyncio.sleep(0.05)
         assert calls == 1
 
     @pytest.mark.asyncio
@@ -1383,7 +1386,10 @@ class TestRunIdempotency:
                 results = await asyncio.gather(*[post() for _ in range(8)])
                 assert {status for status, _ in results} == {202}
                 assert len({body["run_id"] for _, body in results}) == 1
-                await asyncio.sleep(0.15)
+                for _ in range(100):
+                    if calls:
+                        break
+                    await asyncio.sleep(0.05)
         assert calls == 1
 
     def test_restart_durability_and_terminal_semantics(self, tmp_path):

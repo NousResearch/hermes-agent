@@ -554,6 +554,8 @@ def test_systemd_contained_launch_and_teardown_target_the_whole_scope(monkeypatc
     unit_arg = next(arg for arg in launched_argv if arg.startswith("--unit="))
     separator = launched_argv.index("--")
     assert launched_argv[separator + 1] == resolved["env"]
+    bootstrap = launched_argv.index(broker._ENV_EXEC_BOOTSTRAP)
+    assert launched_argv[bootstrap - 3 : bootstrap] == [sys.executable, "-I", "-c"]
     assert all(value not in launched_argv for value in peer_env.values())
     launch_env = popen_calls[0][1]["env"]
     assert "APP_SECRET" not in launch_env

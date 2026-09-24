@@ -1000,6 +1000,7 @@ def _launch(
             "-i",
             "--",
             sys.executable,
+            "-I",
             "-c",
             _ENV_EXEC_BOOTSTRAP,
             str(env_fd),

@@ -2341,6 +2341,40 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     f"kill -TERM {session.pid} 2>/dev/null",
                     timeout=5,
                 )
+                if not session.systemd_unit:
+                    grace = self._daemon_term_grace_seconds()
+                    if grace > 0:
+                        deadline = time.monotonic() + grace
+                        while time.monotonic() < deadline and self._host_pid_is_ours(
+                            session.pid, session.host_start_time
+                        ):
+                            time.sleep(0.05)
+                        if self._host_pid_is_ours(
+                            session.pid, session.host_start_time
+                        ):
+                            session.env_ref.execute(
+                                f"kill -KILL -- -{session.pid} 2>/dev/null || "
+                                f"kill -KILL {session.pid} 2>/dev/null",
+                                timeout=5,
+                            )
+                            deadline = time.monotonic() + self._KILL_SETTLE_SECONDS
+                            while time.monotonic() < deadline and self._host_pid_is_ours(
+                                session.pid, session.host_start_time
+                            ):
+                                time.sleep(0.05)
+                    if self._host_pid_is_ours(
+                        session.pid, session.host_start_time
+                    ):
+                        return {
+                            "status": "error",
+                            "error": (
+                                f"Kill incomplete: process {session.pid} still alive; "
+                                "session running"
+                            ),
+                            "session_id": session.id,
+                            "survivors": [session.pid],
+                            "process_running": True,
+                        }
             else:
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:

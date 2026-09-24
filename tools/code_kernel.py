@@ -43,6 +43,8 @@ _IS_WINDOWS = sys.platform == "win32"
 
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
+_INLINE_SPILL_MAX_CHARS = 5_000_000
+_MAX_KERNEL_FRAME_BYTES = 64 * 1024 * 1024
 
 # Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
@@ -250,7 +252,11 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''.format(cell_source=RUNNER_CELL_SOURCE, capture_limit=_RUNNER_CAPTURE_BYTES, spill_cap=5_000_000)
+'''.format(
+    cell_source=RUNNER_CELL_SOURCE,
+    capture_limit=_RUNNER_CAPTURE_BYTES,
+    spill_cap=_INLINE_SPILL_MAX_CHARS,
+)
 
 
 class CellAuthority:
@@ -589,6 +595,11 @@ def _materialize_inline_spill(kernel: SessionKernel, payload: Dict[str, Any]) ->
     content = payload.pop("stdout_spill_content", None)
     if not payload.get("stdout_clipped") or not isinstance(content, str):
         return
+    if len(content) > _INLINE_SPILL_MAX_CHARS:
+        content = (
+            content[:_INLINE_SPILL_MAX_CHARS]
+            + "\n\n[... spill capped ...]"
+        )
     try:
         count = int(payload.get("execution_count", 0))
     except (TypeError, ValueError):
@@ -657,6 +668,9 @@ def _stdout_reader(kernel: SessionKernel) -> None:
                 raw(marker)
                 buf = rest
                 continue
+            if length < 0 or length > _MAX_KERNEL_FRAME_BYTES:
+                kernel.response_q.put({"status": "protocol-error"})
+                return
             body = rest[newline + 1:]
             while len(body) < length:
                 more = stream.read1(length - len(body))

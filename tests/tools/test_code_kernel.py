@@ -380,6 +380,27 @@ class TestKernelLifecycle(unittest.TestCase):
         finally:
             kernel.teardown()
 
+    def test_inline_broker_spill_is_capped_by_host(self):
+        from tools.code_kernel import SessionKernel, _materialize_inline_spill
+
+        kernel = SessionKernel(("broker-spill-cap",))
+        kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_test_")
+        payload = {
+            "execution_count": 8,
+            "stdout_clipped": True,
+            "stdout_spill_content": "x" * 5_000_001,
+            "stdout_spill_path": "",
+        }
+
+        try:
+            _materialize_inline_spill(kernel, payload)
+            spill = Path(payload["stdout_spill_path"])
+            content = spill.read_text(encoding="utf-8")
+            self.assertEqual(content[:5_000_000], "x" * 5_000_000)
+            self.assertEqual(content[5_000_000:], "\n\n[... spill capped ...]")
+        finally:
+            kernel.teardown()
+
     def test_stdout_reader_reports_non_object_frame_as_protocol_error(self):
         from tools.code_kernel import SessionKernel, _stdout_reader
 
@@ -395,6 +416,23 @@ class TestKernelLifecycle(unittest.TestCase):
         _stdout_reader(kernel)
 
         self.assertEqual(kernel.response_q.get_nowait(), {"status": "protocol-error"})
+
+    def test_stdout_reader_rejects_oversized_broker_frame_before_body(self):
+        from tools.code_kernel import SessionKernel, _stdout_reader
+
+        kernel = SessionKernel(("oversized-broker-frame",))
+        kernel.sentinel = "@@FRAME@@"
+        kernel.broker_lease = Mock()
+        kernel.proc = Mock()
+        kernel.proc.stdout.read1.side_effect = [
+            b"\n@@FRAME@@ 67108865\n",
+            b"",
+        ]
+
+        _stdout_reader(kernel)
+
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "protocol-error"})
+        self.assertEqual(kernel.proc.stdout.read1.call_count, 1)
 
     @pytest.mark.linux_only
     def test_configured_local_broker_failure_does_not_fall_back_to_popen(self):

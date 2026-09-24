@@ -1683,9 +1683,12 @@ class TestKillProcess:
 
             def __init__(self):
                 self.commands = []
+                self.alive = True
 
             def execute(self, command, **kwargs):
                 self.commands.append((command, kwargs))
+                if "kill -TERM" in command:
+                    self.alive = False
                 return {"output": "", "returncode": 0}
 
         env = FakeEnv()
@@ -1695,12 +1698,88 @@ class TestKillProcess:
         session.host_start_time = 9876
         session.pid_scope = "sandbox"
         monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
-        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: True)
+        monkeypatch.setattr(
+            registry,
+            "_host_pid_is_ours",
+            lambda *_args: env.alive,
+        )
 
         assert registry._signal_kill(session, session.id, False) is None
         assert env.commands[0][0] == (
             "kill -TERM -- -4321 2>/dev/null || kill -TERM 4321 2>/dev/null"
         )
+
+    def test_kill_sandbox_session_escalates_when_launcher_ignores_term(
+        self, registry, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/test-broker.sock"
+
+            def __init__(self):
+                self.commands = []
+                self.alive = True
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                if "kill -KILL" in command:
+                    self.alive = False
+                return {"output": "", "returncode": 0}
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_broker_escalate", command="sleep 999")
+        session.env_ref = env
+        session.pid = 4321
+        session.host_start_time = 9876
+        session.pid_scope = "sandbox"
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
+        monkeypatch.setattr(
+            registry,
+            "_host_pid_is_ours",
+            lambda *_args: env.alive,
+        )
+        monkeypatch.setattr(registry, "_daemon_term_grace_seconds", lambda: 0.01)
+
+        assert registry._signal_kill(session, session.id, False) is None
+        assert [command for command, _kwargs in env.commands] == [
+            "kill -TERM -- -4321 2>/dev/null || kill -TERM 4321 2>/dev/null",
+            "kill -KILL -- -4321 2>/dev/null || kill -KILL 4321 2>/dev/null",
+        ]
+
+    def test_kill_sandbox_session_keeps_running_when_launcher_ignores_kill(
+        self, registry, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/test-broker.sock"
+
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "", "returncode": 0}
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_broker_survivor", command="sleep 999")
+        session.env_ref = env
+        session.pid = 4321
+        session.host_start_time = 9876
+        session.pid_scope = "sandbox"
+        registry._running[session.id] = session
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: True)
+        monkeypatch.setattr(registry, "_daemon_term_grace_seconds", lambda: 0.001)
+        monkeypatch.setattr(registry, "_KILL_SETTLE_SECONDS", 0)
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "error"
+        assert result["process_running"] is True
+        assert result["survivors"] == [4321]
+        assert session.id in registry._running
+        assert [command for command, _kwargs in env.commands] == [
+            "kill -TERM -- -4321 2>/dev/null || kill -TERM 4321 2>/dev/null",
+            "kill -KILL -- -4321 2>/dev/null || kill -KILL 4321 2>/dev/null",
+        ]
 
     def test_nonlinux_broker_config_keeps_legacy_kill_protocol(
         self, registry, monkeypatch

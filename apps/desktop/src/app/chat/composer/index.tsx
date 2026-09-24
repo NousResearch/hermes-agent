@@ -44,9 +44,12 @@ import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
+import { extractDroppedFiles, type DroppedFile } from '../hooks/use-composer-actions'
+
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { resolvePastedFileCandidates } from './clipboard-files'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -62,7 +65,7 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { markActiveComposer, onComposerAttachFilesRequest, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
@@ -552,6 +555,47 @@ export function ChatBar({
     recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
   }
 
+  // Pair a paste's DOM snapshot with the OS file-list the user actually copied.
+  // The cloned File objects carry no path; the IPC roundtrip restores it so the
+  // drop pipeline can attach by reference instead of uploading an opaque blob
+  // (#118181). Image-only pastes still surface through onAttachImageBlob.
+  const attachPastedFiles = useCallback(async (snapshot: DroppedFile[], imageBlobs: Blob[]) => {
+    const candidates = await resolvePastedFileCandidates(snapshot, () =>
+      window.hermesDesktop?.readClipboardFilePaths?.() ?? Promise.resolve({ status: 'unsupported', files: [] })
+    )
+
+    if (candidates.some(item => item.path)) {
+      if (await onAttachDroppedItems?.(candidates)) {
+        requestMainFocus()
+      }
+
+      return
+    }
+
+    if (imageBlobs.length > 0) {
+      for (const blob of imageBlobs) {
+        void onAttachImageBlob?.(blob)
+      }
+
+      return
+    }
+
+    // The paste carried files we couldn't resolve to paths and no image bytes
+    // either — under WSL the host screenshot often arrives as an empty paste
+    // (#112345 family). Fall through to the host-image read so the user still
+    // gets the expected screenshot pipeline rather than a silent no-op.
+    void onPasteClipboardImage?.({ silent: true })
+  }, [onAttachDroppedItems, onAttachImageBlob, onPasteClipboardImage, requestMainFocus])
+
+  // Paste-to-focus route: clipboard files from an unfocused ⌘V ride the bus
+  // and the active composer resolves them, just like a focused paste.
+  useEffect(() => onComposerAttachFilesRequest(({ snapshot, imageBlobs, target }) => {
+    if (target === scope.target) {
+      triggerHaptic('selection')
+      void attachPastedFiles(snapshot, imageBlobs)
+    }
+  }), [attachPastedFiles, scope.target])
+
   // Cut never reaches the handler above: React's onBeforeInput is a
   // keypress/textInput polyfill and does not observe the native
   // `beforeinput` event, so Chromium's deleteByCut input type is invisible to
@@ -562,6 +606,23 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    // Chromium's paste event hands us cloned File objects with the original
+    // native identity already stripped — webUtils.getPathForFile returns '' for
+    // them (#118181). Synchronously snapshot whatever the DOM can give us,
+    // prevent the default insertion, and resolve original paths through the
+    // main process after the handler returns. Text-only and image-only pastes
+    // fall through to the handlers below.
+    if (event.clipboardData.files.length > 0) {
+      const snapshot = extractDroppedFiles(event.clipboardData)
+      const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
+      event.preventDefault()
+      triggerHaptic('selection')
+
+      void attachPastedFiles(snapshot, imageBlobs)
+
+      return
+    }
+
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {

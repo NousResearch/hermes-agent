@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events'
 
-import { expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+
+beforeEach(() => vi.stubEnv('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/tmp/hermes-test-bus'))
+afterEach(() => vi.unstubAllEnvs())
 
 const createClient = vi.hoisted(() => vi.fn())
 vi.mock('dbus-native', () => ({ createClient }))

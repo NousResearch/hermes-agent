@@ -586,7 +586,7 @@ test('exec() does not classify a signal death with empty stderr as unreachable',
 
 test('forward() does not classify a signal death with empty stderr as unreachable', async () => {
   const spawnFn = scriptedSpawn([{ signal: 'SIGPIPE', stderr: '' }])
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d', mux: true })
 
   await assert.rejects(() => conn.forward(5000, 6000), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGPIPE'))
 })
@@ -606,7 +606,7 @@ test('close() does not report a signal-killed -O exit with empty stderr as unrea
   })
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
-    { spawnFn, controlDir: '/tmp/d', rememberLog: line => logs.push(line) }
+    { spawnFn, controlDir: '/tmp/d', mux: true, rememberLog: line => logs.push(line) }
   )
 
   await conn.open()

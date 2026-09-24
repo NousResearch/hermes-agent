@@ -124,6 +124,10 @@ describe('detectPluginComponents', () => {
   })
 })
 
+// These cases spawn several real Git processes. Windows process startup under
+// the full suite can exceed Vitest's 5s unit-test default without a stalled clone.
+const GIT_PROCESS_TEST_TIMEOUT = 30_000
+
 describe('probePluginRepo', () => {
   const roots: string[] = []
 
@@ -150,7 +154,7 @@ describe('probePluginRepo', () => {
     const result = await probePluginRepo('git', `${pathToFileURL(repo).href}#integrations/hermes`)
 
     expect(result).toMatchObject({ ok: true, agent: true, agentName: 'nested-agent' })
-  })
+  }, GIT_PROCESS_TEST_TIMEOUT)
 })
 
 describe('installDesktopPluginFromGit', () => {
@@ -199,7 +203,7 @@ describe('installDesktopPluginFromGit', () => {
     const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'hermes-talk', PACKAGE_MARKER), 'utf8'))
     expect(marker.package).toBe('hermes-talk')
     expect(marker.repo).toBe(pathToFileURL(repo).href)
-  })
+  }, GIT_PROCESS_TEST_TIMEOUT)
 
   it('leaves a desktop-only repo unmarked so it stays a standalone plugin', async () => {
     const repo = pluginRepo(null)
@@ -211,5 +215,5 @@ describe('installDesktopPluginFromGit', () => {
     expect(result.ok).toBe(true)
     expect(fs.existsSync(path.join(appRoot, String(result.pluginName), 'plugin.js'))).toBe(true)
     expect(fs.existsSync(path.join(appRoot, String(result.pluginName), PACKAGE_MARKER))).toBe(false)
-  })
+  }, GIT_PROCESS_TEST_TIMEOUT)
 })

@@ -68,12 +68,20 @@ test('truncation really frees the file, and an append-mode writer restarts at 0'
   const file = path.join(dir, 'desktop-chromium.log')
 
   try {
+    // Windows denies ftruncate on an append-only handle. Create the sparse
+    // oversized log before Chromium's stand-in opens it for appending.
+    const seed = fs.openSync(file, 'w+')
+
+    try {
+      fs.ftruncateSync(seed, LOG_MAX_BYTES + 1) // Grow without writing GBs.
+    } finally {
+      fs.closeSync(seed)
+    }
+
     // Stand in for Chromium: an O_APPEND handle held across the reclaim.
     const handle = fs.openSync(file, 'a')
 
     try {
-      fs.ftruncateSync(handle, LOG_MAX_BYTES + 1) // Grow without writing GBs.
-
       assert.equal(
         reclaimActiveLogIfOversized(file, {
           size: f => fs.statSync(f).size,

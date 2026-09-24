@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { type SpawnOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import path from 'node:path'
 import { PassThrough } from 'node:stream'
 
 import { test, vi } from 'vitest'
@@ -37,7 +38,7 @@ test('launches the unpacked helper without prompting and delivers only validated
   )
   assert.equal(spawn.mock.calls.length, 1)
   assert.deepEqual(spawn.mock.calls[0], [
-    '/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/native/command-screenshot-monitor',
+    path.resolve('/Applications/Hermes.app/Contents/Resources/app.asar.unpacked', 'dist/native/command-screenshot-monitor'),
     [],
     { stdio: ['pipe', 'pipe', 'ignore'], shell: false, detached: false, windowsHide: true }
   ])
@@ -55,7 +56,7 @@ test('launches the unpacked helper without prompting and delivers only validated
   assert.equal(child.kill.mock.calls[0]?.[0], 'SIGTERM')
   assert.equal(child.stdout.listenerCount('data'), 0)
   assert.deepEqual(statuses.at(-1), { type: 'stopped' })
-  assert.equal(resolveCommandScreenshotMonitorPath('/tmp/dev'), '/tmp/dev/dist/native/command-screenshot-monitor')
+  assert.equal(resolveCommandScreenshotMonitorPath('/tmp/dev'), path.resolve('/tmp/dev', 'dist/native/command-screenshot-monitor'))
 })
 
 test('bounds startup and termination, preserves permission failures, and isolates restarts', () => {

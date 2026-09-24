@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { Tiered } from '@/store/interface-mode'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
@@ -66,6 +67,10 @@ export interface SessionCompressResponse {
     usage?: Partial<UsageStats>
   }
   messages?: SessionMessage[]
+  /** Set with `status: 'pending'` when the gateway's compute-host wait expired
+   *  while compression is still running; the transcript refreshes from the
+   *  pushed session.info / `compacted` status edge (#97948). */
+  message?: string
   removed?: number
   status?: string
   summary?: {
@@ -118,49 +123,10 @@ export interface HandoffFailResponse {
   state?: string
 }
 
-export interface ExecCommandDispatchResponse {
-  type: 'exec' | 'plugin'
-  output?: string
-}
+export type SidebarNavId =
+  'artifacts' | 'capabilities' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings'
 
-export interface AliasCommandDispatchResponse {
-  type: 'alias'
-  target: string
-}
-
-export interface SkillCommandDispatchResponse {
-  type: 'skill'
-  name: string
-  message?: string
-  /** The invocation the UI renders (`/work fix the leak`). `message` is the
-   *  expanded skill body — model-facing scaffolding no surface may show. */
-  display?: string
-}
-
-export interface SendCommandDispatchResponse {
-  type: 'send'
-  message: string
-  notice?: string
-  /** Set for a skill-bundle send: see SkillCommandDispatchResponse.display. */
-  display?: string
-}
-
-export interface PrefillCommandDispatchResponse {
-  type: 'prefill'
-  message: string
-  notice?: string
-}
-
-export type CommandDispatchResponse =
-  | ExecCommandDispatchResponse
-  | AliasCommandDispatchResponse
-  | SkillCommandDispatchResponse
-  | SendCommandDispatchResponse
-  | PrefillCommandDispatchResponse
-
-export type SidebarNavId = 'artifacts' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings' | 'skills'
-
-export interface SidebarNavItem {
+export interface SidebarNavItem extends Tiered {
   /** Built-in view id, or a contributed row's namespaced contribution id. */
   id: SidebarNavId | (string & {})
   label: string
@@ -190,6 +156,9 @@ export interface ClientSessionState {
   model: string
   provider: string
   reasoningEffort: string
+  /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
+   *  has stamped the current pick (so a clamp is never inferred client-side). */
+  reasoningEffortWire?: string
   serviceTier: string
   fast: boolean
   yolo: boolean
@@ -208,6 +177,11 @@ export interface ClientSessionState {
   interrupted: boolean
   /** True after message.interim finalized a bubble in the still-running turn. */
   interimBoundaryPending: boolean
+  /** Stream bubble a running=false heartbeat settled before its turn's
+   *  message.complete arrived. The frame can be reordered behind the
+   *  heartbeat (#119569); when it lands it settles onto this bubble instead of
+   *  appending a duplicate. Cleared by the next message.start or complete. */
+  heartbeatSettledStreamId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean

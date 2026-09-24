@@ -1,9 +1,13 @@
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
-export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
+export type ToolStatus = 'error' | 'notice' | 'running' | 'success' | 'warning'
 
 export interface ToolPart {
+  toolResultMetadata?: ToolResultMetadata
   args?: unknown
   completedAt?: number
+  interrupted?: boolean
   isError?: boolean
   result?: unknown
   timestamp?: number

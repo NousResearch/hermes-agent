@@ -9,7 +9,9 @@ import {
   rememberActivePane,
   resetRememberedActivePanes,
   resolveRememberedActivePane,
-  setWorkspaceScope
+  setWorkspaceOwnerLabel,
+  setWorkspaceScope,
+  workspaceOwnerTitle
 } from './workspace-scope'
 
 afterEach(() => {
@@ -17,12 +19,6 @@ afterEach(() => {
 })
 
 describe('workspace scope', () => {
-  it('defaults to the un-switched sessions window state', () => {
-    expect($workspaceMode.get()).toBe('sessions')
-    expect($workspaceOwnerKey.get()).toBeNull()
-    expect($workspaceNewSessionTarget.get()).toBeNull()
-  })
-
   it('publishes a coherent mode and owner in one batch', () => {
     const snapshots: Array<['sessions' | 'bots', string | null]> = []
     const capture = () => snapshots.push([$workspaceMode.get(), $workspaceOwnerKey.get()])
@@ -56,14 +52,20 @@ describe('workspace scope', () => {
     setWorkspaceScope('sessions')
     expect($workspaceNewSessionTarget.get()).toBeNull()
   })
+})
 
-  it('keeps a group owner explicit while publishing why it has no generic route', () => {
-    const target = { kind: 'blocked' as const, message: 'New group conversations start in the group composer.' }
+describe('workspace owner title', () => {
+  it('captions a bot chat by its bot instead of the canonical stored title, and leaves everything else alone (#99152)', () => {
+    setWorkspaceOwnerLabel('bot:alpha', 'Alpha')
+    const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
 
-    setWorkspaceScope('bots', 'group:room-1', target)
-
-    expect($workspaceOwnerKey.get()).toBe('group:room-1')
-    expect($workspaceNewSessionTarget.get()).toEqual(target)
+    expect(workspaceOwnerTitle('Bot Chat', botChat)).toBe('Alpha')
+    // A `+` side thread under the same bot keeps its own title.
+    expect(workspaceOwnerTitle('Plan the launch', botChat)).toBe('Plan the launch')
+    // A Sessions tab titled the same way is not a bot chat.
+    expect(workspaceOwnerTitle('Bot Chat', { workspaceMode: 'sessions' })).toBe('Bot Chat')
+    // No label yet (roster not loaded): the stored title stands.
+    expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
   })
 })
 

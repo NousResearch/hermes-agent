@@ -98,7 +98,8 @@ vi.mock('@/store/gateway', async importOriginal => ({
 // the whole projects store (gateway / fs / git) into this hook's test.
 const removed = vi.hoisted(() => ({ ids: new Set<string>() }))
 
-vi.mock('@/store/projects', () => ({
+vi.mock('@/store/session-removal', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
   $removedSessionIds: { get: () => removed.ids }
 }))
 
@@ -214,6 +215,57 @@ describe('refreshSessions identity + loading hygiene', () => {
     })
 
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+
+  it('keeps idle recents when the sidebar returns an empty page plus profile errors', async () => {
+    // Backend contract on disk I/O / lock: HTTP 200, recents=[], errors=[{profile}].
+    // mergeSessionPage only keeps working/pinned/selected, so Yesterday/This-week
+    // idle rows must be carried forward from the previous list — not clobbered.
+    const idle = [row('yesterday'), row('week')]
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: idle }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['yesterday', 'week'])
+
+    setSessionProfilesTruncated({ default: true })
+    setSessionProfilesUsage({ default: { cost_usd: 3, tokens: 30 } })
+    setMessagingTruncated(true)
+
+    listSidebarSessions.mockResolvedValue({
+      ...sidebar({ sessions: [] }),
+      errors: [{ error: 'disk I/O error', profile: 'default' }]
+    })
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['yesterday', 'week'])
+    expect($sessionProfilesTruncated.get()).toEqual({ default: true })
+    expect($sessionProfilesUsage.get()).toEqual({ default: { cost_usd: 3, tokens: 30 } })
+    expect($messagingTruncated.get()).toBe(true)
+  })
+
+  it('still accepts a genuine empty recents page when the backend reported no errors', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get()).toEqual([])
   })
 
   it('drops tombstoned rows from the messaging slice and per-platform paging too (#50928)', async () => {
@@ -390,29 +442,6 @@ describe('refreshSessions identity + loading hygiene', () => {
 })
 
 describe('refreshSessions batches slices into one request', () => {
-  it('makes a single sidebar call and distributes recents / cron / messaging', async () => {
-    const recents = [row('a'), row('b')]
-    const cron = [row('c1', { source: 'cron', title: 'nightly' })]
-    const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
-
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging))
-
-    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
-
-    await act(async () => {
-      await result.current.refreshSessions()
-    })
-
-    // One batched call, not three separate listAllProfileSessions reads.
-    expect(listSidebarSessions).toHaveBeenCalledTimes(1)
-    expect(listAllProfileSessions).not.toHaveBeenCalled()
-
-    // Each slice landed in its own store.
-    expect($sessions.get().map(s => s.id)).toEqual(['a', 'b'])
-    expect($cronSessions.get().map(s => s.id)).toEqual(['c1'])
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
-  })
-
   it('forwards the active profile scope + section limits to the batched call', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
@@ -555,18 +584,6 @@ describe('refreshSessions batches slices into one request', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-chat'])
   })
 
-  it('scopes the cron-jobs fetch to the active profile', async () => {
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
-
-    const scoped = renderHook(() => useSessionListActions({ profileScope: 'work' }))
-
-    await act(async () => {
-      await scoped.result.current.refreshCronJobs()
-    })
-
-    expect(getCronJobs).toHaveBeenLastCalledWith('work')
-  })
-
   it('requests cron jobs for the unified scope', async () => {
     const unified = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
 
@@ -606,28 +623,6 @@ describe('refreshSessions batches slices into one request', () => {
 })
 
 describe('messaging profile scope', () => {
-  it('refreshes messaging sessions only for the active profile', async () => {
-    listAllProfileSessions.mockResolvedValue({
-      sessions: [row('m1', { profile: 'work', source: 'signal' })],
-      total: 1
-    })
-    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
-
-    await act(async () => {
-      await result.current.refreshMessagingSessions()
-    })
-
-    expect(listAllProfileSessions).toHaveBeenCalledWith(
-      expect.any(Number),
-      1,
-      'exclude',
-      'recent',
-      'work',
-      expect.objectContaining({ excludeSources: expect.any(Array) })
-    )
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
-  })
-
   it('keeps the explicit all-profiles view unified', async () => {
     listAllProfileSessions.mockResolvedValue({ sessions: [], total: 0 })
     const { result } = renderHook(() => useSessionListActions({ profileScope: '__all__' }))

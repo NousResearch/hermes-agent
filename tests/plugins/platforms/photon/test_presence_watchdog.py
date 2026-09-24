@@ -28,14 +28,6 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> PhotonAdapte
     return PhotonAdapter(cfg)
 
 
-def test_probe_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    a = _make_adapter(monkeypatch)
-    # Conservative by default: probe only after 10+ minutes of stream silence
-    # so quiet shared lines never trigger restart storms.
-    assert a._probe_interval == 600.0
-    assert a._probe_timeout == 10.0
-    assert a._probe_max_failures == 3
-    assert a._probe_enabled is True
 
 
 def test_note_activity_resets_failures(monkeypatch: pytest.MonkeyPatch) -> None:

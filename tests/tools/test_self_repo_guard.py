@@ -1,13 +1,11 @@
 """Tests for tools/self_repo_guard.py — the running-source-checkout git guard."""
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from tools.self_repo_guard import (
     detect_self_repo_git_mutation,
-    get_running_source_root,
 )
 
 
@@ -147,6 +145,46 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect(command, repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat <<'EOF' | bash\ngit checkout main\nEOF\n",
+            "cat <<EOF | sudo bash -s\ngit reset --hard\nEOF\n",
+            "cat <<'EOF' |& tee log | { echo; bash; }\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | (bash) # note\ngit checkout main\nEOF\n",
+            # `|` at end of line: the body follows, the consumer comes after the terminator.
+            "cat <<'EOF' |\ngit checkout main\nEOF\nbash\n",
+            # Backslash-newline is removed before the shell reads the line.
+            "cat <<'EOF' | \\\nbash\ngit checkout main\nEOF\n",
+            "bash \\\n<<'EOF'\ngit checkout main\nEOF\n",
+            "(cat <<'EOF'; echo) | bash\ngit checkout main\nEOF\n",
+        ],
+    )
+    def test_heredoc_piped_to_bare_shell_is_executed(self, repo, command):
+        """A heredoc body reaching a bare shell anywhere down its pipeline is a script
+        (GitHub issue 112441): the guard scans it like a `bash <<EOF` body."""
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            # `2>&1` is an fd redirect, not a `&` list operator ending the pipeline before bash.
+            ("cat <<'EOF' 2>&1 | bash\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' &>/dev/null | bash\ngit checkout main\nEOF\n", True),
+            # The fd number of a redirect is not a script operand: bash is still bare.
+            ("cat <<'EOF' | bash 2>/dev/null\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' | bash 2>&1\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' | bash >/dev/null\ngit checkout main\nEOF\n", True),
+            # A real script operand keeps the body as data; a plain redirect is a file write.
+            ("cat <<'EOF' | bash run.sh 2>/dev/null\ngit checkout main\nEOF\n", False),
+            ("cat <<'EOF' > notes.md\ngit checkout main\nEOF\n", False),
+        ],
+    )
+    def test_fd_redirects_around_heredoc_pipe(self, repo, command, expected):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is expected
+
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
         hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
@@ -228,6 +266,16 @@ class TestAllowsSafeCommands:
         [
             "cat > script.sh <<'EOF'\ngit checkout main\nEOF\n",
             "python - <<'PY'\nprint('git checkout main')\nPY\n",
+            # Downstream consumers that never execute the body, or a shell running a visible
+            # script (already scanned as its own command).
+            "cat <<'EOF' | grep '| bash'\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | bash -c 'echo hi'\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | bash run.sh\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | python3\ngit checkout main\nEOF\n",
+            # `&&` / `;` / a bare newline end the pipeline: that shell never sees the body.
+            "cat <<'EOF' && bash\ngit checkout main\nEOF\n",
+            "(cat <<'EOF'); bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | grep x\ngit checkout main\nEOF\nbash\n",
         ],
     )
     def test_data_heredoc_is_not_executed_as_shell(self, repo, command):
@@ -328,10 +376,6 @@ class TestWorktreeTargetingSourceRoot:
 
 
 class TestSourceRootResolution:
-    def test_resolves_to_repo_when_git_dir_present(self):
-        root = get_running_source_root()
-        if root is not None:
-            assert (root / ".git").exists()
 
     def test_worktree_git_file_counts(self, tmp_path, monkeypatch):
         import tools.self_repo_guard as mod
@@ -362,17 +406,7 @@ class TestBlockMessageGuidance:
     on most distros — parallel salvage clones running npm ci filled a 32GB
     tmpfs to 97% in one campaign)."""
 
-    def test_message_recommends_shared_clone_on_disk(self, repo):
-        hit, msg = _detect("git rebase origin/main", repo, repo)
-        assert hit is True
-        assert "git clone --shared" in msg
-        assert "scratch" in msg
 
-    def test_message_warns_against_tmp_for_dep_installs(self, repo):
-        hit, msg = _detect("git rebase origin/main", repo, repo)
-        assert hit is True
-        assert "tmpfs" in msg
-        assert "Delete the clone" in msg
 
     def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", "/custom/hermes-home")

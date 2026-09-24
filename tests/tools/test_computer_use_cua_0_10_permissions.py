@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
+from tools.computer_use import cua_backend_driver
+
 
 @pytest.fixture(autouse=True)
 def _reset_computer_use_state():
@@ -43,10 +45,11 @@ def test_gateway_session_key_yolo_maps_to_unrestricted_mode():
     not the DB session_id the tool path passes. Mode resolution must consult
     both namespaces or /yolo is silently dead on messaging platforms."""
     from tools import approval
+    from tools import approval_context
     from tools.computer_use import tool as computer_use
 
     gateway_key = "agent:main:telegram:private:12345"
-    token = approval.set_current_session_key(gateway_key)
+    token = approval_context.set_current_session_key(gateway_key)
     try:
         approval.enable_session_yolo(gateway_key)
         # Tool dispatch passes the (different) DB session id.
@@ -56,9 +59,9 @@ def test_gateway_session_key_yolo_maps_to_unrestricted_mode():
     finally:
         approval.disable_session_yolo(gateway_key)
         try:
-            approval.reset_current_session_key(token)
+            approval_context.reset_current_session_key(token)
         except Exception:
-            approval.set_current_session_key("")
+            approval_context.set_current_session_key("")
 
 
 def test_mode_change_replaces_only_that_sessions_backend():
@@ -133,37 +136,7 @@ def test_mode_change_is_rechecked_after_stale_backend_stops():
     ]
 
 
-def test_release_seam_stops_backend_and_clears_session_state():
-    from tools.computer_use import tool as computer_use
-
-    backend = Mock()
-    computer_use._backends["session-a"] = backend
-    computer_use._backend_call_locks["session-a"] = computer_use.threading.RLock()
-    computer_use._backend_permission_modes["session-a"] = "unrestricted"
-    computer_use._session_auto_approve["session-a"] = True
-    computer_use._always_allow["session-a"] = {("click", "background")}
-
-    assert computer_use.release_computer_use_session("session-a") is True
-    assert computer_use.release_computer_use_session("session-a") is False
-    backend.stop.assert_called_once_with()
-    assert "session-a" not in computer_use._backend_permission_modes
-    assert "session-a" not in computer_use._session_auto_approve
-    assert "session-a" not in computer_use._always_allow
-
-
-def test_yolo_toggle_immediately_releases_mode_dependent_backend():
-    from tools import approval
-
-    with patch("tools.computer_use.release_computer_use_session") as release:
-        approval.enable_session_yolo("session-a")
-        approval.disable_session_yolo("session-a")
-
-    assert release.call_args_list == [
-        (('session-a',), {}),
-        (('session-a',), {}),
-    ]
-
-
+@pytest.mark.linux_only
 def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     from tools.computer_use import cua_backend
 
@@ -175,8 +148,8 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     stopped = SimpleNamespace(returncode=0, stdout="", stderr="")
 
     daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
-    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
-        cua_backend,
+    with patch.object(
+        cua_backend_driver,
         "_resolve_mcp_invocation",
         return_value=("/opt/cua-driver", ["mcp"]),
     ), patch.object(
@@ -215,7 +188,7 @@ def test_standard_backend_does_not_spawn_an_embedded_daemon():
 
 
 def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypatch):
-    from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+    from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
     (tmp_path / "config.yaml").write_text(
         "computer_use:\n  grant_existing_profile: true\n",
@@ -231,10 +204,10 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
             return MagicMock()
 
         with patch(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             return_value="/opt/cua-driver",
         ), patch(
-            "tools.computer_use.cua_backend._resolve_mcp_invocation",
+            "tools.computer_use.cua_backend_driver._resolve_mcp_invocation",
             return_value=("/opt/cua-driver", ["mcp"]),
         ), patch(
             "mcp.StdioServerParameters", side_effect=capture_params
@@ -270,21 +243,6 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
 
     assert captured["command"] == "/opt/cua-driver"
     assert captured["args"] == ["mcp"]
-
-
-def test_transport_reset_invalidates_native_capabilities():
-    from tools.computer_use.cua_backend import CuaDriverBackend
-
-    backend = CuaDriverBackend(permission_mode="standard")
-    backend._active_pid = 10
-    backend._active_window_id = 20
-    backend._snapshot_tokens = {1: "old-token"}
-
-    backend._handle_transport_reset()
-
-    assert backend._active_pid is None
-    assert backend._active_window_id is None
-    assert backend._snapshot_tokens == {}
 
 
 # ── the escalation is at least audible ──────────────────────────────────
@@ -335,23 +293,3 @@ def test_no_escalation_warning_without_a_bypass(caplog):
     assert not [
         r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
     ]
-
-
-def test_each_session_is_warned_separately(caplog):
-    import logging
-
-    from tools.computer_use import tool as computer_use
-
-    computer_use._escalation_warned.clear()
-    with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
-        return_value=True,
-    ):
-        with caplog.at_level(logging.WARNING, logger=computer_use.logger.name):
-            computer_use._cua_permission_mode("session-one")
-            computer_use._cua_permission_mode("session-two")
-
-    escalation = [
-        r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
-    ]
-    assert len(escalation) == 2

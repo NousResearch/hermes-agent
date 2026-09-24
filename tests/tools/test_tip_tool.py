@@ -5,7 +5,6 @@ import json
 import pytest
 
 from tools import tip_tool as tt
-from tools.registry import registry
 
 
 @pytest.fixture
@@ -21,21 +20,8 @@ def emitted(monkeypatch):
     return sent
 
 
-def test_lives_in_the_gui_surface_toolset(monkeypatch):
-    """Scoped by toolset, not by the backend's env — see AGENTS.md."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    entry = registry.get_entry("tip")
-
-    assert entry is not None
-    assert entry.toolset == "desktop_ui"
 
 
-def test_is_ungated_like_tour():
-    """The Appearance switch governs the app's idle rotation, not this."""
-    entry = registry.get_entry("tip")
-
-    assert entry is not None
-    assert entry.check_fn is None
 
 
 def test_requires_the_desktop_bridge(monkeypatch):

@@ -35,7 +35,6 @@ export type TipId =
   | 'composer-mentions'
   | 'cron'
   | 'messaging'
-  | 'model-switch'
   | 'new-session'
   | 'profiles'
   | 'right-pane'
@@ -46,13 +45,12 @@ export type TipId =
 // to stand alone, because that is how they arrive.
 export const TIP_CATALOG: readonly TipDef[] = [
   { id: 'new-session', keybind: 'session.new', side: 'right', targets: ['[data-tour="sidebar-nav-new-session"]'] },
-  { id: 'skills', keybind: 'nav.skills', side: 'right', targets: ['[data-tour="sidebar-nav-skills"]'] },
+  { id: 'skills', keybind: 'nav.capabilities', side: 'right', targets: ['[data-tour="sidebar-nav-capabilities"]'] },
   { id: 'messaging', keybind: 'nav.messaging', side: 'right', targets: ['[data-tour="sidebar-nav-messaging"]'] },
   { id: 'artifacts', keybind: 'nav.artifacts', side: 'right', targets: ['[data-tour="sidebar-nav-artifacts"]'] },
   { id: 'cron', keybind: 'nav.cron', side: 'right', targets: ['[data-tour="sidebar-nav-cron"]'] },
   { id: 'command-palette', keybind: 'nav.commandPalette', side: 'right', targets: ['[data-tour="sessions-sidebar"]'] },
   { id: 'profiles', keybind: 'profile.next', side: 'right', targets: ['[data-tour="profile-rail"]'] },
   { id: 'composer-mentions', side: 'top', targets: ['[data-tour="composer"]'] },
-  { id: 'model-switch', keybind: 'composer.modelPicker', side: 'top', targets: ['[data-tour="model-pill"]'] },
   { id: 'right-pane', keybind: 'view.toggleRightSidebar', side: 'bottom', targets: ['[data-tour="right-pane-toggle"]'] }
 ]

@@ -11,6 +11,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -20,12 +21,12 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = vi.fn()
 })
 
-const request = vi.fn(async () => ({}))
+const { request } = vi.hoisted(() => ({ request: vi.fn(async () => ({})) }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, host: { ...sdk.host, request } }
+  return { ...sdk, usePluginI18n: () => translateBots, host: { ...sdk.host, request } }
 })
 
 const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows } = await import('./cron')
@@ -37,7 +38,9 @@ const activeJob: RoutineJob = {
   last_run_at: '2026-08-23T09:00:00Z',
   last_status: 'success',
   name: '[bot:notetaker] Morning digest',
-  next_run_at: '2026-08-23T10:00:00Z',
+  // Relative to the clock: a fixed stamp ages into the past and the "next run"
+  // it promises would start rendering as overdue (see the overdue case below).
+  next_run_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
   prompt_preview: 'Summarize yesterday and post it.',
   repeat: 'forever',
   schedule: 'every 1440m'
@@ -143,6 +146,29 @@ describe('the row is reachable', () => {
     // the user recreates the job through the hardened create path.
     expect(screen.getByRole('switch')).toHaveProperty('disabled', true)
     expect(screen.getByText(/Paused for security/)).toBeTruthy()
+  })
+
+  it('labels a next run parked past the scheduler grace as overdue, never as "Next" (#114309)', () => {
+    const hour = 60 * 60 * 1000
+    const overdue: RoutineJob = { ...activeJob, next_run_at: new Date(Date.now() - 7 * hour).toISOString() }
+    const upcoming: RoutineJob = { ...activeJob, next_run_at: new Date(Date.now() + 7 * hour).toISOString() }
+
+    render(<RoutineRow job={overdue} onOpen={() => undefined} owner={{ name: 'notetaker' }} />)
+
+    // The card and the inspector make the same call: the stored slot sitting
+    // hours in the past is the only visible trace of a scheduler that stopped
+    // ticking, so it must not be promised as an upcoming run.
+    expect(screen.getByText(/^Overdue since:.*ago$/)).toBeTruthy()
+    expect(screen.queryByText(/^Next:/)).toBeNull()
+    expect(valueOf(routineDetailRows(overdue), 'Overdue since')).toBeTruthy()
+    expect(valueOf(routineDetailRows(overdue), 'Next run')).toBeUndefined()
+
+    cleanup()
+    render(<RoutineRow job={upcoming} onOpen={() => undefined} owner={{ name: 'notetaker' }} />)
+
+    expect(screen.getByText(/^Next: in /)).toBeTruthy()
+    expect(valueOf(routineDetailRows(upcoming), 'Next run')).toBeTruthy()
+    expect(valueOf(routineDetailRows({ ...overdue, enabled: false, state: 'paused' }), 'Overdue since')).toBeUndefined()
   })
 })
 

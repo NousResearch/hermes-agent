@@ -68,13 +68,15 @@ vi.mock('./shared', () => ({ getPluginCtx: () => null }))
 
 /** Route every RPC through one table, recording what was asked. */
 function respondWith(handler: (method: string, params: Record<string, unknown>) => unknown) {
-  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  const calls: Array<{ method: string; options?: { spawnPriority?: string }; params: Record<string, unknown> }> = []
 
-  requestForBotMock.mockImplementation(async (_bot: unknown, method: string, params: Record<string, unknown>) => {
-    calls.push({ method, params: structuredClone(params ?? {}) })
+  requestForBotMock.mockImplementation(
+    async (_bot: unknown, method: string, params: Record<string, unknown>, options?: { spawnPriority?: string }) => {
+      calls.push({ method, options, params: structuredClone(params ?? {}) })
 
-    return handler(method, params)
-  })
+      return handler(method, params)
+    }
+  )
 
   return calls
 }
@@ -134,6 +136,9 @@ describe('the registry row wins, always', () => {
       include_hidden: true,
       title: 'Bot Chat'
     })
+    // #105104: the click's first RPC is the one that cold-spawns the bot's
+    // backend; it must dial foreground or it queues behind roster hydration.
+    expect(list?.options).toEqual({ spawnPriority: 'foreground' })
   })
 
   it('opens the lineage tip of a compression-rotated registry row', async () => {
@@ -197,6 +202,10 @@ describe('no registry row → create', () => {
       hidden: true,
       title: 'Bot Chat'
     })
+    // Same click gesture as the lookup: the create dials foreground too, while
+    // the follow-up title write stays untagged (the socket is already open).
+    expect(calls.find(call => call.method === 'session.create')?.options).toEqual({ spawnPriority: 'foreground' })
+    expect(calls.find(call => call.method === 'session.title')?.options).toBeUndefined()
     // The eager title write persists the row; no user-attributed intro.
     expect(calls.find(call => call.method === 'session.title')?.params).toMatchObject({ session_id: 'rt-1' })
     expect(calls.find(call => call.method === 'prompt.submit')).toBeUndefined()
@@ -279,5 +288,30 @@ describe('a failed lookup fails CLOSED — never "no chat exists"', () => {
 
     await expect(createCanonicalChat('ops')).rejects.toThrow(/Bot Chat registry/)
     expect(calls.some(call => call.method === 'session.create')).toBe(false)
+  })
+
+  // #98383: a profile backend mid-restart can answer `session.list`
+  // SUCCESSFULLY with an empty list instead of throwing. `rows.find(...) ||
+  // null` used to read that identically to "this bot never had a chat",
+  // which minted a replacement and re-fired the kickoff on every click.
+  it('refuses to mint on an empty lookup when the roster already confirmed a canonical chat', async () => {
+    const calls = respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: [] }
+      }
+
+      if (method === 'session.create') {
+        throw new Error('must not create: an empty result is not confirmed absence')
+      }
+
+      return {}
+    })
+
+    const bot = { canonical_session: { id: 'forever-chat' }, name: 'ops' } as RosterRow
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Bot Chat registry/)
+    expect(calls.some(call => call.method === 'session.create')).toBe(false)
+    expect(hostMock.openSession).not.toHaveBeenCalled()
   })
 })

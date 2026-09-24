@@ -92,3 +92,37 @@ def test_watcher_resolves_when_all_children_are_dead():
             )
 
     asyncio.run(_run())
+
+
+def test_fast_fail_probe_never_calls_the_watcher_on_the_plain_path():
+    """The fast-fail gate must inspect the watcher, not call it (#96044).
+
+    The old probe, ``inspect.isawaitable(_watch_children())``, created a fresh
+    watcher coroutine on every stdio tool call and dropped it unawaited on the
+    plain-await path ("coroutine ... was never awaited" under -W error, GC churn).
+    Drive the real call path with a stubbed (non-coroutine) session result and
+    assert the async watcher is never invoked.
+    """
+    import gc
+    import warnings
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from tools.mcp_tool_handlers import _call_tool_racing_stdio_death
+
+    # AsyncMock qualifies as a coroutine function (like the real async method)
+    # and counts calls even when the returned coroutine is never awaited.
+    watcher = AsyncMock()
+    server = SimpleNamespace(
+        session=SimpleNamespace(call_tool=lambda name, arguments: {"ok": name}),
+        _watch_stdio_children=watcher,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = asyncio.run(_call_tool_racing_stdio_death(server, "srv", "tool", {}))
+        gc.collect()
+
+    assert result == {"ok": "tool"}
+    assert watcher.call_count == 0, "fast-fail probe called the watcher (leaks a coroutine per call)"
+    assert not [w for w in caught if "never awaited" in str(w.message)]

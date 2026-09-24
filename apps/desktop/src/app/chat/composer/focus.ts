@@ -10,9 +10,10 @@
  * steal focus from the composer effect.
  */
 
-import { queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
+import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
+import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
@@ -49,10 +50,11 @@ const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
+const DICTATION_EVENT = 'hermes:composer-dictation'
 const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 
 /** Inline edit composer root — mounted only while a user bubble is being edited. */
-const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'
+export const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'
 
 /** Attribute-safe selector fragment. jsdom (vitest) does not ship `CSS.escape`. */
 const cssEscape = (value: string): string => {
@@ -136,6 +138,14 @@ const targetIsReachable = (target: ComposerTarget): boolean => {
  * voice / soft `/` agree with the keyboard path.
  */
 const resolveActive = (): ComposerTarget => {
+  const owner = $floatingComposerOwner.get()?.target
+
+  if (owner && (activeTarget !== 'edit' || !targetIsReachable('edit'))) {
+    activeTarget = owner
+
+    return owner
+  }
+
   if (targetIsReachable(activeTarget)) {
     return activeTarget
   }
@@ -169,7 +179,7 @@ const dispatchNow = <T>(name: string, detail: T) => {
 }
 
 /** Unique identity for the visible composer surface addressed by a submit. */
-const getVisibleComposerSurfaceId = (target: ComposerTarget): string | null => {
+export const getVisibleComposerSurfaceId = (target: ComposerTarget): string | null => {
   if (typeof document === 'undefined') {
     return null
   }
@@ -242,7 +252,22 @@ export const getActiveComposer = (): ComposerTarget => resolveActive()
 export const requestComposerFocus = (
   target: ComposerTarget | 'active' = 'active',
   { typeChar }: { typeChar?: string } = {}
-) => dispatch<FocusDetail>(FOCUS_EVENT, { target: resolve(target), typeChar })
+) => {
+  const detail = { target: resolve(target), typeChar }
+  const owner = $floatingComposerOwner.get()
+
+  // A first character must land before subsequent native input events, not
+  // behind a timer that can reorder fast typing or a pane handoff.
+  if (typeChar) {
+    dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
+  } else if (typeof window !== 'undefined') {
+    window.setTimeout(() => {
+      if (!owner || $floatingComposerOwner.get() === owner) {
+        dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
+      }
+    }, 0)
+  }
+}
 
 export const requestComposerInsert = (
   text: string,
@@ -342,6 +367,14 @@ export const requestVoiceToggle = (target: ComposerTarget | 'active' = 'active')
 export const onComposerVoiceToggleRequest = (handler: (target: ComposerTarget) => void) =>
   subscribe<{ target: ComposerTarget }>(VOICE_TOGGLE_EVENT, ({ target }) => handler(target))
 
+/** Start or stop dictation on one composer. Like voice conversation, the
+ * rebindable action targets only the active visible composer. */
+export const requestComposerDictation = (target: ComposerTarget | 'active' = 'active') =>
+  dispatch<{ target: ComposerTarget }>(DICTATION_EVENT, { target: resolve(target) })
+
+export const onComposerDictationRequest = (handler: (target: ComposerTarget) => void) =>
+  subscribe<{ target: ComposerTarget }>(DICTATION_EVENT, ({ target }) => handler(target))
+
 /** The chat surface inside the zone the pointer is over, if any. Mirrors the
  *  tab verbs' hover-first targeting (`tabTargetGroupId`, #74447): the model
  *  hotkey lands in the pane you're pointing at without clicking into it first.
@@ -396,10 +429,33 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   // Skip when already focused: focus() runs the full focusing steps (forcing
   // layout) even on the active element, and during a session switch the DOM is
   // large and dirty — the redundant retries were measurably expensive there.
+  // Also skip when another VISIBLE composer holds the caret — a keep-alive
+  // remount must not yank typing. A hidden tab that still has DOM focus must
+  // not block the pane the user just switched to.
+  const owner = $floatingComposerOwner.get()
+  const surfaceId = el.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
+
   const focus = () => {
-    if (document.activeElement !== el) {
-      el.focus({ preventScroll: true })
+    if (owner && (owner !== $floatingComposerOwner.get() || (surfaceId && surfaceId !== owner.id))) {
+      return
     }
+
+    if (!el.isConnected || isElementInHiddenPane(el) || document.activeElement === el) {
+      return
+    }
+
+    const active = document.activeElement
+
+    if (
+      active instanceof HTMLElement &&
+      active.dataset.slot === RICH_INPUT_SLOT &&
+      !isElementInHiddenPane(active) &&
+      (!owner || surfaceId !== owner.id)
+    ) {
+      return
+    }
+
+    el.focus({ preventScroll: true })
   }
 
   focus()

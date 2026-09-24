@@ -77,12 +77,15 @@ import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, init
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
   cronEditorUpdates,
+  cronModelChoiceValue,
   jobIsScriptOnly,
+  lastErrorSummary,
   parseCronDeliveryTargets,
+  parseCronModelChoiceValue,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
-import { jobState, jobTitle, STATE_DOT } from './job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -701,6 +704,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
               c={c}
               job={selectedJob}
+              onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
               onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
@@ -777,21 +781,17 @@ function CronJobListRow({
   )
 }
 
-function CronJobDetail({
-  busy,
-  c,
-  job,
-  onOpenSession,
-  onPauseResume,
-  onTrigger
-}: {
+interface CronJobDetailProps {
   busy: boolean
   c: Translations['cron']
   job: CronJob
+  onEdit: () => void
   onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
-}) {
+}
+
+function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onTrigger }: CronJobDetailProps) {
   const state = jobState(job)
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
@@ -820,16 +820,31 @@ function CronJobDetail({
           rows={[
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
-            { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
+            {
+              label: (nextRunOverdueMs(job) === null ? c.next : c.overdueSince).replace(/:$/, ''),
+              value: formatTime(job.next_run_at)
+            },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
             ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
           ]}
         />
 
         {job.last_error ? (
-          <div className="flex items-start gap-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
-            <AlertTriangle className="mt-px size-3 shrink-0" />
-            <span className="min-w-0 break-words">{job.last_error}</span>
+          <div className="space-y-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
+            <div className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-px size-3 shrink-0" />
+              <span className="min-w-0 break-words" title={job.last_error}>
+                {c.lastRunFailed} {lastErrorSummary(job.last_error)}
+              </span>
+            </div>
+            <div className="flex items-center gap-0.5 pl-4">
+              <PanelAction disabled={busy} icon="edit" onClick={onEdit}>
+                {c.editJob}
+              </PanelAction>
+              <PanelAction disabled={busy} icon="zap" onClick={onTrigger}>
+                {c.runAgain}
+              </PanelAction>
+            </div>
           </div>
         ) : null}
       </header>
@@ -1037,8 +1052,8 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
-  // Per-job model override, encoded as `${providerSlug}:${model}` (split on the
-  // first ':' when saving). MODEL_DEFAULT_VALUE = follow the global default.
+  // Per-job model override encoded as an opaque provider/model pair.
+  // MODEL_DEFAULT_VALUE = follow the global default.
   const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
   // Blueprint fills typed slots (time/enum/weekdays/text) instead of the raw
   // cron fields; the backend renders the prompt + schedule from them.
@@ -1093,7 +1108,9 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
-    setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
+    setModelChoice(
+      initial && jobModel(initial) ? cronModelChoiceValue(jobProvider(initial), jobModel(initial)) : MODEL_DEFAULT_VALUE
+    )
     setSlotValues({})
     setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
@@ -1136,7 +1153,9 @@ function CronEditorDialog({
   // stored pin visible and re-selectable rather than silently dropping it.
   const modelChoiceKnown =
     modelChoice === MODEL_DEFAULT_VALUE ||
-    modelProviders.some(provider => (provider.models ?? []).some(model => `${provider.slug}:${model}` === modelChoice))
+    modelProviders.some(provider =>
+      (provider.models ?? []).some(model => cronModelChoiceValue(provider.slug, model) === modelChoice)
+    )
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -1159,11 +1178,7 @@ function CronEditorDialog({
       return
     }
 
-    // Decode `${providerSlug}:${model}` — the model half may itself contain
-    // ':' (e.g. openrouter 'anthropic/claude-sonnet-4:beta'), so split once.
-    const overrideIndex = modelChoice === MODEL_DEFAULT_VALUE ? -1 : modelChoice.indexOf(':')
-    const overrideProvider = overrideIndex >= 0 ? modelChoice.slice(0, overrideIndex) : ''
-    const overrideModel = overrideIndex >= 0 ? modelChoice.slice(overrideIndex + 1) : ''
+    const override = parseCronModelChoiceValue(modelChoice)
 
     setSaving(true)
     setError(null)
@@ -1171,10 +1186,10 @@ function CronEditorDialog({
     try {
       await onSave({
         deliver,
-        model: overrideModel,
+        model: override?.model ?? '',
         name: name.trim(),
         prompt: prompt.trim(),
-        provider: overrideProvider,
+        provider: override?.provider ?? '',
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -1344,21 +1359,21 @@ function CronEditorDialog({
                     <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
                     {!modelChoiceKnown && (
                       <SelectItem className="font-mono" value={modelChoice}>
-                        {modelChoice.slice(modelChoice.indexOf(':') + 1)}
+                        {parseCronModelChoiceValue(modelChoice)?.model ?? modelChoice}
                       </SelectItem>
                     )}
                     {modelProviders.map(provider => (
                       <SelectGroup key={provider.slug}>
                         <SelectLabel>{provider.name}</SelectLabel>
-                        {(provider.models ?? []).map(model => (
-                          <SelectItem
-                            className="font-mono"
-                            key={`${provider.slug}:${model}`}
-                            value={`${provider.slug}:${model}`}
-                          >
-                            {model}
-                          </SelectItem>
-                        ))}
+                        {(provider.models ?? []).map(model => {
+                          const value = cronModelChoiceValue(provider.slug, model)
+
+                          return (
+                            <SelectItem className="font-mono" key={value} value={value}>
+                              {model}
+                            </SelectItem>
+                          )
+                        })}
                       </SelectGroup>
                     ))}
                   </SelectContent>

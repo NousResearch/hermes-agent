@@ -4,11 +4,14 @@ import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
 import {
   blurComposerInput,
+  focusComposerInput,
   getActiveComposer,
   markActiveComposer,
+  onComposerDictationRequest,
   onComposerFocusRequest,
   onComposerModelMenuRequest,
   releaseActiveComposer,
+  requestComposerDictation,
   requestComposerFocus,
   requestModelMenuToggle
 } from './focus'
@@ -50,6 +53,39 @@ afterEach(() => {
   // would otherwise decide the next one.
   markActiveComposer('main')
   $hoveredTreeGroup.set(null)
+})
+
+describe('focusComposerInput', () => {
+  it('does not steal the caret from another live composer', () => {
+    const foreground = mountInput()
+    const background = mountInput()
+
+    foreground.focus()
+    focusComposerInput(background)
+
+    expect(document.activeElement).toBe(foreground)
+  })
+
+  it('still focuses when the caret is not already in a composer', () => {
+    const input = mountInput()
+    const outside = document.createElement('button')
+
+    document.body.append(outside)
+    outside.focus()
+    focusComposerInput(input)
+
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('takes the caret from a hidden keep-alive composer on tab switch', () => {
+    const hidden = mountInput(true)
+    const visible = mountInput()
+
+    hidden.focus()
+    focusComposerInput(visible)
+
+    expect(document.activeElement).toBe(visible)
+  })
 })
 
 describe('blurComposerInput', () => {
@@ -281,5 +317,21 @@ describe('requestModelMenuToggle', () => {
     // Settings/profiles routes: no [data-composer-target] anywhere.
     expect(requestModelMenuToggle()).toBe(false)
     expect(await collectModelMenuTargets()).toEqual([])
+  })
+})
+
+describe('requestComposerDictation', () => {
+  it('delivers the request only to the active visible composer', async () => {
+    mountSurface('main', true)
+    mountSurface('tile:front')
+    markActiveComposer('tile:front')
+    const targets: string[] = []
+    const off = onComposerDictationRequest(target => targets.push(target))
+
+    requestComposerDictation('active')
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    off()
+
+    expect(targets).toEqual(['tile:front'])
   })
 })

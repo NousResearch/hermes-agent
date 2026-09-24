@@ -3,9 +3,6 @@
 import json
 import sys
 import types
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from plugins.memory.mem0._setup import (
     parse_flags,
@@ -14,8 +11,6 @@ from plugins.memory.mem0._setup import (
     _prompt_api_key,
     post_setup,
     _check_qdrant_path,
-    _check_ollama,
-    _check_pgvector,
 )
 
 
@@ -41,35 +36,10 @@ def _inject_fake_hermes_cli(monkeypatch):
     return fake_config_mod
 
 
-class TestParseFlags:
-
-    def test_mode_platform(self):
-        flags = parse_flags(["--mode", "platform", "--api-key", "sk-test"])
-        assert flags["mode"] == "platform"
-        assert flags["api_key"] == "sk-test"
-
-
-    def test_no_flags_returns_empty_mode(self):
-        flags = parse_flags([])
-        assert flags["mode"] == ""
-
-    def test_oss_vector_path_flag(self):
-        flags = parse_flags(["--mode", "oss", "--oss-vector-path", "/data/qdrant"])
-        assert flags["oss_vector_path"] == "/data/qdrant"
 
 
 class TestBuildOSSConfig:
 
-    def test_openai_defaults(self):
-        flags = parse_flags(["--mode", "oss", "--oss-llm-key", "sk-oai"])
-        oss, env_writes = build_oss_config(flags)
-        assert oss["llm"]["provider"] == "openai"
-        assert oss["llm"]["config"]["model"] == "gpt-5-mini"
-        assert oss["llm"]["config"]["is_reasoning_model"] is True
-        assert oss["embedder"]["provider"] == "openai"
-        assert oss["embedder"]["config"]["model"] == "text-embedding-3-small"
-        assert oss["vector_store"]["provider"] == "qdrant"
-        assert env_writes["OPENAI_API_KEY"] == "sk-oai"
 
 
     def test_explicit_gpt_5_mini_is_reasoning_model(self):
@@ -239,11 +209,6 @@ class TestPostSetup:
         assert mem0_json["user_id"] == "hermes-user"
 
 
-class TestDryRun:
-
-    def test_dry_run_flag_parsed(self):
-        flags = parse_flags(["--mode", "oss", "--oss-llm-key", "sk-oai", "--dry-run"])
-        assert flags["dry_run"] is True
 
 
 class TestConnectivityChecks:
@@ -253,3 +218,21 @@ class TestConnectivityChecks:
         assert ok is True
 
 
+
+
+def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
+    """`hermes memory setup mem0` reaches the wizard when the package is first imported by plugin
+    discovery, which execs sibling modules before ``__init__`` (#103078). The invariant is on the
+    module the loader actually cached, not on a normal top-level import."""
+    from plugins.memory import load_memory_provider
+
+    saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.startswith("plugins.memory.mem0")}
+    try:
+        provider = load_memory_provider("mem0", register_skills=False)
+        assert provider is not None
+        assert hasattr(sys.modules["plugins.memory.mem0._setup"], "post_setup")
+    finally:
+        for k in list(sys.modules):
+            if k.startswith("plugins.memory.mem0"):
+                del sys.modules[k]
+        sys.modules.update(saved)

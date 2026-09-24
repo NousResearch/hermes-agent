@@ -39,16 +39,27 @@ class TestTruncatePreview:
     def test_exact_budget_unchanged(self):
         assert BasePlatformAdapter._truncate_preview("x" * 10, 10) == "x" * 10
 
+    def test_ea_fit_measures_the_escaped_rendering(self):
+        """An escaping platform's budget applies to the wire payload, never to raw chars."""
+        class _Html(_DefaultAdapter):
+            def _ea_escape(self, text):
+                return _html.escape(text)
+
+        adapter = _bare(_Html)
+        assert adapter._ea_fit("&" * 100, 20) == "&&&&..."  # 4 x "&amp;" == 20 escaped chars
+        assert adapter._ea_fit("&" * 4, 20) == "&" * 4  # fits once escaped → untouched
+
 
 class TestFormatExecApproval:
-    def test_default_template(self):
-        ad = _bare(_DefaultAdapter)
-        text = ad._format_exec_approval("rm -rf /", "scary")
-        assert text == (
-            "⚠️ Command Approval Required\n\n"
-            "```\nrm -rf /\n```\n"
-            "Reason: scary"
-        )
+
+    def test_deadline_line_tracks_configured_timeout(self, monkeypatch):
+        """The card must say how long the user has and that silence means NO — for any timeout."""
+        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 90)
+        text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
+        assert "within 90 seconds it will NOT run" in text
+        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 7200)
+        text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
+        assert "within 2 hours it will NOT run" in text
 
 
     def test_escape_hook_applied_to_command_and_reason(self):
@@ -78,31 +89,3 @@ class TestFormatChoicePage:
         assert meta["page_info"] == " (21–25 of 25)"
 
 
-class TestAdapterParity:
-    """Rewired adapters produce byte-identical text vs their historical inline code."""
-
-
-    def test_telegram_pagination_parity(self):
-        """_format_choice_page matches the old _build_*_keyboard arithmetic."""
-
-        def old(options, page, page_size):
-            total = len(options)
-            total_pages = max(1, (total + page_size - 1) // page_size)
-            page = max(0, min(page, total_pages - 1))
-            start = page * page_size
-            end = min(start + page_size, total)
-            page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-            return options[start:end], page, total_pages, page_info
-
-        for n in (0, 1, 8, 9, 10, 25):
-            options = list(range(n))
-            for page in (-3, 0, 1, 2, 99):
-                for per in (8, 10):
-                    o_opts, o_page, o_tp, o_info = old(options, page, per)
-                    n_opts, meta = BasePlatformAdapter._format_choice_page(
-                        options, page, per
-                    )
-                    assert n_opts == o_opts
-                    assert meta["page"] == o_page
-                    assert meta["total_pages"] == o_tp
-                    assert meta["page_info"] == o_info

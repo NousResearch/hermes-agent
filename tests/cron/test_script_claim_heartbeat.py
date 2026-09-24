@@ -13,6 +13,7 @@ import pytest
 def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
     """Losing a fire claim must stop both the script and its descendants."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     scripts_dir = tmp_path / "scripts"
@@ -39,7 +40,7 @@ def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
     def _run() -> None:
         try:
             result.append(
-                scheduler._run_job_script(
+                sched_script._run_job_script(
                     str(script),
                     workdir=str(tmp_path),
                     cancel_event=cancel,
@@ -73,6 +74,7 @@ def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
     the tree kill escalates to SIGKILL for surviving group members, and the
     pipe drain is bounded even if a descendant still holds the write ends."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     scripts_dir = tmp_path / "scripts"
@@ -99,7 +101,7 @@ def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
     def _run() -> None:
         try:
             result.append(
-                scheduler._run_job_script(
+                sched_script._run_job_script(
                     str(script),
                     workdir=str(tmp_path),
                     cancel_event=cancel,
@@ -129,6 +131,7 @@ def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
 
 def test_no_agent_forwards_cancel_event_to_script_runner(monkeypatch):
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     cancel = threading.Event()
     observed = []
@@ -177,6 +180,7 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
     """
     import cron.jobs as jobs
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     profile_home = tmp_path / "profile"
     default_cron = tmp_path / "default" / "cron"
@@ -242,11 +246,11 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
         return True, script_output
 
     monkeypatch.setattr(scheduler, "heartbeat_run_claim", _observed_heartbeat)
-    monkeypatch.setattr(scheduler, "_run_job_script", _blocking_script)
+    monkeypatch.setattr(sched_script, "_run_job_script", _blocking_script)
 
     with (
         jobs.use_cron_store(profile_home),
-        patch("hermes_state.SessionDB", return_value=MagicMock()),
+        patch("hermes_state_registry.acquire", return_value=MagicMock()),
     ):
         success, _doc, _response, error = scheduler.run_job(claimed_job)
         profile_claim = jobs.get_job("long-script")["run_claim"]
@@ -266,6 +270,7 @@ def test_script_heartbeat_uses_captured_claim_owner(tmp_path, monkeypatch):
     """A stale script runner cannot refresh a replacement owner's claim."""
     import cron.jobs as jobs
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     profile_home = tmp_path / "profile"
     profile_home.mkdir()
@@ -303,7 +308,7 @@ def test_script_heartbeat_uses_captured_claim_owner(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
     monkeypatch.setattr(scheduler, "heartbeat_run_claim", _observed_heartbeat)
-    monkeypatch.setattr(scheduler, "_run_job_script", _blocking_script)
+    monkeypatch.setattr(sched_script, "_run_job_script", _blocking_script)
 
     with jobs.use_cron_store(profile_home):
         assert scheduler._run_job_script_with_claim_heartbeat(job, "watchdog.py") == (
@@ -320,6 +325,7 @@ def test_run_one_job_refreshes_fire_claim_in_profile_store(tmp_path, monkeypatch
     """The shared execute/save/deliver body keeps its durable fire claim alive."""
     import cron.jobs as jobs
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     profile_home = tmp_path / "profile"
     profile_home.mkdir()
@@ -357,6 +363,7 @@ def test_run_one_job_refreshes_fire_claim_in_profile_store(tmp_path, monkeypatch
 def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     """A runner that loses its durable owner must not deliver its stale result."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     lost_seen = threading.Event()
     heartbeat_calls = 0
@@ -369,7 +376,15 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
         lost_seen.set()
         return False
 
-    def _run_job(job, *, defer_agent_teardown=None, extra_prompt=None, cancel_event=None):
+    def _run_job(
+        job,
+        *,
+        defer_agent_teardown=None,
+        extra_prompt=None,
+        cancel_event=None,
+        execution_id=None,
+    ):
+        assert execution_id == job["execution_id"]
         assert lost_seen.wait(timeout=2)
         return True, "stale output", "stale response", None
 
@@ -384,7 +399,7 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _heartbeat)
     monkeypatch.setattr(scheduler, "run_job", _run_job)
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda job_id: True)
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda execution_id: None)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda execution_id: {})
     monkeypatch.setattr(scheduler, "finish_execution", lambda *args, **kwargs: None)
     save_output = MagicMock()
     deliver_result = MagicMock()
@@ -403,9 +418,124 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     mark_run.assert_not_called()
 
 
+def _run_claimed_job_with_mid_run_action(
+    tmp_path, monkeypatch, mid_run, *, execution_id, stub_output=True, crash=None,
+    expect_result=True,
+):
+    """Fire a claimed job through run_one_job with a stubbed agent run that performs ``mid_run``
+    on its own record, keeps working past one fire-claim heartbeat tick, then completes (or
+    raises ``crash``)."""
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    def _run_job(job, **_kwargs):
+        mid_run(jobs, job)
+        time.sleep(0.3)
+        if crash is not None:
+            raise crash
+        return True, "saved output", "D1 is promoting", None
+
+    delivered = MagicMock(return_value=None)
+    finished = MagicMock()
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(scheduler, "run_job", _run_job)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
+    monkeypatch.setattr(scheduler, "finish_execution", finished)
+    if stub_output:
+        monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
+    monkeypatch.setattr(scheduler, "_deliver_result", delivered)
+
+    with jobs.use_cron_store(tmp_path):
+        job = jobs.create_job(
+            prompt="work", schedule="every 5m", name="remove self", deliver="telegram")
+        assert jobs.claim_job_for_fire(job["id"])
+        claimed = jobs.get_job(job["id"])
+        claimed["execution_id"] = execution_id
+
+        with patch("agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.reset_secret_scope"):
+            assert scheduler.run_one_job(claimed) is expect_result
+    return delivered, finished
+
+
+def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, monkeypatch):
+    """A run that removes its own job (cronjob remove on its own id) and keeps working past a
+    heartbeat tick must still deliver its final response and complete its ledger row (#111039)."""
+    import cron.jobs as jobs
+
+    delivered, finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch,
+        lambda jobs_mod, job: jobs_mod.remove_job(job["id"]),
+        execution_id="self-removal-heartbeat-execution")
+
+    delivered.assert_called_once()
+    finished.assert_called_once_with(
+        "self-removal-heartbeat-execution",
+        success=True, error=None, delivery_outcome="delivered")
+    with jobs.use_cron_store(tmp_path):
+        assert jobs.load_jobs() == []
+
+
+def test_self_removed_job_leaves_no_output_directory(tmp_path, monkeypatch):
+    """remove_job() deletes <cron>/output/<job_id>/; the finishing run must not re-create it
+    (an orphan directory per self-removing job), so 'only the job record is gone' stays true."""
+    import cron.jobs as jobs
+
+    delivered, _finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch,
+        lambda jobs_mod, job: jobs_mod.remove_job(job["id"]),
+        execution_id="self-removal-output-execution", stub_output=False)
+
+    delivered.assert_called_once()
+    with jobs.use_cron_store(tmp_path):
+        assert jobs.load_jobs() == []
+    assert list((tmp_path / "cron" / "output").glob("*")) == []
+
+
+def test_self_removed_job_crash_skips_mark_job_run(tmp_path, monkeypatch):
+    """A run that crashes after removing its own record has no record to mark: the crash path
+    must skip mark_job_run like the completion path does, not probe a missing record."""
+    import cron.scheduler as scheduler
+
+    marked = MagicMock(return_value=True)
+    monkeypatch.setattr(scheduler, "mark_job_run", marked)
+    _delivered, finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch,
+        lambda jobs_mod, job: jobs_mod.remove_job(job["id"]),
+        execution_id="self-removal-crash-execution",
+        crash=RuntimeError("boom after self-removal"), expect_result=False)
+
+    marked.assert_not_called()
+    finished.assert_called_once_with(
+        "self-removal-crash-execution", success=False,
+        error="boom after self-removal", delivery_outcome="delivered")
+
+
+def test_self_removal_followed_by_replacement_record_stays_fail_closed(tmp_path, monkeypatch):
+    """Self-removal only excuses a MISSING record: once another owner's record reclaims the id,
+    the run is stale again and its result must be discarded, never delivered."""
+
+    def _remove_then_replace(jobs_mod, job):
+        assert jobs_mod.remove_job(job["id"])
+        replacement = {k: v for k, v in job.items() if k != "execution_id"}
+        replacement["fire_claim"] = {"at": job["fire_claim"]["at"], "by": "other-machine:owner"}
+        jobs_mod.save_jobs(jobs_mod.load_jobs() + [replacement])
+
+    delivered, finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch, _remove_then_replace, execution_id="replacement-execution")
+
+    delivered.assert_not_called()
+    finished.assert_called_once_with(
+        "replacement-execution", success=False,
+        error="Fire claim ownership lost; stale result was discarded.")
+
+
 def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatch):
     """A stale claimed snapshot rejected before body entry must close its ledger row."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     finish = MagicMock()
@@ -431,6 +561,7 @@ def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatc
 def test_initially_lost_claim_does_not_run_when_ledger_write_fails(monkeypatch):
     """A ledger I/O error cannot turn a confirmed ownership loss into execution."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     job = {
@@ -453,6 +584,7 @@ def test_initially_lost_claim_does_not_run_when_ledger_write_fails(monkeypatch):
 def test_initial_heartbeat_exception_does_not_start_execution(monkeypatch):
     """Unconfirmed initial ownership must fail closed before any side effect."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     finish = MagicMock()
@@ -482,6 +614,7 @@ def test_initial_heartbeat_exception_does_not_start_execution(monkeypatch):
 def test_heartbeat_thread_start_failure_does_not_start_execution(monkeypatch):
     """A claimed job cannot run when no renewal monitor protects its lease."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     finish = MagicMock()
@@ -510,20 +643,29 @@ def test_heartbeat_thread_start_failure_does_not_start_execution(monkeypatch):
 
 
 def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
-    """Store uncertainty cannot let a run outlive its last confirmed lease forever."""
-    import cron.scheduler as scheduler
+    """Store uncertainty cannot let a run outlive its last confirmed lease forever.
 
+    The contract is elapsed-time based (grace since the last confirmed renewal), not a renewal
+    count: on a slow host the first wake can land after the grace, so cancellation after a single
+    failed renewal is correct (#111471). Assert the contract, never a minimum attempt count."""
+    import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
+
+    last_confirmed_at = []
+    cancellation_after = []
     calls = 0
 
     def heartbeat(*_args, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
+            last_confirmed_at.append(time.monotonic())
             return True
         raise OSError("store unavailable")
 
     def run_body(_job, **kwargs):
-        assert kwargs["fire_claim_lost"].wait(timeout=0.5)
+        assert kwargs["claim_lost"].wait(timeout=0.5)
+        cancellation_after.append(time.monotonic() - last_confirmed_at[0])
         return True
 
     job = {
@@ -536,12 +678,14 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
 
     assert scheduler.run_one_job(job) is True
-    assert calls >= 3
+    assert calls >= 2, "cancellation must follow at least one failed renewal"
+    assert cancellation_after[0] >= scheduler._FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
 
 
 def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     """A replacement owner cannot leave the stale ledger recorded as success."""
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     @contextlib.contextmanager
     def owned_fence(*_args, **_kwargs):
@@ -556,7 +700,7 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     finish = MagicMock()
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *args, **kwargs: True)
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
     monkeypatch.setattr(
         scheduler,
         "run_job",

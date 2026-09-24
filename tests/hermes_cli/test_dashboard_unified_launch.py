@@ -8,6 +8,7 @@ launching profile preselected. `--isolated` opts out.
 import sys
 import types
 import pytest
+from hermes_cli import main_dashboard
 
 
 @pytest.fixture
@@ -34,7 +35,7 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
-        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
         execs = []
 
         def fake_exec(exe, argv, env):
@@ -67,12 +68,12 @@ class TestUnifiedDashboardRouting:
         profile and exits, so the desktop never sees a ready backend → boot
         loop. The guard keeps desktop pool backends per-profile."""
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         listening_calls = []
-        monkeypatch.setattr(
-            main_mod, "_dashboard_listening",
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening",
             lambda host, port: listening_calls.append(1) or False,
         )
         execs = []
@@ -108,7 +109,5 @@ class TestInteractiveDashboardAuthSetup:
         assert exc.value.code == 1
         output = capsys.readouterr().out
         assert "configured external dashboard.public_url" in output
-
-
 
 

@@ -158,6 +158,7 @@ describe('the registry row wins, always', () => {
     // The durable registry id names the chat; the tip is what takes focus.
     expect(opened).toEqual({ openedId: 'tip-9', registryId: 'root-1' })
     expect(hostMock.openSession.mock.calls[0][0]).toBe('tip-9')
+    expect(hostMock.openSession.mock.calls[0][1]).toMatchObject({ lineageIds: ['root-1', 'tip-9'] })
   })
 
   it('never reads or writes a stored pointer while opening', async () => {

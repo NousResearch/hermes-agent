@@ -92,6 +92,7 @@ async function openStoredBotChat(
   const ownerKey = botWorkspaceOwnerKey(bot)
   const hasAuthoritativeCount = typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+  const lineageIds = [summary.id, storedId].filter((id): id is string => Boolean(id))
 
   // Current SDKs export the Bot-specific budget. The fallback preserves
   // compatibility with older hosts and isolated plugin test harnesses.
@@ -133,6 +134,7 @@ async function openStoredBotChat(
     forceResume: true,
     hydrationTimeoutMs,
     keepAllProfilesScope: true,
+    lineageIds,
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,
     retryHydrationTimeoutOnce: true,

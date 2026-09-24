@@ -614,12 +614,35 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     return [c for c in merged if c]
 
 
+def fence_reopen_reserve(text, len_fn=None) -> int:
+    """Headroom ``balance_fences_across_chunks`` may need on a single chunk of *text*.
+
+    That pass reopens a carried fence with its original language tag
+    (``` + tag + newline) and closes the chunk (newline + ```), so the widest tag
+    in *text* — not a flat constant — sets how much room the splitter has to
+    leave. Measured through *len_fn* because the caller's limit is in its units.
+    """
+    _len = len_fn or len
+    widest = ""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            tag = stripped[3:].split()
+            if tag and len(tag[0]) > len(widest):
+                widest = tag[0]
+    return _len(f"```{widest}\n") + _len("\n```")
+
+
 def _chunk_newline_preferred(text, limit, len_fn):
     """Stream-consumer-derived newline-preferred splitting (no balancing)."""
     if len_fn(text) <= limit:
         return [text]
-    # Reserve headroom for fence markers a balancing pass may add.
-    split_limit = max(limit - 16, limit // 2, 1) if "```" in text else limit
+    # Reserve headroom for the fence markers a balancing pass may add. The floor
+    # still caps how far the reserve may shrink a chunk, so a limit smaller than
+    # roughly twice the reserve keeps the old overflow — that needs a limit under
+    # ~56 characters, well below every platform limit and the caller's own 500 floor.
+    split_limit = (max(limit - fence_reopen_reserve(text, len_fn), limit // 2, 1)
+                   if "```" in text else limit)
     chunks: "list[str]" = []
     remaining = text
     while len_fn(remaining) > split_limit:

@@ -10,6 +10,8 @@ import pytest
 
 from gateway.platforms.helpers import (
     balance_fences_across_chunks,
+    fence_reopen_reserve,
+    fence_state_after,
     greedy_pack_blocks,
     infer_block_separator,
     merge_streaming_fences,
@@ -186,3 +188,69 @@ def test_empty_fence_block_atoms_match_main():
     assert split_markdown_atoms("```\n```\ncode\n```\ntail") == ["```\n```", "code", "```\ntail"]
     assert split_markdown_atoms("```py\n```\n\n```\n```") == ["```py\n```", "```\n```"]
     assert split_markdown_atoms("a\n```\ncode\n```\nb") == ["a", "```\ncode\n```", "b"]
+
+
+# ── fence reopen headroom scales with the language tag ──────────────────────
+
+
+@pytest.mark.parametrize("lang", ["", "py", "bash", "markdown", "javascript",
+                                  "typescript", "objectivec"])
+def test_balanced_chunks_stay_within_the_limit_for_any_language_tag(lang):
+    """The balancing pass reopens a carried fence with its original language tag,
+    so the headroom the splitter leaves has to scale with that tag. A flat
+    reserve silently overflowed the caller's limit for tags longer than it
+    budgeted for (``javascript`` -> 202 chars against a limit of 200)."""
+    text = f"```{lang}\n" + "x" * 600 + "\n```"
+    chunks = split_text_fence_aware(
+        text, 200, prefer_paragraphs=False, balance_fences=True
+    )
+    assert len(chunks) > 1
+    assert all(len(c) <= 200 for c in chunks)
+
+
+def test_the_widest_tag_in_the_text_sets_the_headroom():
+    """Headroom comes from the widest tag present, not the first one seen."""
+    text = ("```py\n" + "a" * 300 + "\n```\n\nbetween\n\n"
+            "```objectivec\n" + "b" * 300 + "\n```")
+    chunks = split_text_fence_aware(
+        text, 200, prefer_paragraphs=False, balance_fences=True
+    )
+    assert all(len(c) <= 200 for c in chunks)
+
+
+def test_long_tag_chunks_are_still_individually_balanced():
+    """Staying under the limit must not cost the balancing guarantee."""
+    text = "```javascript\n" + "x" * 600 + "\n```"
+    chunks = split_text_fence_aware(
+        text, 200, prefer_paragraphs=False, balance_fences=True
+    )
+    assert all(not fence_state_after(c)[0] for c in chunks)
+
+
+def test_long_tag_headroom_holds_under_a_custom_length_unit():
+    """The reserve is measured through ``len_fn``, so a UTF-16 caller gets the
+    same guarantee as a character-counting one."""
+    text = "```javascript\n" + "ok" * 150 + "🙂" * 40 + "\n```"
+    chunks = split_text_fence_aware(
+        text, 200, utf16_len, prefer_paragraphs=False, balance_fences=True
+    )
+    assert len(chunks) > 1
+    assert all(utf16_len(c) <= 200 for c in chunks)
+
+
+def test_text_without_fences_keeps_the_full_limit():
+    """No fences means nothing to reopen, so no headroom is given up."""
+    chunks = split_text_fence_aware(
+        "x" * 600, 200, prefer_paragraphs=False, balance_fences=True
+    )
+    assert max(len(c) for c in chunks) == 200
+
+
+def test_fence_reopen_reserve_counts_the_markers_it_would_add():
+    """``` + tag + newline on reopen, newline + ``` on close."""
+    assert fence_reopen_reserve("no fences here") == 8
+    assert fence_reopen_reserve("```py\ncode\n```") == 10
+    assert fence_reopen_reserve("```javascript\ncode\n```") == 18
+    assert fence_reopen_reserve("```py\na\n```\n```objectivec\nb\n```") == 18
+    # An info string carries attributes after the language; only the tag reopens.
+    assert fence_reopen_reserve("```javascript {1,3-5}\ncode\n```") == 18

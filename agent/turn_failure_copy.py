@@ -218,6 +218,12 @@ _AUTH_COPY: Dict[str, str] = {
         "Settings → Providers, or run `hermes setup` in a terminal."
     ),
 }
+VERTEX_AUTH_GUIDANCE = (
+    "Vertex AI rejected the service-account credentials or IAM permission, so the model can't be "
+    "be reached. Verify `VERTEX_CREDENTIALS_PATH` / `GOOGLE_APPLICATION_CREDENTIALS` or "
+    "Application Default Credentials, and grant the service account `roles/aiplatform.user` for "
+    "the project."
+)
 
 CONTENT_POLICY_NEXT_STEPS = (
     "Try rewording your message or removing sensitive attachments, or switch to another "
@@ -410,7 +416,8 @@ def nonretryable_copy(
     if getattr(classified, "is_auth", False):
         from agent.error_surface import auth_kind
 
-        template = _AUTH_COPY[auth_kind(str(provider or ""))]
+        provider_slug = str(provider or "").strip().lower()
+        template = VERTEX_AUTH_GUIDANCE if provider_slug == "vertex" else _AUTH_COPY[auth_kind(provider_slug)]
     else:
         template = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
     prefix_hint = (

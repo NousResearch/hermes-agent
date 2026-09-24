@@ -149,6 +149,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
+  const selectionVersionRef = useRef(0)
 
   const resetSession = useCallback(() => {
     cancelResumeScrollRef.current?.()
@@ -192,8 +193,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const startNewSession = useCallback(
-    async (msg?: string, title?: string, keepCurrent = false) => {
+    async (msg?: string, title?: string, keepCurrent = false, startup = false) => {
+      const selectionVersion = selectionVersionRef.current
+      if (startup && selectionVersion) return null
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
+      if (startup && selectionVersionRef.current !== selectionVersion) return null
 
       if (setup?.provider_configured === false) {
         panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
@@ -208,7 +212,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
+      if (startup && selectionVersionRef.current !== selectionVersion) return null
       const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      if (startup && selectionVersionRef.current !== selectionVersion) {
+        if (r) void closeSession(r.session_id)
+        return null
+      }
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -283,12 +292,16 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const newSession = useCallback(
-    (msg?: string, title?: string) => startNewSession(msg, title, false),
+    (msg?: string, title?: string, startup = false) => {
+      if (!startup) selectionVersionRef.current++
+      return startNewSession(msg, title, false, startup)
+    },
     [startNewSession]
   )
 
   const newLiveSession = useCallback(
     (msg = 'new live session started', title?: string) => {
+      selectionVersionRef.current++
       patchOverlayState({ sessions: false })
 
       return startNewSession(msg, title, true)
@@ -298,6 +311,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const activateLiveSession = useCallback(
     (id: string) => {
+      selectionVersionRef.current++
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
 
@@ -344,6 +358,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const resumeById = useCallback(
     (id: string) => {
+      selectionVersionRef.current++
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 

@@ -757,7 +757,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       .then(cfg => {
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
           patchUiState({ status: 'forging session…' })
-          newSession()
+          newSession(undefined, undefined, true)
           scheduleStartupPrompt()
 
           return
@@ -775,13 +775,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
 
           patchUiState({ status: 'forging session…' })
-          newSession()
+          newSession(undefined, undefined, true)
           scheduleStartupPrompt()
         })
       })
       .catch(() => {
         patchUiState({ status: 'forging session…' })
-        newSession()
+        newSession(undefined, undefined, true)
         scheduleStartupPrompt()
       })
   }

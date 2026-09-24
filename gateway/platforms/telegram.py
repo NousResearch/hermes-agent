@@ -4561,21 +4561,58 @@ class TelegramAdapter(BasePlatformAdapter):
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
             )
 
+    def _write_reaction_feedback(
+        self, entry: Dict[str, Any], feedback_type: str, emoji: str, message_id: int, chat_id: str
+    ) -> None:
+        """Blocking file I/O for reaction feedback. Run via asyncio.to_thread."""
+        from datetime import datetime, timezone
+
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+
+        feedback_file = hermes_home / "feedback.jsonl"
+        feedback_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(feedback_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        # For negative feedback or saves, write to memory log
+        if feedback_type in ("negative", "save", "strong_positive"):
+            memory_dir = hermes_home / "memories"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            log_file = memory_dir / "feedback-log.md"
+            ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            if feedback_type == "negative":
+                note = (
+                    f"\n## 👎 Negative feedback — {ts}\n"
+                    f"- Message ID: {message_id} in chat {chat_id}\n"
+                    f"- Review and improve this response type.\n"
+                )
+            else:
+                note = (
+                    f"\n## {emoji} Saved response — {ts}\n"
+                    f"- Message ID: {message_id} in chat {chat_id}\n"
+                    f"- This response was marked as good/worth remembering.\n"
+                )
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(note)
+
     async def _handle_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming emoji reactions from users as feedback signals.
 
         Supported reactions and their meanings:
           👍 (\U0001f44d) → positive feedback
-          👎 (\U0001f44e) → negative feedback — also logged to memory/feedback-log.md
-          ❤️ (\U00002764) → save/bookmark this response — also logged to memory
+          👎 (\U0001f44e) → negative feedback — also logged to memories/feedback-log.md
+          ❤️ (\U00002764, with or without the \U0000fe0f variation selector) →
+              save/bookmark this response — also logged to memory
           🔥 (\U0001f525) → strong positive — also logged to memory
 
-        Feedback is appended to ~/.hermes/feedback.jsonl (one JSON object per line).
-        Negative feedback and saves are additionally written to
-        ~/.hermes/memory/feedback-log.md so future sessions can learn from them.
+        Feedback is appended to get_hermes_home()/feedback.jsonl (one JSON object
+        per line). Negative feedback and saves are additionally written to
+        get_hermes_home()/memories/feedback-log.md so future sessions can learn
+        from them.
         """
-        import datetime
-        import pathlib
+        from datetime import datetime, timezone
 
         reaction_update = update.message_reaction
         if not reaction_update:
@@ -4590,10 +4627,11 @@ class TelegramAdapter(BasePlatformAdapter):
         message_id = reaction_update.message_id
 
         FEEDBACK_MAP = {
-            "\U0001f44d": "positive",       # 👍
-            "\U0001f44e": "negative",       # 👎
-            "\U00002764": "save",           # ❤️
-            "\U0001f525": "strong_positive",  # 🔥
+            "\U0001f44d": "positive",             # 👍
+            "\U0001f44e": "negative",             # 👎
+            "\U00002764": "save",                 # ❤
+            "\U00002764\U0000fe0f": "save",       # ❤️ (with variation selector)
+            "\U0001f525": "strong_positive",      # 🔥
         }
 
         for reaction in new_reactions:
@@ -4603,39 +4641,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
             feedback_type = FEEDBACK_MAP[emoji]
             entry = {
-                "timestamp": datetime.datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
                 "emoji": emoji,
                 "feedback_type": feedback_type,
                 "chat_id": chat_id,
                 "message_id": message_id,
             }
 
-            # Log to feedback.jsonl
-            feedback_file = pathlib.Path.home() / ".hermes" / "feedback.jsonl"
-            feedback_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(feedback_file, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-
-            # For negative feedback or saves, write to memory log
-            if feedback_type in ("negative", "save", "strong_positive"):
-                memory_dir = pathlib.Path.home() / ".hermes" / "memory"
-                memory_dir.mkdir(parents=True, exist_ok=True)
-                log_file = memory_dir / "feedback-log.md"
-                ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-                if feedback_type == "negative":
-                    note = (
-                        f"\n## 👎 Negative feedback — {ts}\n"
-                        f"- Message ID: {message_id} in chat {chat_id}\n"
-                        f"- Review and improve this response type.\n"
-                    )
-                else:
-                    note = (
-                        f"\n## {emoji} Saved response — {ts}\n"
-                        f"- Message ID: {message_id} in chat {chat_id}\n"
-                        f"- This response was marked as good/worth remembering.\n"
-                    )
-                with open(log_file, "a") as f:
-                    f.write(note)
+            try:
+                await asyncio.to_thread(
+                    self._write_reaction_feedback, entry, feedback_type, emoji, message_id, chat_id
+                )
+            except OSError:
+                logger.warning(
+                    "[%s] Failed to persist reaction feedback for message %s",
+                    self.name, message_id, exc_info=True,
+                )
+                continue
 
             logger.info(
                 "[%s] Reaction feedback: %s (%s) on message %s",

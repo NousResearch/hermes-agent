@@ -2,12 +2,11 @@
 
 These tests exercise TelegramAdapter._handle_reaction(), which processes
 MessageReaction updates from Telegram and writes structured feedback to
-~/.hermes/feedback.jsonl and (for certain reaction types) to
-~/.hermes/memory/feedback-log.md.
+get_hermes_home()/feedback.jsonl and (for certain reaction types) to
+get_hermes_home()/memories/feedback-log.md.
 """
 
 import json
-import pathlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -75,13 +74,12 @@ def _make_none_reaction_update():
 @pytest.mark.asyncio
 async def test_thumbs_up_logs_positive_feedback(tmp_path, monkeypatch):
     """👍 reaction should write a 'positive' entry to feedback.jsonl."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U0001f44d")
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     assert feedback_file.exists()
     entry = json.loads(feedback_file.read_text().strip())
     assert entry["emoji"] == "\U0001f44d"
@@ -94,13 +92,12 @@ async def test_thumbs_up_logs_positive_feedback(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_thumbs_down_logs_negative_feedback(tmp_path, monkeypatch):
     """👎 reaction should write a 'negative' entry to feedback.jsonl."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U0001f44e")
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     entry = json.loads(feedback_file.read_text().strip())
     assert entry["feedback_type"] == "negative"
 
@@ -108,28 +105,40 @@ async def test_thumbs_down_logs_negative_feedback(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_heart_logs_save_feedback(tmp_path, monkeypatch):
     """❤️ reaction should write a 'save' entry to feedback.jsonl."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U00002764")
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     entry = json.loads(feedback_file.read_text().strip())
     assert entry["feedback_type"] == "save"
     assert entry["emoji"] == "\U00002764"
 
 
 @pytest.mark.asyncio
+async def test_heart_with_variation_selector_logs_save_feedback(tmp_path, monkeypatch):
+    """❤️ sent as U+2764 U+FE0F (variation selector) should also map to 'save'."""
+    adapter = _make_adapter()
+    update = _make_reaction_update("\U00002764\U0000fe0f")
+
+    await adapter._handle_reaction(update, MagicMock())
+
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
+    entry = json.loads(feedback_file.read_text().strip())
+    assert entry["feedback_type"] == "save"
+    assert entry["emoji"] == "\U00002764\U0000fe0f"
+
+
+@pytest.mark.asyncio
 async def test_fire_logs_strong_positive_feedback(tmp_path, monkeypatch):
     """🔥 reaction should write a 'strong_positive' entry to feedback.jsonl."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U0001f525")
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     entry = json.loads(feedback_file.read_text().strip())
     assert entry["feedback_type"] == "strong_positive"
     assert entry["emoji"] == "\U0001f525"
@@ -141,13 +150,12 @@ async def test_fire_logs_strong_positive_feedback(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_thumbs_down_writes_to_memory_log(tmp_path, monkeypatch):
     """👎 reaction should write a note to memory/feedback-log.md."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U0001f44e", message_id=77, chat_id=555)
 
     await adapter._handle_reaction(update, MagicMock())
 
-    log_file = tmp_path / ".hermes" / "memory" / "feedback-log.md"
+    log_file = tmp_path / "hermes_test" / "memories" / "feedback-log.md"
     assert log_file.exists()
     content = log_file.read_text()
     assert "Negative feedback" in content
@@ -158,13 +166,12 @@ async def test_thumbs_down_writes_to_memory_log(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_heart_writes_to_memory_log(tmp_path, monkeypatch):
     """❤️ reaction should write a saved-response note to memory/feedback-log.md."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U00002764", message_id=88, chat_id=666)
 
     await adapter._handle_reaction(update, MagicMock())
 
-    log_file = tmp_path / ".hermes" / "memory" / "feedback-log.md"
+    log_file = tmp_path / "hermes_test" / "memories" / "feedback-log.md"
     assert log_file.exists()
     content = log_file.read_text()
     assert "Saved response" in content
@@ -175,13 +182,12 @@ async def test_heart_writes_to_memory_log(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_fire_writes_to_memory_log(tmp_path, monkeypatch):
     """🔥 reaction should write a saved-response note to memory/feedback-log.md."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U0001f525", message_id=99, chat_id=777)
 
     await adapter._handle_reaction(update, MagicMock())
 
-    log_file = tmp_path / ".hermes" / "memory" / "feedback-log.md"
+    log_file = tmp_path / "hermes_test" / "memories" / "feedback-log.md"
     assert log_file.exists()
     content = log_file.read_text()
     assert "Saved response" in content
@@ -190,13 +196,12 @@ async def test_fire_writes_to_memory_log(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_thumbs_up_does_not_write_to_memory_log(tmp_path, monkeypatch):
     """👍 (positive) reaction should NOT write to memory/feedback-log.md."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U0001f44d")
 
     await adapter._handle_reaction(update, MagicMock())
 
-    log_file = tmp_path / ".hermes" / "memory" / "feedback-log.md"
+    log_file = tmp_path / "hermes_test" / "memories" / "feedback-log.md"
     assert not log_file.exists()
 
 
@@ -206,46 +211,42 @@ async def test_thumbs_up_does_not_write_to_memory_log(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_unknown_emoji_is_ignored(tmp_path, monkeypatch):
     """An unsupported emoji reaction should produce no output files."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_reaction_update("\U0001f600")  # 😀 — not in FEEDBACK_MAP
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     assert not feedback_file.exists()
 
 
 @pytest.mark.asyncio
 async def test_empty_new_reaction_list_is_ignored(tmp_path, monkeypatch):
     """A reaction-removal event (empty new_reaction list) should do nothing."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_empty_reaction_update()
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     assert not feedback_file.exists()
 
 
 @pytest.mark.asyncio
 async def test_none_message_reaction_is_ignored(tmp_path, monkeypatch):
     """An update with message_reaction=None should return immediately."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
     update = _make_none_reaction_update()
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     assert not feedback_file.exists()
 
 
 @pytest.mark.asyncio
 async def test_multiple_reactions_all_logged(tmp_path, monkeypatch):
     """When multiple reactions are added at once, each should be logged."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
     adapter = _make_adapter()
 
     # Build an update with two reactions at once
@@ -260,7 +261,7 @@ async def test_multiple_reactions_all_logged(tmp_path, monkeypatch):
 
     await adapter._handle_reaction(update, MagicMock())
 
-    feedback_file = tmp_path / ".hermes" / "feedback.jsonl"
+    feedback_file = tmp_path / "hermes_test" / "feedback.jsonl"
     lines = feedback_file.read_text().strip().splitlines()
     assert len(lines) == 2
     types = {json.loads(l)["feedback_type"] for l in lines}

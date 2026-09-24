@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -60,6 +61,63 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+RECONNECT_CIRCUIT_BREAKER_TRIPS = 5  # identical errors escaping start() before the breaker trips
+RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # seconds between attempts while tripped (matches the runner's cap)
+_SDK_LOG_REPEAT_WINDOW = 300.0  # identical dingtalk_stream.client records are collapsed within this window
+
+
+def _is_sdk_incompat(exc: BaseException | None) -> bool:
+    """True for #24851: ``websockets.connect`` is not an async CM for this dingtalk-stream.
+
+    The SDK may surface it as the bare TypeError, or as an AttributeError (its ``except``
+    clause touches the unloaded ``websockets.exceptions``) chained on that TypeError.
+    """
+    for _ in range(4):
+        if exc is None:
+            return False
+        if isinstance(exc, TypeError) and "asynchronous context manager" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+class _SdkLogGuard(logging.Filter):
+    """Collapse repeated dingtalk_stream.client records; never raises on bad format args.
+
+    dingtalk-stream 0.24.3 logs ``logger.exception('unknown exception', e)`` every 3 s from its
+    retry loop — a malformed call that also triggers stdlib "--- Logging error ---" tracebacks.
+    """
+
+    def __init__(self, on_exception=None, window: float = _SDK_LOG_REPEAT_WINDOW):
+        super().__init__()
+        self._on_exception, self._window = on_exception, window
+        self._seen: Dict[tuple, list] = {}  # key -> [last_emitted_monotonic, suppressed_count]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            try:
+                msg = record.getMessage()
+            except Exception:
+                args = record.args if isinstance(record.args, tuple) else (record.args,)
+                msg = " ".join(str(x) for x in (record.msg, *args))
+                record.msg, record.args = msg, ()
+            exc = record.exc_info[1] if record.exc_info else None
+            if exc is not None and self._on_exception is not None:
+                self._on_exception(exc)
+            key = (record.levelno, msg[:500], type(exc).__name__ if exc is not None else None)
+            now = time.monotonic()
+            entry = self._seen.get(key)
+            if entry is not None and now - entry[0] < self._window:
+                entry[1] += 1
+                return False
+            if entry is not None and entry[1]:
+                record.msg, record.args = f"{msg} (suppressed {entry[1]} identical repeats)", ()
+            if len(self._seen) >= 256:
+                self._seen.clear()
+            self._seen[key] = [now, 0]
+        except Exception:
+            pass  # a logging filter must never break the caller
+        return True
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 _TRUTHY = {"true", "1", "yes", "on"}
@@ -195,19 +253,30 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the async stream client with auto-reconnection.
+        """Run the SDK stream client with auto-reconnection.
 
-        Uses exponential backoff (RECONNECT_BACKOFF) capped at 60 s.
-        A circuit breaker prevents a hot reconnection storm: if the same
-        *type* of error recurs _RECONNECT_CIRCUIT_BREAKER_TRIPS consecutive
-        times without a successful connection, the loop sleeps for
-        _RECONNECT_CIRCUIT_BREAKER_DELAY seconds before trying again so
-        the gateway does not generate hundreds of megabytes of logs.
-        The backoff index is reset after a successful start() call so that
-        a recovered connection is treated as a fresh attempt.
+        dingtalk-stream's ``start()`` runs its own catch-all retry loop, so most
+        errors never reach us: ``_SdkLogGuard`` collapses that loop's repeated
+        log records, and a dingtalk-stream/websockets incompatibility (#24851)
+        is handed to the gateway's reconnect watcher via ``_set_fatal_error``
+        instead of retrying forever.  For errors that do escape ``start()``,
+        exponential backoff (RECONNECT_BACKOFF) applies; after
+        RECONNECT_CIRCUIT_BREAKER_TRIPS identical errors in a row the breaker
+        trips and stays tripped (silent, RECONNECT_CIRCUIT_BREAKER_DELAY between
+        attempts) until the error type changes.
         """
-        _RECONNECT_CIRCUIT_BREAKER_TRIPS = 5
-        _RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # 5 minutes
+        self._sdk_loop_task = asyncio.current_task()
+        sdk_logger = getattr(self._stream_client, "logger", None)
+        if not isinstance(sdk_logger, logging.Logger):
+            sdk_logger = logging.getLogger("dingtalk_stream.client")
+        guard = _SdkLogGuard(self._on_sdk_error)
+        sdk_logger.addFilter(guard)
+        try:
+            await self._run_stream_loop()
+        finally:
+            sdk_logger.removeFilter(guard)
+
+    async def _run_stream_loop(self) -> None:
         backoff_idx = 0
         consecutive_same_error = 0
         last_error_type: type | None = None
@@ -215,58 +284,55 @@ class DingTalkAdapter(BasePlatformAdapter):
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
                 await self._stream_client.start()
-                # start() returned normally (clean disconnect) — reset state.
-                backoff_idx = 0
-                consecutive_same_error = 0
-                last_error_type = None
             except asyncio.CancelledError:
+                if getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
+                    await self._notify_fatal_error()
                 return
             except Exception as e:
                 if not self._running:
                     return
-                # Circuit breaker: suppress repeated identical errors to
-                # avoid flooding the log with thousands of duplicate lines.
+                if _is_sdk_incompat(e):
+                    self._on_sdk_error(e, cancel=False)
+                    await self._notify_fatal_error()
+                    return
                 error_type = type(e)
                 if error_type is last_error_type:
                     consecutive_same_error += 1
                 else:
                     consecutive_same_error = 1
                     last_error_type = error_type
-                if isinstance(e, TypeError) and consecutive_same_error == 1:
-                    # A TypeError from start() is an SDK/websockets version
-                    # mismatch, not a network blip — reconnecting won't fix it.
-                    logger.error(
-                        "[%s] Stream client error: %s — likely a dingtalk-stream / "
-                        "websockets version incompatibility; upgrade with "
-                        "`pip install -U dingtalk-stream`.",
-                        self.name, e,
-                    )
-                elif consecutive_same_error <= _RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                if consecutive_same_error <= RECONNECT_CIRCUIT_BREAKER_TRIPS:
                     logger.warning("[%s] Stream client error: %s", self.name, e)
-                elif consecutive_same_error == _RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
+                elif consecutive_same_error == RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
                     logger.error(
-                        "[%s] Stream client error repeated %d times: %s — "
-                        "entering circuit-breaker pause (%ds). "
-                        "Further attempts suppressed until next pause cycle.",
-                        self.name, consecutive_same_error, e,
-                        _RECONNECT_CIRCUIT_BREAKER_DELAY,
+                        "[%s] Stream client error repeated %d times: %s — circuit breaker tripped; "
+                        "retrying every %ds silently until the error changes.",
+                        self.name, consecutive_same_error, e, RECONNECT_CIRCUIT_BREAKER_DELAY,
                     )
-                # else: suppress repeated log line to avoid storm
-
             if not self._running:
                 return
-
-            if consecutive_same_error > _RECONNECT_CIRCUIT_BREAKER_TRIPS:
-                # Use a long pause to prevent log storms.
-                await asyncio.sleep(_RECONNECT_CIRCUIT_BREAKER_DELAY)
-                # Reset consecutive counter after the pause so we get at least
-                # one fresh warning log on the next attempt.
-                consecutive_same_error = 0
+            if consecutive_same_error > RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                await asyncio.sleep(RECONNECT_CIRCUIT_BREAKER_DELAY)
             else:
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
                 logger.info("[%s] Reconnecting in %ds...", self.name, delay)
                 await asyncio.sleep(delay)
                 backoff_idx += 1
+
+    def _on_sdk_error(self, exc: BaseException, *, cancel: bool = True) -> None:
+        """Called (sync, possibly from the SDK logger) with an SDK exception; hands off on incompat."""
+        if not _is_sdk_incompat(exc) or getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
+            return
+        msg = (f"dingtalk-stream cannot open its websocket with the installed websockets package ({exc}). "
+               "Hermes pins dingtalk-stream==0.24.3 with websockets==15.0.1; reinstall the dingtalk extra "
+               "so those versions are used (e.g. `pip install 'hermes-agent[dingtalk]'`).")
+        logger.error("[%s] %s", self.name, msg)
+        # Not retryable: only a reinstall + restart fixes it, and connect() returns True before the
+        # socket exists, so a gateway reconnect would re-fail every watcher tick forever.
+        self._set_fatal_error("dingtalk_stream_error", msg, retryable=False)
+        task = getattr(self, "_sdk_loop_task", None)
+        if cancel and task is not None and not task.done():
+            task.cancel()  # SDK's own retry loop never exits; lands on its next await
 
     async def _quiet(self, coro, debug_fmt: str = "", *args) -> None:
         """Await *coro*, swallowing any exception (logged at debug as ``debug_fmt % (name, *args, exc)`` when given)."""

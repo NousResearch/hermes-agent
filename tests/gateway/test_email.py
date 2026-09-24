@@ -19,6 +19,29 @@ from email.mime.multipart import MIMEMultipart
 from unittest.mock import patch, MagicMock, ANY
 
 
+# The identity env decides who the adapter thinks it is: EMAIL_ADDRESS is the LOGIN it authenticates
+# with, EMAIL_FROM the address it sends as (an alias on the same account). A test that asserts on
+# either must OWN both variables — inheriting them is silent breakage: a shell exporting the live
+# EMAIL_FROM supplies the alias identity, and with no ambient EMAIL_FROM the pre-fix adapter happens
+# to agree with the assertion, so the regression test passes in CI whatever the code does. Pin the
+# two identities APART (login != From) — the shape the live deployment runs, and the one that
+# exposes the bug — plus the two settings that would otherwise switch the guard off
+# (EMAIL_RECIPIENTS) or widen the poll (EMAIL_MAILBOXES).
+TEST_LOGIN_ADDRESS = "hermes@test.com"
+TEST_FROM_ADDRESS = "hermes-alias@test.com"
+
+
+def _identity_env(**overrides):
+    """Hermetic identity env: login and From: pinned apart, no recipients gate, INBOX only."""
+    env = {
+        "EMAIL_ADDRESS": TEST_LOGIN_ADDRESS,
+        "EMAIL_FROM": TEST_FROM_ADDRESS,
+        "EMAIL_RECIPIENTS": "",
+        "EMAIL_MAILBOXES": "",
+    }
+    env.update(overrides)
+    return env
+
 
 class TestConfigEnvOverrides(unittest.TestCase):
     """Verify email config is loaded from environment variables."""
@@ -123,30 +146,38 @@ class TestDispatchMessage(unittest.TestCase):
             os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
 
     def _make_adapter(self):
-        """Create an EmailAdapter with mocked env vars."""
+        """Create an EmailAdapter with mocked env vars.
+
+        The identity env is pinned (``_identity_env``) rather than inherited: EMAIL_ADDRESS is the
+        login and EMAIL_FROM a different address on the same account, so a message from the login
+        address is dropped only when the guard covers both identities.
+        """
         from gateway.config import PlatformConfig
-        with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "imap.test.com",
-            "EMAIL_IMAP_PORT": "993",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
-            "EMAIL_SMTP_PORT": "587",
-            "EMAIL_POLL_INTERVAL": "15",
-        }):
+        with patch.dict(os.environ, _identity_env(
+            EMAIL_PASSWORD="secret",
+            EMAIL_IMAP_HOST="imap.test.com",
+            EMAIL_IMAP_PORT="993",
+            EMAIL_SMTP_HOST="smtp.test.com",
+            EMAIL_SMTP_PORT="587",
+            EMAIL_POLL_INTERVAL="15",
+        )):
             from plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def test_self_message_filtered(self):
-        """Messages from the agent's own address should be skipped."""
+        """Messages from the agent's own address should be skipped.
+
+        The sender is the LOGIN address while the From: identity is an alias on the same account,
+        so this passes only when the guard covers both identities.
+        """
         import asyncio
         adapter = self._make_adapter()
         adapter._message_handler = MagicMock()
 
         msg_data = {
             "uid": b"1",
-            "sender_addr": "hermes@test.com",
+            "sender_addr": TEST_LOGIN_ADDRESS,
             "sender_name": "Hermes",
             "subject": "Test",
             "message_id": "<msg1@test.com>",
@@ -888,14 +919,17 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-        "EMAIL_SMTP_PORT": "587",
-    })
+    @patch.dict(os.environ, _identity_env(
+        EMAIL_PASSWORD="secret",
+        EMAIL_SMTP_HOST="smtp.test.com",
+        EMAIL_SMTP_PORT="587",
+    ))
     def test_send_email_tool_success(self):
-        """_send_email should use verified STARTTLS when sending."""
+        """_send_email should use verified STARTTLS when sending.
+
+        EMAIL_FROM is pinned to a different address on the same account: the address passed in for
+        this send must win over it, so this passes only when the caller's config is authoritative.
+        """
         import asyncio
         import ssl
         from plugins.platforms.email.adapter import _standalone_send as _email_send
@@ -908,7 +942,7 @@ class TestSendEmailStandalone(unittest.TestCase):
             mock_smtp.return_value = mock_server
 
             result = asyncio.run(
-                _send_email({"address": "hermes@test.com", "smtp_host": "smtp.test.com"}, "user@test.com", "Hello")
+                _send_email({"address": TEST_LOGIN_ADDRESS, "smtp_host": "smtp.test.com"}, "user@test.com", "Hello")
             )
 
             self.assertTrue(result["success"])
@@ -919,7 +953,8 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Hermes Agent")
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
-            self.assertEqual(send_call["From"], "hermes@test.com")
+            self.assertEqual(send_call["From"], TEST_LOGIN_ADDRESS)
+            self.assertNotEqual(send_call["From"], TEST_FROM_ADDRESS)
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

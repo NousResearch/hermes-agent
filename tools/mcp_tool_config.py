@@ -354,9 +354,15 @@ def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
             if name in safe_servers:
                 logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
-                safe_servers[name] = dict(cfg)
+                interpolated = _interpolate_env_vars(cfg)
+                if isinstance(interpolated, dict):
+                    _warn_hidden_whitespace(name, interpolated)
+                    safe_servers[name] = interpolated
+                else:
+                    safe_servers[name] = dict(cfg)
     except Exception:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
+
 
 
 def _load_mcp_config() -> Dict[str, dict]:

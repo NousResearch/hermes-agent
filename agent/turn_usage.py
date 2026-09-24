@@ -75,8 +75,9 @@ def record_response_usage(
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
-    and the API-call log line (see module docstring). No-usage responses only
-    consume a pending compaction verdict. Returns the loop-visible outcome."""
+    and the API-call log line (see module docstring). A no-usage response consumes a
+    pending compaction verdict and still records the call itself. Returns the
+    loop-visible outcome."""
     rearmed = False
     compressor = agent.context_compressor
     # Count every completed provider attempt, including providers that omit usage.
@@ -96,6 +97,28 @@ def record_response_usage(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
+        # Token/cost counters stay gated on real usage, but the request itself is not: an
+        # OpenAI-compatible provider that never emits a usage chunk would otherwise leave the
+        # session row at a zero call count with a NULL billing route (#71578).
+        if agent._session_db and agent.session_id:
+            try:
+                if not agent._session_db_created:
+                    agent._ensure_db_session()
+                agent._session_db.queue_token_counts(
+                    agent.session_id,
+                    source=_agent_session_source(agent),
+                    input_tokens=0,
+                    output_tokens=0,
+                    billing_provider=agent.provider,
+                    billing_base_url=agent.base_url,
+                    model=agent.model,
+                    api_call_count=1,
+                )
+            except Exception as e:  # silent loss here undercounts analytics
+                logger.debug(
+                    "Token persistence (no-usage fallback) failed (session=%s): %s",
+                    agent.session_id, e,
+                )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)

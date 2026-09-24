@@ -20,7 +20,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { $backendThemes, $pendingSkinApply } from './backend-sync'
+import { $backendThemes, $gatewaySkinName, $pendingSkinApply, seedLocalSkin } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
@@ -407,10 +407,44 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     typeof window === 'undefined' ? 'system' : modePref.resolve(readBootProfileKey())
   )
 
+  // `display.skin` read off the local disk, painted while nothing is persisted
+  // for the profile. The skin otherwise only arrives over a live gateway, so an
+  // unreachable primary painted the built-in default (#118942). Never persisted:
+  // any explicit pick — manual, or the gateway's own `skin.changed` apply —
+  // clears it and wins.
+  const [localSkin, setLocalSkin] = useState<null | string>(null)
+  // Once a gateway names a DIFFERENT skin (a remote host with its own
+  // `display.skin`), the local disk no longer describes this connection.
+  const gatewaySkin = useStore($gatewaySkinName)
+  const diskFallback = localSkin && (!gatewaySkin || gatewaySkin === localSkin) ? localSkin : null
+
+  useEffect(() => {
+    let cancelled = false
+
+    void window.hermesDesktop
+      ?.getLocalSkin?.()
+      .then(skin => {
+        const name = seedLocalSkin(skin)
+
+        if (!cancelled && name && skinPref.stored(normalizeProfileKey($activeGatewayProfile.get())) === null) {
+          setLocalSkin(name)
+        }
+      })
+      .catch(() => {
+        // Main process predates the channel or the read failed: gateway-only, as before.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // Follow profile switches: paint the profile's assigned skin + mode and
-  // remember it for the next boot's first paint.
+  // remember it for the next boot's first paint. The disk fallback was read for
+  // the boot profile, so it doesn't follow a switch.
   useEffect(() => {
     rememberActiveProfileKey(profileKey)
+    setLocalSkin(null)
     setThemeNameState(storedSkin(profileKey))
     setModeState(modePref.resolve(profileKey))
   }, [profileKey])
@@ -426,6 +460,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       }
 
       const live = normalizeProfileKey($activeGatewayProfile.get())
+
+      if (skinPref.stored(live) !== null) {
+        setLocalSkin(null)
+      }
 
       setThemeNameState(storedSkin(live))
       setModeState(modePref.resolve(live))
@@ -447,10 +485,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // The committed skin, resolved against the CURRENT registry — so a stored
   // backend skin that failed to resolve at boot paints once the gateway seeds it.
   const committedName = useMemo(
-    () => normalizeSkin(themeName),
+    () => normalizeSkin(diskFallback ?? themeName),
     // normalizeSkin resolves through the merged registry; the stores are its reactivity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [themeName, userThemes, backendThemes, registryVersion]
+    [diskFallback, themeName, userThemes, backendThemes, registryVersion]
   )
 
   const paintedName = preview ? preview.name : committedName
@@ -495,6 +533,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
     setPreview(null)
+    setLocalSkin(null)
     setThemeNameState(next)
     skinPref.assign(liveProfile(), next)
   }, [])

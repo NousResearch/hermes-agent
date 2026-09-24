@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import {
+  $backendThemes,
+  $pendingSkinApply,
+  __resetBackendSkinSync,
+  ingestBackendSkin,
+  seedLocalSkin
+} from './backend-sync'
 
 const skin = (name: string) => ({
   name,
@@ -113,5 +119,50 @@ describe('ingestBackendSkin', () => {
     const fresh = await import('./backend-sync')
 
     expect(fresh.$backendThemes.get()).toEqual({})
+  })
+})
+
+describe('seedLocalSkin', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+  })
+
+  it('registers the disk skin and returns its name without applying', () => {
+    expect(seedLocalSkin(skin('neon'))).toBe('neon')
+    expect($backendThemes.get().neon?.name).toBe('neon')
+    expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('refreshes a stale cached palette for the same name', () => {
+    ingestBackendSkin(skin('neon'), { apply: false })
+    __resetBackendSkinSync()
+    $backendThemes.set({ neon: { ...$backendThemes.get().neon!, label: 'stale' } })
+
+    seedLocalSkin(skin('neon'))
+
+    expect($backendThemes.get().neon?.label).toBe('Neon')
+  })
+
+  it('leaves the sync baseline alone, so the gateway seed + skin.changed still apply', () => {
+    seedLocalSkin(skin('neon'))
+    ingestBackendSkin(skin('neon'), { apply: false })
+    ingestBackendSkin(skin('neon'), { apply: true })
+
+    expect($pendingSkinApply.get()).toBe('neon')
+  })
+
+  it('yields once a gateway has synced: a late disk read never overwrites it', () => {
+    ingestBackendSkin(skin('forest'), { apply: false })
+
+    expect(seedLocalSkin({ name: 'neon', colors: { background: '#000000' } })).toBeNull()
+    expect($backendThemes.get().neon).toBeUndefined()
+  })
+
+  it('returns built-in names without registering, and null for junk', () => {
+    expect(seedLocalSkin({ name: 'mono' })).toBe('mono')
+    expect($backendThemes.get().mono).toBeUndefined()
+    expect(seedLocalSkin(null)).toBeNull()
+    expect(seedLocalSkin({ name: 'nothing-to-paint' })).toBeNull()
   })
 })

@@ -28,7 +28,6 @@ def standalone_home(tmp_path, monkeypatch):
     # The probe seams live on the hermes_cli.gateway facade, like the other refusal tests.
     monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
     monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda name=None: None)
-    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: False)
     return gw, home
 
 
@@ -54,6 +53,26 @@ def test_standalone_named_home_still_served_by_host_record_is_refused_with_resca
     assert "gateway.standalone" in out
     assert "rescan-profiles" in out
     assert "--force" not in out
+
+
+def test_standalone_gateway_is_not_mistaken_for_a_multiplexer(standalone_home, monkeypatch):
+    """Its own launchd gateway must not block the profile's service restart."""
+    gw, home = standalone_home
+    from gateway.host_attach import HostGateway
+
+    owner = HostGateway(1234, home, ("coder",), standalone=True)
+    monkeypatch.setattr(gw, "host_multiplexer_serving", lambda name=None: owner)
+
+    assert gw.named_profile_served_by_running_multiplexer() is False
+
+    calls = []
+    monkeypatch.setattr("hermes_cli.gateway_profile_lifecycle.profile_lifecycle", lambda *args: False)
+    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: "launchd")
+    monkeypatch.setattr(gw, "_service_call", lambda kind, verb, system: calls.append((kind, verb, system)))
+
+    gw._cmd_restart(type("Args", (), {"system": False, "all": False, "force": False})())
+
+    assert calls == [("launchd", "restart", False)]
 
 
 def test_non_standalone_refusal_names_the_opt_out(standalone_home):

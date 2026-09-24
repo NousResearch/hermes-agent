@@ -7489,6 +7489,7 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
 def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_threading(
     monkeypatch, tmp_path
 ):
+    from contextlib import nullcontext
     import queue as _queue_mod
 
     from tools.process_registry import process_registry
@@ -7496,6 +7497,14 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
     _configure_immediate_prompt_run(
         monkeypatch, tmp_path, immediate_threads=False
     )
+    # This race concerns real thread admission and queue ownership, not durable
+    # crash markers, profile hydration, or the cross-process session cap. Keep their filesystem I/O
+    # out of the five-second synchronization window (both have dedicated tests).
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "record_turn_start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "clear_turn_marker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(server, "_hud_surface_note", lambda _session: "")
     real_thread_class = threading.Thread
     threads = []
     nested_started = threading.Event()
@@ -7545,7 +7554,15 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
     try:
         server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
 
-        assert nested_started.wait(timeout=5)
+        if not nested_started.wait(timeout=5):
+            import traceback
+
+            frames = sys._current_frames()
+            stacks = [
+                f"{thread.name}:\n{''.join(traceback.format_stack(frames[thread.ident]))}"
+                for thread in threads if thread.ident in frames
+            ]
+            pytest.fail(f"notification turn did not start; turns={turns!r}\n" + "\n".join(stacks))
         threads[0].join(timeout=5)
         assert not threads[0].is_alive()
         # Membership, not order: the completion_queue is process-global, and

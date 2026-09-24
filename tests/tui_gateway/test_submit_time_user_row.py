@@ -97,7 +97,7 @@ def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkey
     monkeypatch.setattr(server.threading, "Thread", InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
     monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
-    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: session.pop("_submit_user_row", None))
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args, **kwargs: session.pop("_submit_user_row", None))
     try:
         replies = []
         for _ in range(2):

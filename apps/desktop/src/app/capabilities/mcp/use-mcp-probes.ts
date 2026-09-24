@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type RefObject, useEffect, useMemo, useState } from 'react'
 
 import { type ProfileScope, testMcpServer } from '@/hermes'
 import { PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
@@ -34,13 +34,10 @@ export function useMcpProbes({
   servers
 }: UseMcpProbesOptions): McpProbes {
   const [probes, setProbes] = useState<Record<string, Probe>>({})
-  const probesRef = useRef(probes)
-  probesRef.current = probes
 
   useEffect(() => {
     // The same server name and config on a different connection is a new
-    // owner. Clear the ref before the auto-probe effect checks for a result.
-    probesRef.current = {}
+    // owner. The auto-probe effect retries after this state reset.
     setProbes({})
     setToolCalls30d(null)
   }, [scopeProfileKey])
@@ -78,7 +75,7 @@ export function useMcpProbes({
 
   useEffect(() => {
     for (const [serverName, server] of Object.entries(servers)) {
-      if (!serverEnabled(server) || probesRef.current[serverName] !== undefined) {
+      if (!serverEnabled(server) || probes[serverName] !== undefined) {
         continue
       }
 
@@ -91,7 +88,7 @@ export function useMcpProbes({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [servers, scopeProfileKey])
+  }, [servers, scopeProfileKey, probes])
 
   useEffect(() => {
     const epoch = profileEpoch.current

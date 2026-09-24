@@ -2,19 +2,21 @@
 import { cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type * as HermesModule from '@/hermes'
 import { probeCache, probeKey } from '@/lib/mcp-probe-cache'
 
+import type * as McpStatusModule from './mcp-status'
 import { useMcpProbes } from './use-mcp-probes'
 
 const testMcpServer = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hermes', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/hermes')>()),
+  ...(await importOriginal<typeof HermesModule>()),
   testMcpServer
 }))
 
 vi.mock('./mcp-status', async importOriginal => ({
-  ...(await importOriginal<typeof import('./mcp-status')>()),
+  ...(await importOriginal<typeof McpStatusModule>()),
   loadMcpUsage: vi.fn().mockResolvedValue({})
 }))
 

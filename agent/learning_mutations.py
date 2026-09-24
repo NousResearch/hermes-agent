@@ -108,13 +108,21 @@ def _mutate_memory(node_id: str, replacement: str | None) -> dict[str, Any]:
     name = _MEMORY_FILES[source]
     message = f"deleted memory from {name}" if replacement is None else f"updated memory in {name}"
 
-    def _apply(entries, _limit):
+    def _apply(entries, limit):
+        from tools.memory_tool import ENTRY_DELIMITER
+
         _, chunks, local = _locate_memory(node_id)
         text = chunks[local].strip()
         if text not in entries:
             return {"success": False, "error": "memory node id is stale — refresh the graph"}
         idx = entries.index(text)
-        return entries[:idx] + ([] if replacement is None else [replacement]) + entries[idx + 1:], message
+        new_entries = entries[:idx] + ([] if replacement is None else [replacement]) + entries[idx + 1:]
+        # Same cap the memory tool enforces on replace: an over-limit entry reads as external
+        # drift to every later mutation, so the tool's own remove/replace refuse until hand-fixed.
+        if (total := len(ENTRY_DELIMITER.join(new_entries))) > limit:
+            return {"success": False,
+                    "error": f"Replacement would put memory at {total:,}/{limit:,} chars. Shorten the new content."}
+        return new_entries, message
 
     result = load_on_disk_store()._mutate(_STORE_TARGETS[source], _apply)
     if not result.get("success"):

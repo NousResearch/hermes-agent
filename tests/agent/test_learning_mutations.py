@@ -53,6 +53,19 @@ def test_edit_memory_replaces_chunk(home):
     assert (home / "memories" / "USER.md").read_text(encoding="utf-8").strip() == "rewritten profile"
 
 
+def test_edit_memory_refuses_an_entry_over_the_memory_tools_limit(home):
+    """Same char cap as the memory tool's replace: an over-limit entry reads as external drift to
+    every later mutation, so the tool's own remove/replace would refuse (with a .bak) until the
+    file is fixed by hand."""
+    from tools.memory_tool import MemoryStore
+
+    result = lm.edit_node("memory:profile:2", "x" * 5000)
+
+    assert not result["ok"] and "Shorten" in result["message"]
+    assert (home / "memories" / "USER.md").read_text(encoding="utf-8") == "user profile note"
+    assert MemoryStore().remove("user", "user profile note")["success"]
+
+
 
 
 

@@ -168,6 +168,21 @@ class TestScanFile:
         findings = scan_file(f, "safe.py")
         assert findings == []
 
+    @pytest.mark.parametrize("flag", ["--disable-setuid-sandbox", "--disable-setgid-sandbox", "--disable-cap_setuid-sandbox"])
+    def test_hyphenated_browser_flags_are_not_privilege_mechanisms(self, tmp_path, flag):
+        f = tmp_path / "browser.md"
+        f.write_text(f'puppeteer args: ["{flag}"]\n', encoding="utf-8")
+        assert not any(fi.pattern_id == "setuid_setgid" for fi in scan_file(f, f.name))
+
+    @pytest.mark.parametrize("mechanism", ["os.setuid(1000)", "setgid 1000", "cap_setuid+ep", "SETUID"])
+    def test_real_privilege_mechanisms_remain_critical(self, tmp_path, mechanism):
+        f = tmp_path / "privilege.md"
+        f.write_text(mechanism + "\n", encoding="utf-8")
+        assert any(
+            fi.pattern_id == "setuid_setgid" and fi.severity == "critical"
+            for fi in scan_file(f, f.name)
+        )
+
 
     def test_socat_prose_is_not_a_reverse_shell_but_a_socat_relay_is(self, tmp_path):
         prose = tmp_path / "ocean.md"

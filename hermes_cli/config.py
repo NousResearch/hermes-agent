@@ -495,6 +495,22 @@ def _secure_file(path):
         pass
 
 
+def seed_config_file(config_path: Path, template: Optional[Path] = None) -> bool:
+    """Create a missing config.yaml the way the installers do: copy cli-config.yaml.example (the display keys
+    there are commented out), else write stripped DEFAULT_CONFIG. Never DEFAULT_CONFIG verbatim -- the gateway
+    merges no defaults, so every written display key becomes a global that beats each platform's own default
+    (#121230). Shared by ``hermes config edit`` and ``hermes doctor --fix`` so the seeders cannot drift.
+    Returns True when the template was copied (the fallback, like save_config, writes get_config_path())."""
+    template = template or get_project_root() / "cli-config.yaml.example"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if template.exists():
+        shutil.copy2(template, config_path)
+        _secure_file(config_path)
+        return True
+    save_config(DEFAULT_CONFIG)
+    return False
+
+
 def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
     A SOUL.md the user actually customized is never touched."""
@@ -3039,15 +3055,7 @@ def edit_config():
         return
     config_path = get_config_path()
     if not config_path.exists():
-        # Seed like the installer and `hermes doctor --fix`: DEFAULT_CONFIG written verbatim pins CLI display values
-        # (show_reasoning, interim_assistant_messages, ...) globally, over every messaging platform's own defaults.
-        template = get_project_root() / "cli-config.yaml.example"
-        if template.exists():
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(template, config_path)
-            _secure_file(config_path)
-        else:
-            save_config(DEFAULT_CONFIG)
+        seed_config_file(config_path)
         print(f"Created {config_path}")
 
     # Windows lands on notepad even without Git Bash/nano; POSIX prefers nano/vim, which headless

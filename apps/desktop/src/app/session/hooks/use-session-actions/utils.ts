@@ -1157,6 +1157,37 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
 
   const projectAssistantDump = wantsAssistantRow && !turnAlreadyCommitted && !(turnAlreadyStructured && !inflightError)
 
+  // #121122, the mirror of turnAlreadyCommitted: REST already holds this
+  // turn's PARTIAL assistant row (committed as the turn progressed, tool
+  // blocks included) while `inflight` still streams the fuller dump.
+  // Appending the dump paints the turn twice — the frozen partial with its
+  // action bar plus the live copy repeating it. Fold the dump into the tail
+  // row instead: same live id (deltas keep landing), fuller text, committed
+  // structure carried over. Only when the dump extends the tail text — a
+  // diverged tail is a different reply and both rows survive.
+  const committedPartial = liveAssistantOfCurrentTurn && !isLiveTailRow(liveAssistantOfCurrentTurn)
+    ? liveAssistantOfCurrentTurn
+    : null
+
+  const committedPartialAt = committedPartial ? messages.lastIndexOf(committedPartial) : -1
+
+  const committedPartialText = committedPartial ? chatMessageText(committedPartial) : ''
+
+  const turnPartiallyCommitted = Boolean(
+    projectAssistantDump &&
+    !inflightError &&
+    inflightStreaming &&
+    committedPartial &&
+    committedPartialAt >= 0 &&
+    inflightUserAlreadyPersisted &&
+    !correctionOffsetsUsable &&
+    (typeof turnStartedAt !== 'number' ||
+      typeof committedAt !== 'number' ||
+      committedAt >= turnStartedAt) &&
+    (committedPartialText.trim() === inflightAssistant.trim() ||
+      isStrictAnswerTextExtension(inflightAssistant, committedPartialText))
+  )
+
   const pushCorrection = (correction: string, index: number): void => {
     if (persistedInLatestRun(correction)) {
       return
@@ -1210,14 +1241,29 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     })
   } else {
     if (projectAssistantDump) {
-      projected.push({
+      const liveRow: ChatMessage = {
         id: liveStreamId,
         role: 'assistant',
         parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
         pending: inflightStreaming,
         ...(inflightError ? { error: inflightError } : {}),
         ...(inflightError && inflightErrorSurface ? { errorSurface: inflightErrorSurface } : {})
-      })
+      }
+
+      if (turnPartiallyCommitted && committedPartial) {
+        // #121122: the persisted tail IS this turn's partial — replace it in
+        // place so the transcript holds one row that keeps streaming.
+        // Structure the flat dump cannot express (tool calls, reasoning)
+        // carries over; reactions stay so nothing blinks off mid-turn.
+        const merged = preserveStructuralParts(liveRow, committedPartial)
+
+        projected.push({
+          ...merged,
+          ...(committedPartial.reactions?.length ? { reactions: [...committedPartial.reactions] } : {})
+        })
+      } else {
+        projected.push(liveRow)
+      }
     }
 
     for (const [index, correction] of inflightCorrections.entries()) {
@@ -1231,6 +1277,12 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       role: 'user',
       parts: [textPart(queuedUser)]
     })
+  }
+
+  if (turnPartiallyCommitted && committedPartialAt >= 0) {
+    // Splice the folded live row (plus any corrections/queued tail) into the
+    // committed partial's slot instead of appending beside it.
+    return [...messages.slice(0, committedPartialAt), ...projected, ...messages.slice(committedPartialAt + 1)]
   }
 
   return projected.length ? [...messages, ...projected] : messages

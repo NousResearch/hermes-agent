@@ -1733,6 +1733,114 @@ describe('appendLiveSessionProjection', () => {
       pending: true
     })
   })
+
+  // #121122: switching away mid-turn and back. REST already holds this
+  // turn's partial assistant row (text + tool blocks committed as the turn
+  // progressed) while `inflight` still streams the fuller dump. Appending
+  // the dump paints the turn twice: the frozen partial with its action bar
+  // plus the live copy repeating it. Fold the dump into the tail row.
+  it('folds a still-streaming dump into the same-turn committed partial instead of doubling it', () => {
+    const stored: ChatMessage[] = [
+      msg('1-user', 'user', 'Fais X'),
+      {
+        id: '111-1-assistant',
+        role: 'assistant',
+        parts: [
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
+          { type: 'text', text: 'Tu as raison. Je les regarde' }
+        ],
+        timestamp: 111,
+        rowId: 13
+      } as ChatMessage
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 's1',
+      inflight: {
+        user: 'Fais X',
+        assistant: 'Tu as raison. Je les regarde vraiment cette fois. + more',
+        streaming: true
+      }
+    })
+
+    const assistants = restored.filter(message => message.role === 'assistant')
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].id).toBe('assistant-stream-s1')
+    expect(assistants[0].pending).toBe(true)
+    // The committed row's tool structure survives; the fuller live text wins.
+    expect(assistants[0].parts.some(part => part.type === 'tool-call')).toBe(true)
+    expect(chatMessageText(assistants[0])).toBe('Tu as raison. Je les regarde vraiment cette fois. + more')
+  })
+
+  // Same shape but diverged text: the tail row is a different reply, so the
+  // dump must still append rather than eat a committed row.
+  it('keeps both rows when the committed tail is not a prefix of the live dump', () => {
+    const stored: ChatMessage[] = [
+      msg('1-user', 'user', 'Fais X'),
+      {
+        id: '111-1-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'An unrelated committed answer' }],
+        timestamp: 111,
+        rowId: 13
+      } as ChatMessage
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 's1',
+      inflight: {
+        user: 'Fais X',
+        assistant: 'Something entirely different streaming in',
+        streaming: true
+      }
+    })
+
+    expect(restored.filter(message => message.role === 'assistant')).toHaveLength(2)
+    expect(restored.at(-1)).toMatchObject({ id: 'assistant-stream-s1', pending: true })
+  })
+
+  // End-to-end switch-back shape (#121122): the folded live row reconciles
+  // against the frozen local stream row to a single streaming bubble.
+  it('switch-back pipeline keeps one streaming row for a partially committed turn', () => {
+    const persisted: ChatMessage[] = [
+      msg('1-user', 'user', 'Fais X'),
+      {
+        id: '111-1-assistant',
+        role: 'assistant',
+        parts: [
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
+          { type: 'text', text: 'Tu as raison. Je les regarde' }
+        ],
+        timestamp: 111,
+        rowId: 13
+      } as ChatMessage
+    ]
+
+    // Local cache frozen at switch-away: the same turn, less text.
+    const cached: ChatMessage[] = [
+      msg('user-local', 'user', 'Fais X'),
+      streamingMsg('assistant-stream-s1', 'Tu as raison. Je les regarde')
+    ]
+
+    const projection = {
+      session_id: 's1',
+      inflight: {
+        user: 'Fais X',
+        assistant: 'Tu as raison. Je les regarde vraiment cette fois. + more',
+        streaming: true
+      }
+    }
+
+    const withLive = appendLiveSessionProjection(persisted, projection)
+    const reconciled = reconcileResumeMessages(withLive, cached)
+    const final = preserveLocalPendingTurnMessages(reconciled, cached)
+
+    const assistants = final.filter(message => message.role === 'assistant')
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].id).toBe('assistant-stream-s1')
+    expect(assistants[0].pending).toBe(true)
+    expect(chatMessageText(assistants[0])).toBe('Tu as raison. Je les regarde vraiment cette fois. + more')
+  })
 })
 
 describe('resolveResumedBusy', () => {

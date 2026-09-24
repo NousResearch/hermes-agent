@@ -374,6 +374,13 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
   return <MarkdownImageContent {...props} />
 }
 
+// A cold frame is ~4:3 because that is the envelope an image can occupy here
+// (--image-preview-max-width x --image-preview-height, 34rem x 26.25rem): every
+// shape, portrait included, fits at the size it would have without a reserved
+// frame. A 16:9 box shrank every narrower image (a 1080x1920 portrait to
+// 172x306). Warm mounts use the measured size instead.
+const COLD_IMAGE_RATIO = 4 / 3
+
 function MarkdownImageContent({
   className,
   src,
@@ -386,7 +393,7 @@ function MarkdownImageContent({
   ...props
 }: ComponentProps<'img'>) {
   const rawSrc = typeof src === 'string' ? src : ''
-  const image = useMediaImage(rawSrc, 16 / 9, validImageDimensions(width, height))
+  const image = useMediaImage(rawSrc, COLD_IMAGE_RATIO, validImageDimensions(width, height))
   const { open, openFailed } = useOpenMediaFile(rawSrc)
   const name = mediaName(rawSrc || String(alt || 'image'))
 
@@ -394,6 +401,9 @@ function MarkdownImageContent({
     return null
   }
 
+  // The image keeps its natural size (never upscaled) inside the fixed frame;
+  // the w-fit container hugs it so the download button and shadow sit on the
+  // image, not on the letterbox.
   return (
     <span className="relative my-2 block max-w-full" data-slot="aui_markdown-image" style={image.frameStyle}>
       {image.failed ? (
@@ -409,10 +419,10 @@ function MarkdownImageContent({
           {...props}
           alt={alt}
           className={cn(
-            'm-0 block size-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+            'm-0 block h-auto max-h-full w-auto max-w-full rounded-lg object-scale-down shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
             className
           )}
-          containerClassName="absolute inset-0 block size-full"
+          containerClassName="absolute left-0 top-0 block h-full w-fit"
           onError={event => {
             image.onError()
             onError?.(event)

@@ -634,10 +634,7 @@ def _scan_gateway_pids(
 
     try:
         if is_windows():
-            listing = _windows_process_listing()
-            if listing is None:
-                return []
-            for pid, command in _iter_windows_list_processes(listing):
+            for pid, command in _windows_process_pairs():
                 _consider(pid, command)
         else:
             # /proc first (Docker without procps), then `ps -Aww`.
@@ -698,39 +695,71 @@ def _iter_windows_list_processes(listing: str):
             current_cmd = ""
 
 
+def _windows_process_pairs():
+    """Yield ``(pid, command_line)`` for every Windows process without spawning PowerShell.
+
+    #121719: the old ``Get-CimInstance Win32_Process`` fallback spawned powershell.exe
+    with a backtick-heavy multi-line pipeline on every gateway boot, which heuristic
+    AV (McAfee RealProtect) flags as an obfuscated command line. ``psutil`` is a pinned
+    dependency and returns the same ``(pid, cmdline)`` pairs directly — faster than WMI
+    and invisible to AV. Falls back to the wmic ``/FORMAT:LIST`` parse when psutil is
+    unavailable; yields nothing when neither works.
+    """
+    try:
+        import psutil
+    except ImportError:
+        psutil = None  # type: ignore[assignment]
+    if psutil is not None:
+        try:
+            for proc in psutil.process_iter(["pid", "cmdline"]):
+                try:
+                    info = proc.info
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+                pid = info.get("pid")
+                cmdline = info.get("cmdline") or []
+                if pid is None:
+                    continue
+                try:
+                    yield int(pid), " ".join(cmdline) if isinstance(cmdline, list) else str(cmdline)
+                except (ValueError, TypeError):
+                    continue
+            return
+        except Exception:
+            pass
+    listing = _windows_process_listing()
+    if listing is None:
+        return
+    yield from _iter_windows_list_processes(listing)
+
+
 def _windows_process_listing() -> str | None:
-    """``CommandLine=``/``ProcessId=`` LIST output for every Windows process (wmic, else Get-CimInstance), or None.
+    """``CommandLine=``/``ProcessId=`` LIST output for every Windows process via wmic, or None.
     ``bounded_probe_run``, NOT ``subprocess.run(timeout=...)``: run()'s post-timeout cleanup joins pipe
     readers unbounded and a conhost.exe holding duplicated handles wedges the caller forever; it also
-    hides the console window this windowless pythonw backend would flash."""
-    # Prefer wmic when present (fast, stable output format). On modern Windows 11 / Win 10 late builds, wmic
-    # has been removed as part of the WMIC deprecation — fall back to PowerShell's Get-CimInstance. A spawn
-    # failure or timeout (result is None) trips the fallback. ``hermes update`` hung exactly there on
-    # slow-WMI machines where the full Win32_Process scan exceeds its budget (#87134). bounded_probe_run
-    # also hides the console window: this scan runs inside the windowless pythonw.exe gateway/desktop
-    # backend, so a bare wmic/powershell spawn would flash a conhost window on every watchdog probe.
+    hides the console window this windowless pythonw backend would flash.
+
+    NOTE (#121719): the old shell-based WMI fallback was removed — its obfuscated-looking
+    command line trips heuristic AV on every boot on wmic-less Windows 11 builds. Use
+    :func:`_windows_process_pairs` (psutil) instead; this wmic-only helper remains for compat.
+    """
+    # wmic is fast with a stable output format where present. On modern Windows 11 /
+    # late Win 10 builds wmic was removed (WMIC deprecation) — those hosts are served
+    # by _windows_process_pairs() via psutil instead (#121719). A spawn failure or
+    # timeout (result is None) yields None. ``hermes update`` hung exactly there on
+    # slow-WMI machines where the full Win32_Process scan exceeds its budget (#87134).
+    # bounded_probe_run also hides the console window: this scan runs inside the
+    # windowless pythonw.exe gateway/desktop backend, so a bare wmic spawn would flash
+    # a conhost window on every watchdog probe.
     from hermes_cli._subprocess_compat import bounded_probe_run
     wmic_path = shutil.which("wmic")
-    result = None
-    if wmic_path is not None:
-        result = bounded_probe_run(
-            [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"], timeout=10, errors="ignore"
-        )
-    if result is None or result.returncode != 0 or not (result.stdout or ""):
-        powershell = shutil.which("powershell") or shutil.which("pwsh")
-        if powershell is None:
-            return None
-        ps_cmd = (
-            "Get-CimInstance Win32_Process | "
-            "ForEach-Object { "
-            "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
-            "  'ProcessId=' + $_.ProcessId; "
-            "  '' "
-            "}"
-        )
-        result = bounded_probe_run([powershell, "-NoProfile", "-Command", ps_cmd], timeout=15, errors="ignore")
-        if result is None:
-            return None
+    if wmic_path is None:
+        return None
+    result = bounded_probe_run(
+        [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"], timeout=10, errors="ignore"
+    )
+    if result is None:
+        return None
     return None if result.returncode != 0 or result.stdout is None else result.stdout
 
 

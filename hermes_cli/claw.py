@@ -99,6 +99,37 @@ def _warn_running(auto_yes: bool, headline: str, running: list[str], lines: tupl
     return _confirm(auto_yes, question, default=False, declined=declined, non_tty=non_tty)
 
 
+def _node_pid_with_cmdline_match(pattern: str):
+    """First PID whose command line matches ``pattern`` (psutil); None when unavailable."""
+    import re
+
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        rx = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return None
+    try:
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                info = proc.info
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            cmdline = info.get("cmdline") or []
+            text = " ".join(cmdline) if isinstance(cmdline, list) else str(cmdline)
+            name = (info.get("name") or "").lower()
+            if ("node" in name or "node" in text.lower()) and rx.search(text):
+                try:
+                    return int(info.get("pid"))
+                except (ValueError, TypeError):
+                    continue
+    except Exception:
+        return None
+    return None
+
+
 def _detect_openclaw_processes() -> list[str]:
     """Detect running OpenClaw processes and services."""
     found: list[str] = []
@@ -112,13 +143,24 @@ def _detect_openclaw_processes() -> list[str]:
                 result = bounded_probe_run(["tasklist", "/FI", f"IMAGENAME eq {exe}"], timeout=5)
                 if result is not None and exe in (result.stdout or "").lower():
                     found.append(f"process: {exe}")
-            # Node.js-hosted OpenClaw — tasklist doesn't show command lines, so use PowerShell.
-            ps_cmd = (
-                'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" | '
-                'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
-                'Select-Object -First 1 ProcessId')
-            result = bounded_probe_run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=5)
-            pid = (result.stdout or "").strip() if result is not None else ""
+            # Node.js-hosted OpenClaw — tasklist doesn't show command lines. Prefer psutil
+            # (#121719: avoids a PowerShell spawn whose obfuscated-looking command line
+            # trips heuristic AV); fall back to Get-CimInstance only when psutil is missing.
+            node_pid = _node_pid_with_cmdline_match("openclaw|clawd")
+            if node_pid is None:
+                try:
+                    import psutil  # noqa: F401
+                except ImportError:
+                    ps_cmd = (
+                        'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" | '
+                        'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
+                        'Select-Object -First 1 ProcessId')
+                    result = bounded_probe_run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=5)
+                    pid = (result.stdout or "").strip() if result is not None else ""
+                else:
+                    pid = ""
+            else:
+                pid = str(node_pid)
             if pid:
                 found.append(f"node.exe process with openclaw in command line (PID {pid})")
         except Exception:

@@ -82,6 +82,7 @@ export const ja = defineLocale({
   },
 
   fileMenu: {
+    openWithApp: 'デフォルトのアプリで開く',
     revealFinder: 'Finder で表示',
     revealExplorer: 'エクスプローラーで表示',
     revealFileManager: '格納フォルダーを開く',

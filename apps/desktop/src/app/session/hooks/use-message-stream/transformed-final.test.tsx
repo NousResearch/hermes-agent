@@ -23,6 +23,9 @@ const delta = (text: string) =>
 const interim = (text: string) =>
   act(() => stream.handleEvent({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
 
+const complete = (text: string) =>
+  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.complete' }))
+
 const completeTransformed = (text: string) =>
   act(() =>
     stream.handleEvent({ payload: { text, response_transformed: true }, session_id: SID, type: 'message.complete' })
@@ -67,5 +70,17 @@ describe('useMessageStream response_transformed settlement', () => {
     expect(texts).toHaveLength(1)
     expect(texts[0]).toBe('example-service.internal')
     expect(texts).not.toContain('TOKEN_1')
+  })
+
+  it('never lets a transformed completion overwrite an already-settled reply', async () => {
+    mountStream()
+    await start()
+    await interim('old')
+    await complete('old')
+
+    // The interim boundary is spent: a late transformed final is a distinct reply.
+    await completeTransformed('new')
+
+    expect(assistantTexts()).toEqual(['old', 'new'])
   })
 })

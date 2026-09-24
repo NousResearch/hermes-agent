@@ -801,19 +801,12 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            // A transform_llm_output hook rewrites the final after streaming (e.g. pseudonym
-            // restore), so it may share no prefix with the streamed text yet is still this
-            // turn's authoritative reply: settle it in place rather than append a duplicate.
-            // Gated on sawAssistantPayload so a stale completion can't overwrite an older bubble.
-            const transformedCurrentReply = Boolean(responseTransformed && state.sawAssistantPayload && finalText)
-
-            if (
-              existing.pending ||
-              transformedCurrentReply ||
-              (!interimBoundaryPending && finalText && existingText === finalText)
-            ) {
+            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = settleAt(index)
-            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
+            } else if (
+              (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
+              finalContinuesInterim
+            ) {
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Two distinct
               // settle paths with different boundary requirements:
@@ -828,6 +821,10 @@ export function useMessageStream({
               //   (otherwise interim('old') → message.start →
               //   complete({response_previewed: true, text: 'new'}) would
               //   silently destroy 'old').
+              //
+              // • responseTransformed (a transform_llm_output hook rewrote the
+              //   final after streaming, e.g. pseudonym restore) shares the
+              //   same no-continuity shape, so it takes the same boundary gate.
               //
               // • finalContinuesInterim (prefix-either-way continuity, same
               //   text or one a prefix of the other) is safe to settle

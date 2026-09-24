@@ -566,7 +566,8 @@ class SessionMessagesMixin:
 
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
-        lock_holder: Optional[str] = None, tail_count: int = 0) -> int:
+        lock_holder: Optional[str] = None, tail_count: int = 0,
+        held_ids: Optional[List[int]] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -584,6 +585,12 @@ class SessionMessagesMixin:
         platform_message_id, token counts, reasoning sidecars all survive byte-exact, and the FTS triggers
         index the clones naturally), and the originals are archived. NOTE: re-sequencing assigns the tail
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
+
+        *held_ids* (#121734): exact durable row ids the compacting surface held
+        at compression START. When provided, only those ids may be archived —
+        a foreign-row gap below ``max(held)`` (another surface's rows the
+        compressor never saw) stays active. ``None`` preserves the legacy
+        positional behavior.
         """
         from hermes_state import SessionCompressionInProgressError
         def _do(conn):
@@ -609,7 +616,25 @@ class SessionMessagesMixin:
                     "ORDER BY id DESC LIMIT ?",
                     (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
             rewind_ids += tail_ids
-            if rewind_ids:
+            held_set = None if held_ids is None else {int(x) for x in held_ids}
+            if held_set is not None:
+                # #121734: never archive rows the compressor never held.
+                # Rewind (verbatim tail) is intersected; concurrent tail_ids
+                # (id > watermark) still clone as before — they arrived after
+                # START and must survive regardless of held membership.
+                tail_set = set(int(x) for x in tail_ids)
+                rewind_ids = [i for i in rewind_ids
+                              if int(i) in held_set or int(i) in tail_set]
+                archive_ids = sorted(held_set - {int(x) for x in rewind_ids} - tail_set)
+                if rewind_ids:
+                    placeholders = _placeholders(rewind_ids)
+                    conn.execute("UPDATE messages SET active = 0, compacted = 0 "
+                        f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
+                if archive_ids:
+                    placeholders = _placeholders(archive_ids)
+                    conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id IN ({placeholders})",
+                                 [session_id, *archive_ids])
+            elif rewind_ids:
                 placeholders = _placeholders(rewind_ids)
                 conn.execute("UPDATE messages SET active = 0, compacted = 0 "
                     f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])

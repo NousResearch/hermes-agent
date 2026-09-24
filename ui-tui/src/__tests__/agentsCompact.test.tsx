@@ -12,6 +12,7 @@ import { getInputSelection } from '../app/inputSelectionStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { AgentsOverlay } from '../components/agentsOverlay.js'
 import { AgentsPanelView } from '../components/agentsPanel.js'
+import { agentsOverlayBounds } from '../components/appLayout.js'
 import { TextInput } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { buildAgentRows } from '../lib/agentRows.js'
@@ -30,6 +31,21 @@ it('keeps collapsed live chrome to one row without losing count or restore contr
     expect(renderToScreen(<AgentsPanelView cols={cols} {...rows} t={DEFAULT_THEME} />, cols).height).toBeGreaterThan(
       view.height
     )
+  }
+})
+
+it('bounds the agents roster overlay so the transcript and composer viewport remain visible', () => {
+  for (const [cols, rows] of [
+    [80, 24],
+    [120, 40],
+    [42, 16]
+  ]) {
+    const bounds = agentsOverlayBounds(cols, rows)
+
+    expect(bounds.width).toBeLessThanOrEqual(cols - 2)
+    expect(bounds.height).toBeLessThan(rows)
+    expect(bounds.top).toBeGreaterThanOrEqual(1)
+    expect(bounds.top + bounds.height).toBeLessThan(rows)
   }
 })
 

@@ -114,11 +114,23 @@ def test_early_recovery_module_is_stdlib_only(tmp_path):
             STDLIB = set(sys.stdlib_module_names) | {"hermes_cli"}
             real_import = builtins.__import__
 
-            def guard(name, *args, **kwargs):
+            def guard(name, globals=None, locals=None, fromlist=(), level=0):
+                # level > 0 is a RELATIVE import executed from inside a
+                # package whose own absolute import already cleared this
+                # guard -- e.g. importlib/__init__.py doing
+                # `from ._bootstrap import __import__`, which arrives here
+                # as the bare name "_bootstrap". That is not a top-level
+                # stdlib name, so gating it on STDLIB rejects legitimate
+                # stdlib internals and makes the whole check depend on
+                # which modules the host interpreter happened to preload
+                # at startup. Only ABSOLUTE imports carry the signal this
+                # test exists to pin.
+                if level:
+                    return real_import(name, globals, locals, fromlist, level)
                 top = name.split(".")[0]
                 if top not in STDLIB:
                     raise ImportError(f"non-stdlib import blocked: {name}")
-                return real_import(name, *args, **kwargs)
+                return real_import(name, globals, locals, fromlist, level)
 
             builtins.__import__ = guard
             import hermes_cli._early_recovery  # noqa: F401

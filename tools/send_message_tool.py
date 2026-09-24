@@ -623,7 +623,8 @@ def _platform_max_length(platform):
 # WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
 # caption-capable, media_files sentinel for non-final chunks, forward force_document)
 _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "feishu": ("Feishu", True, False, None, False),
-                            "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True)}
+                            "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True),
+                            "onebot": ("OneBot", True, False, None, True)}
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
@@ -681,7 +682,7 @@ _TEXT_SENDERS = {
     "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
     "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
 
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and onebot"
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,

@@ -4770,6 +4770,21 @@ def _housekeeping_checkpoint_prune() -> None:
     auto_prune_from_config()
 
 
+def _housekeeping_model_picker_prune(runner=None) -> None:
+    """``/model`` picker 快照 TTL 清理（评审建议：生产无 prune 调用点，之前完全
+    依赖 lookup 惰性剔除 + 256 容量兜底）。显式 prune 让那些不再发 ``/model``
+    的会话的过期快照也能被回收；runner 尚未记录过快照时零开销 no-op。"""
+    if runner is None:
+        return
+    # 直接读属性而非 _model_picker_store：不在 housekeeping 线程上懒建 store。
+    store = getattr(runner, "_model_picker_snapshots", None)
+    if store is None:
+        return
+    removed = store.prune()
+    if removed:
+        logger.debug("Model picker snapshot prune: removed %d expired snapshot(s)", removed)
+
+
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
@@ -4837,6 +4852,7 @@ def _start_gateway_housekeeping(
                 _housekeeping_state_db_maintenance(_launch))),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (5, "Model picker snapshot prune", lambda: _housekeeping_model_picker_prune(runner)),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]

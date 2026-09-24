@@ -1,0 +1,35 @@
+name: onebot-platform
+label: QQ (OneBot)
+kind: platform
+version: 1.0.0
+description: >
+  QQ bot via the OneBot 11 protocol — compatible with NapCat, Lagrange,
+  LLOneBot, go-cqhttp. Reverse-WebSocket server or forward client mode;
+  DM + group chats with mention gating and allowlists; inbound images
+  downloaded for the vision tool; long replies split at sentence
+  boundaries or rendered as a text image.
+author: user
+# Model-facing tools (qq_send_* / qq_napcat_api / qq_group_history),
+# implemented in tools.py. Declared here so CLI/TUI sessions preload the
+# toolset even when the platform adapter stays deferred.
+provides_tools:
+  - qq_send_image
+  - qq_send_voice
+  - qq_send_video
+  - qq_send_file
+  - qq_send_forward
+  - qq_napcat_api
+  - qq_group_history
+optional_env:
+  - name: ONEBOT_ALLOWED_USERS
+    description: "Comma-separated QQ user ids allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated QQ ids)"
+    password: false
+  - name: ONEBOT_ALLOW_ALL_USERS
+    description: "Allow any user to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ONEBOT_HOME_CHANNEL
+    description: "Default chat id for cron / notification delivery (e.g. private:123456789)"
+    prompt: "Home channel (private:<qq> or group:<qq>)"
+    password: false

@@ -49,9 +49,9 @@ def main() -> int:
         print("[config-migrate] HERMES_SKIP_CONFIG_MIGRATION is set; skipping config migration")
         return 0
 
-    # Strict read: malformed YAML or a non-mapping root is left alone with a warning (the
-    # tolerant check_config_version() already printed one) and the boot continues, instead of
-    # running the backup/migrate dance that migrate_config() would refuse anyway.
+    # Strict read: malformed YAML or a non-mapping root is left alone with a warning and the
+    # boot continues, instead of running the backup/migrate dance that migrate_config() would
+    # refuse anyway.
     try:
         stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
     except InvalidUserConfigError as exc:

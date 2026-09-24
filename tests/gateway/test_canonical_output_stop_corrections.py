@@ -1,6 +1,7 @@
 """Real inert FIFO/producer/native Stop lifecycle regressions; no model or runtime."""
 import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,6 +54,16 @@ async def stopped_producer(authority, service, runner, root, monkeypatch, *, nam
         result = await asyncio.wait_for(work, 8)
         service.runtime._thread = None
     task = tasks.get_task(service.db_path, result[3]['identity'])
+    # The admission callback only wakes the inert driver on cancellation.
+    # Exercise its real receipt/acknowledgement path before claiming retirement.
+    assert task['status'] == 'stopping'
+    binding = result[4]
+    lease = tasks.acquire_lease(service.db_path, room_id=binding.room_id,
+        gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+        process_generation='driver', ttl_seconds=60, clock=time.time)
+    assert await asyncio.to_thread(service.runtime._finish_stop, binding, task, lease)
+    task = tasks.get_task(service.db_path, task['identity'])
+    assert task['status'] == 'cancelled'
     service._reconcile_stopped_output(task)
     return task, result[4], captured[0]
 
@@ -68,9 +79,13 @@ def initialize_inputs(authority, root, request):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mixed', [False, True], ids=['text', 'mixed'])
 async def test_completed_replays_after_real_admission_retirement(tmp_path, monkeypatch, request, mixed):
+    from typing import cast
+    from hermes_state import SessionDB
     from hermes_state_mutation_retirement import retire_prunable
     from gateway.hosted_room_input_custody import custody_holds
     async with owner(tmp_path, monkeypatch) as (authority, service, runner):
+        db = cast(SessionDB, authority.db)
+        media = None
         monkeypatch.setattr('model_tools._resolve_active_context_length', lambda: 32768)
         if mixed:
             initialize_inputs(authority, tmp_path, request)
@@ -81,11 +96,36 @@ async def test_completed_replays_after_real_admission_retirement(tmp_path, monke
             record, = [r for _, r in records(conn, 'room')]
             assert record['state'] == 'completed'
             assert record['version'] == 2 and 'binding' not in record
-            admitted = json.loads(conn.execute('SELECT payload_json FROM session_admissions').fetchone()[0])
+            admission_row = conn.execute('SELECT admission_id,payload_json FROM session_admissions').fetchone()
+            admitted = json.loads(admission_row['payload_json'])
             if mixed:
                 media, = admitted['attachments_v1']['media']
                 assert custody_holds(conn, authority.db.db_path, media)
+                assert Path(media['path']).is_file()
+        if mixed:
+            assert media is not None
+            from gateway.session_ingress_media import release_admission_media
+            assert release_admission_media(authority.db, admission_row['admission_id']) == 0
+            assert Path(media['path']).is_file(), 'completed Output is not raw admission retirement'
         assert authority.db._execute_write(lambda c: retire_prunable(c, [producer.ref.session_id])) == [producer.ref.session_id]
+        if mixed:
+            assert media is not None
+            reference = media
+            from hermes_state_terminal import ADMISSION_PREFIX
+            def missing_or_foreign_proof_holds(conn):
+                key = ADMISSION_PREFIX + admission_row['admission_id']
+                for statement, args in (
+                    ('DELETE FROM state_meta WHERE key=?', (key,)),
+                    ("UPDATE state_meta SET value=json_set(value,'$.principal_id','foreign') WHERE key=?", (key,)),
+                ):
+                    conn.execute('SAVEPOINT incomplete_retirement_proof')
+                    try:
+                        conn.execute(statement, args)
+                        assert custody_holds(conn, db.db_path, reference)
+                    finally:
+                        conn.execute('ROLLBACK TO incomplete_retirement_proof')
+                        conn.execute('RELEASE incomplete_retirement_proof')
+            db._execute_write(missing_or_foreign_proof_holds)
         def forbidden(*args, **kwargs):
             raise AssertionError('completed replay must not reconstruct inputs or unlink')
         with monkeypatch.context() as guard:
@@ -119,6 +159,13 @@ async def test_completed_replays_after_real_admission_retirement(tmp_path, monke
             service.prepare_room(binding)
             with authority.db._read_ctx() as conn:
                 require_room_retired(conn, 'room')
+
+        if mixed:
+            assert media is not None
+            from gateway.hosted_room_input_reclamation import collect_legacy_input_aliases
+            assert Path(media['path']).is_file()
+            collect_legacy_input_aliases(authority.db, epoch=authority.epoch)
+            assert not Path(media['path']).exists(), 'positive retirement must permit real reclamation'
 
 
 @pytest.mark.asyncio

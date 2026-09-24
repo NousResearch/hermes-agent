@@ -34,6 +34,7 @@ async def owner(tmp_path, monkeypatch):
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              config=GatewayConfig(), _cached_agent_for=lambda _: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    runner._delivery_adapter_for = runner._adapter_for_source
     from gateway.hosted_room_input_custody import initialize_input_custody
     from hermes_state_runtime import begin_runtime_epoch
     initialize_input_custody(store._db)

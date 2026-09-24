@@ -316,6 +316,9 @@ def _mock_assistant_msg(
     reasoning=None,
     reasoning_content=None,
     reasoning_details=None,
+    thinking_content=None,
+    thinking=None,
+    model_extra=None,
 ):
     """Return a SimpleNamespace mimicking an OpenAI ChatCompletionMessage."""
     msg = SimpleNamespace(content=content, tool_calls=tool_calls)
@@ -325,6 +328,12 @@ def _mock_assistant_msg(
         msg.reasoning_content = reasoning_content
     if reasoning_details is not None:
         msg.reasoning_details = reasoning_details
+    if thinking_content is not None:
+        msg.thinking_content = thinking_content
+    if thinking is not None:
+        msg.thinking = thinking
+    if model_extra is not None:
+        msg.model_extra = model_extra
     return msg
 
 
@@ -451,6 +460,28 @@ class TestExtractReasoning:
     def test_reasoning_field(self, agent):
         msg = _mock_assistant_msg(reasoning="thinking hard")
         assert agent._extract_reasoning(msg) == "thinking hard"
+
+    def test_thinking_content_field(self, agent):
+        # Baidu Qianfan / some CN providers stream chain-of-thought under
+        # the top-level thinking_content instead of reasoning_content
+        # (reworked #7148 scope onto current main).
+        msg = _mock_assistant_msg(thinking_content="qianfan chain of thought")
+        assert agent._extract_reasoning(msg) == "qianfan chain of thought"
+
+    def test_thinking_field(self, agent):
+        msg = _mock_assistant_msg(thinking="plain thinking field")
+        assert agent._extract_reasoning(msg) == "plain thinking field"
+
+    def test_thinking_content_from_model_extra(self, agent):
+        msg = _mock_assistant_msg(model_extra={"thinking_content": "extra thinking"})
+        assert agent._extract_reasoning(msg) == "extra thinking"
+
+    def test_reasoning_content_and_thinking_content_both_captured(self, agent):
+        # extract_reasoning collects every present structured field (joining
+        # with \n\n), matching the existing reasoning+reasoning_content
+        # behavior — thinking_* adds to the union rather than replacing it.
+        msg = _mock_assistant_msg(reasoning_content="canonical", thinking_content="fallback")
+        assert agent._extract_reasoning(msg) == "canonical\n\nfallback"
 
 
 class TestSessionFilenameSafety:

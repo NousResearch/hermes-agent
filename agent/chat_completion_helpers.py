@@ -1613,9 +1613,12 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
     raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
     if raw_reasoning_content is None:
+        raw_reasoning_content = getattr(assistant_message, "thinking_content", None)
+    if raw_reasoning_content is None:
         model_extra = getattr(assistant_message, "model_extra", None) or {}
-        if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
-            raw_reasoning_content = model_extra["reasoning_content"]
+        if isinstance(model_extra, dict):
+            raw_reasoning_content = (model_extra.get("reasoning_content")
+                                     or model_extra.get("thinking_content"))
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
@@ -3060,10 +3063,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 usage_obj = chunk.usage
 
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            # thinking_content / thinking (Baidu Qianfan, some CN providers) —
+            # same chain as reasoning_content, reworked #7148 scope.
+            if reasoning_text is None:
+                reasoning_text = getattr(delta, "thinking_content", None) or getattr(delta, "thinking", None)
             # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
-                reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+                reasoning_text = (delta.model_extra.get("reasoning_content")
+                                  or delta.model_extra.get("reasoning")
+                                  or delta.model_extra.get("thinking_content")
+                                  or delta.model_extra.get("thinking"))
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(

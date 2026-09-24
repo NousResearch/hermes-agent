@@ -3,8 +3,8 @@
 ``StateStoreInterface`` is a ``typing.Protocol`` (structural, ``@runtime_checkable``):
 a store satisfies it by *having* the methods, not by inheriting anything. The
 SQLite ``SessionDB`` (``hermes_state.SessionDB``) is the reference
-implementation. Other backends can implement the same shape independently, so
-plugins do not need to depend on SQLite internals.
+implementation; the PostgreSQL facade implements the same shape independently,
+so plugins do not need to depend on SQLite internals.
 
 Scope and intent:
 

@@ -141,9 +141,10 @@ class TestBrowseShape:
 
         shared_db = _DB()
         profile_db = _DB()
+        from state_store import contextual_session_search_store
         monkeypatch.setattr(
-            "tools.session_search_tool._resolve_profile_db",
-            lambda _profile: profile_db,
+            "tools.session_search_tool._resolve_profile_store",
+            lambda _profile: contextual_session_search_store(profile_db),
         )
 
         result = json.loads(session_search(db=shared_db, profile="work"))

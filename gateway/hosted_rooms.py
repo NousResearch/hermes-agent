@@ -395,8 +395,20 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
     ).fetchone() is not None
 
 
+def shared_room_namespace_home() -> Path:
+    """Return the canonical root/global namespace for hosted-room coordination.
+
+    This is a routing identity only.  A profile may direct a room member's
+    execution policy, but it cannot direct the coordination store or become a
+    database selector.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root().expanduser().resolve()
+
+
 def default_db_path() -> Path:
-    """Return the hosted-room coordination database for the active install.
+    """Return the hosted-room coordination database for the canonical root/global namespace.
 
     Profile gateways (``~/.hermes/profiles/<name>/``) resolve to the shared
     ROOT ``shared-state.db`` instead of the master ``state.db``: hosted-room
@@ -408,9 +420,7 @@ def default_db_path() -> Path:
     tables in a dedicated file means profile gateways never open the master
     session store writable.
     """
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home()
-    return (home.parent.parent if home.parent.name == "profiles" else home) / "shared-state.db"
+    return shared_room_namespace_home() / "shared-state.db"
 
 
 def local_authority_gateway_id() -> str:

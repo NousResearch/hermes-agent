@@ -807,6 +807,8 @@ const sidebars: SidebarsConfig = {
             'developer-guide/session-storage',
             'developer-guide/state-store-interface',
             'developer-guide/state-db-recovery',
+            'developer-guide/state-store-architecture',
+            'developer-guide/state-store-postgresql-rollback',
             'developer-guide/provider-runtime',
             'developer-guide/programmatic-integration',
           ],

@@ -37,6 +37,13 @@ _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
 _SLACK_RAW_ID_PREFIXES = ("C0", "D0", "G0")
 
 
+def _require_legacy_channel_directory_runtime() -> None:
+    """Refuse selected PostgreSQL before routing-cache or session-origin access."""
+    from state_store_runtime_readiness import require_legacy_state_db_runtime
+
+    require_legacy_state_db_runtime()
+
+
 def _directory_path() -> Path:
     return DIRECTORY_PATH or get_hermes_home() / "channel_directory.json"
 
@@ -46,6 +53,7 @@ def _aliases_path() -> Path:
 
 
 def _read_json(path: Path) -> Any:
+    _require_legacy_channel_directory_runtime()
     # utf-8-sig: Windows editors may leave a BOM that plain utf-8 json.load rejects (pm-era fix).
     with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
@@ -53,6 +61,7 @@ def _read_json(path: Path) -> Any:
 
 def _load_json_dict(path: Path) -> Dict[str, Any]:
     """Read a JSON object from *path*; {} when missing, unreadable, or not a dict."""
+    _require_legacy_channel_directory_runtime()
     if not path.exists():
         return {}
     try:
@@ -131,6 +140,7 @@ def _report_slack_failure(team_id: str, error_code: Optional[str], detail: str) 
 
 async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """Build the directory from connected adapters + session data and persist it."""
+    _require_legacy_channel_directory_runtime()
     from gateway.config import Platform
     platforms: Dict[str, List[Dict[str, str]]] = {}
     for platform, adapter in adapters.items():
@@ -322,6 +332,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
     state.db is the primary source (#9006): gateway session rows persist origin_json.
     """
+    _require_legacy_channel_directory_runtime()
     return _build_from_sessions_db(platform_name) or _build_from_sessions_json(platform_name)
 
 
@@ -347,6 +358,7 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> List[D
 
 def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
+    _require_legacy_channel_directory_runtime()
     def _origins() -> Iterable[Tuple[Dict[str, Any], Any]]:
         from hermes_state_registry import acquire, release_or_close
         db = acquire()
@@ -369,6 +381,7 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
 
 def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
     """Legacy fallback: pull channels/contacts from sessions.json origin data."""
+    _require_legacy_channel_directory_runtime()
     sessions_path = get_hermes_home() / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []
@@ -387,6 +400,7 @@ def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
 
 def load_directory() -> Dict[str, Any]:
     """Load the cached directory from disk, with aliases re-applied on read."""
+    _require_legacy_channel_directory_runtime()
     directory_path = _directory_path()
     if directory_path.exists():
         with contextlib.suppress(Exception):

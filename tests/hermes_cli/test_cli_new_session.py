@@ -243,6 +243,16 @@ def test_clear_command_starts_new_session_before_redrawing(tmp_path):
     assert cli.conversation_history == []
 
 
+def test_reset_alias_dispatches_the_same_new_session_lifecycle(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    cli.process_command("/reset Fresh start")
+
+    assert cli.session_id != old_session_id
+    assert cli._session_db.get_session(old_session_id)["end_reason"] == "new_session"
+    assert cli._session_db.get_session(cli.session_id)["title"] == "Fresh start"
+    assert cli.conversation_history == []
 
 
 def test_new_session_resets_token_counters(tmp_path):

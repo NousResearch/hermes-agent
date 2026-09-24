@@ -594,6 +594,9 @@ def run_backup(args) -> bool:
     the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
     archive that is missing state.db. Hard failures keep raising ``SystemExit``.
     """
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("backup")
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -730,6 +733,9 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
 
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("archive-import")
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -1177,7 +1183,11 @@ def create_pre_update_backup(
     """Full zip backup to ``backups/pre-update-<timestamp>.zip``, auto-pruned; ``None`` if nothing
     was found, the backup failed, or it was incomplete (salvage kept as ``*.incomplete.zip``).
     Never raises — ``hermes update`` continues anyway."""
-    return _create_prefixed_full_backup(hermes_home, _PRE_UPDATE_PREFIX, max(keep, 1), "pre-update", "backup")
+    home = hermes_home or get_hermes_home()
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("update-snapshot", home=home)
+    return _create_prefixed_full_backup(home, _PRE_UPDATE_PREFIX, max(keep, 1), "pre-update", "backup")
 
 
 def create_pre_migration_backup(
@@ -1186,8 +1196,12 @@ def create_pre_migration_backup(
     (same dir as update backups so listings/``hermes import`` find it); ``None`` if nothing was
     found, the write failed, or it was incomplete (salvage kept as ``*.incomplete.zip``). Never
     raises."""
+    home = hermes_home or get_hermes_home()
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("claw-snapshot", home=home)
     return _create_prefixed_full_backup(
-        hermes_home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
+        home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
 
 
 # ---------------------------------------------------------------------------
@@ -1202,6 +1216,9 @@ def create_quick_snapshot(
 ) -> Optional[str]:
     """Create one atomic quick snapshot while holding the shared backup slot."""
     home = hermes_home or get_hermes_home()
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("snapshot-create", home=home)
     with _backup_operation_lock(home):
         return _create_quick_snapshot_locked(
             label=label,
@@ -1459,7 +1476,11 @@ def list_quick_snapshots(
     hermes_home: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     """List existing quick state snapshots, most recent first."""
-    root = _quick_snapshot_root(hermes_home)
+    home = hermes_home or get_hermes_home()
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("snapshot-list", home=home)
+    root = _quick_snapshot_root(home)
     if not root.exists():
         return []
 
@@ -1506,6 +1527,9 @@ def restore_quick_snapshot(
     was not refused or skipped.
     """
     home = hermes_home or get_hermes_home()
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("snapshot-restore", home=home)
     root = _quick_snapshot_root(home)
 
     # Security: reject snapshot_id values that contain path separators or
@@ -2184,7 +2208,11 @@ def prune_quick_snapshots(
     hermes_home: Optional[Path] = None,
 ) -> int:
     """Manually prune quick snapshots. Returns count deleted."""
-    return _prune_quick_snapshots(_quick_snapshot_root(hermes_home), keep=keep)
+    home = hermes_home or get_hermes_home()
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("snapshot-prune", home=home)
+    return _prune_quick_snapshots(_quick_snapshot_root(home), keep=keep)
 
 
 def run_quick_backup(args) -> None:

@@ -40,8 +40,16 @@ _TRANSCRIPT_SPOOL_SEQ = itertools.count()
 _REPLAYED_UNREMOVABLE: set[Path] = set()
 
 
+def _require_legacy_flush_runtime() -> None:
+    """Refuse selected PostgreSQL before durable recovery-spool activity."""
+    from state_store_runtime_readiness import require_legacy_state_db_runtime
+
+    require_legacy_state_db_runtime()
+
+
 def _get_flush_dir():
     """Return the pending-messages flush directory under the active HERMES_HOME."""
+    _require_legacy_flush_runtime()
     from hermes_constants import get_hermes_home
     flush_dir = get_hermes_home() / "pending_messages"
     from hermes_constants import assert_named_profile_home_live
@@ -54,6 +62,7 @@ def _get_flush_dir():
 
 def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
     """Atomically write one private, uniquely named recovery payload; return its path."""
+    _require_legacy_flush_runtime()
     from utils import atomic_json_write
     final_path = flush_dir / f"pending-{uuid.uuid4().hex}.json"
     atomic_json_write(final_path, payload, mode=0o600, default=str)
@@ -76,6 +85,7 @@ def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
 
 def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **extra: Any) -> bool:
     """Serialise and write one pending value; return True when a payload was written."""
+    _require_legacy_flush_runtime()
     try:
         serialised = _serialise_value(value)
         if serialised is None:
@@ -89,6 +99,7 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **ext
 
 def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown") -> int:
     """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count."""
+    _require_legacy_flush_runtime()
     if not pending:
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
@@ -107,6 +118,7 @@ def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str =
     tail; both must survive restart. Each event is its own payload in the slot-flush shape so
     ``recover_pending_to_db`` replays them unchanged; ``seq`` preserves arrival order per session.
     """
+    _require_legacy_flush_runtime()
     if not overflow_by_session:
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
@@ -130,6 +142,7 @@ def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -
     message under ``<hermes_home>/pending_messages/``), so a runtime cap rotation no longer silently
     discards user data while the process stays up (#78182).
     """
+    _require_legacy_flush_runtime()
     try:
         return _write_payload(_get_flush_dir(), {
             "session_key": session_id, "reason": TRANSCRIPT_CAP_DROP_REASON, "ts": int(time.time()),
@@ -151,6 +164,7 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
     expected and logs at DEBUG, so a stalled session does not add one WARNING per append on top of
     its ERROR (#114266).
     """
+    _require_legacy_flush_runtime()
     try:
         candidates = list(_get_flush_dir().glob("pending-*.json"))
     except Exception as exc:
@@ -331,6 +345,7 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
     messages recovered, and the session ids whose spool files this pass held back after a failed
     replay, so the live writer can drain them before that session's next row.
     """
+    _require_legacy_flush_runtime()
     flush_files = _order_flush_files(_get_flush_dir().glob("*.json"))
     if not flush_files:
         return 0, set()
@@ -384,6 +399,7 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
     or quarantined when the database rejected the row itself)."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id: replay it
     # directly (#78182). This handles spool files that were never drained before a restart.
+    _require_legacy_flush_runtime()
     if payload.get("reason") == TRANSCRIPT_CAP_DROP_REASON:
         from gateway.session_transcript import transcript_append_kwargs
         data = payload.get("data", {}) or {}
@@ -478,6 +494,7 @@ def flush_agent_history_to_file(session_id: Optional[str], history: list) -> Non
     ``_flush_messages_to_session_db`` raises (e.g. FTS/SQLite corruption): the transcript is written
     outside the broken DB so an operator can salvage it after repairing state.db. Failures are
     swallowed — shutdown must never block on a best-effort backup."""
+    _require_legacy_flush_runtime()
     if not history:
         return
     try:

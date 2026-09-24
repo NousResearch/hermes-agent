@@ -109,14 +109,24 @@ def _print_fts_optimize_available_notice() -> None:
     """Advertise the opt-in FTS storage rebuild when state.db still needs one.
 
     ``sessions.fts_optimize_notice``: ``advise`` (default), ``require`` (firmer), ``off``.
+    The probe is a SQLite state.db layout check; under a selected PostgreSQL state store
+    there is no state.db FTS to upgrade, so it no-ops without ever opening state.db.
     """
     try:
         from hermes_cli.config import load_config
-        mode = str(((load_config() or {}).get("sessions") or {}).get("fts_optimize_notice", "advise")).strip().lower()
+        cfg = load_config() or {}
     except Exception:
-        mode = "advise"
+        cfg = {}
+    mode = str(((cfg.get("sessions") or {}).get("fts_optimize_notice", "advise"))).strip().lower()
     if mode == "off":
         return
+
+    try:
+        from state_store import resolve_state_store_config
+        if resolve_state_store_config(cfg).backend != "sqlite":
+            return  # selected PostgreSQL: no SQLite FTS layout to probe
+    except Exception:
+        return  # unusable state-store config: refuse rather than probe SQLite speculatively
 
     try:
         from hermes_constants import get_hermes_home

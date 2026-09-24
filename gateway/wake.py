@@ -55,13 +55,23 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
     if not session_id or not profile:
         return False
     profile = str(profile)
+    from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
     try:
         from gateway.run import _multiplex_profile_homes
         home = dict(_multiplex_profile_homes(config)).get(profile)
         if home is None:
             return False
+        # Guard the home we are about to open (the profile's), not the launch
+        # home SessionDB's own constructor checks.
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+        require_legacy_state_db_runtime(home=Path(home))
         from hermes_state import SessionDB
         db = SessionDB(Path(home) / "state.db", read_only=True)
+    except PostgreSQLRuntimeActivationError:
+        # Selected PostgreSQL has no SessionDB contract at all; treating that as
+        # "not owned" would launder a fail-closed refusal into an authorization
+        # answer. Propagate — callers gate wake admission on this predicate.
+        raise
     except Exception as exc:
         logger.debug("wake: session ownership check unavailable for %s/%s: %s", profile, session_id, exc)
         return False

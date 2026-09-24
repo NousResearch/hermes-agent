@@ -123,13 +123,36 @@ class TestSchemaMigration:
         finally:
             conn.close()
 
-        assert "adapter_profile" in columns
+        assert {"adapter_profile", "delivery_fence", "owner_installation_id", "owner_host", "owner_generation", "lease_expires_at"} <= columns
 
 
 class TestStateMachine:
     def test_record_starts_pending(self):
         _record()
         assert _row("ob-1")["state"] == "pending"
+
+    def test_duplicate_create_is_idempotent_and_does_not_reopen_delivery(self):
+        first = dl.record_obligation(obligation_id="ob-1", session_key="s", platform="slack",
+                                     chat_id="C1", thread_id=None, content="one")
+        attempt = dl.mark_attempting(first)
+        assert attempt is not None and dl.mark_delivered(attempt)
+        duplicate = dl.record_obligation(obligation_id="ob-1", session_key="other", platform="slack",
+                                         chat_id="C2", thread_id=None, content="different")
+        assert duplicate == attempt
+        assert _row("ob-1")["state"] == "delivered"
+
+    def test_stale_receipt_cannot_mutate_stolen_lease(self):
+        original = dl.record_obligation(obligation_id="ob-1", session_key="s", platform="slack",
+                                        chat_id="C1", thread_id=None, content="one")
+        first = dl.mark_attempting(original)
+        assert first is not None
+        _orphan("ob-1")
+        claimed = dl.sweep_recoverable()
+        assert len(claimed) == 1
+        assert claimed[0]["receipt"].fence > first.fence
+        assert dl.mark_delivered(first) is False
+        assert _row("ob-1")["state"] == "attempting"
+        assert dl.mark_delivered(claimed[0]["receipt"]) is True
 
 
 class TestObligationId:

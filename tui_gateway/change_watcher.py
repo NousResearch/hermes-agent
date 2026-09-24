@@ -134,6 +134,44 @@ _SESSION_SIGNATURE_FIELDS = (
 _sessions_db_sig_cache: dict[str, tuple[int | None, tuple | None]] = {}
 
 
+_PG_EXCLUDED_CACHE_TTL_S = 30.0
+
+
+def _read_profile_config_for_watch(home: Path) -> dict:
+    """Raw config mapping for one home; unreadable/absent => SQLite default."""
+    try:
+        import yaml
+
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _pg_excluded_session_roots() -> tuple[Path, ...]:
+    """Skip stale SQLite signals for PostgreSQL-selected homes.
+
+    Cache on the function object because watcher bodies are rebound onto server.py.
+    """
+    import time as _time
+
+    roots = (_watcher_home(), *_served_profile_homes)
+    config_mtimes = tuple(_watcher_mtime_ns(root / "config.yaml") for root in roots)
+    cache_key = (tuple(map(str, roots)), config_mtimes)
+    cached = getattr(_pg_excluded_session_roots, "_cache", None)
+    if (cached is not None and cached[0] == cache_key
+            and _time.monotonic() - cached[1] < _PG_EXCLUDED_CACHE_TTL_S):
+        return cached[2]
+    from state_store import resolve_state_store_config
+
+    excluded = tuple(
+        root for root in roots
+        if resolve_state_store_config(_read_profile_config_for_watch(root)).backend == "postgresql"
+    )
+    _pg_excluded_session_roots._cache = (cache_key, _time.monotonic(), excluded)
+    return excluded
+
+
 def _session_db_content_sig(db_path: Path):
     """Digest list/transcript-relevant session rows, excluding unrelated tables.
 
@@ -200,9 +238,11 @@ def _sessions_sig():
     change signal. Hashing only those rows avoids false Desktop refreshes from
     unrelated state.db writes such as gateway heartbeats.
     """
+    pg_roots = _pg_excluded_session_roots()
     return tuple(
         _session_db_content_sig(root / "state.db")
         for root in (_watcher_home(), *_served_profile_homes)
+        if root not in pg_roots
     )
 
 

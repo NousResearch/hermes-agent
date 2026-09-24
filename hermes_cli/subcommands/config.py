@@ -40,5 +40,6 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers.add_parser("env-path", help="Print .env file path")
     config_subparsers.add_parser("check", help="Check for missing/outdated config")
     config_subparsers.add_parser("migrate", help="Update config with new options")
+    config_subparsers.add_parser("state-store", help="Configure SQLite or PostgreSQL state storage")
 
     config_parser.set_defaults(func=cmd_config)

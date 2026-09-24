@@ -24,8 +24,8 @@ stores:
 2. **Interface-layer SQLite** (this layer): the store satisfies
    `StateStoreInterface`, so the plugin can rely on the contracted face and
    call `clear_stored_system_prompts()` instead of hand-rolled SQL.
-3. **Another backend**: the same face implemented over a different storage
-   engine; a plugin written against the protocol works unchanged.
+3. **PostgreSQL backend** (PR #118142): the same face implemented over
+   PostgreSQL; a plugin written against the protocol works unchanged.
 
 The protocol is what makes states 2 and 3 interchangeable from a plugin's
 point of view.
@@ -136,11 +136,8 @@ returns `''`. Do not rely on `is None` across layouts or backends.
 
 ## Relationship to other backends
 
-Backend implementations are reviewed and shipped independently from this
-interface layer. A backend may carry an equivalent protocol definition while
-the changes are under separate review, then converge on this module after both
-lines land. That temporary duplication does not make either pull request a
-dependency of the other.
-
-This layer contains only the protocol and the SQLite reference behavior: it
-introduces no PostgreSQL dependency and changes no SQLite default behavior.
+The PostgreSQL branch is stacked on this interface layer and its facade
+implements the same protocol, including prompt invalidation. This layer
+itself introduces no PostgreSQL dependency or SQLite default behavior change.
+The protocol does not imply a transaction spanning distinct operations;
+backend-specific atomicity and failure behavior must be assessed per operation.

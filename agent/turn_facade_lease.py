@@ -220,16 +220,23 @@ class DurableTurnLease:
         if patience <= 0:
             return self._stop_on_exhausted_authority()
         try:
+            # SQLite offers a bounded busy-handler patience; PostgreSQL's lease primitive
+            # does not accept that SQLite-specific keyword. Keep the holder fence on both.
+            from state_store_postgresql import PostgreSQLStateStore
+            renewal_kwargs = {} if isinstance(self.db, PostgreSQLStateStore) else {
+                "patience_s": min(_REFRESH_WRITE_PATIENCE_S, patience)}
             if self.db.refresh_session_turn_lease(
-                self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS,
-                patience_s=min(_REFRESH_WRITE_PATIENCE_S, patience),
+                self.session_id, self.holder, ttl_seconds=LEASE_TTL_SECONDS,
+                **renewal_kwargs,
             ):
+                if time.time() >= self._authority_deadline:
+                    return self._stop_on_exhausted_authority()
                 self._authority_deadline = started + LEASE_TTL_SECONDS
                 return None
             if self.stop.is_set():
                 return False
             logger.error(
-                "Lost session turn lease while turn is active: %s", self._current_session_id()
+                "Lost session turn lease while turn is active: %s", self.session_id
             )
             self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
         except Exception as exc:
@@ -248,7 +255,7 @@ class DurableTurnLease:
                 )
                 return None
             logger.warning(
-                "Failed to refresh session turn lease: %s", self._current_session_id(), exc_info=True,
+                "Failed to refresh session turn lease: %s", self.session_id, exc_info=True,
             )
             self._interrupt_turn(
                 "Session turn lease could not be refreshed; stopping to protect the transcript."

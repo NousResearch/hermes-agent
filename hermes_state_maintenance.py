@@ -139,6 +139,7 @@ class SessionMaintenanceMixin:
         parents are closed, not live, so they are not guarded (prune and delete share this)."""
         return {sid for sid in ids if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
 
+
     def clear_stored_system_prompts(self) -> Dict[str, Any]:
         """Invalidate every stored system-prompt snapshot so each session rebuilds its
         prompt from the live configuration on the next run or resume.

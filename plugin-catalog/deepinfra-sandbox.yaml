@@ -1,6 +1,6 @@
 name: deepinfra-sandbox
 repo: https://github.com/deepinfra/deepinfra-hermes-sandbox
-sha: 08b7f63609825fcb536f5bd10d52cb183e50fd61
+sha: 259a477548f1862071c9e2462fda6a7bb9de68c8
 description: Terminal backend running agent commands in isolated DeepInfra cloud sandboxes (deep_sands microVMs).
 maintainer: DeepInfra
 tier: community

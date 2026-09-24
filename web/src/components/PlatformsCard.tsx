@@ -7,6 +7,9 @@ import { useI18n } from "@/i18n";
 
 export function PlatformsCard({ platforms }: PlatformsCardProps) {
   const { t } = useI18n();
+  const connectedCount = platforms.filter(
+    ([, info]) => info.state === "connected",
+  ).length;
   const platformStateBadge: Record<
     string,
     { tone: "success" | "warning" | "destructive" | "outline"; label: string }
@@ -20,11 +23,19 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Radio className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
-            {t.status.connectedPlatforms}
-          </CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Radio className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <CardTitle className="min-w-0 truncate text-base">
+              {t.status.connectedPlatforms}
+            </CardTitle>
+          </div>
+          <Badge
+            tone={connectedCount === platforms.length ? "success" : "warning"}
+            className="shrink-0 text-[10px] tabular-nums"
+          >
+            {connectedCount}/{platforms.length} {t.status.connected}
+          </Badge>
         </div>
       </CardHeader>
 

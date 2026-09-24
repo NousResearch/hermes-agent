@@ -3282,36 +3282,33 @@ function Install-HermesCommandLaunchers {
 
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 
-    # Launcher form depends on the venv (keep in lockstep with
-    # hermes_cli/_install_repair.py): a normal venv's exe trampoline
-    # embeds an absolute interpreter path and survives copying; a
-    # relocatable venv's trampoline (managed_uv rebuilds use
-    # --relocatable) resolves relative to its own location, and a copy
-    # dies with 'uv trampoline failed to canonicalize script path' --
-    # those get a .cmd delegator invoking the in-venv exe instead.
-    $pyvenvCfg = Join-Path $Root "venv\pyvenv.cfg"
-    $venvRelocatable = $false
-    if (Test-Path -LiteralPath $pyvenvCfg) {
-        $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
-    }
+    # The PATH launcher is always a .cmd text delegator invoking the in-venv
+    # exe (keep in lockstep with hermes_cli/_install_repair.py). A byte-copy
+    # of uv's unsigned exe trampoline re-mints a fresh low-prevalence PE on
+    # every reinstall, which Defender heuristics quarantine (Pomal!rfn);
+    # the text delegator has no such surface. (A copied relocatable-venv
+    # trampoline additionally dies with 'uv trampoline failed to
+    # canonicalize script path', so .cmd is also the only form that works
+    # for every venv kind.)
     foreach ($launcher in @("hermes", "hermes-acp")) {
         $src = Join-Path $scriptsDir "$launcher.exe"
         if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
-        if ($venvRelocatable) {
-            Remove-Item (Join-Path $Destination "$launcher.exe") -Force -ErrorAction SilentlyContinue
-            Set-Content -Path (Join-Path $Destination "$launcher.cmd") -Value "@echo off`r`n`"$src`" %*" -Encoding Ascii
-        } else {
-            Remove-Item (Join-Path $Destination "$launcher.cmd") -Force -ErrorAction SilentlyContinue
-            Copy-Item -Force -LiteralPath $src -Destination (Join-Path $Destination "$launcher.exe")
+        Remove-Item (Join-Path $Destination "$launcher.exe") -Force -ErrorAction SilentlyContinue
+        $destCmd = Join-Path $Destination "$launcher.cmd"
+        $body = "@echo off`r`n`"$src`" %*`r`n"
+        $write = $true
+        if (Test-Path -LiteralPath $destCmd -PathType Leaf) {
+            $write = ([System.IO.File]::ReadAllText($destCmd) -ne $body)
+        }
+        if ($write) {
+            Set-Content -NoNewline -Path $destCmd -Value $body -Encoding Ascii
         }
     }
 
-    # Verify either staged form before the caller mutates PATH.
-    $requiredExe = Join-Path $Destination "hermes.exe"
+    # Verify the staged delegator before the caller mutates PATH.
     $requiredCmd = Join-Path $Destination "hermes.cmd"
-    if (-not ((Test-Path -LiteralPath $requiredExe -PathType Leaf) -or
-              (Test-Path -LiteralPath $requiredCmd -PathType Leaf))) {
-        throw "Cannot set up the hermes command: launcher was not installed: $requiredExe"
+    if (-not (Test-Path -LiteralPath $requiredCmd -PathType Leaf)) {
+        throw "Cannot set up the hermes command: launcher was not installed: $requiredCmd"
     }
     return $Destination
 }

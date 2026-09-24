@@ -100,6 +100,10 @@ If attestation says "Verification succeeded" and the last line prints `True`, yo
 
 For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://github.com/astral-sh/uv/issues/13553), [astral-sh/uv#15011](https://github.com/astral-sh/uv/issues/15011), [astral-sh/uv#10079](https://github.com/astral-sh/uv/issues/10079).
 
+#### Windows Defender quarantines `hermes.exe` as `Pomal!rfn`
+
+If Defender removes `venv\Scripts\hermes.exe` (the uv-generated console-script launcher) as `Trojan:Win32/Pomal!rfn`, this is the same class of false positive: every reinstall mints a fresh unsigned launcher and the ML heuristic flags the new PE. Confirm it in Windows Security → Protection history, restore the file, and keep the `%LOCALAPPDATA%\hermes\bin` folder exclusion above (it covers both `uv.exe` and the launchers). Do **not** reinstall in a loop — each reinstall only produces another quarantinable sample. The `hermes` command resolves through a stable `hermes.cmd` text delegator that Defender does not flag; if the in-venv exe is missing, `hermes update` / the startup heal reports it instead of silently succeeding, and `python -m hermes_cli.main <command>` from the checkout works as a workaround.
+
 ---
 
 ## Getting Started

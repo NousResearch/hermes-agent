@@ -92,35 +92,43 @@ try {
 
     $staged = Install-HermesCommandLaunchers -Root $installRoot -Destination $binDir
     Assert-True ($staged -eq $binDir) 'returns the destination it staged into'
-    Assert-BytesEqual $hermesV1 `
-        ([System.IO.File]::ReadAllBytes((Join-Path $binDir 'hermes.exe'))) `
-        'normal venv: exe copy lands in the destination'
+    # PATH launchers are always .cmd text delegators -- never byte-copies of
+    # uv's unsigned trampoline (Defender Pomal!rfn quarantine). No .exe copy
+    # lands in the destination for any venv kind.
+    Assert-True (Test-Path -LiteralPath (Join-Path $binDir 'hermes.cmd')) `
+        'normal venv: .cmd delegator staged'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $binDir 'hermes.exe'))) `
+        'normal venv: no exe copy staged'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $binDir 'hermes-acp.exe'))) `
         'optional ACP launcher may be absent'
+    $cmdBody = [System.IO.File]::ReadAllText((Join-Path $binDir 'hermes.cmd'))
+    Assert-True ($cmdBody.Contains((Join-Path $scriptsDir 'hermes.exe')) -and $cmdBody.Contains('%*')) `
+        'delegator invokes the in-venv exe and forwards args'
+
+    $expectedBody = "@echo off`r`n`"$(Join-Path $scriptsDir 'hermes.exe')`" %*`r`n"
+    Assert-True ($cmdBody -eq $expectedBody) `
+        'delegator body matches expected delegator text with trailing CRLF'
 
     [System.IO.File]::WriteAllBytes((Join-Path $scriptsDir 'hermes.exe'), $hermesV2)
     [System.IO.File]::WriteAllBytes((Join-Path $scriptsDir 'hermes-acp.exe'), $acp)
     Install-HermesCommandLaunchers -Root $installRoot -Destination $binDir | Out-Null
-    Assert-BytesEqual $hermesV2 `
-        ([System.IO.File]::ReadAllBytes((Join-Path $binDir 'hermes.exe'))) `
-        'installer refreshes an existing Hermes launcher'
-    Assert-BytesEqual $acp `
-        ([System.IO.File]::ReadAllBytes((Join-Path $binDir 'hermes-acp.exe'))) `
-        'installer copies the optional ACP launcher when present'
+    $refreshed = [System.IO.File]::ReadAllText((Join-Path $binDir 'hermes.cmd'))
+    Assert-True ($refreshed.Contains((Join-Path $scriptsDir 'hermes.exe'))) `
+        'installer refresh keeps delegating to the in-venv exe'
+    Assert-True (Test-Path -LiteralPath (Join-Path $binDir 'hermes-acp.cmd')) `
+        'installer stages the optional ACP delegator when present'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $binDir 'hermes-acp.exe'))) `
+        'installer stages no ACP exe copy'
 
-    # Relocatable venv: exe trampolines die when copied out of venv\Scripts
-    # ('uv trampoline failed to canonicalize script path'), so the stage
-    # must emit .cmd delegators and clear the stale exe copies.
-    Set-Content -Path (Join-Path $installRoot 'venv\pyvenv.cfg') `
-        -Value "home = X`r`nrelocatable = true" -Encoding Ascii
-    Install-HermesCommandLaunchers -Root $installRoot -Destination $binDir | Out-Null
+    # Stale exe copies are removed when the delegator is already in place.
+    [System.IO.File]::WriteAllBytes((Join-Path $binDir 'hermes.exe'), $hermesV1)
     Assert-True (Test-Path -LiteralPath (Join-Path $binDir 'hermes.cmd')) `
-        'relocatable venv: .cmd delegator staged'
+        'delegator is already present before stale exe cleanup'
+    Install-HermesCommandLaunchers -Root $installRoot -Destination $binDir | Out-Null
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $binDir 'hermes.exe'))) `
-        'relocatable venv: stale exe copy removed'
-    $cmdBody = [System.IO.File]::ReadAllText((Join-Path $binDir 'hermes.cmd'))
-    Assert-True ($cmdBody.Contains((Join-Path $scriptsDir 'hermes.exe')) -and $cmdBody.Contains('%*')) `
-        'delegator invokes the in-venv exe and forwards args'
+        'stale exe copy removed even when delegator already exists'
+    Assert-True (Test-Path -LiteralPath (Join-Path $binDir 'hermes.cmd')) `
+        'delegator preserved after stale exe cleanup'
 } finally {
     if (Test-Path -LiteralPath $caseRoot) {
         $resolvedCase = [System.IO.Path]::GetFullPath($caseRoot)

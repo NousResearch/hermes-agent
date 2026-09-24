@@ -1113,7 +1113,11 @@ def _verify_console_scripts_installed(
 
     On Windows ``uv pip install -e .`` can register ``hermes.exe`` in the wheel RECORD while the
     file never lands (live shim locked, launcher write skipped), so ``hermes`` drops off PATH
-    after a "successful" install. Missing shims get ``--reinstall -e .`` under quarantine.
+    after a "successful" install. Missing shims get ONE ``--reinstall -e .`` under quarantine —
+    never a loop: when antivirus (Defender Pomal!rfn, #117796) removes the freshly generated
+    launcher, each reinstall only mints another quarantinable sample, so a still-missing shim
+    after the single repair is reported with the quarantine checklist instead of reinstalling
+    again.
 
     The symptom is ``hermes-agent.exe`` and ``hermes-acp.exe`` present but ``hermes.exe`` missing, so
     ``hermes`` drops off PATH even though the install reported success (issue #52931).
@@ -1144,7 +1148,11 @@ def _verify_console_scripts_installed(
             "closing other hermes processes.")):
         return
     _report_still_missing(
-        _missing(), "Workaround: python -m hermes_cli.main <command>",
+        _missing(),
+        "Workaround: python -m hermes_cli.main <command>. "
+        "If the shims vanish again right after install, check Windows Security > "
+        "Protection history for an antivirus quarantine (Defender Pomal!rfn on hermes.exe) "
+        "before reinstalling — see the README troubleshooting section.",
         ok="  ✓ All console entry points restored")
 
 

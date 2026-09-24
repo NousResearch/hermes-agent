@@ -582,11 +582,25 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
     profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch
     profile ``.env`` / TERMINAL_* residue dropped, target secrets overlaid), never the multiplexer's raw
     ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
-    caller knows it (relay RPC, roster); otherwise the active override."""
+    caller knows it (relay RPC, roster); otherwise the active override, and failing that the launch
+    home — never empty, which ``served_profile_child_env`` fails closed on under multiplex."""
+    from agent.secret_scope import current_secret_scope
     from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     from tools.environments.local import served_profile_child_env
 
-    env = served_profile_child_env(base=os.environ, target_home=profile_home, inherit_credentials=True)
+    # ``served_profile_child_env`` resolves an empty target as override -> bound scope -> and then,
+    # under multiplex, FAILS CLOSED. That last step is wrong for this lane: a relay RPC is
+    # sessionless (no scope) and ``_profile_home`` answers None for the LAUNCH profile *by design*
+    # ("already the launch profile, no override needed"), so "no home known" here means the launch
+    # profile, not "unknown". Leaving it empty broke every relayed DM into a *default* profile
+    # ("Hermes could not read this profile's API key") while deliveries to named secondary profiles
+    # — which do resolve a home — kept working. Supply the launch home only when the other two
+    # tiers are genuinely absent, so a bound scope still wins.
+    target_home = profile_home
+    if not target_home and not get_hermes_home_override() and current_secret_scope() is None:
+        target_home = get_routing_process_hermes_home()
+    env = served_profile_child_env(base=os.environ, target_home=target_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
     for name in _delivery_child_session_env_names():
         env.pop(name, None)

@@ -53,7 +53,7 @@ def _gaps(rig: Rig) -> list[float]:
 
 
 def test_429_waits_the_retry_after_then_succeeds(rig_factory) -> None:
-    retry_after = 3.0
+    retry_after = 4.0  # above the 2-3 s jittered default backoff, so ignoring it is visible
     rig = rig_factory([ApiError(429, "rate_limit_error", "Number of requests exceeded", retry_after=retry_after),
                        Reply([Text("AFTER-RATE-LIMIT")])], config={"agent": {"api_max_retries": 2}})
     proc = rig.run("-z", "hello")

@@ -1131,3 +1131,17 @@ def test_wm_has_a_mind_panel(home):
     from wintermute_engine import status
     text = status.render_full(status.snapshot())
     assert "MIND" in text and "presence" in text and "attach" in text
+
+
+def test_brain_scan_composes_without_error(home):
+    from wintermute_engine import brainscan, status
+    pulse.tick(T0)
+    snap = status.snapshot()
+    sparks = {}
+    levels = brainscan._levels(snap["drives"])
+    brainscan.update_sparks(sparks, levels, {}, ["heard", "feel"])
+    assert sparks and any(v > 0.5 for v in sparks.values())
+    frame = brainscan.compose(snap, sparks, angle=1.0)
+    assert "live scan" in frame and "firing:" in frame
+    plain = [__import__("re").sub(r"\x1b\[[0-9;]*m", "", ln) for ln in frame.splitlines()]
+    assert max(len(ln) for ln in plain) <= 80          # fits a terminal

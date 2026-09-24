@@ -212,6 +212,7 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
 |---|---|
 | `wm` | tout sur un écran (80 colonnes, en anglais comme le code) : état, budget, témoin, pulsions et hormones côte à côte, inconscient et tempérament, ce qu'il ressent à la place des chiffres, liens, fil de pensée, activité, journal. Les flèches ↑ ↓ → comparent à il y a 3 h |
 | `wm live` | le même écran rafraîchi toutes les 2 s, sans animation (Ctrl+C pour quitter) |
+| `wm brain` | **scan cérébral en direct** : un cerveau 3D en fil de fer qui tourne (déco), et à côté ses régions (drives, hormones, inconscient) posées sur un cortex, colorées par niveau ; les connexions **s'allument quand ça fire** (une émotion, un message, un outil) puis s'éteignent en ~2 s. Truecolor si le terminal le gère, sinon 256 couleurs. Sans dépendance |
 | `wm graph` / `wm graph 72` | pour chaque valeur sur 48 (ou 72…) h : une barre simple ░ jamais atteint, ▒ plage vécue, █ maintenant, avec min / moyenne / max |
 | `wm forget <peer>` | efface un interlocuteur (ex. `cli:local`) |
 | `wm wipe --yes` | ardoise propre émotionnelle : remet à zéro pulsions, hormones, tempérament, entropie, liens et courbes ; garde mémoire, autoportrait, secrets, journaux |

@@ -2,6 +2,7 @@
 
     wm              everything, on one screen
     wm live         the same screen, refreshed every 2 s (Ctrl+C to quit)
+    wm brain        a live scan of his mind: a rotating brain + firing connections
     wm graph [h]    each value over the last h hours (48): its range, its average, where it is now
     wm alerts       what the witness saw, with his reasons
     wm ack [item]   accept the current state of watched files (all, or one: soul, engine...)
@@ -545,6 +546,9 @@ def main(args: List[str]) -> int:
     command = args[0] if args else ""
     if command == "live":
         live()
+    elif command == "brain":
+        from . import brainscan
+        brainscan.live(snapshot)
     elif command == "graph":
         hours = physics.safe_float(args[1], 48.0) if len(args) > 1 else 48.0
         print(render_graph(limits.clamp(hours, 1.0, 24.0 * 30)))

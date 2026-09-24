@@ -55,6 +55,34 @@ def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch
     assert calls == ["finalize", "cleanup", "release"]
 
 
+def test_finalize_single_query_closes_agent_without_skipping_cleanup(monkeypatch):
+    """One-shot exit owns the Codex app-server session even when close raises."""
+    calls = []
+
+    class _Agent:
+        def close(self):
+            calls.append("close")
+            raise RuntimeError("app-server already exited")
+
+    fake_cli = SimpleNamespace(
+        agent=_Agent(),
+        _release_active_session=lambda: calls.append("release"),
+    )
+
+    monkeypatch.setattr(
+        cli, "_wait_for_oneshot_background_completions", lambda _cli: calls.append("wait")
+    )
+    monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda _cli: calls.append("flush"))
+    monkeypatch.setattr(
+        cli, "_notify_single_query_session_finalize", lambda _cli: calls.append("finalize")
+    )
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **kwargs: calls.append("cleanup"))
+
+    cli._finalize_single_query(fake_cli)
+
+    assert calls == ["wait", "flush", "finalize", "close", "cleanup", "release"]
+
+
 
 
 def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):

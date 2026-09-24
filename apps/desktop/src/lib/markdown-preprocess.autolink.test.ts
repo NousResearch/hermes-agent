@@ -107,6 +107,16 @@ describe('preprocessMarkdown / raw-URL autolinking inside markdown links', () =>
 
 describe('preprocessMarkdown / bare-URL trailing punctuation', () => {
   it.each([
+    ['Bare autolink: http://localhost:3000', 'http://localhost:3000'],
+    ['With a path: http://localhost:3000/dashboard', 'http://localhost:3000/dashboard'],
+    ['Loopback IP: http://127.0.0.1:8080', 'http://127.0.0.1:8080'],
+    ['Wildcard bind: http://0.0.0.0:8000', 'http://0.0.0.0:8000'],
+    ['IPv6 loopback: http://[::1]:8080/status', 'http://[::1]:8080/status'],
+  ])('preserves bare loopback URLs in prose: %s', (input, expected) => {
+    expect(hrefs(input)).toEqual([expected])
+  })
+
+  it.each([
     ['Visit https://example.com/a.', 'https://example.com/a'],
     ['Visit https://example.com/a, then', 'https://example.com/a'],
     ['(see https://example.com/a)', 'https://example.com/a'],

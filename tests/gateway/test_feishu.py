@@ -2311,6 +2311,114 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         self.assertEqual(result, "@Hermes hi")
 
 
+class TestTopicSendRouting(unittest.TestCase):
+    """Anchorless topic sends must anchor via the reply API, never thread_id-create (99992402)."""
+
+    def _build_adapter(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._client = Mock()
+        return adapter
+
+    def _reply_response(self, success=True):
+        response = Mock()
+        response.success = Mock(return_value=success)
+        return response
+
+    def test_anchor_found_replies_in_thread(self):
+        adapter = self._build_adapter()
+        async def _fetch(thread_id):
+            return "om_anchor"
+        adapter._fetch_last_message_in_thread = _fetch
+        reply_calls = []
+
+        async def _fake_reply(func, *args):
+            reply_calls.append(args)
+            return self._reply_response()
+
+        adapter._run_blocking = _fake_reply
+        adapter._build_reply_message_body = Mock(return_value=object())
+        adapter._build_reply_message_request = Mock(return_value=object())
+        create_calls = []
+        adapter._build_create_message_request = Mock(
+            side_effect=lambda *a, **k: create_calls.append((a, k)) or object())
+
+        result = asyncio.run(adapter._send_raw_message(
+            chat_id="oc_chat", msg_type="text",
+            payload=json.dumps({"text": "hi"}), reply_to=None,
+            metadata={"thread_id": "omt_thread"},
+        ))
+        self.assertTrue(adapter._response_succeeded(result))
+        self.assertEqual(len(reply_calls), 1)
+        adapter._build_reply_message_request.assert_called_once_with("om_anchor", adapter._build_reply_message_body.return_value)
+        self.assertEqual(create_calls, [])
+
+    def test_no_anchor_falls_through_to_chat_level_create(self):
+        adapter = self._build_adapter()
+        async def _fetch(thread_id):
+            return None
+        adapter._fetch_last_message_in_thread = _fetch
+        async def _rb(func, *args):
+            return self._reply_response()
+        adapter._run_blocking = _rb
+        adapter._build_create_message_body = Mock(return_value=object())
+        adapter._build_create_message_request = Mock(return_value=object())
+
+        result = asyncio.run(adapter._send_raw_message(
+            chat_id="oc_chat", msg_type="text",
+            payload=json.dumps({"text": "hi"}), reply_to=None,
+            metadata={"thread_id": "omt_thread"},
+        ))
+        self.assertTrue(adapter._response_succeeded(result))
+        # create must NOT use thread_id as receive_id_type
+        adapter._build_create_message_request.assert_called_once()
+        self.assertEqual(adapter._build_create_message_request.call_args[0][0], "chat_id")
+
+    def test_fetch_error_degrades_to_chat_level_create(self):
+        adapter = self._build_adapter()
+        async def _fetch(thread_id):
+            raise RuntimeError("api down")
+        adapter._fetch_last_message_in_thread = _fetch
+        async def _rb(func, *args):
+            return self._reply_response()
+        adapter._run_blocking = _rb
+        adapter._build_create_message_body = Mock(return_value=object())
+        adapter._build_create_message_request = Mock(return_value=object())
+
+        result = asyncio.run(adapter._send_raw_message(
+            chat_id="oc_chat", msg_type="text",
+            payload=json.dumps({"text": "hi"}), reply_to=None,
+            metadata={"thread_id": "omt_thread"},
+        ))
+        self.assertTrue(adapter._response_succeeded(result))
+        adapter._build_create_message_request.assert_called_once()
+        self.assertEqual(adapter._build_create_message_request.call_args[0][0], "chat_id")
+
+    def test_legacy_env_restores_thread_id_create(self):
+        adapter = self._build_adapter()
+        fetch_calls = []
+        async def _fetch(thread_id):
+            fetch_calls.append(thread_id)
+            return "om_anchor"
+        adapter._fetch_last_message_in_thread = _fetch
+        async def _rb(func, *args):
+            return self._reply_response()
+        adapter._run_blocking = _rb
+        adapter._build_create_message_body = Mock(return_value=object())
+        adapter._build_create_message_request = Mock(return_value=object())
+
+        with patch.dict(os.environ, {"FEISHU_THREAD_SEND_MODE": "legacy"}):
+            result = asyncio.run(adapter._send_raw_message(
+                chat_id="oc_chat", msg_type="text",
+                payload=json.dumps({"text": "hi"}), reply_to=None,
+                metadata={"thread_id": "omt_thread"},
+            ))
+        self.assertTrue(adapter._response_succeeded(result))
+        self.assertEqual(fetch_calls, [])
+        adapter._build_create_message_request.assert_called_once_with("thread_id", adapter._build_create_message_body.return_value)
+
+
 class TestFeishuMentionEndToEnd(unittest.TestCase):
     """High-level scenarios from the design spec — verify the full pipeline."""
 

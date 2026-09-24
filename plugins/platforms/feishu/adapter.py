@@ -3726,14 +3726,37 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
+        if thread_id and not effective_reply_to and os.environ.get("FEISHU_THREAD_SEND_MODE", "").lower() != "legacy":
+            # Anchorless topic send: ``receive_id_type=thread_id`` on the create API is
+            # rejected by this bot app with 99992402 (field validation failed) for BOTH
+            # post and text payloads — content formatting was never the cause. Anchor
+            # the message to the topic's latest message via the reply API instead.
+            try:
+                anchor = await self._fetch_last_message_in_thread(thread_id)
+            except Exception as exc:
+                # Fetch failure must degrade to a chat-level send, never abort the send path.
+                logger.warning("[Feishu] Anchor fetch failed for thread %s: %s", thread_id, exc)
+                anchor = None
+            if anchor:
+                logger.info("[Feishu] Anchorless topic send: replying to last message %s in thread %s", anchor, thread_id)
+                body = self._build_reply_message_body(
+                    content=payload, msg_type=msg_type, reply_in_thread=True, uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(anchor, body)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+            logger.warning(
+                "[Feishu] No anchor found in thread %s; falling through to chat-level send", thread_id,
+            )
+            thread_id = None
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
-        if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
+        if thread_id and os.environ.get("FEISHU_THREAD_SEND_MODE", "").lower() == "legacy":
+            # Legacy path (rollback only): create with receive_id_type=thread_id. Known
+            # to fail with 99992402 on bot apps that reject thread_id receive ids.
             receive_id, receive_id_type = thread_id, "thread_id"
         elif chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"

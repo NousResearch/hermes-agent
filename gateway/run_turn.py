@@ -2497,12 +2497,23 @@ class GatewayTurnMixin:
             preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
             header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
             images, media_files, text_content = [], [], ""
+            output_tail = ""
             if response:
                 media_files, response = adapter.extract_media(response)
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
+                # P3: when the agent's final response is shorter than the session's
+                # raw output (agent summarized), append the tail of that raw output
+                # through the SAME extract/filter pipeline so no unfiltered content
+                # or local media path is re-injected into the chat.
+                if isinstance(result, dict):
+                    raw_output = str(result.get("output") or result.get("final_output") or "")
+                    if raw_output.strip() and raw_output.strip() != response.strip():
+                        _tail_media, tail_text = adapter.extract_media(raw_output.strip()[-800:])
+                        _tail_media = BasePlatformAdapter.filter_media_delivery_paths(_tail_media)
+                        _, output_tail = adapter.extract_images(tail_text)
             if text_content:
-                await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
+                await adapter.send(chat_id=source.chat_id, content=header + output_tail + text_content, metadata=_thread_metadata)
             elif not images and not media_files:
                 await adapter.send(
                     chat_id=source.chat_id, content=header + "(No response generated)", metadata=_thread_metadata,

@@ -52,7 +52,8 @@ def test_fresh_install_prefers_nova(tmp_path):
 
 def test_unset_fields_are_omitted_so_runtime_defaults_apply():
     config = M.build_config(_spec())
-    assert config == {}
+    # The one thing every agent gets: the outcome plugin, enabled (see outcome.py).
+    assert config == {"plugins": M.plugins_section(policy=False, knowledge=False)}
 
 
 def test_limits_compile_to_runtime_keys():
@@ -173,7 +174,7 @@ def test_dry_run_writes_nothing_but_reports_the_plan(home, audit, runtime):
         _spec(), audit=audit, correlation_id=new_correlation_id(), dry_run=True
     )
     assert result.created is True
-    assert len(result.paths_written) == 3
+    assert len(result.paths_written) == 6  # config, SOUL.md, provenance + the outcome plugin's 3
     assert not HermesPaths(home=home).profile_dir("support").exists()
 
 

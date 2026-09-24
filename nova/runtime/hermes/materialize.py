@@ -72,6 +72,15 @@ PLUGIN_DECIDE = Path(__file__).parents[2] / "policy" / "decide.py"
 #: The plugin directory names, which are also the keys the runtime enables them by.
 POLICY_PLUGIN_NAME = "nova-policy"
 KNOWLEDGE_PLUGIN_NAME = "nova-knowledge"
+OUTCOME_PLUGIN_NAME = "nova-outcome"
+
+#: The worker outcome plugin, installed for every agent: any agent's model call can fail,
+#: and a failed run has to say why (see outcome.py).
+OUTCOME_MANIFEST = Path(__file__).parent / "outcome_manifest.yaml"
+OUTCOME_ENTRY = Path(__file__).parent / "outcome.py"
+#: Copied beside it so a blocked task explains a provider error in the same words the
+#: Control Centre uses for the same error.
+OUTCOME_MODEL_ERRORS = Path(__file__).parents[1] / "model_errors.py"
 
 #: The knowledge plugin, installed only for agents that were granted a corpus.
 KNOWLEDGE_MANIFEST = Path(__file__).parent / "knowledge_manifest.yaml"
@@ -234,7 +243,7 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str
     return out
 
 
-def plugins_section(*, policy: bool, knowledge: bool) -> dict[str, Any]:
+def plugins_section(*, policy: bool, knowledge: bool, outcome: bool = True) -> dict[str, Any]:
     """The ``plugins`` block enabling the plugins NOVA installed for this agent.
 
     **Installing a plugin does not activate it.** The runtime's loader is opt-in —
@@ -254,7 +263,7 @@ def plugins_section(*, policy: bool, knowledge: bool) -> dict[str, Any]:
     refusal is better than omitting the key and inheriting whatever the default becomes.
     """
     enabled = [name for name, wanted in (
-        (POLICY_PLUGIN_NAME, policy), (KNOWLEDGE_PLUGIN_NAME, knowledge)
+        (POLICY_PLUGIN_NAME, policy), (KNOWLEDGE_PLUGIN_NAME, knowledge), (OUTCOME_PLUGIN_NAME, outcome)
     ) if wanted]
     if not enabled:
         return {}
@@ -699,6 +708,11 @@ def plan_writes(
         writes[knowledge_dir / "plugin.yaml"] = KNOWLEDGE_MANIFEST.read_text(encoding="utf-8")
         writes[knowledge_dir / "__init__.py"] = KNOWLEDGE_ENTRY.read_text(encoding="utf-8")
         writes[knowledge_dir / "_query.py"] = KNOWLEDGE_QUERY.read_text(encoding="utf-8")
+
+    outcome_dir = paths.outcome_plugin_dir(spec.id)
+    writes[outcome_dir / "plugin.yaml"] = OUTCOME_MANIFEST.read_text(encoding="utf-8")
+    writes[outcome_dir / "__init__.py"] = OUTCOME_ENTRY.read_text(encoding="utf-8")
+    writes[outcome_dir / "_model_errors.py"] = OUTCOME_MODEL_ERRORS.read_text(encoding="utf-8")
 
     return writes
 

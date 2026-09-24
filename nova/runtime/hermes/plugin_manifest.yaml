@@ -8,3 +8,4 @@ author: NOVA
 kind: backend
 hooks:
   - pre_tool_call
+  - on_session_start

@@ -164,3 +164,89 @@ def decide(
         tool=tool,
         rule="default-allow",
     )
+
+
+# -- delegation --------------------------------------------------------------
+#
+# Who may put work on whose queue. An agent declares ``delegation.may_assign_to``; these two
+# decisions are that declaration enforced, once where work is created and once where it is
+# received. Both are needed: the creating side sees only the agent's own tools, and the
+# receiving side is the one place every route converges — the tool, a shell-out to the CLI,
+# and the runtime's own decomposer, which routes a triage card's children by asking a model.
+
+#: The tool through which an agent creates work, and the argument naming who does it.
+ASSIGNING_TOOL = "kanban_create"
+ASSIGNEE_ARG = "assignee"
+
+#: What NOVA's own supervisor writes as a task's creator. Its routing is checked against
+#: the same declarations *before* it writes (nova/supervisor/route.py), so it is trusted here.
+SUPERVISOR = "nova-supervisor"
+
+#: The tools a refused task may still use: enough to read the card and say why it is being
+#: refused, and nothing that does or finishes the work.
+REFUSED_TASK_TOOLS = frozenset({"kanban_block", "kanban_show", "kanban_comment", "kanban_heartbeat"})
+
+
+def _may_assign_to(policy: Optional[Mapping[str, Any]]) -> set[str]:
+    return set((policy or {}).get("may_assign_to") or ())
+
+
+def decide_assignment(policy: Optional[Mapping[str, Any]], assignee: Any) -> Decision:
+    """May this agent create work for ``assignee``? Its own queue always; others if declared."""
+    self_id = (policy or {}).get("agent_id") or ""
+    target = assignee.strip() if isinstance(assignee, str) else ""
+    if not target or target == self_id or target in _may_assign_to(policy):
+        return Decision(ALLOW, f"{self_id} may assign work to {target or 'itself'}",
+                        tool=ASSIGNING_TOOL, rule="delegation-declared")
+    declared = ", ".join(sorted(_may_assign_to(policy))) or "no other agent"
+    return Decision(
+        DENY,
+        f"{self_id} may not hand work to {target}: its delegation declares {declared}. "
+        f"Add {target} to delegation.may_assign_to in {self_id}'s agent file to allow it",
+        tool=ASSIGNING_TOOL,
+        rule="delegation-not-declared",
+    )
+
+
+def decide_acceptance(
+    policy: Optional[Mapping[str, Any]],
+    *,
+    authorizer: str,
+    authorizer_policy: Optional[Mapping[str, Any]],
+    via_decomposer: bool,
+) -> Decision:
+    """May this agent work a task that ``authorizer`` put on its queue?
+
+    ``authorizer`` is whoever is answerable for the assignment: the task's creator, or —
+    for a child the runtime's decomposer routed — whoever owns the card it was split from.
+    ``authorizer_policy`` is that authorizer's compiled policy when it is a NOVA agent,
+    else None (a person, or a process that is not an agent).
+    """
+    self_id = (policy or {}).get("agent_id") or ""
+    if authorizer == SUPERVISOR:
+        return Decision(ALLOW, "routed by the NOVA supervisor, which checked delegation before creating it",
+                        rule="supervisor-routed")
+    if authorizer == self_id:
+        return Decision(ALLOW, f"{self_id} assigned this work to itself", rule="self-assigned")
+    if authorizer_policy is not None:
+        if self_id in _may_assign_to(authorizer_policy):
+            return Decision(ALLOW, f"{authorizer} declares it may hand work to {self_id}",
+                            rule="delegation-declared")
+        return Decision(
+            DENY,
+            f"{authorizer} handed this task to {self_id}, but {authorizer}'s delegation does not "
+            f"include {self_id}. Add {self_id} to delegation.may_assign_to in {authorizer}'s agent "
+            "file, or reassign the task",
+            rule="delegation-not-declared",
+        )
+    if via_decomposer:
+        return Decision(
+            DENY,
+            f"the runtime's decomposer routed this task to {self_id} from a card no NOVA agent owns "
+            f"(owner: {authorizer or 'nobody'}), so no delegation declaration covers the choice. "
+            "Give the card an agent as its assignee before it is decomposed, or submit the work "
+            "as a NOVA objective",
+            rule="decomposer-unowned",
+        )
+    return Decision(ALLOW, f"assigned by {authorizer or 'an operator'}, a person rather than an agent",
+                    rule="operator-directed")

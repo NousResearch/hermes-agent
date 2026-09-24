@@ -1,0 +1,12 @@
+name: nova-outcome
+version: 1.0.0
+description: >-
+  NOVA worker outcome. When a task's run ends because the AI model call failed, blocks the
+  task with the provider's reason (or, for a failure time may fix, comments it for the
+  retry) instead of leaving the board to guess. Installed and maintained by NOVA; edits
+  here are overwritten on the next apply.
+author: NOVA
+kind: backend
+hooks:
+  - api_request_error
+  - post_api_request

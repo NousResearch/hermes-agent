@@ -160,6 +160,10 @@ def compile_policy(
         "unlisted_tool": policy.unlisted_tool,
         # HARD BOUNDARY (nova/policy/limits.py). Absent or zero means no ceiling.
         "max_tool_calls_per_run": spec.limits.max_tool_calls_per_run or 0,
+        # The agents this one may hand work to. Enforced in the worker twice: on the tool
+        # that creates work for another agent, and on the receiving side, where a task no
+        # declared delegation put there is refused (decide.decide_acceptance).
+        "may_assign_to": sorted(spec.delegation.may_assign_to),
     }
     return CompiledPolicy(agent_id=spec.id, document=document, warnings=tuple(warnings))
 

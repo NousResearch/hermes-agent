@@ -25,10 +25,10 @@ from looping back through the runtime contract. What lives here is the behaviour
 rather than a report: NOVA is the writer, so a plan that violates the tenant's delegation
 policy produces no tasks at all, rather than tasks that a reviewer discovers afterwards.
 
-The honest limit of that, stated here because it belongs next to the claim: NOVA governs
-the work **NOVA submits**. A human running ``hermes kanban create --assignee X``, or the
-runtime's own decomposer choosing an assignee, is outside this boundary — see
-``docs/platform/PHASE_5.md`` for what the control plane shows in those cases.
+Work NOVA did not submit — an agent's own ``kanban_create``, the runtime's decomposer — is
+held to the same declarations on the receiving side, inside the worker
+(:func:`nova.policy.decide.decide_acceptance`). See ``docs/platform/PHASE_5.md``, "The
+boundary of that claim", for the table and what remains outside it.
 """
 
 from nova.spec.objective import ObjectiveSpec, PlanStep, load_objectives

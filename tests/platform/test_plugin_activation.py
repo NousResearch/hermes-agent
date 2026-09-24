@@ -18,6 +18,7 @@ import pytest
 from nova.policy import compile_policy
 from nova.runtime.hermes.materialize import (
     KNOWLEDGE_PLUGIN_NAME,
+    OUTCOME_PLUGIN_NAME,
     POLICY_PLUGIN_NAME,
     build_config,
     build_persona,
@@ -41,21 +42,28 @@ def test_an_installed_policy_plugin_is_enabled_in_the_config():
     call succeed with no decision recorded.
     """
     section = plugins_section(policy=True, knowledge=False)
-    assert section["enabled"] == [POLICY_PLUGIN_NAME]
+    assert section["enabled"] == [POLICY_PLUGIN_NAME, OUTCOME_PLUGIN_NAME]
 
 
 def test_the_knowledge_plugin_is_enabled_only_when_installed():
     assert plugins_section(policy=True, knowledge=True)["enabled"] == [
         POLICY_PLUGIN_NAME,
         KNOWLEDGE_PLUGIN_NAME,
+        OUTCOME_PLUGIN_NAME,
     ]
-    assert plugins_section(policy=False, knowledge=False) == {}
+    assert plugins_section(policy=False, knowledge=False, outcome=False) == {}
 
 
 def test_no_plugin_block_is_written_when_no_plugin_is_installed():
     """An empty ``plugins`` key would be an explicit "enable nothing", which is different
     from saying nothing and letting the runtime's own defaults stand."""
-    assert "plugins" not in build_config(_agent(), policy=False, knowledge=False)
+    assert plugins_section(policy=False, knowledge=False, outcome=False) == {}
+
+
+def test_every_agent_enables_the_outcome_plugin_even_without_a_policy():
+    """Any agent's model call can fail; a failed run has to say why on the board."""
+    config = build_config(_agent(), policy=False, knowledge=False)
+    assert config["plugins"]["enabled"] == [OUTCOME_PLUGIN_NAME]
 
 
 def test_neither_plugin_asks_to_override_a_built_in_tool():
@@ -113,7 +121,8 @@ def test_the_enforcement_plugin_registers_its_hook():
             registered.append((name, callback.__name__))
 
     enforcement.register(Context())
-    assert registered == [("pre_tool_call", "pre_tool_call")]
+    # on_session_start records a task refused by delegation on the board before the first turn.
+    assert registered == [("pre_tool_call", "pre_tool_call"), ("on_session_start", "on_session_start")]
 
 
 def test_the_installed_policy_plugin_has_a_register_function():

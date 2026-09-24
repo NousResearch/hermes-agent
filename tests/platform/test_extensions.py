@@ -399,4 +399,4 @@ def test_an_agent_with_no_extensions_compiles_exactly_as_before():
     spec = AgentSpec.parse({"id": "x"})
     config = build_config(spec, policy=True, knowledge=False)
     assert "mcp_servers" not in config
-    assert config["plugins"]["enabled"] == ["nova-policy"]
+    assert config["plugins"]["enabled"] == ["nova-policy", "nova-outcome"]

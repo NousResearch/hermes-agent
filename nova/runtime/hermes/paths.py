@@ -106,6 +106,10 @@ class HermesPaths:
         """The knowledge tool, scoped to one agent by the same mechanism as the policy plugin."""
         return self.profile_dir(agent_id) / "plugins" / "nova-knowledge"
 
+    def outcome_plugin_dir(self, agent_id: str) -> Path:
+        """The worker outcome plugin, installed in every agent's profile."""
+        return self.profile_dir(agent_id) / "plugins" / "nova-outcome"
+
     def knowledge_config_path(self, agent_id: str) -> Path:
         """Which corpora this agent may search, read by the knowledge plugin."""
         return self.profile_dir(agent_id) / "nova-knowledge.json"

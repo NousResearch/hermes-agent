@@ -3,7 +3,9 @@
 This file is **copied verbatim** into each agent's profile as the plugin entry point. It
 runs inside a worker process, not inside NOVA, so it imports nothing from NOVA and
 nothing from the runtime — only the standard library and its sibling ``_decide`` module,
-which is a verbatim copy of :mod:`nova.policy.decide`.
+which is a verbatim copy of :mod:`nova.policy.decide`. (One exception, and it is not on the
+enforcement path: :func:`on_session_start` records a refused task on the board through the
+runtime's own API, best-effort.)
 
 It implements ``pre_tool_call``, the runtime's documented policy hook: returning
 ``{"action": "block", "message": ...}`` vetoes a call, and ``{"action": "approve", ...}``
@@ -20,15 +22,23 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 try:  # installed layout: the copied decision module sits beside this file
-    from ._decide import ALLOW, DENY, REQUIRE_APPROVAL, decide
+    from ._decide import (
+        ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, REFUSED_TASK_TOOLS, REQUIRE_APPROVAL,
+        Decision, decide, decide_acceptance, decide_assignment,
+    )
 except ImportError:  # in-tree layout, for tests that import this module directly
-    from nova.policy.decide import ALLOW, DENY, REQUIRE_APPROVAL, decide
+    from nova.policy.decide import (
+        ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, REFUSED_TASK_TOOLS, REQUIRE_APPROVAL,
+        Decision, decide, decide_acceptance, decide_assignment,
+    )
 
 #: Written beside the profile's configuration by the runtime adapter.
 POLICY_FILENAME = "nova-policy.json"
@@ -71,6 +81,88 @@ def _load_policy() -> Optional[Dict[str, Any]]:
         policy = None
     _CACHE["policy"] = policy
     return policy
+
+
+#: A profile name as the runtime allows it. Checked before a name read from the board is
+#: used to build a path, so a task row can never point this plugin outside the profiles.
+_PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def _sibling_policy(agent: str) -> Optional[Dict[str, Any]]:
+    """Another agent's compiled policy, if ``agent`` is a NOVA agent on this host.
+
+    Read from the sibling profile rather than copied into this one, so a change to the
+    delegating agent's declaration is in force the moment that agent is re-applied.
+    """
+    if not agent or ".." in agent or not _PROFILE_NAME.match(agent):
+        return None
+    path = Path(__file__).resolve().parents[3] / agent / POLICY_FILENAME
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _task_origin(task_id: str) -> tuple[str, bool]:
+    """``(authorizer, via_decomposer)`` for a task, read from the board without writing.
+
+    The creator is answerable for an ordinary task. A child the runtime's decomposer made
+    carries the decomposer as its creator, which answers for nothing; the card it was split
+    from does — its original assignee (the agent that owned the work), else its creator.
+    """
+    db = os.environ.get("HERMES_KANBAN_DB", "")
+    connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    try:
+        row = connection.execute("SELECT created_by FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise LookupError(f"task {task_id} is not on the board")
+        created = connection.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created' ORDER BY id LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        root = (json.loads(created[0] or "{}") if created else {}).get("from_decompose_of")
+        if not root:
+            return row[0] or "", False
+        root_row = connection.execute("SELECT created_by FROM tasks WHERE id = ?", (root,)).fetchone()
+        root_created = connection.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created' ORDER BY id LIMIT 1",
+            (root,),
+        ).fetchone()
+        owner = (json.loads(root_created[0] or "{}") if root_created else {}).get("assignee")
+        return owner or (root_row[0] if root_row else "") or "", True
+    finally:
+        connection.close()
+
+
+def _acceptance(policy: Dict[str, Any]) -> Optional[Decision]:
+    """Whether this worker may do the task it was spawned for. None outside a task.
+
+    Decided once per process — a worker is spawned for exactly one task — and it fails
+    closed: a task whose origin cannot be read is refused, not assumed to be fine.
+    """
+    if "acceptance" in _CACHE:
+        return _CACHE["acceptance"]
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    decision: Optional[Decision] = None
+    if task_id:
+        try:
+            authorizer, via_decomposer = _task_origin(task_id)
+            decision = decide_acceptance(
+                policy,
+                authorizer=authorizer,
+                authorizer_policy=_sibling_policy(authorizer),
+                via_decomposer=via_decomposer,
+            )
+        except Exception as exc:  # noqa: BLE001 — an unreadable origin is not a permitted one
+            decision = Decision(
+                DENY,
+                f"could not establish who assigned task {task_id} ({type(exc).__name__}); "
+                "refusing rather than working a task no delegation may cover",
+                rule="origin-unreadable",
+            )
+    _CACHE["acceptance"] = decision
+    return decision
 
 
 def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
@@ -127,7 +219,23 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, **
     global _CALLS_USED
     try:
         policy = _load_policy()
+        # A task no declared delegation put on this agent's queue is not worked at all:
+        # every tool but the ones that read the card and refuse it is closed.
+        acceptance = _acceptance(policy) if policy is not None else None
+        if acceptance is not None and acceptance.effect == DENY and tool_name not in REFUSED_TASK_TOOLS:
+            _record(policy, Decision(DENY, acceptance.reason, tool=tool_name, rule=acceptance.rule), tool_name)
+            return {
+                "action": "block",
+                "message": (
+                    f"BLOCKED by NOVA delegation policy: {acceptance.reason}. Do not do this "
+                    "task. Call kanban_block with this reason so a person can route it."
+                ),
+            }
         decision = decide(policy, tool_name, calls_used=_CALLS_USED)
+        if tool_name == ASSIGNING_TOOL and decision.effect in (ALLOW, REQUIRE_APPROVAL):
+            assignment = decide_assignment(policy, (args or {}).get(ASSIGNEE_ARG))
+            if assignment.effect == DENY:
+                decision = assignment
     except Exception as exc:  # noqa: BLE001 — a policy bug must never permit a call
         return {
             "action": "block",
@@ -181,3 +289,36 @@ def register(ctx: Any) -> None:
     registration itself.
     """
     ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_hook("on_session_start", on_session_start)
+
+
+def on_session_start(**_: Any) -> None:
+    """Refuse an undelegated task on the board before the agent spends a turn on it.
+
+    The tool hook above is the enforcement and needs nothing from the runtime. This only
+    makes the refusal *durable*: the task is blocked with the reason, through the runtime's
+    own API — the same call its goal loop makes — so the board shows why, and the
+    dispatcher does not re-run a task that will be refused every time. Best-effort by
+    design: if it cannot write, the tool hook still stops the work.
+    """
+    try:
+        policy = _load_policy()
+        acceptance = _acceptance(policy) if policy is not None else None
+        if acceptance is None or acceptance.effect != DENY or _CACHE.get("refusal_recorded"):
+            return
+        _CACHE["refusal_recorded"] = True
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+
+        task_id = os.environ["HERMES_KANBAN_TASK"]
+        raw_run = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+        with kbc.connect_closing() as connection:
+            kb.block_task(
+                connection, task_id,
+                reason=f"NOVA delegation policy: {acceptance.reason}",
+                kind="capability",
+                expected_run_id=int(raw_run) if raw_run.isdigit() else None,
+            )
+        _record(policy, Decision(DENY, acceptance.reason, tool="(task)", rule=acceptance.rule), "(task)")
+    except Exception:  # noqa: BLE001 — recording the refusal must never break the worker
+        pass

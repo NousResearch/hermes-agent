@@ -80,19 +80,36 @@ only "refused" has to go and read three YAML files to find out why.
 
 ## The boundary of that claim
 
-Stated here because it belongs next to the claim, not in a footnote:
+Stated here because it belongs next to the claim, not in a footnote.
 
-**NOVA governs the work NOVA submits.** Three things are outside it:
+When this phase shipped, **NOVA governed only the work NOVA submitted.** An agent creating a
+task for another agent, and the runtime's own decomposer routing a triage card's children,
+both put work on any queue on the host. That gap is now closed on the **receiving** side,
+inside the worker (`nova/policy/decide.py::decide_acceptance`, enforced by the policy plugin):
 
-1. A human running `hermes kanban create --assignee finance` directly.
-2. The runtime's own decomposer, which routes the children of a triage card.
-3. An agent delegating in-session through the runtime's own delegation tools.
+| Who put the task there | Accepted when |
+|---|---|
+| NOVA's supervisor | always — its routing was checked before it wrote |
+| the agent itself | always |
+| another NOVA agent | that agent's `may_assign_to` names the receiver |
+| the runtime's decomposer | the **card's owner** (its original assignee, else its creator) is a NOVA agent whose `may_assign_to` names the receiver. A card no agent owns is refused: nobody's declaration covers a model's routing choice |
+| a person (CLI, dashboard) | always — delegation governs agents, not operators |
 
-For (2), a step may opt in with `decompose: true`. NOVA records that the step's children are
-routed by the runtime, `RoutingDecision.ungoverned_steps` names them, and the routing
-decision carries a warning saying so. Claiming those children were governed would be exactly
-the control that looks present in a review and does nothing — which is the thing this phase
-was built to remove, not to add somewhere else.
+A refused task has every tool closed except `kanban_block`, `kanban_show`, `kanban_comment` and
+`kanban_heartbeat`, and is blocked on the board with the reason before the agent's first turn.
+The **creating** side is checked too: `kanban_create` for an undeclared assignee is refused.
+
+What remains outside, stated plainly:
+
+1. **The creator field is trusted.** The check reads `created_by` from the board. An agent with
+   a shell and write access to `kanban.db` could forge it; agents that must not do that must
+   not have `terminal` (the example denies it).
+2. **In-session subagents** (`delegate_task`) run in the delegating agent's own profile and
+   policy, so they are not a cross-agent assignment; their limits are `limits.delegation`.
+
+For a step with `decompose: true`, `RoutingDecision.ungoverned_steps` still names it at
+submission — NOVA cannot know the children in advance — but its children are now held to the
+step owner's declaration when they run.
 
 ---
 
@@ -171,7 +188,8 @@ store which columns it has and selects the intersection; the defensive accessors
 ## Known limitations
 
 - **Declared plans, not generated ones.** NOVA does not decompose. A step needing it delegates
-  to the runtime's decomposer and is marked ungoverned.
+  to the runtime's decomposer; its children are checked against the step owner's delegation
+  when they run, not when they are created.
 - **No scheduling.** An objective is submitted when someone submits it. Recurrence is the
   runtime's `cron/` or an external scheduler.
 - **No cross-objective concurrency control.** Two objectives can both queue work for one

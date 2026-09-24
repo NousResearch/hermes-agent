@@ -515,6 +515,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         else:
             logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
         return True
+    if evt_type == "heartbeat" and not registry.heartbeat_is_current(evt):
+        return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
         return True
     text = fmt(evt)

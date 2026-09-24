@@ -123,7 +123,10 @@ describe('task attachment compatibility', () => {
     const save = vi.fn().mockResolvedValue({ saved: true })
     vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
     setApiRequestConnection('local')
-    detail = { ...legacyDetail, attachments: [{ id: 7, filename: 'notes.txt', stored_path: '/home/me/.hermes/kanban/notes.txt' }] }
+    detail = {
+      ...legacyDetail,
+      attachments: [{ id: 7, filename: 'notes.txt', stored_path: '/home/me/.hermes/kanban/notes.txt' }]
+    }
     openDrawer()
     const download = await screen.findByRole('button', { name: 'Download notes.txt' })
     setApiRequestConnection('remote-host')
@@ -152,7 +155,11 @@ describe('task attachment compatibility', () => {
     const button = await screen.findByRole('button', { name: 'Download gone.md' })
     fireEvent.click(button)
     await waitFor(() =>
-      expect($notifications.get()[0]).toMatchObject({ kind: 'error', message: 'File not found', title: 'Download failed' })
+      expect($notifications.get()[0]).toMatchObject({
+        kind: 'error',
+        message: 'File not found',
+        title: 'Download failed'
+      })
     )
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
     save.mockResolvedValueOnce({ saved: true })

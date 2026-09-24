@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ComposerAttachment } from './composer'
 import {
@@ -13,6 +13,7 @@ import {
   parkQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
+  sanitizePersistedQueueState,
   shouldAutoDrain,
   unparkQueuedPrompts,
   updateQueuedPrompt,
@@ -21,6 +22,7 @@ import {
 
 const SESSION_KEY = 'session-abc'
 const QUEUE_STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
+const DAY_MS = 24 * 60 * 60 * 1000
 
 function attachment(id: string, kind: ComposerAttachment['kind'] = 'file'): ComposerAttachment {
   return {
@@ -30,6 +32,54 @@ function attachment(id: string, kind: ComposerAttachment['kind'] = 'file'): Comp
     refText: `@file:${id}`
   }
 }
+
+describe('sanitizePersistedQueueState', () => {
+  it('drops expired turns while preserving fresh valid entries', () => {
+    const now = Date.UTC(2026, 8, 1)
+
+    const fresh = {
+      attachments: [],
+      displayKind: 'hidden' as const,
+      id: 'queued-fresh',
+      queuedAt: now - DAY_MS,
+      text: 'fresh setup note'
+    }
+
+    const expired = {
+      attachments: [attachment('old-image', 'image')],
+      id: 'queued-expired',
+      queuedAt: now - 8 * DAY_MS,
+      text: 'stale retry'
+    }
+
+    expect(
+      sanitizePersistedQueueState(
+        {
+          'session-expired': [expired],
+          'session-fresh': [fresh]
+        },
+        now
+      )
+    ).toEqual({ 'session-fresh': [fresh] })
+  })
+
+  it('writes the sanitized queue back during persisted-state load', async () => {
+    const now = Date.now()
+    const fresh = { attachments: [], id: 'fresh', queuedAt: now, text: 'send me' }
+    const expired = { attachments: [], id: 'expired', queuedAt: now - 8 * DAY_MS, text: 'do not retry' }
+
+    window.localStorage.setItem(
+      QUEUE_STORAGE_KEY,
+      JSON.stringify({ 'session-expired': [expired], 'session-fresh': [fresh] })
+    )
+    vi.resetModules()
+
+    const reloaded = await import('./composer-queue')
+
+    expect(reloaded.$queuedPromptsBySession.get()).toEqual({ 'session-fresh': [fresh] })
+    expect(JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!)).toEqual({ 'session-fresh': [fresh] })
+  })
+})
 
 describe('composer queue store', () => {
   beforeEach(() => {

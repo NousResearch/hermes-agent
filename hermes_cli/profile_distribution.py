@@ -396,6 +396,7 @@ def _replace_entry(src: Path, dest: Path) -> None:
 def _merge_cron_store(src: Path, dest: Path) -> None:
     """Merge a distribution's cron store by job id; new jobs arrive paused."""
     from cron import jobs as cron_jobs
+    from cron.job_definition import merge_job_definition
 
     try:
         with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
@@ -421,9 +422,9 @@ def _merge_cron_store(src: Path, dest: Path) -> None:
             merged = []
             for local in cron_jobs.load_jobs():
                 incoming = shipped.pop(local.get("id"), None)
-                merged.append(local if incoming is None else cron_jobs.merge_job_definition(local, incoming))
+                merged.append(local if incoming is None else merge_job_definition(local, incoming))
             merged.extend(
-                cron_jobs.merge_job_definition({"id": job_id, **new_state}, incoming)
+                merge_job_definition({"id": job_id, **new_state}, incoming)
                 for job_id, incoming in shipped.items()
             )
             cron_jobs.save_jobs(merged)

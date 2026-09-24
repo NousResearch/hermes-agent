@@ -420,6 +420,7 @@ def _configure_quiet_agent(agent) -> None:
     agent.quiet_mode = True
     agent.suppress_status_output = True
     agent.stream_delta_callback = None
+    agent.interim_assistant_callback = None
     agent.tool_gen_callback = None
     agent.reasoning_callback = None
     # The diff/progress callbacks print directly and are gated by neither quiet_mode nor

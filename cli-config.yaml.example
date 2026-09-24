@@ -1851,14 +1851,16 @@ display:
   cleanup_progress: false
 
   # Natural mid-turn assistant updates.
-  # On gateway platforms, when true, completed assistant status messages are
-  # sent as separate chat messages. On the Desktop app, when true, mid-turn
-  # assistant narration streamed between tool calls is kept in the transcript
-  # instead of the bubble collapsing to only the final message on completion.
-  # Independent of tool_progress and gateway streaming.
-  #   true:  Keep/send mid-turn assistant updates (default; off on platforms
-  #          that cannot edit messages)
-  #   false: Only keep/send the final response
+  # In the classic CLI, when true, completed updates render in scrollback
+  # between tool calls. On gateway platforms they are sent as separate chat
+  # messages. On the Desktop app they remain in the transcript instead of the
+  # bubble collapsing to only the final message on completion.
+  # Independent of tool_progress and streaming.
+  #   true:  Show/keep/send mid-turn assistant updates (default; some platforms
+  #          disable it when they cannot edit messages)
+  #   false: Only show/keep/send the final response
+  # Leave this unset globally to preserve per-platform defaults; configure it
+  # under display.platforms.<platform> to override one messaging platform.
   # interim_assistant_messages: true
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry

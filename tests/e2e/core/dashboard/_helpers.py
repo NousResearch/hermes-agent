@@ -145,6 +145,27 @@ class Sandbox:
         for p in self.profiles.values():
             if p.srv is not None:
                 p.srv.stop()
+        reap_sandbox(self.home)
+
+
+def reap_sandbox(home: Path) -> list[int]:
+    """SIGKILL every process whose environment points HOME into this sandbox.
+
+    Detached children (``hermes gateway restart`` spawned by a dashboard action, keep-alive PTY
+    helpers) start their own session and escape the dashboard's process group; without this a
+    regression that lets such a route fire would leak processes past the test."""
+    needle = f"HOME={home}".encode()
+    killed = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            if needle in (entry / "environ").read_bytes().split(b"\0"):
+                os.kill(int(entry.name), signal.SIGKILL)
+                killed.append(int(entry.name))
+        except (OSError, ProcessLookupError):
+            continue
+    return killed
 
 
 def write_profile_home(p: Profile, extra_config: dict[str, Any] | None = None) -> None:

@@ -44,6 +44,16 @@ def _usage_provider_identity(session: dict) -> tuple[str, str, Any]:
 
 def _usage_provider_lines(session: dict) -> tuple[list[str], list[str]]:
     """Return bounded, fail-open provider account and rate-limit lines."""
+    from tui_gateway.server import _session_profile_runtime_scope
+
+    # The RPC's registered handler is the _session_method wrapper, not a
+    # _profile_scoped wrapper. Bind before resolving config and copy that exact
+    # scope into the quota worker (including profile credentials).
+    with _session_profile_runtime_scope(session, hydrate_secrets=False):
+        return _scoped_usage_provider_lines(session)
+
+
+def _scoped_usage_provider_lines(session: dict) -> tuple[list[str], list[str]]:
     account_lines: list[str] = []
     rate_limit_lines: list[str] = []
     provider, base_url, api_key = _usage_provider_identity(session)

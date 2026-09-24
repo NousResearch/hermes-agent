@@ -145,7 +145,9 @@ def test_slow_usage_endpoint_does_not_block_rpc_reader(usage_runtime, monkeypatc
         def write(self, frame):
             frames.put(frame)
 
-    params = {"session_id": "usage-integration", "command": "usage"}
+    params = {"session_id": "usage-integration"}
+    if method == "slash.exec":
+        params["command"] = "usage"
     try:
         assert runtime.server.dispatch({"id": 1, "method": method, "params": params}, Transport()) is None
         assert runtime.entered.wait(5), "real account request never started"

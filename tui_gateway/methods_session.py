@@ -1263,7 +1263,6 @@ def _(rid, params: dict) -> dict:
 
 
 # ── usage ────────────────────────────────────────────────────────────
-@_profile_scoped
 @_session_method("session.usage")
 def _(rid, params: dict, session: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)

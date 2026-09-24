@@ -11,12 +11,19 @@
 //
 // These helpers are pure so they can be unit-tested without Electron.
 
+import { resolveProfileId, type ProfileIdCandidate } from './profile-id'
+
 /**
  * Build the canonical headless backend argv (always `serve`).
  * @param {string} [profile] optional Hermes profile to pin via `--profile`.
+ * @param {ProfileIdCandidate[]} [candidates] local profile directories + their
+ *   `display_name` labels. A LABEL is resolved to its directory here: the
+ *   backend parses `--profile <value>` as a profile name, so handing it a label
+ *   ('SmartHome' for `profiles/smarthome`) exits 2 before any port announce.
  */
-export function serveBackendArgs(profile?: string) {
-  const head = profile ? ['--profile', profile] : []
+export function serveBackendArgs(profile?: string, candidates?: readonly ProfileIdCandidate[]) {
+  const id = profile ? resolveProfileId(profile, candidates) : ''
+  const head = id ? ['--profile', id] : []
 
   return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
 }

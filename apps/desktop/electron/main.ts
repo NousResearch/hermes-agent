@@ -61,7 +61,7 @@ import {
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
-import { dashboardFallbackArgs } from './backend-command'
+import { dashboardFallbackArgs, serveBackendArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
 import {
@@ -375,6 +375,7 @@ import {
   profileNameFromDeleteRequest,
   resolveRouteProfile
 } from './profile-delete-routing'
+import { readProfileIdCandidates, resolveProfileId } from './profile-id'
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
 import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
@@ -11419,6 +11420,15 @@ function primaryProfileKey() {
   return primaryProfilePin.resolve(readActiveDesktopProfile)
 }
 
+// The profile directories that exist on this box, with the `profile.yaml`
+// display_name that labels each one. The spawn path treats a display_name as an
+// ALIAS for its directory, never as a profile name of its own — see
+// profile-id.ts. Advisory only: an unreadable listing returns [] and the caller
+// keeps the name it was given.
+function localProfileIdCandidates(): ReturnType<typeof readProfileIdCandidates> {
+  return readProfileIdCandidates(path.join(HERMES_HOME, 'profiles'))
+}
+
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
 function profileRouteOptions(profile, request?) {
   const config = readDesktopConnectionConfig()
@@ -11457,7 +11467,17 @@ async function ensureBackend(
   } = {}
 ) {
   localBackendLifecycle.assertCanStart()
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const requested = profile && String(profile).trim() ? String(profile).trim() : ''
+  // The profile's IDENTITY is its directory name; `profile.yaml`'s display_name
+  // is a label the UI renders. Callers hand this seam whatever name they hold
+  // (a roster label, a remembered name, a session's profile), so resolve a
+  // non-id-shaped name back to its directory BEFORE it becomes a pool key or a
+  // `--profile` value — a label there starts a child for a profile that does not
+  // exist and exits 2 (`invalid choice`). The `PROFILE_NAME_RE` gate keeps the
+  // hot path I/O-free: a canonical id can only ever resolve to itself.
+  const key = requested
+    ? resolveProfileId(requested, PROFILE_NAME_RE.test(requested) ? [] : localProfileIdCandidates())
+    : primaryProfileKey()
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   poolRetirer.assertCanOpen(key, spawnPriority)
   const passive = Boolean(opts.passive)
@@ -12696,7 +12716,9 @@ async function runPoolBackendStart(
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
+  // `profile` is a canonical id by the time it reaches here (ensureBackend
+  // resolved it); serveBackendArgs re-checks so no caller can pass a label.
+  const backendArgs = serveBackendArgs(profile)
 
   const backend = await ensureRuntime(await resolveHermesBackend(backendArgs), () =>
     assertPoolEntryStillOwned(poolKey, entry)
@@ -13406,17 +13428,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
-    // unaffected.
+    // unaffected. The value is the profile's DIRECTORY name (readActive()
+    // already rejects anything that is not one).
     const activeProfile = readActiveDesktopProfile()
-
-    if (activeProfile) {
-      backendArgs.unshift('--profile', activeProfile)
-    }
+    const backendArgs = serveBackendArgs(activeProfile ?? undefined, localProfileIdCandidates())
 
     const setup = await runPrimaryBackendStartup({
       signal: localBackendLifecycle.signal,

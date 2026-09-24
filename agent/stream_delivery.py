@@ -52,6 +52,9 @@ class StreamDeliveryMixin:
         """
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+        # Inline <think> text is forwarded to the reasoning pane only while no native reasoning delta
+        # arrived for this model response (#89647).
+        self._native_reasoning_streamed = False
         # Next stream re-reads plugins.stream_reasoning_deltas (config edits land per request).
         self._stream_reasoning_hooks_enabled = None
 
@@ -72,10 +75,6 @@ class StreamDeliveryMixin:
         if think_scrubber is not None:
             think_tail = think_scrubber.flush()
             deliver(ctx_scrubber.feed(think_tail) if think_tail and ctx_scrubber is not None else think_tail)
-            # Inline reasoning recovered for reasoning_content is per model response (#89647).
-            clear_reasoning = getattr(think_scrubber, "clear_reasoning", None)
-            if callable(clear_reasoning):
-                clear_reasoning()
         if ctx_scrubber is not None:
             deliver(ctx_scrubber.flush())
         self._current_streamed_assistant_text = ""
@@ -308,6 +307,11 @@ class StreamDeliveryMixin:
             # See #5719.
             scrubber = getattr(self, "_stream_context_scrubber", None)
             text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+            # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so the
+            # live reasoning pane would stay empty; forward what the scrubber stripped instead (#89647).
+            hidden = think_scrubber.last_hidden if think_scrubber is not None else ""
+            if hidden and not getattr(self, "_native_reasoning_streamed", False):
+                self._fire_reasoning_delta(hidden, inline=True)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).
@@ -320,8 +324,13 @@ class StreamDeliveryMixin:
         if delivered:
             self._record_streamed_assistant_text(text)
 
-    def _fire_reasoning_delta(self, text: str) -> None:
-        """Fire reasoning callback if registered; superseded writers are fenced like content deltas."""
+    def _fire_reasoning_delta(self, text: str, *, inline: bool = False) -> None:
+        """Fire reasoning callback if registered; superseded writers are fenced like content deltas.
+
+        ``inline`` marks text recovered from ``<think>`` blocks in content; any other call is a native
+        provider reasoning delta and stops inline forwarding for the rest of this model response."""
+        if not inline:
+            self._native_reasoning_streamed = True
         if self._stream_writer_superseded():
             # Single-writer guard (#65991): fence out a superseded stream's reasoning deltas the same way as
             # content deltas.

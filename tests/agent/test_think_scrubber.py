@@ -182,25 +182,3 @@ class TestRealisticStreaming:
         s = StreamingThinkScrubber()
         deltas = ["Hello ", "world ", "how ", "are ", "you?"]
         assert _drive(s, deltas) == "Hello world how are you?"
-
-
-
-class TestReasoningCollection:
-    """The scrubber collects stripped reasoning for structured fields (#89647)."""
-
-    def test_streamed_blocks_rejoin_verbatim_and_tags_are_removed(self) -> None:
-        s = StreamingThinkScrubber()
-        visible = _drive(s, ["<think>", "Let me check", " their config", "</think>", "Done. ",
-                             "<thinking>plan</thinking>ok"])
-        assert visible == "Done. ok"
-        assert s.reasoning() == "Let me check their config\nplan"
-
-    def test_per_request_reset_drops_previous_response_reasoning(self) -> None:
-        from agent.stream_delivery import StreamDeliveryMixin
-
-        agent = StreamDeliveryMixin.__new__(StreamDeliveryMixin)
-        agent._stream_think_scrubber = StreamingThinkScrubber()
-        agent._stream_context_scrubber = None
-        agent._stream_think_scrubber.feed("<think>first call</think>hi")
-        agent._reset_stream_delivery_tracking()
-        assert agent._stream_think_scrubber.reasoning() == ""

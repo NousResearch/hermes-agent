@@ -3194,13 +3194,12 @@ class _StreamingCall(StreamingWaitMonitor):
         args or stamping "stop"."""
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
-        if not full_reasoning:
-            # Providers that inline reasoning (MiniMax-M3 streams <think>…</think> in content) never
-            # send a reasoning delta — recover what the think scrubber stripped so the structured
-            # reasoning_content field stays populated (#89647).
-            think_scrubber = getattr(self.agent, "_stream_think_scrubber", None)
-            if think_scrubber is not None:
-                full_reasoning = think_scrubber.reasoning() or None
+        if not full_reasoning and full_content:
+            # Inline-reasoning providers (MiniMax-M3 streams <think>…</think> in content) send no
+            # reasoning delta; fill the structured field from the raw content (#89647).
+            from agent.agent_runtime_helpers import extract_reasoning
+
+            full_reasoning = extract_reasoning(self.agent, SimpleNamespace(content=full_content))
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:

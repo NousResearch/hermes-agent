@@ -23,13 +23,6 @@ THINK_TAG_NAMES: Tuple[str, ...] = ("think", "thinking", "reasoning", "thought",
 THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
 THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 
-# Tag markup stripped by reasoning(); matches every variant the scrubber
-# recognizes (open, close, case-insensitive).
-_THINK_TAG_RE = re.compile(
-    r"<\s*/?\s*(?:" + "|".join(THINK_TAG_NAMES) + r")\s*>",
-    re.IGNORECASE,
-)
-
 
 class StreamingThinkScrubber:
     """Stateful scrubber for streaming reasoning/thinking blocks.
@@ -44,8 +37,6 @@ class StreamingThinkScrubber:
     _CLOSE_TAGS: Tuple[str, ...] = THINK_CLOSE_TAGS
     _ALL_TAGS: Tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
     _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
-    # Separates collected reasoning blocks; streamed pieces of one block rejoin verbatim.
-    _BLOCK_END: str = "\x00"
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
     _ORPHAN_CLOSE_RE = re.compile(
         "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")[ \t\n\r]*", re.IGNORECASE
@@ -59,7 +50,8 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
-        self._reasoning_parts: list[str] = []
+        # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
+        self.last_hidden: str = ""
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
@@ -70,24 +62,22 @@ class StreamingThinkScrubber:
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion ("" when it is all reasoning or held back)."""
+        self.last_hidden = ""
         if not text:
             return ""
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
+        hidden: list[str] = []
 
         while buf:
             if self._in_block:
                 close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
                 if close_idx == -1:
-                    # No close yet: hold back a possible partial close-tag prefix; collect
-                    # the rest as reasoning (#89647).
-                    discard = self._hold_partial(buf, self._CLOSE_TAGS)
-                    if discard:
-                        self._reasoning_parts.append(discard)
+                    # No close yet: hold back a possible partial close-tag prefix; the rest is reasoning.
+                    hidden.append(self._hold_partial(buf, self._CLOSE_TAGS))
                     break
-                # Found close: collect block content as reasoning (#89647).
-                self._reasoning_parts.append(buf[:close_idx] + self._BLOCK_END)
+                hidden.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
                 continue
@@ -99,8 +89,8 @@ class StreamingThinkScrubber:
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
                 self._emit(out, buf[:pair[0]])
-                # Collect the stripped pair (tags removed by reasoning()) (#89647).
-                self._reasoning_parts.append(buf[pair[0]:pair[1]] + self._BLOCK_END)
+                # Pair tags are exact ``<name>``/``</name>``: inner text sits between them.
+                hidden.append(buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
                 buf = buf[pair[1]:]
                 continue
             if open_idx != -1:
@@ -114,6 +104,7 @@ class StreamingThinkScrubber:
             self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
             break
 
+        self.last_hidden = "".join(hidden)
         return "".join(out)
 
     def _hold_partial(self, buf: str, tags: Tuple[str, ...]) -> str:
@@ -127,27 +118,11 @@ class StreamingThinkScrubber:
         partial reasoning is worse than a truncated answer), otherwise the tail is emitted verbatim.
         Always resets the boundary flag — intra-turn retries flush then stream again without ``reset()``,
         and a stale False flag made the new stream's opening ``<think>`` look mid-line."""
-        if self._in_block:
-            self._reasoning_parts.append(self._buf + self._BLOCK_END)
         tail = "" if self._in_block else self._buf
         self._buf = ""
         self._in_block = False
         self._last_emitted_ended_newline = True
         return self._strip_orphan_close_tags(tail) if tail else ""
-
-    def reasoning(self) -> str:
-        """Reasoning text stripped from streamed content so far, tag markup removed ("" when none).
-
-        Lets callers populate a structured ``reasoning_content`` field for providers (e.g. MiniMax-M3)
-        that inline reasoning instead of returning a reasoning delta (#89647).
-        """
-        blocks = _THINK_TAG_RE.sub("", "".join(self._reasoning_parts)).split(self._BLOCK_END)
-        return "\n".join(t for t in (b.strip() for b in blocks) if t)
-
-    def clear_reasoning(self) -> None:
-        """Drop collected reasoning. Called per model request so one API call's inline reasoning
-        does not bleed into the next call's ``reasoning_content`` within the same turn."""
-        self._reasoning_parts = []
 
     # ── internal helpers ───────────────────────────────────────────────
 

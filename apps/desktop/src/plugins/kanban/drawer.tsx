@@ -893,7 +893,13 @@ export function TaskDrawer({
   const commentMut = useMutation({
     mutationFn: (body: string) => addComment(id!, body),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
-    onSuccess: invalidate
+    onSuccess: result => {
+      if (result.move_error) {
+        host.notify({ kind: 'warning', message: result.move_error })
+      }
+
+      invalidate()
+    }
   })
 
   // "Note & requeue" for a running task: post the note, then reclaim so the
@@ -901,8 +907,10 @@ export function TaskDrawer({
   // replacement for the block → comment → unblock dance.
   const requeueMut = useMutation({
     mutationFn: async (body: string) => {
-      await addComment(id!, body)
-      await reclaimTask(id!)
+      // A board `comment_moves_to` move already took it off the worker.
+      if (!(await addComment(id!, body)).moved_to) {
+        await reclaimTask(id!)
+      }
     },
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: () => {

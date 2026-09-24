@@ -319,8 +319,15 @@ export const bulkTasks = (ids: string[], patch: Record<string, unknown>) =>
     })
   )
 
+/** The board's `comment_moves_to` may move the card like a drag would, so a
+ *  comment nudges too. `move_error` is the refused drag's text. */
 export const addComment = (id: string, body: string) =>
-  call(withBoard(`/tasks/${id}/comments`), { method: 'POST', body: { author: 'desktop', body } })
+  nudged(
+    call<{ moved_to?: null | string; move_error?: string }>(withBoard(`/tasks/${id}/comments`), {
+      method: 'POST',
+      body: { author: 'desktop', body }
+    })
+  )
 
 export const reassignTask = (id: string, profile: string) =>
   nudged(call(withBoard(`/tasks/${id}/reassign`), { method: 'POST', body: { profile, reclaim_first: true } }))

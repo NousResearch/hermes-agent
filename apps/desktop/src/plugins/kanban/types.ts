@@ -151,6 +151,8 @@ export interface BoardMeta {
   /** First-class Project the board is scoped to (id) + resolved name. */
   project_id?: null | string
   project_name?: null | string
+  /** Status a human comment moves the task to (null = off). */
+  comment_moves_to?: null | string
 }
 
 /** POST /boards/{slug}/export — the archive the backend wrote. */

@@ -191,6 +191,8 @@ type KanbanMessages = {
   noProject: string
   projectHintPre: string
   projectHintCmd: string
+  commentMovesTo: string
+  dontMove: string
   createBoard: string
   // orchestration
   orchestratorProfile: string
@@ -407,6 +409,8 @@ export const en: KanbanMessages = {
   projectHintPre:
     'New tasks run in the project’s repo (a worktree per task); each task can still override its workspace at creation. Manage projects with ',
   projectHintCmd: 'hermes project',
+  commentMovesTo: 'On comment, move to',
+  dontMove: 'Don’t move',
   createBoard: 'Create board',
   orchestratorProfile: 'Orchestrator profile',
   defaultAssignee: 'Default assignee',
@@ -620,6 +624,8 @@ const ja: KanbanMessages = {
   projectHintPre:
     '新しいタスクはプロジェクトのリポジトリで実行されます（タスクごとに worktree）。各タスクは作成時にワークスペースを上書きできます。プロジェクトの管理は ',
   projectHintCmd: 'hermes project',
+  commentMovesTo: 'コメント時の移動先',
+  dontMove: '移動しない',
   createBoard: 'ボードを作成',
   orchestratorProfile: 'オーケストレータープロフィール',
   defaultAssignee: 'デフォルトの担当',
@@ -831,6 +837,8 @@ const zh: KanbanMessages = {
   projectHintPre:
     '新任务将在项目的仓库中运行（每个任务一个 worktree）；每个任务在创建时仍可覆盖其工作区。管理项目请使用 ',
   projectHintCmd: 'hermes project',
+  commentMovesTo: '评论后移至',
+  dontMove: '不移动',
   createBoard: '创建面板',
   orchestratorProfile: '编排者配置档',
   defaultAssignee: '默认负责人',
@@ -1041,6 +1049,8 @@ const zhHant: KanbanMessages = {
   projectHintPre:
     '新任務將在專案的儲存庫中執行（每個任務一個 worktree）；每個任務在建立時仍可覆寫其工作區。管理專案請使用 ',
   projectHintCmd: 'hermes project',
+  commentMovesTo: '留言後移至',
+  dontMove: '不移動',
   createBoard: '建立面板',
   orchestratorProfile: '編排者設定檔',
   defaultAssignee: '預設負責人',

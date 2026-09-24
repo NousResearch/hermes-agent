@@ -556,6 +556,8 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
+        # Status a human dashboard comment moves the task to; None = off.
+        "comment_moves_to": None,
         "created_at": None,
         "archived": False,
     }
@@ -578,10 +580,11 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    comment_moves_to: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
-    set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    set on first write. ``project_id``/``default_workdir``/``comment_moves_to``: ``None`` =
+    unchanged, "" = clear (``project_id``/``comment_moves_to`` are not validated here)."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -594,7 +597,9 @@ def write_board_metadata(
             meta[key] = str(value)
     if archived is not None:
         meta["archived"] = bool(archived)
-    for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
+    for key, value in (
+        ("default_workdir", default_workdir), ("project_id", project_id), ("comment_moves_to", comment_moves_to),
+    ):
         if value is not None:
             meta[key] = str(value) if value else None
     if not meta.get("created_at"):

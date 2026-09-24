@@ -578,6 +578,11 @@ _STATUS_HANDLERS: dict[str, Any] = {
     "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),
     "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage")}
 
+# Board ``comment_moves_to`` values: the ``_drag_to`` verbs, which accept a card from any
+# state. ``blocked``/``review`` only leave running/ready, ``done`` needs handoff evidence,
+# ``scheduled`` a wake-up time.
+_COMMENT_MOVE_TARGETS = ("triage", "todo", "ready")
+
 
 def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
     """Dispatch a status verb; raises ``_StatusRejected`` (user-facing message)
@@ -775,12 +780,22 @@ class CommentBody(BaseModel):
 
 @router.post("/tasks/{task_id}/comments")
 def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
+    """A human comment, then the board's ``comment_moves_to`` move through the drag PATCH path.
+    Worker/CLI comments write ``kanban_db.add_comment`` directly and never move the card."""
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
     with _board_conn(board) as (board, conn):
-        _require_task(conn, task_id)
+        task = _require_task(conn, task_id)
         kanban_db.add_comment(conn, task_id, author=payload.author or "dashboard", body=payload.body)
-        return {"ok": True}
+        target = kanban_db._board_meta_for(board).get("comment_moves_to")
+        if not target or target == task.status:
+            return {"ok": True, "moved_to": None}
+        try:
+            _patch_status(conn, task_id, UpdateTaskBody(status=target), review_assignee_deferred=False)
+        except HTTPException as exc:
+            # The comment stands; the refusal is the text a refused drag would show.
+            return {"ok": True, "moved_to": None, "move_error": exc.detail}
+        return {"ok": True, "moved_to": kanban_db.get_task(conn, task_id).status}
 
 
 class LinkBody(BaseModel):
@@ -1291,9 +1306,10 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
-    # For both fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
+    # For these fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
     default_workdir: Optional[str] = None
     project_id: Optional[str] = None
+    comment_moves_to: Optional[str] = None  # one of _COMMENT_MOVE_TARGETS
 
 
 # Board transfer exchanges filesystem PATHS, not bytes (same contract as profile export/import):
@@ -1430,8 +1446,11 @@ def create_board_endpoint(payload: CreateBoardBody):
 
 @router.patch("/boards/{slug}")
 def rename_board(slug: str, payload: RenameBoardBody):
-    """Update display metadata / default workdir / project scope (slug is immutable)."""
+    """Update display metadata / default workdir / project scope / comment move (slug is immutable)."""
     normed = _existing_board_slug(slug)
+    if payload.comment_moves_to and payload.comment_moves_to not in _COMMENT_MOVE_TARGETS:
+        raise HTTPException(
+            status_code=400, detail=f"comment_moves_to must be one of {', '.join(_COMMENT_MOVE_TARGETS)} or empty")
     # write_board_metadata treats a falsy value as "clear", so pass "" through.
     default_workdir: Optional[str] = None
     if payload.default_workdir is not None:
@@ -1447,7 +1466,8 @@ def rename_board(slug: str, payload: RenameBoardBody):
         else:
             project_id = ""  # clear the scope
     meta = kanban_db.write_board_metadata(
-        normed, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+        normed, default_workdir=default_workdir, project_id=project_id, comment_moves_to=payload.comment_moves_to,
+        **_board_display_kwargs(payload))
     return {"board": _annotate_board_meta(meta)}
 
 

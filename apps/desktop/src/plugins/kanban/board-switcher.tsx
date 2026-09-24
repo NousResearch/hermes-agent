@@ -48,11 +48,14 @@ import {
 } from './api'
 import { runExportBoardFlow, runImportBoardFlow } from './transfer'
 import type { BoardMeta } from './types'
-import { errText, FIELD_LABEL, useKanban } from './ui'
+import { columnLabel, errText, FIELD_LABEL, useKanban } from './ui'
 
 const NO_PROJECT = '__none__'
+const NO_MOVE = '__none__'
 /** Mirrors `kanban_db.DEFAULT_BOARD` — the board that always exists. */
 const DEFAULT_BOARD = 'default'
+/** The board's `comment_moves_to` choices; mirrors `_COMMENT_MOVE_TARGETS` in the plugin API. */
+const COMMENT_MOVE_TARGETS = ['triage', 'todo', 'ready']
 
 /** Board scope = a first-class Hermes project. Its primary repo becomes the
  *  board's default workspace root; new tasks inherit it as a worktree with a
@@ -253,6 +256,7 @@ function RenameBoardDialog({ board, onClose }: { board: BoardMeta | null; onClos
 function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
   const k = useKanban()
   const [project, setProject] = useState('')
+  const [moveTo, setMoveTo] = useState('')
   // Null while closed — see RenameBoardDialog on why this can't live inside
   // the mutation callback.
   const slug = board?.slug ?? ''
@@ -260,12 +264,14 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
   useEffect(() => {
     if (board) {
       setProject(board.project_id || '')
+      setMoveTo(board.comment_moves_to || '')
     }
   }, [board])
 
   // The name lives in the rename dialog; '' clears the scope, which also
-  // drops the mirrored default_workdir on the backend.
-  const save = useBoardWrite(() => updateBoard(slug, { project_id: project }), onClose)
+  // drops the mirrored default_workdir on the backend. '' also turns the
+  // comment move off.
+  const save = useBoardWrite(() => updateBoard(slug, { comment_moves_to: moveTo, project_id: project }), onClose)
 
   return (
     <BoardDialog
@@ -277,6 +283,22 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
       title={board ? k.boardSettingsFor(board.name || board.slug) : k.settingsDots}
     >
       <ProjectPicker onChange={setProject} value={project} />
+      <label className="flex flex-col gap-1">
+        <span className={FIELD_LABEL}>{k.commentMovesTo}</span>
+        <Select onValueChange={value => setMoveTo(value === NO_MOVE ? '' : value)} value={moveTo || NO_MOVE}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_MOVE}>{k.dontMove}</SelectItem>
+            {COMMENT_MOVE_TARGETS.map(name => (
+              <SelectItem key={name} value={name}>
+                {columnLabel(k, name)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
     </BoardDialog>
   )
 }

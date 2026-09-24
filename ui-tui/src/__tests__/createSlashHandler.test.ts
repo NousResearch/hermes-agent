@@ -168,6 +168,24 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it.each(['hidden', 'no', 'false', '0'])('normalizes /statusbar %s to canonical off before RPC', async value => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(`/statusbar ${value}`)).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'statusbar', value: 'off' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('status bar off')
+    })
+  })
+
+  it('rejects an unknown /statusbar value without calling the RPC', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/statusbar sideways')).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /statusbar [on|off|top|bottom|toggle]')
+  })
+
   it('keeps typed /model switches session-scoped by default', async () => {
     patchUiState({ sid: 'sid-abc' })
 

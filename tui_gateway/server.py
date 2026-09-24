@@ -1740,6 +1740,7 @@ def _write_config_key(key_path: str, value):
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
+_STATUSBAR_HIDDEN_ALIASES = frozenset({"0", "false", "hidden", "no", "off"})
 _APPROVAL_MODES = frozenset({"manual", "smart", "off"})
 
 # Appearance switches the renderer owns but the AGENT must see (each gates a tool's `check_fn`). `config.set`
@@ -1761,7 +1762,18 @@ def _load_approval_mode() -> str:
 def _coerce_statusbar(raw) -> str:
     if raw is False:
         return "off"
-    return s if isinstance(raw, str) and (s := raw.strip().lower()) in _STATUSBAR_MODES else "top"
+    if not isinstance(raw, str):
+        return "top"
+    value = raw.strip().lower()
+    if value in _STATUSBAR_HIDDEN_ALIASES:
+        return "off"
+    return "top" if value == "on" else value if value in _STATUSBAR_MODES else "top"
+
+
+def _effective_statusbar_raw():
+    """Canonical statusbar wins when present; legacy TUI key remains a fallback."""
+    display = _display_cfg()
+    return display["statusbar"] if "statusbar" in display else display.get("tui_statusbar", "top")
 
 
 _MOUSE_TRACKING_ALIASES = {

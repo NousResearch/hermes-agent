@@ -1925,6 +1925,16 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     assert suggestion == "gateway.auto_multiplex_migration"
 
 
+def test_statusbar_is_a_recognized_unseeded_display_key():
+    """The classic CLI reads it, but seeding a default would shadow the legacy fallback."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert "statusbar" not in DEFAULT_CONFIG["display"]
+    assert _validate_config_key("display.statusbar") == (True, None)
+    assert _validate_config_key("display.statusbara")[0] is False
+
+
 def test_empty_dict_default_sections_are_open_containers():
     """``compression.model_thresholds.<model>`` / ``terminal.docker_env.<VAR>`` are free-form
     mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not be refused as

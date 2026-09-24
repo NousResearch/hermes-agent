@@ -616,7 +616,9 @@ export const coreCommands: SlashCommand[] = [
             ? 'top'
             : mode === 'off' || mode === 'bottom'
               ? mode
-              : null
+              : mode === 'hidden' || mode === 'no' || mode === 'false' || mode === '0'
+                ? 'off'
+                : null
 
       if (!next) {
         return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')

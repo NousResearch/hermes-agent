@@ -388,8 +388,9 @@ def _toggle_setters() -> dict:
         "battery": (_word, "display.battery",
                     {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False},
                     lambda: not bool(_display_cfg().get("battery", False)), on_off),
-        "statusbar": (_word, "display.tui_statusbar", {"on": "top", **{m: m for m in _STATUSBAR_MODES}},
-                      lambda: "top" if _coerce_statusbar(_display_cfg().get("tui_statusbar", "top")) == "off" else "off",
+        "statusbar": (_word, "display.statusbar", {"on": "top", **{m: m for m in _STATUSBAR_MODES},
+                                                      **{alias: "off" for alias in _STATUSBAR_HIDDEN_ALIASES}},
+                      lambda: "top" if _coerce_statusbar(_effective_statusbar_raw()) == "off" else "off",
                       lambda v: v),
         # _raw_word: falsy non-strings (0, False) reach the alias map as themselves (-> 'off'), not toggle.
         "mouse": (_raw_word, "display.mouse_tracking", _MOUSE_TRACKING_ALIASES,

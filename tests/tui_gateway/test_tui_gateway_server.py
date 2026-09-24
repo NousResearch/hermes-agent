@@ -8684,7 +8684,44 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
 
     assert resp["result"]["value"] == "bottom"
     saved = yaml.safe_load(cfg_path.read_text())
-    assert saved["display"]["tui_statusbar"] == "bottom"
+    assert saved["display"]["statusbar"] == "bottom"
+
+
+def test_config_set_statusbar_normalizes_classic_hidden_aliases_and_owns_canonical_key(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"display": {"statusbar": "hidden", "tui_statusbar": "bottom"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    for word in ("hidden", "no", "0", "false"):
+        resp = server.handle_request(
+            {"id": "1", "method": "config.set", "params": {"key": "statusbar", "value": word}}
+        )
+        assert resp["result"]["value"] == "off"
+        saved = yaml.safe_load(cfg_path.read_text())
+        assert saved["display"]["statusbar"] == "off"
+        assert saved["display"]["tui_statusbar"] == "bottom"
+
+    resp = server.handle_request(
+        {"id": "2", "method": "config.set", "params": {"key": "statusbar", "value": "top"}}
+    )
+    assert resp["result"]["value"] == "top"
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["display"]["statusbar"] == "top"
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: yaml.safe_load(cfg_path.read_text()))
+    get_resp = server.handle_request(
+        {"id": "3", "method": "config.get", "params": {"key": "statusbar"}}
+    )
+    assert get_resp["result"]["value"] == "top"
+
+    for word, expected in (("on", "top"), ("off", "off"), ("bottom", "bottom"), ("toggle", "off")):
+        resp = server.handle_request(
+            {"id": "4", "method": "config.set", "params": {"key": "statusbar", "value": word}}
+        )
+        assert resp["result"]["value"] == expected
+        assert yaml.safe_load(cfg_path.read_text())["display"]["statusbar"] == expected
 
 
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):

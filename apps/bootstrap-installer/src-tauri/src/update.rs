@@ -45,6 +45,25 @@ static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// fire-and-forget shape; progress arrives on the `bootstrap` event channel.
 #[tauri::command]
 pub async fn start_update(app: AppHandle) -> Result<(), String> {
+    // Retry (and the initial hand-off) must not enter acquire while a live
+    // foreign updater holds the marker. Identify that PID and stop here.
+    let marker = crate::paths::update_in_progress_marker();
+    let owner = live_marker_owner(&marker);
+    if let UpdateFailureRetryAction::StopOrWait { pid, age_secs } = update_failure_retry_action(
+        owner.as_ref().map(|owner| (owner.pid, owner.age_secs)),
+        std::process::id(),
+    ) {
+        let msg = live_updater_blocked_message(pid, age_secs);
+        emit(
+            &app,
+            BootstrapEvent::Failed {
+                stage: None,
+                error: msg.clone(),
+            },
+        );
+        return Err(msg);
+    }
+
     // Re-entrancy guard (see UPDATE_RUNNING). compare_exchange lets exactly one
     // caller flip false→true; any concurrent caller no-ops instead of spawning
     // a second racing update.
@@ -83,6 +102,55 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
         UPDATE_RUNNING.store(false, Ordering::SeqCst);
     });
     Ok(())
+}
+
+/// Foreign updater currently holding the marker. None when Retry may acquire.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LiveUpdateMarker {
+    pub pid: u32,
+    #[serde(rename = "ageSecs")]
+    pub age_secs: u64,
+}
+
+/// Identify the live marker PID without entering UpdateMarkerGuard::acquire.
+#[tauri::command]
+pub fn live_update_marker() -> Option<LiveUpdateMarker> {
+    let marker = crate::paths::update_in_progress_marker();
+    let owner = live_marker_owner(&marker);
+    match update_failure_retry_action(
+        owner.as_ref().map(|owner| (owner.pid, owner.age_secs)),
+        std::process::id(),
+    ) {
+        UpdateFailureRetryAction::StopOrWait { pid, age_secs } => Some(LiveUpdateMarker {
+            pid,
+            age_secs,
+        }),
+        UpdateFailureRetryAction::Acquire => None,
+    }
+}
+
+/// Stop the updater named by the live marker. Never acquires the lock.
+///
+/// If that PID is still alive afterwards, the error says so and the caller
+/// must wait. This does not fall through into start_update.
+#[tauri::command]
+pub fn stop_live_updater() -> Result<(), String> {
+    let marker = crate::paths::update_in_progress_marker();
+    let owner = live_marker_owner(&marker);
+    match update_failure_retry_action(
+        owner.as_ref().map(|owner| (owner.pid, owner.age_secs)),
+        std::process::id(),
+    ) {
+        UpdateFailureRetryAction::Acquire => Ok(()),
+        UpdateFailureRetryAction::StopOrWait { pid, age_secs } => {
+            stop_marker_owner(pid)?;
+            if pid_is_alive(pid) {
+                return Err(live_updater_blocked_message(pid, age_secs));
+            }
+            release_marker_if_names(&marker, pid);
+            Ok(())
+        }
+    }
 }
 
 /// RAII guard that owns the "update in progress" marker (see
@@ -175,6 +243,49 @@ fn should_heal_self_marker_refusal(exit_code: Option<i32>, marker_path: &Path) -
     exit_code == Some(UPDATE_EXIT_CONCURRENT) && marker_owned_by_self(marker_path)
 }
 
+/// What Retry on the update-failure screen may do.
+///
+/// `Acquire` is the only arm that may enter `UpdateMarkerGuard::acquire`.
+/// A live foreign PID is `StopOrWait`: name that updater and either stop it
+/// or wait. Do not re-enter acquire while it is alive. A marker that names
+/// this process is not that case (self-PID adoption, #74761).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpdateFailureRetryAction {
+    Acquire,
+    StopOrWait { pid: u32, age_secs: u64 },
+}
+
+fn update_failure_retry_action(
+    live_owner: Option<(u32, u64)>,
+    self_pid: u32,
+) -> UpdateFailureRetryAction {
+    match live_owner {
+        Some((pid, age_secs)) if pid != 0 && pid != self_pid => {
+            UpdateFailureRetryAction::StopOrWait { pid, age_secs }
+        }
+        _ => UpdateFailureRetryAction::Acquire,
+    }
+}
+
+fn format_marker_age(age_secs: u64) -> String {
+    let mins = age_secs / 60;
+    let secs = age_secs % 60;
+    if mins > 0 {
+        format!("{mins}m {secs}s")
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Same sentence as `updateFailureRetryAction` in the installer UI.
+fn live_updater_blocked_message(pid: u32, age_secs: u64) -> String {
+    format!(
+        "Another Hermes update is still running (PID {pid}, started {} ago). \
+         Wait for it to finish, or stop that updater and try again.",
+        format_marker_age(age_secs)
+    )
+}
+
 /// True when a process with `pid` currently exists.
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
@@ -207,6 +318,69 @@ fn pid_is_alive(pid: u32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Signal a foreign updater to exit. Refuses pid 0 and this process.
+fn stop_marker_owner(pid: u32) -> Result<(), String> {
+    if pid == 0 || pid == std::process::id() {
+        return Err("refusing to stop this process".to_string());
+    }
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|err| format!("could not stop updater PID {pid}: {err}"))?;
+        if !status.success() && pid_is_alive(pid) {
+            return Err(format!(
+                "Updater PID {pid} is still running. Wait for it to finish."
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        if wait_until_stopped(pid, Duration::from_millis(400)) {
+            return Ok(());
+        }
+        let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        if wait_until_stopped(pid, Duration::from_millis(400)) {
+            return Ok(());
+        }
+        Err(format!(
+            "Updater PID {pid} is still running. Wait for it to finish."
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn wait_until_stopped(pid: u32, budget: Duration) -> bool {
+    let started = Instant::now();
+    while pid_is_alive(pid) {
+        if started.elapsed() >= budget {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    true
+}
+
+/// Drop the marker only after the named owner is confirmed dead.
+fn release_marker_if_names(path: &Path, pid: u32) {
+    if pid == 0 || pid_is_alive(pid) {
+        return;
+    }
+    let named = std::fs::read_to_string(path).ok().and_then(|raw| {
+        raw.lines()
+            .next()
+            .and_then(|line| line.trim().parse::<u32>().ok())
+    });
+    if named == Some(pid) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 impl UpdateMarkerGuard {
@@ -288,19 +462,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     ) {
         Ok(guard) => guard,
         Err(owner) => {
-            let mins = owner.age_secs / 60;
-            let secs = owner.age_secs % 60;
-            let elapsed = if mins > 0 {
-                format!("{mins}m {secs}s")
-            } else {
-                format!("{secs}s")
-            };
-            let msg = format!(
-                "Another Hermes update is already running (PID {}, started {} ago). \
-                 Wait for it to finish, or close the window or dashboard tab that \
-                 started it, then try again.",
-                owner.pid, elapsed
-            );
+            let msg = live_updater_blocked_message(owner.pid, owner.age_secs);
             emit(
                 &app,
                 BootstrapEvent::Failed {
@@ -1775,5 +1937,45 @@ mod tests {
         );
         assert!(!old.exists(), "backup should be rolled back, not left behind");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn failure_retry_does_not_acquire_while_a_live_foreign_pid_holds_the_marker() {
+        assert_eq!(
+            update_failure_retry_action(Some((50214, 6)), 1),
+            UpdateFailureRetryAction::StopOrWait {
+                pid: 50214,
+                age_secs: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn failure_retry_acquires_only_when_no_live_foreign_owner() {
+        assert_eq!(
+            update_failure_retry_action(None, 1),
+            UpdateFailureRetryAction::Acquire
+        );
+        // Self-PID adoption is a different contract. Do not offer to stop us.
+        assert_eq!(
+            update_failure_retry_action(Some((42, 3)), 42),
+            UpdateFailureRetryAction::Acquire
+        );
+        // pid 0 is the process group, not an updater we may stop.
+        assert_eq!(
+            update_failure_retry_action(Some((0, 4)), 1),
+            UpdateFailureRetryAction::Acquire
+        );
+    }
+
+    #[test]
+    fn blocked_updater_message_names_the_pid_and_says_to_wait_or_stop() {
+        let msg = live_updater_blocked_message(50214, 6);
+        assert!(msg.contains("50214"));
+        assert!(msg.contains("6s"));
+        assert!(msg.to_lowercase().contains("still running"));
+        assert!(msg.to_lowercase().contains("wait"));
+        assert!(msg.to_lowercase().contains("stop"));
+        assert_eq!(format_marker_age(125), "2m 5s");
     }
 }

@@ -1,15 +1,19 @@
 import { useStore } from '@nanostores/react'
 import { FileText, RefreshCw } from 'lucide-react'
-import { type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 
 import { Button } from '../components/button'
+import { updateFailureRetryAction } from '../lib/update-failure-retry'
 import {
+  $liveUpdater,
   $logPath,
   $mode,
   type BootstrapStateModel,
   openLogDir,
+  refreshLiveUpdater,
   startInstall,
-  startUpdate
+  startUpdate,
+  stopLiveUpdater
 } from '../store'
 
 interface FailureProps {
@@ -20,13 +24,50 @@ interface FailureProps {
  * Failure screen. Same hero treatment as Welcome/Success — the wordmark
  * carries the brand, so we keep it across every terminal state.
  *
- * The actual error message lives below in muted text. Two affordances on
- * shared Button tokens: Retry (primary) and Open logs (quiet text link).
+ * Update failures that cite a live marker PID do not re-enter the lock.
+ * The screen names that updater and offers to stop it, or to wait.
  */
 export default function Failure({ bootstrap }: FailureProps) {
   const logPath = useStore($logPath)
   const mode = useStore($mode)
+  const liveUpdater = useStore($liveUpdater)
+  const [stopNote, setStopNote] = useState<string | null>(null)
   const isUpdate = mode === 'update'
+  const decision = updateFailureRetryAction(isUpdate ? liveUpdater : null)
+  const blockedPid = decision.kind === 'stop_or_wait' ? decision.pid : null
+  const stopLabel = decision.kind === 'stop_or_wait' ? decision.stopLabel : null
+  const detail =
+    decision.kind === 'stop_or_wait'
+      ? decision.waitMessage
+      : (bootstrap.error ??
+        (isUpdate
+          ? 'Something went wrong during the update.'
+          : 'Something went wrong during installation.'))
+
+  useEffect(() => {
+    if (!isUpdate) {return}
+    void refreshLiveUpdater()
+  }, [isUpdate, bootstrap.error])
+
+  async function onRetryUpdate() {
+    const owner = await refreshLiveUpdater()
+    const next = updateFailureRetryAction(owner)
+
+    // Still alive: stay here. Do not call startUpdate, which acquires.
+    if (next.kind === 'stop_or_wait') {return}
+    await startUpdate()
+  }
+
+  async function onStopUpdater() {
+    setStopNote(null)
+    const message = await stopLiveUpdater()
+    const owner = await refreshLiveUpdater()
+    const next = updateFailureRetryAction(owner)
+
+    if (message && next.kind === 'stop_or_wait') {
+      setStopNote(message)
+    }
+  }
 
   return (
     <div className="hermes-fade-in flex h-full flex-col items-center justify-center gap-6 px-12 py-10">
@@ -48,15 +89,21 @@ export default function Failure({ bootstrap }: FailureProps) {
         </p>
 
         <p className="m-0 mx-auto max-w-xl text-center text-sm leading-normal tracking-tight text-muted-foreground">
-          {bootstrap.error ??
-            (isUpdate
-              ? 'Something went wrong during the update.'
-              : 'Something went wrong during installation.')}
+          {detail}
         </p>
       </div>
 
       <div className="flex items-center gap-3">
-        <Button className="gap-1.5" onClick={() => void (isUpdate ? startUpdate() : startInstall())}>
+        {stopLabel ? (
+          <Button className="gap-1.5" onClick={() => void onStopUpdater()}>
+            {stopLabel}
+          </Button>
+        ) : null}
+        <Button
+          className="gap-1.5"
+          onClick={() => void (isUpdate ? onRetryUpdate() : startInstall())}
+          variant={stopLabel ? 'outline' : 'default'}
+        >
           <RefreshCw />
           {isUpdate ? 'Retry update' : 'Retry install'}
         </Button>
@@ -65,6 +112,17 @@ export default function Failure({ bootstrap }: FailureProps) {
           Open logs
         </Button>
       </div>
+
+      {blockedPid !== null ? (
+        <p className="max-w-lg text-center text-xs text-muted-foreground/70">
+          Updater PID {blockedPid} is still running. Wait for it to finish, or stop it.
+          Retry will not start another update while that PID is alive.
+        </p>
+      ) : null}
+
+      {stopNote ? (
+        <p className="max-w-lg text-center text-xs text-muted-foreground/70">{stopNote}</p>
+      ) : null}
 
       {logPath && (
         <p className="max-w-lg text-center text-xs text-muted-foreground/70">

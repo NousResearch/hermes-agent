@@ -2,6 +2,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { atom, computed } from 'nanostores'
 
+import {
+  updateFailureRetryAction,
+  type LiveMarkerOwner
+} from './lib/update-failure-retry'
+
 /*
  * Bootstrap state store — single source of truth for installer screens.
  *
@@ -76,6 +81,8 @@ export const $mode = atom<AppMode>('install')
 export const $bootstrap = atom<BootstrapStateModel>(INITIAL)
 export const $logPath = atom<string | null>(null)
 export const $hermesHome = atom<string | null>(null)
+// Live foreign updater holding the marker, or null when Retry may acquire.
+export const $liveUpdater = atom<LiveMarkerOwner | null>(null)
 
 export const $progress = computed($bootstrap, (b) => {
   const total = b.stageOrder.length
@@ -322,6 +329,53 @@ export async function startInstall(opts?: { branch?: string }): Promise<void> {
   })
 }
 
+function invokeErrorText(err: unknown): string {
+  if (typeof err === 'string') {return err}
+  if (err instanceof Error) {return err.message}
+  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+    return err.message
+  }
+
+  return 'The update could not start.'
+}
+
+// Read the live foreign marker owner without acquiring the lock.
+export async function refreshLiveUpdater(): Promise<LiveMarkerOwner | null> {
+  if (fakeMode()) {
+    $liveUpdater.set(null)
+
+    return null
+  }
+
+  try {
+    const owner = await invoke<LiveMarkerOwner | null>('live_update_marker')
+    const live = owner && Number.isInteger(owner.pid) && owner.pid > 0 ? owner : null
+
+    $liveUpdater.set(live)
+
+    return live
+  } catch (err) {
+    console.warn('failed to read update marker', err)
+    $liveUpdater.set(null)
+
+    return null
+  }
+}
+
+// Stop the live foreign updater. Does not acquire the marker.
+// Returns an error string when that PID is still running.
+export async function stopLiveUpdater(): Promise<string | null> {
+  if (fakeMode()) {return null}
+
+  try {
+    await invoke('stop_live_updater')
+
+    return null
+  } catch (err) {
+    return invokeErrorText(err)
+  }
+}
+
 export async function startUpdate(): Promise<void> {
   if (fakeMode()) {
     void runFakeBoot('update')
@@ -329,12 +383,46 @@ export async function startUpdate(): Promise<void> {
     return
   }
 
+  // A live foreign updater must not re-enter acquire. Identify it and stay
+  // on the failure screen so the user can stop it or wait.
+  const owner = await refreshLiveUpdater()
+  const decision = updateFailureRetryAction(owner)
+
+  if (decision.kind === 'stop_or_wait') {
+    $bootstrap.set({
+      ...$bootstrap.get(),
+      status: 'failed',
+      error: decision.waitMessage,
+      currentStage: null
+    })
+    $route.set('failure')
+
+    return
+  }
+
   // Update is driven by the desktop handing off (Hermes-Setup.exe --update);
   // there's no welcome click. Reset + jump straight to progress, then let the
   // Rust side stream the synthetic update manifest.
+  $liveUpdater.set(null)
   $bootstrap.set(INITIAL)
   $route.set('progress')
-  await invoke('start_update')
+
+  try {
+    await invoke('start_update')
+  } catch (err) {
+    // Rust refused before acquire (the owner appeared between the check and
+    // the command). Stay on the failure screen; do not treat that as a start.
+    const ownerAfter = await refreshLiveUpdater()
+    const blocked = updateFailureRetryAction(ownerAfter)
+
+    $bootstrap.set({
+      ...$bootstrap.get(),
+      status: 'failed',
+      error: blocked.kind === 'stop_or_wait' ? blocked.waitMessage : invokeErrorText(err),
+      currentStage: null
+    })
+    $route.set('failure')
+  }
 }
 
 export async function cancelInstall(): Promise<void> {

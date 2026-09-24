@@ -180,6 +180,8 @@ pub fn run() {
             bootstrap::get_bootstrap_status,
             // Update lifecycle
             update::start_update,
+            update::live_update_marker,
+            update::stop_live_updater,
             // Hand-off
             bootstrap::launch_hermes_desktop,
             // Diagnostics

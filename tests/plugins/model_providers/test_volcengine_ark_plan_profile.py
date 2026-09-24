@@ -32,13 +32,38 @@ class TestVolcengineArkPlanProfile:
         """The plan endpoint has no /models route (404) — doctor must skip the probe."""
         assert ark_profile.supports_health_check is False
 
-    def test_fetch_models_returns_none_without_models_route(self, ark_profile):
-        """fetch_models on the default base_url yields no catalog: 404 → None, never [].
+    def test_fetch_models_returns_none_without_models_route(self, ark_profile, monkeypatch):
+        """fetch_models maps any HTTP failure to None, never [].
 
         An empty list would be cached as a valid catalog and blank the picker.
+        Mocked at the HTTP layer: the real endpoint has no /models route
+        (verified live 2026-09-21), but unit tests must not do network I/O —
+        offline CI would stall and the vendor could flip the status code.
         """
+        import urllib.error
+
+        def _fake_open(req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url, 404, "Not Found", hdrs=__import__("email.message").Message(), fp=None
+            )
+
+        monkeypatch.setattr(
+            "providers.base.open_credentialed_url", _fake_open, raising=False
+        )
         result = ark_profile.fetch_models(api_key="invalid-key", timeout=5.0)
         assert result is None
+
+    def test_fetch_models_maps_offline_errors_to_none(self, ark_profile, monkeypatch):
+        """Connection failures (offline CI, DNS loss) must also yield None."""
+        import urllib.error
+
+        def _fake_open(req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(
+            "providers.base.open_credentialed_url", _fake_open, raising=False
+        )
+        assert ark_profile.fetch_models(api_key="k", timeout=5.0) is None
 
     def test_fallback_models_are_an_entry_floor(self, ark_profile):
         """The static list is a small entry floor (models.dev is the authority):

@@ -18,8 +18,10 @@ during a retry backoff) must still SIGINT the command (exit 130); non-approved
 commands keep current interrupt behavior.
 """
 import json
+import shlex
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -43,6 +45,20 @@ def _isolate(tmp_path, monkeypatch):
     yield
     with _lock:
         _interrupted_threads.clear()
+
+
+def _sh_path(path) -> str:
+    """Spell a path so the shell the terminal tool runs actually keeps it.
+
+    The command string is handed to bash. Interpolating a native Windows path
+    (``C:\\Users\\...\\cmd_started_c``) let bash eat every backslash as an
+    escape, so ``touch`` created a junk file literally named
+    ``C:Users...AppData...cmd_started_c`` in the CWD, the sentinel the
+    barrier polls for never appeared, and the interrupt-after-start behaviour
+    under test was never reached. Forward slashes survive quoting on both
+    platforms, and on POSIX this is the identity.
+    """
+    return shlex.quote(Path(path).as_posix())
 
 
 def _wait_for_sentinel(sentinel, timeout=10.0):
@@ -93,7 +109,7 @@ def test_approved_command_genuine_interrupt_after_start_still_kills(tmp_path):
 
     def worker():
         holder["result"] = tt.terminal_tool(
-            command=f"touch {sentinel}; sleep 5; echo DONE", force=True
+            command=f"touch {_sh_path(sentinel)}; sleep 5; echo DONE", force=True
         )
 
     t = threading.Thread(target=worker, daemon=True)
@@ -124,7 +140,9 @@ def test_approved_note_enriched_not_misleading_on_interrupt(monkeypatch, tmp_pat
     holder = {}
 
     def worker():
-        holder["result"] = tt.terminal_tool(command=f"touch {sentinel}; sleep 5; echo DONE")
+        holder["result"] = tt.terminal_tool(
+            command=f"touch {_sh_path(sentinel)}; sleep 5; echo DONE"
+        )
 
     t = threading.Thread(target=worker, daemon=True)
     t.start()

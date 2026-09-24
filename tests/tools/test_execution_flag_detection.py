@@ -21,10 +21,19 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     argv, stdin, expected_returncode, expected_output
 ):
     """Pin the CLI grammar that the approval detector models."""
-    if shutil.which(argv[0]) is None:
+    resolved = shutil.which(argv[0])
+    if resolved is None:
         pytest.skip(f"{argv[0]} is not installed")
 
-    completed = subprocess.run(argv, input=stdin, text=True, capture_output=True)
+    # Invoke the binary that ``shutil.which`` just vetted, not the bare name.
+    # The two disagree on Windows: ``which`` walks PATH, while the bare name
+    # goes through CreateProcess, which searches System32 FIRST — so "sort"
+    # ran ``C:\Windows\System32\sort.exe`` (a namesake with an entirely
+    # different grammar, exit 1) while the skip guard had approved Git's GNU
+    # coreutils sort. The test was pinning the wrong program's CLI.
+    completed = subprocess.run(
+        [resolved, *argv[1:]], input=stdin, text=True, capture_output=True
+    )
 
     assert completed.returncode == expected_returncode
     assert completed.stdout == expected_output

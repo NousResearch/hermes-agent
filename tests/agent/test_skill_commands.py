@@ -1,6 +1,7 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -704,13 +705,20 @@ class TestInlineShellExpansion:
             skill_dir = _make_skill(
                 tmp_path,
                 "dyn-cwd",
-                body="Here: !`pwd`",
+                # run_inline_shell uses bash on EVERY platform (it prefers
+                # Git Bash on Windows), so `pwd` runs fine here — but Git
+                # Bash reports the MSYS form (/c/Users/...), which is not a
+                # Windows path. `pwd -W` asks it for the native spelling.
+                body="Here: !`pwd -W`" if os.name == "nt" else "Here: !`pwd`",
             )
             scan_skill_commands()
             msg = build_skill_invocation_message("/dyn-cwd")
 
         assert msg is not None
-        assert f"Here: {skill_dir}" in msg
+        # Compare as a path, not as a string: `pwd -W` answers with forward
+        # slashes. The guarantee is WHICH DIRECTORY the snippet ran in.
+        line = next(ln for ln in msg.splitlines() if ln.startswith("Here: "))
+        assert Path(line[len("Here: "):].strip()) == skill_dir
 
     def test_inline_shell_timeout_does_not_break_message(self, tmp_path):
         with (

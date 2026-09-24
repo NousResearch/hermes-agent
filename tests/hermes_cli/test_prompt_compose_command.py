@@ -8,7 +8,8 @@ stripping, seeding, and the empty-buffer cancel path.
 """
 
 import os
-import stat
+import shlex
+import sys
 import tempfile
 
 import pytest
@@ -22,16 +23,29 @@ class _Stub(CLICommandsMixin):
 
 
 def _fake_editor(body: str, mode: str = "append") -> str:
-    """Write a tiny shell 'editor' that mutates the file it is handed."""
-    f = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False)
-    if mode == "append":
-        f.write("#!/usr/bin/env bash\n")
-        f.write(f"cat >> \"$1\" <<'EOF'\n{body}\nEOF\n")
-    else:  # clear
-        f.write("#!/usr/bin/env bash\n: > \"$1\"\n")
-    f.close()
-    os.chmod(f.name, os.stat(f.name).st_mode | stat.S_IEXEC)
-    return f.name
+    """Return an ``$EDITOR`` command that mutates the file it is handed.
+
+    A Python script driven by this interpreter, not a ``#!/usr/bin/env bash``
+    script: production launches the editor as
+    ``subprocess.call([*shlex.split(editor), path])``, and a shebang script is
+    only self-executing where the kernel honours shebangs. Where it isn't, the
+    launch fails and ``_compose_in_editor`` maps that onto "empty buffer"
+    (its documented behaviour) — which silently turns the append test red and
+    the *cancel* test vacuously green. Returning a shlex-quoted
+    ``<python> <script>`` command keeps the editor genuinely running, and
+    ``shlex.split`` round-trips it unchanged on both platforms.
+    """
+    fd, script = tempfile.mkstemp(suffix=".py", prefix="hermes_fake_editor_")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("import sys\n")
+        fh.write("target = sys.argv[1]\n")
+        if mode == "append":
+            fh.write(f"body = {body!r}\n")
+            fh.write("with open(target, 'a', encoding='utf-8') as f:\n")
+            fh.write("    f.write(body + '\\n')\n")
+        else:  # clear
+            fh.write("open(target, 'w', encoding='utf-8').close()\n")
+    return shlex.join([sys.executable, script])
 
 
 @pytest.fixture(autouse=True)

@@ -1,9 +1,10 @@
 """Tests for hermes_cli/completion.py — shell completion script generation."""
 
 import argparse
-import os
+import shutil
 import subprocess
-import tempfile
+
+import pytest
 
 from hermes_cli.completion import _walk, generate_bash, generate_fish
 
@@ -80,17 +81,24 @@ class TestGenerateBash:
         assert "complete -F _hermes_completion hermes" in out
 
 
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
     def test_valid_bash_syntax(self):
-        """Script must pass `bash -n` syntax check."""
+        """Script must pass `bash -n` syntax check.
+
+        The script is fed to bash on STDIN rather than written to a temp file
+        and passed by path: bash resolves its argument through its own POSIX
+        path rules, so a native ``C:\\Users\\...`` temp path is eaten as escape
+        sequences by bash and the check degrades into a "no such file"
+        127 that can never see the script.  Reading from stdin runs the exact
+        same parse-only check with no path spelling involved.
+        """
         out = generate_bash(_make_parser())
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".bash", delete=False) as f:
-            f.write(out)
-            path = f.name
-        try:
-            result = subprocess.run(["bash", "-n", path], capture_output=True)
-            assert result.returncode == 0, result.stderr.decode()
-        finally:
-            os.unlink(path)
+        result = subprocess.run(
+            [shutil.which("bash"), "-n"],
+            input=out.encode("utf-8"),
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr.decode()
 
 
 # ---------------------------------------------------------------------------

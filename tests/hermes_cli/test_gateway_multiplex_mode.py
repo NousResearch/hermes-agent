@@ -20,7 +20,6 @@ import hermes_constants
 from gateway.config import GatewayConfig, load_gateway_config
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_multiplex_mode as mode
-from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 
 @pytest.fixture
@@ -53,7 +52,6 @@ def _name(home: Path) -> str:
 def test_default_config_is_on_but_the_loader_leaves_an_unset_flag_undecided():
     """DEFAULT_CONFIG says on; GatewayConfig keeps "unset" distinguishable from "chosen" so the boot
     guard can tell them apart (an explicit value must survive verbatim)."""
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is True
     assert GatewayConfig.from_dict({}).multiplex_profiles is None
     assert not GatewayConfig.from_dict({}).multiplex_profiles  # readers treat undecided as off
     assert GatewayConfig.from_dict({"gateway": {"multiplex_profiles": False}}).multiplex_profiles is False

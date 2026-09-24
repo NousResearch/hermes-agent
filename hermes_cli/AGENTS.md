@@ -152,10 +152,15 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   none of them; without the graft the swap deletes them). Post-swap, the Desktop
   rebuild decision also trusts the build stamp under HERMES_HOME, so an install that already lost
   its artifacts in an earlier update is rebuilt instead of "forgotten" (#90495).
-- **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE (every `hermes-gateway*` unit /
-  `ai.hermes.gateway*` LaunchAgent), drain-first (SIGUSR1), with per-unit/per-label failure
-  isolation. Restarting only the invoking profile's service leaves siblings on stale `sys.modules`
-  until they crash — the largest dupe-PR cluster in the repo's history came from that bug.
+- **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE within the updating install (every
+  `hermes-gateway*` unit / `ai.hermes.gateway*` LaunchAgent whose home is the updating root or one of its
+  `profiles/<name>`), drain-first (SIGUSR1), with per-unit/per-label failure isolation. Restarting only the
+  invoking profile's service leaves siblings on stale `sys.modules` until they crash — the largest dupe-PR
+  cluster in the repo's history came from that bug. The fleet is bounded by HOME, not by namespace:
+  `hermes_cli/update_fleet_scope.py` judges every unit/label/process by the home it actually runs on
+  (live environ, unit `Environment=`, plist `HERMES_HOME`), and a runtime of another `HERMES_HOME` on the
+  same account — a sibling install, the real `hermes-gateway.service` seen from a scratch home — is named and
+  left alone, never restarted (#93349).
 - **Verify**: gateways stamp `code_sha`/`code_version` into `gateway_state.json` on every
   runtime-status write (`gateway/status.py`); the updater compares each live gateway against the
   fresh checkout and prints a fleet version matrix. A provably-stale gateway fails the update

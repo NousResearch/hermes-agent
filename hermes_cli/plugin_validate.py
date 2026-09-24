@@ -24,12 +24,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
+from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_CONFIG_TYPES = {
-    "str", "string", "int", "integer", "float", "number",
-    "bool", "boolean", "list", "array", "dict", "mapping", "map",
-}
+# Admission accepts exactly the ``config_schema`` types the loader type-checks at load time (and the
+# Desktop settings renderer keys its field table on) — a private copy drifted and rejected ``secret``.
+_CONFIG_TYPES = frozenset(_CONFIG_SCHEMA_TYPES)
 _PROBE_TIMEOUT = 30
 _PROBE_SENTINEL = "HERMES_VALIDATE_JSON:"
 

@@ -22,6 +22,21 @@ from agent.turn_context_compaction import _reanchor
 
 logger = logging.getLogger("agent.conversation_loop")
 
+
+def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
+    """True when ``messages[idx]`` is this turn's user row (verbatim, or its user-originated view)."""
+    if not isinstance(idx, int) or not 0 <= idx < len(messages):
+        return False
+    msg = messages[idx]
+    if not (isinstance(msg, dict) and msg.get("role") == "user"):
+        return False
+    if msg.get("content") == user_message:
+        return True
+    from agent.context_compressor import user_originated_turn_view
+
+    view = user_originated_turn_view(msg)
+    return view is not None and view.get("content") == user_message
+
 ITERATION_BUDGET_WARNING_TEMPLATE = (
     "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
     "iterations. Checkpoint durable progress now, then continue the task; do not stop "
@@ -205,6 +220,18 @@ def prepare_iteration(
                     current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
                 )
                 current_turn_user_idx = _reanchored_idx
+    # Mid-turn compaction (post-tool gate, overflow restart, recovery) rebuilds ``messages`` without
+    # handing back a new index. A stale index splits the request's replay prefix inside this turn's
+    # tool rows: prefix canonicalization then drops the assistant tool_call whose result fell past the
+    # split, the orphaned result is sanitized away, and the model silently loses tool output that
+    # state.db still holds. A valid index always lands on this turn's user row; re-anchor otherwise.
+    if user_message is not None and not _anchors_current_turn(messages, current_turn_user_idx, user_message):
+        _reanchored_idx = _reanchor(agent, messages, user_message)
+        request_logger.info(
+            "Re-anchored stale current_turn_user_idx %s -> %s (session=%s)",
+            current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
+        )
+        current_turn_user_idx = _reanchored_idx
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,

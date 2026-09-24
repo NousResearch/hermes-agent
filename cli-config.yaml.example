@@ -4,6 +4,11 @@
 # This file configures CLI behavior; only documented secret environment
 # variables in .env take precedence over their corresponding settings.
 
+# Schema version of this file. The installers copy it to seed config.yaml, and
+# `hermes update` uses it to know which one-time migrations the file already
+# has. Hermes manages it: do not copy it into another config.
+_config_version: 46
+
 # =============================================================================
 # Database Configuration
 # =============================================================================
@@ -36,6 +41,15 @@ database:
 # null to disable the adjustment. Default: 4096.
 runtime:
   nofile_soft_limit: 4096
+
+# =============================================================================
+# Plugin Installation
+# =============================================================================
+plugins:
+  # Deadline for each Git clone, fetch or checkout during plugin install. Default: 300
+  # seconds. Subdirectory installs download only that folder.
+  # Raise this for large repositories or slow connections. Maximum: 3600.
+  clone_timeout_seconds: 300
 
 # =============================================================================
 # Model Configuration

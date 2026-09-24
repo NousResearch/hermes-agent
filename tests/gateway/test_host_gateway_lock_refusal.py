@@ -140,6 +140,15 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     from gateway.run import _claim_host_gateway_role
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(host_lock_dir))
+    owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
+    assert owner is not None
+    # Another process holds the record (our own pid would short-circuit _owner_is_standalone before
+    # the wire is asked), and it never answers the rescan: an owner we cannot interrogate is a
+    # multiplexer.
+    from gateway.host_attach import HostGateway
+    silent_owner = HostGateway(pid=owner.pid + 1, home=host_lock_dir, profiles=(),
+                               served_known=False)
+    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: silent_owner)
     monkeypatch.setattr("gateway.host_attach.request_serve_profile",
                         lambda profile, owner=None: None)  # owner never answers
     handle = _hold_host_lock_from_another_description(hr)
@@ -148,4 +157,59 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
             _claim_host_gateway_role()
     finally:
         handle.close()
+    assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.asyncio
+async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_loses_the_lock(
+    host_lock_dir, tmp_path, monkeypatch,
+):
+    """Every unit Hermes generates (launchd, systemd, s6) runs ``gateway run --replace``. When the
+    attach check saw no owner yet (the record lands a moment after the owner's claim) nothing was
+    replaced, and the lock is the only arbiter of the race. Reading ``--replace`` as ``--force``
+    there started a second gateway beside the multiplexer, and the two fought for the same bot
+    tokens: each --replace token handoff SIGTERMs the current holder."""
+    from unittest.mock import AsyncMock
+
+    from gateway import host_rendezvous as hr
+    from gateway import status
+    from gateway.config import GatewayConfig
+    from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+    from gateway.run import start_gateway
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+
+    class _RunnerMustNotStart:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+
+        async def start(self):
+            raise AssertionError("a second gateway started beside the host owner")
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.run._host_attach_or_none", AsyncMock(return_value=None))
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustNotStart)
+    # The lock holder is a multiplexer: the standalone start-beside carve-out must not rescue a
+    # --replace unit. Patched where _claim_host_gateway_role reads it; the request_serve_profile
+    # patch this used to carry was unreachable (_owner_is_standalone short-circuits on our own pid).
+    monkeypatch.setattr("gateway.run._owner_is_standalone", lambda: False)
+
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_lock_dir))
+    handle = _hold_host_lock_from_another_description(hr)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+    finally:
+        handle.close()
+        status.remove_pid_file()
+        status.release_gateway_runtime_lock()
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE

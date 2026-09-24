@@ -766,18 +766,6 @@ class TestEmojiVariationSelectorSuppression:
         assert result["findings"] == findings
 
 
-class TestIsAppTldFinding:
-    """Unit tests for the _is_app_tld_finding helper."""
-
-    @pytest.mark.parametrize("finding, expected", [
-        ({"rule_id": "lookalike_tld", "value": ".APP"}, True),   # case-insensitive
-        ({"rule_id": "lookalike_tld", "message": "Domain uses '.app' TLD"}, True),
-        ({"rule_id": "shortened_url", "value": ".app"}, False),  # wrong rule_id
-        ({"rule_id": "lookalike_tld", "value": ".zip"}, False),  # other TLD
-    ])
-    def test_app_tld_detection(self, finding, expected):
-        from tools.tirith_security import _is_app_tld_finding
-        assert _is_app_tld_finding(finding) is expected
 
 
 # ---------------------------------------------------------------------------

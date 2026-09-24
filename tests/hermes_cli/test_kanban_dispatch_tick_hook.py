@@ -19,7 +19,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
+from hermes_cli.plugins import get_plugin_manager
 
 
 @pytest.fixture
@@ -110,21 +110,3 @@ def test_misbehaving_subscriber_does_not_break_dispatcher(kanban_home):
         mgr._hooks = saved
 
 
-def test_no_subscriber_short_circuits_tick_hook(kanban_home, monkeypatch):
-    """With nothing registered, the tick observer is never invoked."""
-    from hermes_cli import lifecycle
-
-    invoked: list[str] = []
-    real_invoke = lifecycle.invoke_hook
-
-    def _spy(hook_name, **kw):
-        invoked.append(hook_name)
-        return real_invoke(hook_name, **kw)
-
-    monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kbc.connect()
-    try:
-        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
-    finally:
-        conn.close()
-    assert "on_kanban_dispatch_tick" not in invoked

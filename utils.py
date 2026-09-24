@@ -431,6 +431,14 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
+# ruamel's emitter can change a double-quoted value when it folds a long line right after an
+# escaped backslash (``D:\\Cent…`` → ``D:\\`` + bare newline): the fold reloads as a literal space
+# and a no-op save mutates the stored value (#119844). Config writes must be value-preserving, so
+# every round-trip emitter in the tree keeps scalars on one line instead of folding (``None``
+# does NOT disable folding on 0.18.x; only a large width does).
+ROUNDTRIP_YAML_WIDTH = 2**31 - 1
+
+
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
@@ -438,6 +446,7 @@ def _roundtrip_load(path: Path):
     from ruamel.yaml.comments import CommentedMap
 
     yaml_rt = YAML(typ="rt")
+    yaml_rt.width = ROUNDTRIP_YAML_WIDTH
     yaml_rt.preserve_quotes = True
     yaml_rt.allow_unicode = True
     yaml_rt.default_flow_style = False

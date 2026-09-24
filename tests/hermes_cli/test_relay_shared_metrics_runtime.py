@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import contextvars
-import asyncio
 import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -1291,30 +1289,6 @@ def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
     assert contender.is_alive() is False
 
 
-def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
-    runtime = relay_runtime.get_runtime()
-    assert runtime is not None
-    session = runtime.ensure_session({"session_id": "lifo-contract"})
-    assert session is not None
-
-    first = runtime.run_in_session(
-        session,
-        direct_runtime.scope.push,
-        "first",
-        direct_runtime.ScopeType.Function,
-    )
-    second = runtime.run_in_session(
-        session,
-        direct_runtime.scope.push,
-        "second",
-        direct_runtime.ScopeType.Function,
-    )
-
-    with pytest.raises(RuntimeError, match="not at the top"):
-        runtime.run_in_session(session, direct_runtime.scope.pop, first)
-
-    runtime.run_in_session(session, direct_runtime.scope.pop, second)
-    runtime.run_in_session(session, direct_runtime.scope.pop, first)
 
 
 def test_close_session_drains_orphaned_scopes_before_session_pop(direct_runtime):

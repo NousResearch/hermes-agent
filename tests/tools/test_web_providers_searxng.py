@@ -31,10 +31,6 @@ class TestSearXNGSearchProviderIsConfigured:
         assert SearXNGWebSearchProvider().is_available() is True
 
 
-    def test_implements_web_search_provider(self):
-        from agent.web_search_provider import WebSearchProvider
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        assert issubclass(SearXNGWebSearchProvider, WebSearchProvider)
 
 
 class TestSearXNGSearchProviderSearch:

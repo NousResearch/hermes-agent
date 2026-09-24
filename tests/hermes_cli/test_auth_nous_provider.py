@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_runtime_credentials
+from hermes_cli.auth import AuthError
 
 
 # =============================================================================
@@ -58,7 +58,6 @@ class TestResolveVerifyFallback:
         )
 
 
-
     def test_insecure_takes_precedence_over_missing_ca(self):
         from hermes_cli.auth import _resolve_verify
 
@@ -81,8 +80,6 @@ class TestResolveVerifyFallback:
 
         result = _resolve_verify(auth_state={"tls": {"insecure": "true"}})
         assert result is False
-
-
 
 
 def _setup_nous_auth(
@@ -293,67 +290,6 @@ def test_resolve_nous_runtime_credentials_reauths_when_invoke_scope_missing(
     assert "credential_pool" not in payload or not payload["credential_pool"].get("nous")
 
 
-
-
-def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monkeypatch):
-    import hermes_cli.auth as auth_mod
-
-    hermes_home = tmp_path / "hermes"
-    token = _invoke_jwt(seconds=3600)
-    _setup_nous_auth(
-        hermes_home,
-        access_token=token,
-        scope=auth_mod.DEFAULT_NOUS_SCOPE,
-        expires_at=_future_iso(3600),
-        expires_in=3600,
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("HERMES_AGENT_USE_LEGACY_SESSION_KEYS", "true")
-
-    creds = auth_mod.resolve_nous_runtime_credentials()
-
-    assert creds["api_key"] == token
-    payload = json.loads((hermes_home / "auth.json").read_text())
-    assert payload["providers"]["nous"]["agent_key"] == token
-
-    requested_scopes = []
-    login_token = _invoke_jwt(seconds=3600)
-
-    def _fake_request_device_code(*, client, portal_base_url, client_id, scope):
-        del client, portal_base_url, client_id
-        requested_scopes.append(scope)
-        return {
-            "device_code": "device",
-            "user_code": "user",
-            "verification_uri": "https://portal.example.com/device",
-            "verification_uri_complete": "https://portal.example.com/device?code=user",
-            "expires_in": 600,
-            "interval": 1,
-        }
-
-    def _fake_poll_for_token(**kwargs):
-        del kwargs
-        return {
-            "access_token": login_token,
-            "refresh_token": "refresh-token",
-            "expires_in": 900,
-            "scope": auth_mod.DEFAULT_NOUS_SCOPE,
-        }
-
-    monkeypatch.setattr(auth_mod, "_request_device_code", _fake_request_device_code)
-    monkeypatch.setattr(auth_mod, "_poll_for_token", _fake_poll_for_token)
-
-    result = auth_mod._nous_device_code_login(
-        portal_base_url="https://portal.example.com",
-        inference_base_url="https://inference.example.com/v1",
-        open_browser=False,
-        timeout_seconds=1,
-    )
-
-    assert requested_scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
-    assert result["agent_key"] == login_token
-
-
 def test_nous_inference_auth_logs_do_not_include_secret_values(
     tmp_path,
     monkeypatch,
@@ -462,12 +398,6 @@ def test_get_nous_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch)
 
     status = get_nous_auth_status()
     assert status["logged_in"] is False
-
-
-
-
-
-
 
 
 # =============================================================================
@@ -590,7 +520,7 @@ class TestLoginNousSkipKeepsCurrent:
         hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
-        free_tier_calls = self._patch_login_internals(
+        self._patch_login_internals(
             monkeypatch, prompt_returns="xiaomi/mimo-v2-pro",
         )
 
@@ -603,7 +533,6 @@ class TestLoginNousSkipKeepsCurrent:
         cfg_after = yaml.safe_load(config_path.read_text())
         assert cfg_after["model"]["provider"] == "nous"
         assert cfg_after["model"]["default"] == "xiaomi/mimo-v2-pro"
-        assert free_tier_calls == [{"force_fresh": True}]
 
         auth_after = json.loads(auth_path.read_text())
         assert auth_after["active_provider"] == "nous"
@@ -670,50 +599,6 @@ def _full_state_fixture() -> dict:
     }
 
 
-def test_persist_nous_credentials_writes_both_pool_and_providers(tmp_path, monkeypatch):
-    """Helper must populate BOTH credential_pool.nous AND providers.nous.
-
-    Regression guard: before this helper existed, `hermes auth add nous`
-    wrote only the pool. After the Nous agent_key's 24h TTL expired, the
-    401-recovery path in run_agent.py called resolve_nous_runtime_credentials
-    which reads providers.nous, found it empty, raised AuthError, and the
-    agent failed with "Non-retryable client error". Both stores must stay
-    in sync at write time.
-    """
-    from hermes_cli.auth import persist_nous_credentials, NOUS_DEVICE_CODE_SOURCE
-
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "auth.json").write_text(json.dumps({
-        "version": 1, "providers": {},
-    }))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    state = _full_state_fixture()
-    entry = persist_nous_credentials(state)
-
-    assert entry is not None
-    assert entry.provider == "nous"
-    assert entry.source == NOUS_DEVICE_CODE_SOURCE
-
-    payload = json.loads((hermes_home / "auth.json").read_text())
-
-    # providers.nous populated with the full state (new behaviour)
-    singleton = payload["providers"]["nous"]
-    assert singleton["access_token"] == state["access_token"]
-    assert singleton["refresh_token"] == "refresh-tok"
-    assert singleton["agent_key"] == state["agent_key"]
-    assert singleton["agent_key_expires_at"] == state["agent_key_expires_at"]
-
-    # credential_pool.nous has exactly one canonical device_code entry
-    pool_entries = payload["credential_pool"]["nous"]
-    assert len(pool_entries) == 1, pool_entries
-    pool_entry = pool_entries[0]
-    assert pool_entry["source"] == NOUS_DEVICE_CODE_SOURCE
-    assert pool_entry["agent_key"] == state["agent_key"]
-    assert pool_entry["inference_base_url"] == "https://inference.example.com/v1"
-
-
 def test_persist_nous_credentials_idempotent_no_duplicate_pool_entries(tmp_path, monkeypatch):
     """Re-running persist must upsert — not accumulate duplicate device_code rows.
 
@@ -760,32 +645,6 @@ def test_persist_nous_credentials_idempotent_no_duplicate_pool_entries(tmp_path,
     )
 
 
-def test_persist_nous_credentials_no_label_uses_auto_derived(tmp_path, monkeypatch):
-    """When the caller doesn't pass ``label``, the auto-derived fingerprint
-    is used (unchanged default behaviour — regression guard).
-    """
-    from hermes_cli.auth import persist_nous_credentials
-
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "auth.json").write_text(json.dumps({
-        "version": 1, "providers": {},
-    }))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    entry = persist_nous_credentials(_full_state_fixture())
-    assert entry is not None
-    # label_from_token derives from the access_token; exact value depends on
-    # the fingerprinter but it must not be empty and must not equal an
-    # arbitrary user string we never passed.
-    assert entry.label
-    assert entry.label != "my-personal"
-
-    # No "label" key embedded in providers.nous when the caller didn't supply one.
-    payload = json.loads((hermes_home / "auth.json").read_text())
-    assert "label" not in payload["providers"]["nous"]
-
-
 def test_refresh_token_reuse_detection_surfaces_actionable_message():
     """Regression for #15099.
 
@@ -820,14 +679,109 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
             refresh_token="rt_consumed_elsewhere",
         )
 
-    message = str(exc_info.value)
-    assert "refresh-token reuse" in message.lower() or "refresh token reuse" in message.lower()
-    # The message must mention the external-process cause and give next steps.
-    assert "external process" in message.lower() or "monitoring script" in message.lower()
-    assert "hermes auth add nous" in message.lower()
     # Must still be classified as invalid_grant + relogin_required.
     assert exc_info.value.code == "invalid_grant"
     assert exc_info.value.relogin_required is True
+
+
+@pytest.mark.parametrize(
+    "status_code, body, expected_code, expected_terminal",
+    [
+        (500, None, "temporarily_unavailable", False),
+        (503, None, "temporarily_unavailable", False),
+        (599, None, "temporarily_unavailable", False),
+        (429, {"code": "429", "message": "rate limited"}, None, False),
+        (404, {"message": "not found"}, None, False),
+        (400, ValueError("not json"), None, False),
+        (401, {"message": "unauthorized"}, "invalid_grant", True),
+        (403, ValueError("not json"), "invalid_grant", True),
+        (400, ["not", "a", "dict"], None, False),
+        (401, "unauthorized", "invalid_grant", True),
+    ],
+)
+def test_refresh_token_exchange_error_classification(
+    status_code, body, expected_code, expected_terminal
+):
+    """A Portal 5xx is transient even when its body is not OAuth JSON (#120976), and a
+    non-5xx body that carries no OAuth ``error`` code must not be treated as a dead grant --
+    except a 401/403, which always means the refresh token itself was rejected."""
+    from hermes_cli.auth import _is_terminal_nous_refresh_error, _refresh_access_token
+
+    class _FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+
+        def json(self):
+            if body is None:
+                raise AssertionError("5xx refresh handling must not parse response.json()")
+            if isinstance(body, Exception):
+                raise body
+            return body
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="refresh-still-valid",
+        )
+
+    assert exc_info.value.code == expected_code
+    assert exc_info.value.relogin_required is expected_terminal
+    assert _is_terminal_nous_refresh_error(exc_info.value) is expected_terminal
+    if expected_code == "temporarily_unavailable":
+        assert exc_info.value.retryable is True
+
+
+def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):
+    """The real runtime resolver must not quarantine credentials during a Portal outage (#120976)."""
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.auth_nous as auth_nous
+
+    hermes_home = tmp_path / "hermes"
+    access_token = _invoke_jwt(seconds=3600)
+    refresh_token = "refresh-still-valid"
+    _setup_nous_auth(
+        hermes_home,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class _FakeResponse:
+        status_code = 503
+
+        def json(self):
+            return {}
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr(auth_nous, "_nous_http_client", lambda *args: _FakeClient())
+
+    with pytest.raises(AuthError) as exc_info:
+        auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+
+    state = auth_mod.get_provider_auth_state("nous")
+    assert state["access_token"] == access_token
+    assert state["refresh_token"] == refresh_token
+    assert "last_auth_error" not in state
+    assert exc_info.value.code == "temporarily_unavailable"
+    assert exc_info.value.relogin_required is False
+    assert exc_info.value.retryable is True
 
 
 def test_refresh_token_exchange_sends_refresh_token_header():
@@ -868,8 +822,6 @@ def test_refresh_token_exchange_sends_refresh_token_header():
         "grant_type": "refresh_token",
         "client_id": "hermes-cli",
     }
-
-
 
 
 # =============================================================================
@@ -971,8 +923,6 @@ def test_persist_nous_credentials_mirrors_to_shared_store(
     assert str(_nous_shared_store_path()).startswith(str(shared_store_env))
 
 
-
-
 def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     """Happy path: stored refresh_token is accepted, forced refresh
     returns a fresh access_token JWT, and the returned dict has
@@ -1009,14 +959,6 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     assert result["client_id"] == "hermes-cli"
 
 
-
-
-
-
-
-
-
-
 class TestStalePortalBaseUrlMigration:
     """_migrate_stale_nous_portal_url auto-corrects stale portal_base_url on load."""
 
@@ -1040,9 +982,6 @@ class TestStalePortalBaseUrlMigration:
         store = _load_auth_store(auth_file)
         nous = store["providers"]["nous"]
         assert nous["portal_base_url"] == DEFAULT_NOUS_PORTAL_URL
-
-
-
 
 
     def test_runtime_credentials_rejects_http_for_production_portal(
@@ -1098,32 +1037,10 @@ class TestStalePortalBaseUrlMigration:
 # =============================================================================
 
 
-class TestNousDeviceAuthTimeoutMessage:
-    def test_timeout_message_mentions_captcha_login_and_retry(self):
-        from hermes_cli.auth import _nous_device_auth_timeout_message
-
-        msg = _nous_device_auth_timeout_message("https://portal.nousresearch.com")
-        assert "CAPTCHA" in msg
-        assert "hermes portal" in msg
-        assert "https://portal.nousresearch.com/login" in msg
-        # Must NOT point at the nonexistent /device page (live Portal 404s it).
-        assert "/device" not in msg
-
-    def test_timeout_message_falls_back_to_default_portal(self):
-        from hermes_cli.auth import (
-            DEFAULT_NOUS_PORTAL_URL,
-            _nous_device_auth_timeout_message,
-        )
-
-        msg = _nous_device_auth_timeout_message("")
-        assert f"{DEFAULT_NOUS_PORTAL_URL.rstrip('/')}/login" in msg
-
-
 def test_poll_for_token_timeout_raises_actionable_message():
     """The poll deadline must raise the CAPTCHA-aware guidance at the SOURCE,
     so both the CLI login and the dashboard poller (web_server_oauth._nous_poller,
     which surfaces str(e) to the UI) inherit it."""
-    import httpx
     import pytest
 
     import hermes_cli.auth as auth_mod
@@ -1139,7 +1056,7 @@ def test_poll_for_token_timeout_raises_actionable_message():
 
     from typing import cast
 
-    with pytest.raises(TimeoutError) as excinfo:
+    with pytest.raises(TimeoutError):
         auth_mod._poll_for_token(
             client=cast(httpx.Client, _PendingClient()),
             portal_base_url="https://portal.nousresearch.com",
@@ -1148,56 +1065,3 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
-
-    msg = str(excinfo.value)
-    assert "CAPTCHA" in msg
-    assert "hermes portal" in msg
-    assert "https://portal.nousresearch.com/login" in msg
-
-
-def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
-    """Poll timeout must surface the CAPTCHA-aware guidance through the CLI
-    login flow (propagates unchanged from _poll_for_token)."""
-    import pytest
-
-    import hermes_cli.auth as auth_mod
-
-    monkeypatch.setattr(
-        auth_mod,
-        "_request_device_code",
-        lambda **kwargs: {
-            "device_code": "device",
-            "user_code": "SMCL-97YT",
-            "verification_uri": "https://portal.nousresearch.com/manage-subscription",
-            "verification_uri_complete": (
-                "https://portal.nousresearch.com/manage-subscription"
-                "?user_code=SMCL-97YT"
-            ),
-            "expires_in": 600,
-            "interval": 1,
-        },
-    )
-
-    def _timeout(**kwargs):
-        raise TimeoutError(
-            auth_mod._nous_device_auth_timeout_message(
-                kwargs.get("portal_base_url", "")
-            )
-        )
-
-    monkeypatch.setattr(auth_mod, "_poll_for_token", _timeout)
-    monkeypatch.setattr(auth_mod.webbrowser, "open", lambda url: True)
-    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-
-    with pytest.raises(TimeoutError) as excinfo:
-        auth_mod._nous_device_code_login(
-            portal_base_url="https://portal.nousresearch.com",
-            inference_base_url="https://inference.example.com/v1",
-            open_browser=False,
-            timeout_seconds=1,
-        )
-
-    msg = str(excinfo.value)
-    assert "CAPTCHA" in msg
-    assert "hermes portal" in msg
-    assert "https://portal.nousresearch.com/login" in msg

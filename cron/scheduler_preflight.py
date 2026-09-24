@@ -135,6 +135,25 @@ def _credential_store_scope_label() -> str:
     return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
 
+def _profile_routes_from_raw_config(raw) -> object:
+    """``gateway.profile_routes`` from a raw config dict (top-level or nested), else None."""
+    if not isinstance(raw, dict):
+        return None
+    routes = raw.get("profile_routes")
+    if routes is None and isinstance(raw.get("gateway"), dict):
+        routes = raw["gateway"].get("profile_routes")
+    return routes
+
+
+def _load_managed_raw_config() -> dict:
+    """Managed-scope config (e.g. ``/etc/hermes/config.yaml``), or {} when unavailable."""
+    try:
+        from hermes_cli import managed_scope
+        return managed_scope.load_managed_config() or {}
+    except Exception:
+        return {}
+
+
 def _primary_profile_routes_for_current_home() -> list:
     """Primary gateway ``profile_routes`` targeting the profile being served; ``[]`` if this IS the
     primary home. Satellite crons are ticked and delivered by the primary gateway (a satellite
@@ -163,9 +182,12 @@ def _primary_profile_routes_for_current_home() -> list:
 
         from hermes_cli.config import read_user_config_raw
         raw = read_user_config_raw(config_path)  # raw primary file, not the merged current-profile config
-        routes_raw = raw.get("profile_routes")
-        if routes_raw is None and isinstance(raw.get("gateway"), dict):
-            routes_raw = raw["gateway"].get("profile_routes")
+        # Managed-scope overlay wins over the user file, exactly like the merged config: routes
+        # pinned in /etc/hermes/config.yaml never reach the raw user read (#121212), which made
+        # preflight false-block and routed delivery fail closed on centrally-managed installs.
+        routes_raw = _profile_routes_from_raw_config(_load_managed_raw_config())
+        if routes_raw is None:
+            routes_raw = _profile_routes_from_raw_config(raw)
         if not isinstance(routes_raw, list):
             return []
 

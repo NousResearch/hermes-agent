@@ -257,12 +257,27 @@ def _merge_file_config(defaults: Dict[str, Any], file_config: Dict[str, Any]) ->
 
 
 def load_cli_config() -> Dict[str, Any]:
-    """~/.hermes/config.yaml (else ./cli-config.yaml) over built-in defaults; env vars win.
+    """The selected profile's ``config.yaml`` over built-in defaults; env vars win.
 
-    ``HERMES_IGNORE_USER_CONFIG=1`` skips the user config entirely (``.env`` still loads).
+    A context-local HERMES_HOME override selects a routed profile ahead of the launch profile
+    captured by ``cli._hermes_home``. Profiles remain independent: a missing selected-profile
+    config falls back to the packaged CLI config, never the launch profile's file.
+    ``HERMES_IGNORE_USER_CONFIG=1`` skips the selected user config entirely (``.env`` still loads).
     """
     from cli import _cli_config_defaults, _hermes_home, _merge_file_config, _mirror_config_to_env
-    config_path = _hermes_home / 'config.yaml'
+    from hermes_constants import (
+        assert_named_profile_home_live,
+        get_hermes_home,
+        get_hermes_home_override,
+        hermes_home_key,
+    )
+
+    # cli._hermes_home is the launch profile, captured after -p / active_profile bootstrap. A
+    # routed TUI/gateway body binds a higher-priority ContextVar override; use it without consulting
+    # HERMES_PROFILE or appending profiles/<name> (HERMES_HOME already is the selected profile home).
+    config_home = get_hermes_home() if get_hermes_home_override() else _hermes_home
+    assert_named_profile_home_live(config_home)
+    config_path = config_home / 'config.yaml'
     if not config_path.exists() or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
         config_path = Path(__file__).parent / 'cli-config.yaml'
 
@@ -283,7 +298,8 @@ def load_cli_config() -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
-    # Expand ${ENV_VAR} references before bridging to env vars.
+    # Expand ${ENV_VAR} references before bridging to env vars. Routed callers bind the selected
+    # profile's secret scope alongside its home override, so expansion cannot borrow launch secrets.
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
 
@@ -293,7 +309,10 @@ def load_cli_config() -> Dict[str, Any]:
 
     defaults = managed_scope.apply_managed_overlay(defaults)
 
-    _mirror_config_to_env(defaults, _file_has_terminal_config)
+    # The env bridge is process-global and belongs to the launch profile. A routed profile already
+    # has terminal/config scopes; mirroring its values here would leak them into sibling sessions.
+    if hermes_home_key(config_home) == hermes_home_key(_hermes_home):
+        _mirror_config_to_env(defaults, _file_has_terminal_config)
 
     return defaults
 

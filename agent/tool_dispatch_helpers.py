@@ -9,7 +9,6 @@ normalisation, and the tool-result message constructor with untrusted-content wr
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -17,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.compression_marker import _COMPRESSION_MARKER_RE
 from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
@@ -69,21 +69,6 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
-@functools.lru_cache(maxsize=1)
-def _context_pruned_marker_re() -> re.Pattern[str]:
-    """Producer-shaped regex for the compressor's model-visible prune marker.
-
-    Imported lazily: ``agent.context_compressor`` -> ``agent.prompt_builder`` ->
-    this module, so a module-level import would be circular. Compiled once.
-    """
-    from agent.context_compressor import _COMPRESSION_MARKER_PREFIX
-
-    return re.compile(
-        re.escape(_COMPRESSION_MARKER_PREFIX)
-        + r"\s+\d[\d,]* of \d[\d,]* chars omitted here by Hermes's context compressor\."
-    )
-
-
 def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     """Paths whose values contain model-visible context-compression artifacts.
 
@@ -96,12 +81,11 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     if not tool_may_have_side_effect(tool_name):
         return []
 
-    marker_re = _context_pruned_marker_re()
     found: list[str] = []
 
     def _walk(value: Any, path: str) -> None:
         if isinstance(value, str):
-            if marker_re.search(value):
+            if _COMPRESSION_MARKER_RE.search(value):
                 found.append(path)
             return
         if isinstance(value, dict):

@@ -384,3 +384,69 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     assert "unreachable" in r.text.lower()
 
 
+# ---------------------------------------------------------------------------
+# API 401 rejection audit (#103117)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _audit_home(tmp_path, monkeypatch):
+    """Point $HERMES_HOME at a tmp dir; return a reader for audit events."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def _events():
+        log_file = tmp_path / "logs" / "dashboard-auth.log"
+        if not log_file.exists():
+            return []
+        import json as _json
+        return [_json.loads(line) for line in log_file.read_text().splitlines() if line.strip()]
+
+    return _events
+
+
+def test_invalid_bearer_401_is_audited(gated_app, _audit_home):
+    """A presented-but-invalid bearer (stale desktop token) must produce a
+    ``session_rejected`` audit event: before #103117 the bearer path 401'd
+    with no server-side trace, so dashboard-auth.log affirmatively suggested
+    auth was healthy while every app request was rejected."""
+    r = gated_app.post(
+        "/api/auth/ws-ticket", headers={"Authorization": "Bearer stale-desktop-token"}
+    )
+    assert r.status_code == 401
+    assert r.json()["reason"] == "invalid_or_expired_session"
+
+    events = _audit_home()
+    rejected = [e for e in events if e["event"] == "session_rejected"]
+    assert rejected, f"no session_rejected event in audit log: {events}"
+    assert rejected[0]["reason"] == "invalid_or_expired_session"
+    assert rejected[0]["path"] == "/api/auth/ws-ticket"
+    assert "ip" in rejected[0]
+    # The rejected bearer value itself must not reach the log.
+    assert "stale-desktop-token" not in str(events)
+
+
+def test_no_cookie_api_401_is_audited(gated_app, _audit_home):
+    """Bare unauthenticated API calls also leave a ``session_rejected`` trace."""
+    r = gated_app.get("/api/auth/me")
+    assert r.status_code == 401
+    assert r.json()["reason"] == "no_cookie"
+
+    events = _audit_home()
+    rejected = [e for e in events if e["event"] == "session_rejected"]
+    assert rejected and rejected[0]["reason"] == "no_cookie"
+    assert rejected[0]["path"] == "/api/auth/me"
+
+
+def test_valid_bearer_and_html_redirect_not_audited_as_rejected(gated_app, _audit_home):
+    """Positive controls: a verifying bearer serves normally, and the HTML
+    302-to-/login is normal unauthenticated navigation — neither may emit
+    ``session_rejected``."""
+    token = _mint_stub_at(StubAuthProvider())
+    r = gated_app.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+
+    r = gated_app.get("/", follow_redirects=False)
+    assert r.status_code == 302
+
+    assert [e for e in _audit_home() if e["event"] == "session_rejected"] == []
+
+

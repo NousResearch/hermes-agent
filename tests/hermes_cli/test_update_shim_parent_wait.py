@@ -34,6 +34,7 @@ from hermes_cli import main as cli_main, update_cmd, update_handoff, update_lock
 
 seen = {"paused": 0, "registered": None}
 parent_pid = int(os.environ[update_handoff.SHIM_PARENT_PID_ENV])
+update_cmd._detect_venv_python_processes = lambda **kw: []
 cli_main._update_preflight_handled = lambda args: False
 cli_main._install_hangup_protection = lambda **kw: None
 cli_main._finalize_update_output = lambda state: None
@@ -92,11 +93,11 @@ def test_update_child_outwaits_shim_parent_then_owns_the_lock_and_the_resume_tok
     hermes_home = tmp_path / "home"
     hermes_home.mkdir()
     ready = tmp_path / "ready"
-    token = {"resume_needed": True, "profiles": {"default": 4}, "unmapped": []}
     # The parent lives until we close its stdin — the marker is its claim, as in a real run.
     parent = subprocess.Popen(
         [sys.executable, "-c", "import sys; sys.stdin.read()"],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    token = {"resume_needed": True, "profiles": {"default": parent.pid}, "unmapped": []}
     marker = hermes_home / update_lock.MARKER_NAME
     marker.write_text(f"{parent.pid}\n{int(time.time())}\n", encoding="utf-8")
     env = {

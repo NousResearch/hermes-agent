@@ -13,12 +13,9 @@ These tests confirm:
   2. The ``.ogg`` voice path forwards the probed duration to ``bot.send_voice``.
   3. The ``.mp3`` audio path forwards the probed duration to ``bot.send_audio``.
 
-Hermetic: no real mutagen / ffprobe required. The WAV path uses stdlib only;
-the mutagen path is exercised with a fake module injected into ``sys.modules``.
+Hermetic: no real mutagen / ffprobe required. The WAV path uses stdlib only.
 """
-import sys
 import wave
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,7 +27,6 @@ from plugins.platforms.telegram.adapter import (  # noqa: E402
     _coerce_duration_seconds,
     _probe_voice_duration_seconds,
 )
-from tools.send_message_tool import _send_telegram  # noqa: E402
 
 
 def _write_wav(path, *, rate, frames):
@@ -59,17 +55,6 @@ def test_probe_wav_rounds_to_whole_seconds(tmp_path, rate, frames, expected):
     f = tmp_path / "clip.wav"
     _write_wav(f, rate=rate, frames=frames)
     assert _probe_voice_duration_seconds(str(f)) == expected
-
-
-# ---------------------------------------------------------------------------
-# 1b. mutagen path — fake module so ogg/mp3 work without the real dependency
-# ---------------------------------------------------------------------------
-
-def _inject_fake_mutagen(monkeypatch, length):
-    fake = SimpleNamespace(
-        File=lambda _p: SimpleNamespace(info=SimpleNamespace(length=length))
-    )
-    monkeypatch.setitem(sys.modules, "mutagen", fake)
 
 
 # ---------------------------------------------------------------------------

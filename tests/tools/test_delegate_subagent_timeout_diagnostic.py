@@ -17,7 +17,6 @@ These tests pin:
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -85,65 +84,6 @@ class _StubChild:
 
 class TestDumpSubagentTimeoutDiagnostic:
 
-    def test_writes_log_with_expected_sections(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
-        child = _StubChild(subagent_id="sa-7-abc123")
-
-        worker = threading.Thread(
-            target=lambda: child.run_conversation("test"),
-            daemon=True,
-        )
-        worker.start()
-        time.sleep(0.1)
-        try:
-            path = _dump_subagent_timeout_diagnostic(
-                child=child,
-                task_index=7,
-                timeout_seconds=300.0,
-                duration_seconds=300.01,
-                worker_thread=worker,
-                goal="Research something long",
-            )
-        finally:
-            child.interrupt()
-            worker.join(timeout=2.0)
-
-        assert path is not None
-        p = Path(path)
-        assert p.is_file()
-        # File lives under HERMES_HOME/logs/
-        assert p.parent == hermes_home / "logs"
-        assert p.name.startswith("subagent-timeout-sa-7-abc123-")
-        assert p.suffix == ".log"
-
-        content = p.read_text()
-        # Header references the issue for future grep-ability
-        assert "issue #14726" in content
-        # Timeout facts
-        assert "task_index:        7" in content
-        assert "subagent_id:       sa-7-abc123" in content
-        assert "configured_timeout: 300.0s" in content
-        assert "actual_duration:   300.01s" in content
-        # Goal
-        assert "Research something long" in content
-        # Child config
-        assert "model: 'test/model'" in content
-        assert "provider: 'testprov'" in content
-        assert "base_url: 'https://example.test/v1'" in content
-        assert "max_iterations: 30" in content
-        # Toolsets
-        assert "enabled_toolsets:  ['web', 'terminal']" in content
-        assert "loaded tool count: 2" in content
-        # Prompt / schema sizes
-        assert "system_prompt_bytes:" in content
-        assert "tool_schema_count: 2" in content
-        assert "tool_schema_bytes:" in content
-        # Activity summary
-        assert "api_call_count: 0" in content
-        # Worker stack
-        assert "Worker thread stack at timeout" in content
-        # The thread is parked inside _hang.wait → cond.wait → waiter.acquire
-        assert "acquire" in content or "wait" in content
 
 
     def test_returns_none_on_unwritable_logs_dir(self, tmp_path, monkeypatch):

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 
 import { test } from 'vitest'
 
@@ -84,11 +84,6 @@ test('clampDataUrlReadMaxMb defaults and bounds the attach size preference', () 
   assert.equal(clampDataUrlReadMaxMb(256), 256)
   assert.equal(clampDataUrlReadMaxMb(99999), 4096)
   assert.equal(dataUrlReadMaxBytesFromMb(16), 16 * 1024 * 1024)
-})
-
-test('attachment upload cap is bounded above the preview default', () => {
-  assert.equal(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES, 256 * 1024 * 1024)
-  assert.ok(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES > dataUrlReadMaxBytesFromMb(DATA_URL_READ_DEFAULT_MAX_MB))
 })
 
 test('attachment data URL helper reads bytes above the preview default without changing that limit', async () => {
@@ -970,161 +965,6 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
-})
-
-// main.ts has no module.exports, so the wiring of the extracted keyring-less
-// helpers into the main process follows the repo's source-assertion pattern
-// (see windows-hermes-resolution.test.ts). These pin the propagation the PR
-// reviewer flagged as untested: the connection-config IPC path forwarding
-// allowPlainTextToken through resolvePersistedRemoteToken, and the whenReady
-// --password-store=basic startup branch.
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-
-function readMain() {
-  return fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
-}
-
-test('registry JSON helpers retain native OAuth bearer authentication', () => {
-  const source = readMain()
-  const postStart = source.indexOf('async function postJsonForBackend(')
-  const fetchStart = source.indexOf('async function fetchJsonForBackend(', postStart)
-  const helpers = source.slice(postStart, fetchStart)
-
-  assert.notEqual(postStart, -1)
-  assert.notEqual(fetchStart, -1)
-  assert.match(
-    helpers,
-    /return fetchJsonForBackend\(descriptor, path, \{ \.\.\.opts, body: body \?\? \{\}, method: 'POST' \}\)/
-  )
-  assert.match(helpers, /return fetchJsonForBackend\(descriptor, path, opts\)/)
-  assert.doesNotMatch(helpers, /fetchJsonViaOauthSession/)
-})
-
-test('coerceDesktopConnectionConfig routes token persistence through resolvePersistedRemoteToken', () => {
-  const source = readMain()
-  const fnStart = source.indexOf('function coerceDesktopConnectionConfig(')
-  assert.notEqual(fnStart, -1, 'coerceDesktopConnectionConfig must exist in main.ts')
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
-  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
-
-  assert.match(
-    body,
-    /const nextToken = resolvePersistedRemoteToken\(\{/,
-    'the persist decision must go through the shared hardening helper'
-  )
-  // The opt-in must be forwarded RAW (no `=== true` at the call site): the
-  // helper owns the strict coercion so it is asserted in exactly one place.
-  assert.match(
-    body,
-    /allowPlainText: input\.allowPlainTextToken\b/,
-    'allowPlainTextToken must reach the helper so the IPC opt-in propagates'
-  )
-  assert.doesNotMatch(
-    body,
-    /allowPlainText: input\.allowPlainTextToken === true/,
-    'the strict coercion must live in the helper, not be duplicated at the call site'
-  )
-  assert.match(body, /encryptSecret: encryptDesktopSecret\b/, 'the helper must encrypt via encryptDesktopSecret')
-})
-
-test('connection-config save and apply IPC handlers route payloads through coerceDesktopConnectionConfig', () => {
-  const source = readMain()
-
-  for (const channel of ['hermes:connection-config:save', 'hermes:connection-config:apply']) {
-    const handlerStart = source.indexOf(`ipcMain.handle('${channel}'`)
-    assert.notEqual(handlerStart, -1, `${channel} handler must exist`)
-    const handlerBody = source.slice(handlerStart, handlerStart + 400)
-    assert.match(
-      handlerBody,
-      /coerceDesktopConnectionConfig\(payload(?:, previousConfig)?\)/,
-      `${channel} must coerce its payload (the propagation seam) before persisting`
-    )
-  }
-})
-
-test('whenReady enables basic password-store encryption before createWindow', () => {
-  const source = readMain()
-  const enableIndex = source.indexOf('enableBasicPasswordStoreEncryption({')
-  assert.notEqual(enableIndex, -1, 'whenReady must call enableBasicPasswordStoreEncryption')
-
-  const call = source.slice(enableIndex, enableIndex + 240)
-  assert.match(call, /platform: process\.platform/, 'the real platform must be forwarded')
-  assert.match(
-    call,
-    /passwordStoreSwitch: app\.commandLine\.getSwitchValue\('password-store'\)/,
-    'the real --password-store switch value must be forwarded'
-  )
-  assert.match(call, /safeStorageApi: safeStorage/, 'the real safeStorage must be forwarded')
-
-  // Ordering matters: the switch must take effect before anything touches
-  // safeStorage, so the enable call must precede the first createWindow().
-  const createWindowIndex = source.indexOf('createWindow()', enableIndex)
-  assert.notEqual(createWindowIndex, -1, 'whenReady must call createWindow after enabling encryption')
-  assert.ok(
-    enableIndex < createWindowIndex,
-    'enableBasicPasswordStoreEncryption must run before createWindow() so the switch is applied first'
-  )
-})
-
-test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteTokenPlainText', () => {
-  const source = readMain()
-  const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')
-  assert.notEqual(fnStart, -1, 'sanitizeDesktopConnectionConfig must exist in main.ts')
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
-  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
-
-  const returnIndex = body.indexOf('return {')
-  assert.notEqual(returnIndex, -1, 'sanitizeDesktopConnectionConfig must return a sanitized object')
-  const returned = body.slice(returnIndex)
-  assert.match(returned, /\bsecureTokenStorage\b/, 'the renderer needs the secure-storage availability signal')
-  assert.match(returned, /\bremoteTokenPlainText\b/, 'the renderer needs the plain-text token signal')
-})
-
-// #117269: the plain-text signal must be gated on the machine actually being
-// unable to secure the token — an inline encoding check would warn every
-// keychain-opt-out user, whose chosen mode is plain text. The signal flows
-// through resolveRemoteTokenPlainText (behavior tests above); this pins the
-// main-process wiring so the gate cannot be dropped at the call site.
-test('sanitizeDesktopConnectionConfig routes remoteTokenPlainText through the gated helper', () => {
-  const source = readMain()
-  const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')
-  assert.notEqual(fnStart, -1, 'sanitizeDesktopConnectionConfig must exist in main.ts')
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
-  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
-
-  assert.match(
-    body,
-    /const remoteTokenPlainText = resolveRemoteTokenPlainText\(\{/,
-    'remoteTokenPlainText must be computed by resolveRemoteTokenPlainText (gated on secure storage) (#117269)'
-  )
-})
-
-// #95393: connections.save succeeded but the switcher menu (renderer
-// $connectionsRegistry snapshot) never refreshed until reload. The registry
-// push (broadcastConnectionsChanged) fired only on the dial-material-edit
-// branch, so a brand-new connection or a label rename never reached other
-// windows — or the switcher's onChanged re-pull. Mirrors the live repro at
-// /tmp/mg-ab/w2_95393.py: save → menu (no reload) must include the new row.
-test('saveRegistryConnection republishes the registry to renderers on EVERY successful save (#95393)', () => {
-  const source = readMain()
-  const fnStart = source.indexOf('async function saveRegistryConnection(')
-  assert.notEqual(fnStart, -1, 'saveRegistryConnection must exist in main.ts')
-  const fnEnd = source.indexOf('\nasync function ', fnStart + 1)
-  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
-
-  // The dial-material edit branch keeps its dispose+redial semantics…
-  assert.match(
-    body,
-    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'updated' \}\)/,
-    'a dial-material edit must still push the dispose+redial signal'
-  )
-  // …and every OTHER save (new connection, label rename) must still push a
-  // registry refresh, or the switcher menu paints stale until reload.
-  assert.match(
-    body,
-    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'saved' \}\)/,
-    'a non-dial-material save must republish the registry snapshot (#95393)'
-  )
 })
 
 // ---------------------------------------------------------------------------

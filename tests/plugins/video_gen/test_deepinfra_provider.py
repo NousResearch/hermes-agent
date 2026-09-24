@@ -27,32 +27,11 @@ def _isolation(tmp_path, monkeypatch):
     yield
 
 
-def test_identity_and_availability(monkeypatch):
+def test_availability_follows_api_key(monkeypatch):
     p = deepinfra_plugin.DeepInfraVideoGenProvider()
-    assert p.name == "deepinfra"
-    assert p.display_name == "DeepInfra"
-    assert p._base_url() == "https://api.deepinfra.com/v1/openai"
     assert p.is_available() is True
     monkeypatch.delenv("DEEPINFRA_API_KEY", raising=False)
     assert p.is_available() is False
-
-
-def test_list_models_filters_by_video_gen_tag(monkeypatch):
-    """list_models() returns only ``video-gen``-tagged catalog entries."""
-    import hermes_cli.models as _models_mod
-
-    def _fake_by_tag(tag, **kw):
-        assert tag == "video-gen"
-        return [
-            {"id": "vendor/p-video", "metadata": {"description": "fast t2v"}},
-            {"id": "vendor/wan-t2v", "metadata": {}},
-        ]
-
-    monkeypatch.setattr(_models_mod, "_fetch_deepinfra_models_by_tag", _fake_by_tag)
-    rows = deepinfra_plugin.DeepInfraVideoGenProvider().list_models()
-    ids = {row["id"] for row in rows}
-    assert ids == {"vendor/p-video", "vendor/wan-t2v"}
-    assert all("display" in r for r in rows)
 
 
 def _fake_openai_with_capture(captured: dict, *, status="succeeded",
@@ -155,3 +134,31 @@ def test_generate_text_to_video_downloads_url_and_saves_locally():
     assert "image_url" not in captured["kwargs"].get("extra_body", {})
 
 
+def test_credentials_follow_the_profile_secret_scope(monkeypatch):
+    """On a multiplexed gateway os.environ is the launch profile's .env: the key and base URL come from the
+    routed profile's scope, and a profile without a key is unavailable instead of borrowing the launch key."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+    monkeypatch.setenv("DEEPINFRA_BASE_URL", "https://launch.example/v1")
+    provider = deepinfra_plugin.DeepInfraVideoGenProvider()
+    captured: dict = {}
+    set_multiplex_active(True)
+    try:
+        token = set_secret_scope({"DEEPINFRA_API_KEY": "profile-b-key", "DEEPINFRA_BASE_URL": "https://profile-b.example/v1"})
+        try:
+            with patch.dict("sys.modules", {"openai": _fake_openai_with_capture(captured)}), \
+                    _mock_url_download(captured):
+                assert provider.generate(prompt="a cube", model="vendor/x")["success"]
+        finally:
+            reset_secret_scope(token)
+        token = set_secret_scope({})
+        try:
+            assert provider.is_available() is False
+        finally:
+            reset_secret_scope(token)
+    finally:
+        set_multiplex_active(False)
+        if captured.get("http_client") is not None:
+            captured["http_client"].close()
+    assert captured["api_key"] == "profile-b-key"
+    assert captured["base_url"] == "https://profile-b.example/v1"

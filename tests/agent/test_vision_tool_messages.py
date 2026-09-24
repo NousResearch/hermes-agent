@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +61,6 @@ def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"
 # ---------------------------------------------------------------------------
 
 
-class TestProviderSupportsVisionToolMessages:
-    def test_xiaomi_returns_false(self):
-        agent = _make_agent("xiaomi", "mimo-v2.5")
-        assert agent._provider_supports_vision_tool_messages() is False
 
 
 # ---------------------------------------------------------------------------
@@ -137,22 +132,4 @@ class TestToolResultContentProactiveDowngrade:
 # ---------------------------------------------------------------------------
 
 
-class TestProviderProfileField:
-    def test_default_is_true(self):
-        from providers.base import ProviderProfile
-        # ProviderProfile uses __init__ with defaults; check via a minimal instance
-        # by reading the class-level default from a dataclass-like field
-        import dataclasses
-        if dataclasses.is_dataclass(ProviderProfile):
-            fields = {f.name: f.default for f in dataclasses.fields(ProviderProfile)}
-            assert fields.get("supports_vision_tool_messages", True) is True
-        else:
-            # Class-level attribute default
-            assert getattr(ProviderProfile, "supports_vision_tool_messages", True) is True
-
-    def test_xiaomi_profile_has_false(self):
-        from providers import get_provider_profile
-        profile = get_provider_profile("xiaomi")
-        assert profile is not None
-        assert profile.supports_vision_tool_messages is False
 

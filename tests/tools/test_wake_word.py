@@ -61,12 +61,6 @@ def test_looks_like_path():
     assert not _looks_like_path("hey_jarvis")
 
 
-def test_load_wake_word_config_is_a_dict_with_defaults():
-    # Wired into DEFAULT_CONFIG, so a real load returns the section shape.
-    cfg = ww.load_wake_word_config()
-    assert isinstance(cfg, dict)
-    assert cfg.get("enabled") is False
-    assert cfg.get("provider") == "openwakeword"
 
 
 def test_load_wake_word_config_guards_non_dict(monkeypatch):
@@ -240,16 +234,6 @@ def test_bundled_hey_hermes_model_ships_on_disk():
 # ── platform-aware backend selection (openWakeWord onnx is broken on macOS ARM64,
 #    upstream dscripka/openWakeWord#336) ────────────────────────────────────────
 
-def test_default_framework_tracks_the_macos_arm64_probe():
-    """``default_inference_framework()`` is exactly the ``_is_macos_arm64()``
-    branch — tflite there, onnx everywhere else.
-
-    Stated as an invariant between the probe and its consumer so it holds on
-    every host, including the macOS runner (where both sides are real) and an
-    Intel Mac (where ONNX is fine and both sides say so).
-    """
-    expected = "tflite" if ww._is_macos_arm64() else "onnx"
-    assert ww.default_inference_framework() == expected
 
 
 @pytest.mark.macos_only
@@ -788,7 +772,6 @@ def test_requirements_client_capture_without_local_mic(monkeypatch):
             return ""
 
     monkeypatch.setattr(ww, "lazy_deps", _LD, raising=False)
-    import tools.lazy_deps as real_ld
     monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
     monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
 

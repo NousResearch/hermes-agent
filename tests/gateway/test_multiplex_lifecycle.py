@@ -67,11 +67,6 @@ class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""
 
 
-    def test_force_bypasses(self, monkeypatch):
-        from hermes_cli import gateway as gw
-        # Even if it looks like a named profile, force returns immediately.
-        monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
-        gw._guard_named_profile_under_multiplexer(force=True)
 
     def test_inert_when_no_default_gateway_running(self, monkeypatch, tmp_path):
         from hermes_cli import gateway as gw

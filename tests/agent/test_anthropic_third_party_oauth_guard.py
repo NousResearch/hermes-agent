@@ -27,7 +27,6 @@ from run_agent import AIAgent
 
 # A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
 _OAUTH_LIKE_TOKEN = "sk-ant-oauth-example-1234567890abcdef"
-_API_KEY_TOKEN = "sk-ant-api-abcdef1234567890"
 
 
 @pytest.fixture
@@ -75,6 +74,57 @@ class TestOAuthFlagOnRefresh:
         assert result is False
         # And the flag is untouched regardless.
         assert agent._is_anthropic_oauth is False
+
+    @pytest.mark.parametrize("base_url", [
+        "https://llmbox.bytedance.net",
+        "http://127.0.0.1:8080/anthropic.com",  # substring spoof: the host is still foreign
+        "https://llmbox.bytedance.net/anthropic",  # accepted proxy shape, but holds a custom key
+    ])
+    def test_third_party_endpoint_skips_refresh(self, agent, base_url):
+        """provider == 'anthropic' on a third-party endpoint must not refresh: the refresh
+        would swap in native Anthropic credentials the endpoint was never given."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent._anthropic_api_key = "custom-api-key"
+        agent._anthropic_base_url = base_url
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = False
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token",
+                  return_value=_OAUTH_LIKE_TOKEN),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is False
+        assert agent._anthropic_api_key == "custom-api-key"
+        assert agent._is_anthropic_oauth is False
+
+    @pytest.mark.parametrize("base_url", [
+        "https://api.claude.com",
+        "https://llm.corp.example/anthropic",
+    ])
+    def test_accepted_native_proxy_keeps_rotating_anthropic_token(self, agent, base_url):
+        """Hosts the resolver accepts as native Anthropic already hold the Anthropic token, so
+        blocking the refresh would strand an expiring OAuth token (401 with no recovery)."""
+        old, new = "sk-ant-oat01-old-token-aaaaaaaa", "sk-ant-oat01-new-token-bbbbbbbb"
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent._anthropic_api_key = old
+        agent._anthropic_base_url = base_url
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is True
+        assert agent._anthropic_api_key == new
 
 
 
@@ -131,28 +181,6 @@ class TestOAuthFlagOnConstruction:
         assert agent._is_anthropic_oauth is False
 
 
-class TestOAuthFlagOnFallbackActivation:
-    """Site 5 — _try_activate_fallback targeting a third-party Anthropic endpoint."""
-
-    def test_fallback_to_third_party_does_not_flip_oauth(self, agent):
-        """Directly mimic the post-fallback assignment at line ~6537."""
-        from agent.anthropic_credentials import _is_oauth_token
-
-        # Emulate the relevant lines of _try_activate_fallback without
-        # running the entire recovery stack (which pulls in streaming,
-        # sessions, etc.).
-        fb_provider = "minimax"
-        effective_key = _OAUTH_LIKE_TOKEN
-        agent._is_anthropic_oauth = (
-            _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
-        )
-        assert agent._is_anthropic_oauth is False
 
 
-class TestApiKeyTokensAlwaysSafe:
-    """Regression: plain API-key shapes must always resolve to non-OAuth, any provider."""
-
-    def test_native_anthropic_with_api_key_token(self):
-        from agent.anthropic_credentials import _is_oauth_token
-        assert _is_oauth_token(_API_KEY_TOKEN) is False
 

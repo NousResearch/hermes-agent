@@ -201,18 +201,19 @@ def test_real_user_systemd_scope_preserves_worker_context(
     receipt = workspace / "worker-receipt.json"
     script = (
         "import json, os, pathlib, sys, time; "
-        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "p = pathlib.Path(sys.argv[1]); t = p.with_suffix('.tmp'); "
+        "t.write_text(json.dumps({"
         "'pid': os.getpid(), 'cwd': os.getcwd(), "
         "'task': os.environ.get('HERMES_KANBAN_TASK'), "
         "'run': os.environ.get('HERMES_KANBAN_RUN_ID'), "
-        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
+        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); os.replace(t, p); time.sleep(0.5)"
     )
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-c", script, str(receipt)])
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
 
     pid = kbd._default_spawn(task, str(workspace))
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while not receipt.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
 

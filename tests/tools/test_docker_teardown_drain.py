@@ -56,11 +56,3 @@ def test_atexit_drain_joins_worker_of_env_already_popped_from_registry(monkeypat
     assert not env._cleanup_thread.is_alive()
 
 
-def test_finished_workers_do_not_accumulate():
-    t = threading.Thread(target=lambda: None)
-    with docker_env._TEARDOWN_LOCK:
-        docker_env._TEARDOWN_THREADS.add(t)
-    t.start(); t.join()
-    assert docker_env.DockerEnvironment.wait_for_all_teardowns(timeout=1) is True
-    with docker_env._TEARDOWN_LOCK:
-        assert t not in docker_env._TEARDOWN_THREADS

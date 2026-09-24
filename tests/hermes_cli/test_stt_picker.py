@@ -68,10 +68,19 @@ class TestActiveDetection:
 class TestModelPicker:
 
     def test_catalog_matches_runtime_model_sets(self):
-        from tools.transcription_common import GROQ_MODELS, OPENAI_MODELS
+        from hermes_cli.web_server_config import _SCHEMA_OVERRIDES
+        from tools.transcription_common import (
+            DEFAULT_LOCAL_MODEL,
+            GROQ_MODELS,
+            LOCAL_STT_MODEL_OPTIONS,
+            OPENAI_MODELS,
+        )
 
         assert set(STT_MODEL_CATALOG["openai"]) == OPENAI_MODELS
         assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS
+        assert STT_MODEL_CATALOG["local"][0] == DEFAULT_LOCAL_MODEL
+        assert set(STT_MODEL_CATALOG["local"]) == set(LOCAL_STT_MODEL_OPTIONS)
+        assert _SCHEMA_OVERRIDES["stt.local.model"]["options"] == list(LOCAL_STT_MODEL_OPTIONS)
 
 
 

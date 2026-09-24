@@ -1143,7 +1143,7 @@ DEFAULT_CONFIG = {
         "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {
-            "model": "base",  # tiny, base, small, medium, large-v3
+            "model": "base",  # tiny, base, small, medium, large-v3, turbo
             "language": "",  # auto-detect; set "en", "es", ... to force
             "initial_prompt": "",
             # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter

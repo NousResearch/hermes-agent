@@ -2418,7 +2418,7 @@ stt:
   cloud_trim_keep_ms: 300      # how much of each pause survives the trim (keeps natural pacing)
   # prompt: "Hermes, Teknium, Nous Research, kanban"   # Static vocabulary hint (see below)
   local:
-    model: "base"              # tiny, base, small, medium, large-v3
+    model: "base"              # tiny, base, small, medium, large-v3, turbo
     language: ""               # per-provider override of stt.language
     initial_prompt: ""         # optional whisper prompt to bias vocabulary/script (e.g. Simplified Chinese)
     vad: true                  # Silero VAD filter (default on) — silence never reaches whisper; false = raw behavior (music/ambient)

@@ -135,6 +135,11 @@ def _parse_fallback_entries(
             type(raw).__name__,
         )
         if not isinstance(raw, str):
+            if warn_empty:
+                logger.warning(
+                    "fallback_providers/fallback_model is configured (1 raw entry) but no entry "
+                    "parsed — the effective fallback chain is EMPTY."
+                )
             return []
         candidates = [raw]
     entries: list[tuple[int, dict[str, Any]]] = []

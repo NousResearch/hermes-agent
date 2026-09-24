@@ -136,7 +136,7 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
         halt_active, halt_message = fallback_halt_active()
     except Exception:
         return "No backup provider succeeded either."
-    if halt_active:
+    if halt_active and chain:
         return halt_message
     if chain:
         return "No backup provider succeeded either."

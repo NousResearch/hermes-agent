@@ -81,6 +81,21 @@ def test_halted_fallback_copy_says_backups_were_disabled_not_attempted(monkeypat
     assert "No backup provider succeeded either" not in msg
 
 
+def test_halt_without_a_fallback_chain_reports_no_backup_configured(monkeypatch):
+    monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": []})
+    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    monkeypatch.setattr(
+        scheduler,
+        "fallback_halt_active",
+        lambda: (True, "fallback halt refusal"),
+    )
+
+    phrase = scheduler._fallback_chain_phrase()
+
+    assert "No backup provider is configured" in phrase
+    assert "fallback halt refusal" not in phrase
+
+
 def test_fallback_chain_phrase_fails_open_on_config_error(monkeypatch):
     def _raise():
         raise RuntimeError("config unreadable")

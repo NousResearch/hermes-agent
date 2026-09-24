@@ -38,7 +38,7 @@ def test_halt_blocks_auxiliary_main_fallback_chain(tmp_path):
     resolve_entry.assert_not_called()
 
 
-def test_halt_blocks_every_auto_route_selection_fallback(monkeypatch):
+def test_halt_blocks_every_auto_route_selection_fallback(monkeypatch, caplog):
     """An unavailable provider:auto route must not reach task, main, or discovery providers."""
     from agent import auxiliary_client as ac
 
@@ -57,6 +57,8 @@ def test_halt_blocks_every_auto_route_selection_fallback(monkeypatch):
     task_chain.assert_not_called()
     main_chain.assert_not_called()
     discovery_chain.assert_not_called()
+    assert "provider:auto" in caplog.text
+    assert "discovery" in caplog.text
 
 
 def test_halt_blocks_every_auto_runtime_fallback_but_not_explicit_task_chain(monkeypatch):

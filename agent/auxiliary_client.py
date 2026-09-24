@@ -4643,7 +4643,11 @@ def _resolve_auto_route(
 
     halt_active, halt_message = fallback_halt_active()
     if halt_active:
-        logger.warning("Auxiliary %s: %s", task or "call", halt_message)
+        logger.warning(
+            "Auxiliary %s: %s Under provider:auto, automatic provider discovery and payment "
+            "recovery count as fallback.",
+            task or "call", halt_message,
+        )
         return None, None, ""
     if task:
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
@@ -7675,7 +7679,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
 
         halt_active, halt_message = fallback_halt_active()
         if halt_active:
-            logger.warning("Auxiliary %s%s: %s", task or "call", tag, halt_message)
+            logger.warning(
+                "Auxiliary %s%s: %s Under provider:auto, automatic provider discovery and "
+                "payment recovery count as fallback.",
+                task or "call", tag, halt_message,
+            )
             return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip

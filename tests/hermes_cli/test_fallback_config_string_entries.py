@@ -2,6 +2,8 @@
 
 import logging
 
+import pytest
+
 from hermes_cli.fallback_config import _iter_fallback_entries, get_fallback_chain
 
 
@@ -43,7 +45,6 @@ def test_every_dropped_shape_warns_without_logging_values(caplog):
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
         assert _iter_fallback_entries(raw) == []
-        assert _iter_fallback_entries(42) == []
         assert _iter_fallback_entries("openrouter:qwen/qwen3.6-plus") == [
             {"provider": "openrouter", "model": "qwen/qwen3.6-plus"}
         ]
@@ -51,10 +52,18 @@ def test_every_dropped_shape_warns_without_logging_values(caplog):
     assert "entry[0] is a malformed string" in caplog.text
     assert "entry[1] (dict) missing 'model'" in caplog.text
     assert "entry[2] (int) is malformed" in caplog.text
-    assert "Malformed fallback root (int)" in caplog.text
     assert "Malformed fallback root (str)" in caplog.text
     assert "effective fallback chain is EMPTY" in caplog.text
     assert not any(secret in caplog.text for secret in secrets)
+
+
+@pytest.mark.parametrize("raw", [42, True, 3.5], ids=["int", "bool", "float"])
+def test_malformed_scalar_root_warns_that_effective_chain_is_empty(raw, caplog):
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+        assert _iter_fallback_entries(raw) == []
+
+    assert f"Malformed fallback root ({type(raw).__name__})" in caplog.text
+    assert "effective fallback chain is EMPTY" in caplog.text
 
 
 def test_combined_chain_warns_for_duplicates_without_leaking_values(caplog):
@@ -75,10 +84,18 @@ def test_combined_chain_warns_for_duplicates_without_leaking_values(caplog):
     assert not any(secret in caplog.text for secret in secrets)
 
 
-def test_valid_legacy_entry_prevents_false_empty_chain_warning(caplog):
+@pytest.mark.parametrize(
+    "malformed_primary",
+    [
+        42,
+        {"provider": "openrouter", "api_key": "FAKE_MALFORMED_PRIMARY_SECRET_25ad"},
+    ],
+    ids=["scalar-root", "secret-bearing-entry"],
+)
+def test_valid_legacy_entry_prevents_false_empty_chain_warning(malformed_primary, caplog):
     secret = "FAKE_MALFORMED_PRIMARY_SECRET_25ad"
     config = {
-        "fallback_providers": [{"provider": "openrouter", "api_key": secret}],
+        "fallback_providers": malformed_primary,
         "fallback_model": {"provider": "nous", "model": "backup-model"},
     }
 
@@ -87,6 +104,5 @@ def test_valid_legacy_entry_prevents_false_empty_chain_warning(caplog):
             {"provider": "nous", "model": "backup-model"}
         ]
 
-    assert "entry[0] (dict) missing 'model'" in caplog.text
     assert "effective fallback chain is EMPTY" not in caplog.text
     assert secret not in caplog.text

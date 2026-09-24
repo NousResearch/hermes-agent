@@ -61,9 +61,14 @@ fallback_policy.halt` refusal is emitted, and the primary's error surfaces throu
 terminal path. The gate
 covers both mid-turn activation and pre-agent credential-resolution fallback in interactive CLI,
 one-shot, messaging gateway, TUI/Desktop, and cron runs. It also prevents auxiliary tasks using
-`provider: auto` from walking the main fallback chain. For cron, a halted chain does not suppress
-primary credential preflight, and provider-failure notices say fallback was disabled rather than
-claiming that backups were attempted. Default is `false` (activate the chain as usual).
+`provider: auto` from switching through task-specific or global chains, built-in provider
+discovery, or payment-recovery routes. Those automatic routes count as fallback even when no
+explicit `fallback_providers` list exists; this is what prevents an unavailable selected route
+from silently moving work onto a metered provider. Explicit non-`auto` auxiliary providers retain
+their normal, separately documented recovery behavior. For cron, a halted configured chain does
+not suppress primary credential preflight, and provider-failure notices say fallback was disabled
+rather than claiming that backups were attempted. If no chain exists, the notice says no backup is
+configured instead. Default is `false` (activate fallback as usual).
 
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 
@@ -255,16 +260,16 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 
 ### Auto-Detection Chain
 
-When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes follows your configured fallback policy and then stops:
+When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes follows the available automatic fallback sources and then stops:
 
 ```text
 Main provider + main model → auxiliary.<task>.fallback_chain →
-fallback_providers / fallback_model → skip the task (warn)
+fallback_providers / fallback_model → built-in discovery (when eligible) → skip the task (warn)
 ```
 
 A billing or quota failure quarantines only the failed custom endpoint for the auxiliary health cooldown, not every route registered as `custom`. A healthy local endpoint with a different base URL remains eligible for fallback and subsequent auto routing. Aliases for the same custom endpoint share its health state. Built-in providers retain their shared-account health checks.
 
-The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
+The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well. `fallback_policy.halt: true` stops before every switch in this sequence, including built-in discovery and payment-recovery switching; an explicit chain is not required for the halt policy to apply.
 
 **Built-in text discovery chain (compression, web extract, title generation, etc.):**
 

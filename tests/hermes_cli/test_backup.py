@@ -1453,6 +1453,82 @@ class TestSafeCopyDb:
         assert connect_calls[0][1]["timeout"] == 0.0
         assert not dst.exists()
 
+    def test_progress_churn_without_busy_is_bounded_by_overall_deadline(
+        self, tmp_path, monkeypatch
+    ):
+        # #120888: concurrent writes can keep the backup emitting SQLITE_OK
+        # progress (0 BUSY/LOCKED) indefinitely, resetting the busy deadline
+        # on every callback. An absolute wall-clock bound must stop it.
+        from hermes_cli import backup as backup_mod
+
+        src = tmp_path / "churn.db"
+        dst = tmp_path / "copy.db"
+        src.touch()
+        dst.write_bytes(b"partial")
+
+        tick = [1000.0]
+
+        def fake_monotonic():
+            tick[0] += 60.0
+            return tick[0]
+
+        class FakeSourceConnection:
+            def backup(self, _destination, *, pages, progress, sleep):
+                for _ in range(50):
+                    progress(sqlite3.SQLITE_OK, 5, 10)
+
+            def close(self):
+                pass
+
+        class FakeDestinationConnection:
+            def close(self):
+                pass
+
+        connections = iter((FakeSourceConnection(), FakeDestinationConnection()))
+        monkeypatch.setattr(
+            backup_mod.sqlite3, "connect", lambda *_a, **_k: next(connections)
+        )
+        monkeypatch.setattr(backup_mod.time, "monotonic", fake_monotonic)
+
+        assert backup_mod._safe_copy_db(src, dst) is False
+        assert not dst.exists()
+
+    def test_progress_churn_under_overall_deadline_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        # Same churn shape, but converging well inside the absolute bound.
+        from hermes_cli import backup as backup_mod
+
+        src = tmp_path / "churn.db"
+        dst = tmp_path / "copy.db"
+        src.touch()
+
+        tick = [1000.0]
+
+        def fake_monotonic():
+            tick[0] += 60.0
+            return tick[0]
+
+        class FakeSourceConnection:
+            def backup(self, _destination, *, pages, progress, sleep):
+                for _ in range(5):
+                    progress(sqlite3.SQLITE_OK, 5, 10)
+
+            def close(self):
+                pass
+
+        class FakeDestinationConnection:
+            def close(self):
+                pass
+
+        connections = iter((FakeSourceConnection(), FakeDestinationConnection()))
+        monkeypatch.setattr(
+            backup_mod.sqlite3, "connect", lambda *_a, **_k: next(connections)
+        )
+        monkeypatch.setattr(backup_mod.time, "monotonic", fake_monotonic)
+
+        assert backup_mod._safe_copy_db(src, dst) is True
+
 
 
 

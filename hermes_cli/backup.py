@@ -341,10 +341,15 @@ def _query_ro_sqlite(path: Path, fn):
         _close_quietly(conn)
 
 
-def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
+def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0,
+                  overall_timeout_seconds: float = 1800.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
     Fails closed when no consistent snapshot can be made: copying only the main file loses WAL data.
+    ``timeout_seconds`` bounds each continuous locked (BUSY/LOCKED) stall; the deadline resets on
+    page progress. ``overall_timeout_seconds`` is an absolute wall-clock bound (#120888) that never
+    resets: concurrent writes can otherwise keep page progress (and internal backup restarts)
+    flowing forever with 0 BUSY/LOCKED callbacks, stalling the backup indefinitely.
     """
     conn = backup_conn = None
     try:
@@ -367,11 +372,19 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         # full locked-source deadline instead of adding the default timeout before each callback.
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
         backup_conn = sqlite3.connect(str(dst))
-        busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
+        # ponytail: one absolute cap per DB file (healthy ~2 GB snapshots take
+        # ~1 min; 30 min only ever fires on a non-converging live backup). Finer
+        # per-page/restart accounting if huge-DB tuning ever matters.
+        start = time.monotonic()
+        busy_deadline = start + max(0.0, timeout_seconds)
+        overall_deadline = start + max(0.0, overall_timeout_seconds)
 
         def _check_backup_progress(status: int, _remaining: int, _total: int) -> None:
             nonlocal busy_deadline
             now = time.monotonic()
+            if now >= overall_deadline:
+                raise _SQLiteBackupTimeout(
+                    f"database backup did not converge within {overall_timeout_seconds:g} seconds")
             if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 if now >= busy_deadline:
                     raise _SQLiteBackupTimeout(f"database remained locked for {timeout_seconds:g} seconds")

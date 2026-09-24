@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 from .method_ctx import bind_module
+from agent.compaction_display import project_compaction_message_for_display
 from agent.prompt_builder import STEER_DISPLAY_KIND
 
 # Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user

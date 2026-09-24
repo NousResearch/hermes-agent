@@ -17,6 +17,7 @@ import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
+import { delegateRowsFromCall } from '@/components/assistant-ui/tool/delegate-model'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -28,6 +29,7 @@ import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
+import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
@@ -62,7 +64,8 @@ const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
 const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   // A call that failed outright dispatched nothing — there are no children to
   // list, only an error. The generic row extracts and expands it properly.
-  if (props.isError || settledWithoutResult(props)) {
+  const rows = delegateRowsFromCall(props.args, props.result, props.toolCallId)
+  if (rows.length === 0 && (props.isError || Boolean(extractToolErrorMessage(props.result)) || settledWithoutResult(props))) {
     return <ToolFallback {...props} />
   }
 

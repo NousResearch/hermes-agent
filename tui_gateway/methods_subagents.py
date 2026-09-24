@@ -10,7 +10,7 @@ _registry = HandlerRegistry()
 method = _registry.method
 
 _SUBAGENT_SNAPSHOT_FIELDS = (
-    "subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
+    "subagent_id", "child_session_id", "parent_id", "depth", "goal", "delegation_id", "model",
     "started_at", "status", "tool_count", "last_tool", "accepting_steer",
 )
 _SUBAGENT_TAIL_BYTES = 16384

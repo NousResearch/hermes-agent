@@ -86,4 +86,43 @@ describe('live tool result evidence', () => {
     expect(empty.result).toBe('')
     expect(buildToolView(empty, '').status).toBe('success')
   })
+
+  it('does not falsely mark empty or non-error payloads as isError on stored result hydration', async () => {
+    const { applyStoredToolResult } = await import('./tool-parts')
+    const messages = [
+      {
+        id: 'msg-1',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'linter', isError: false }]
+      }
+    ] as any
+
+    // { error: [] } is a linter reporting 0 errors — should NOT be isError: true
+    applyStoredToolResult(messages, {
+      role: 'tool',
+      tool_call_id: 'call-1',
+      content: JSON.stringify({ error: [] }),
+      timestamp: 10
+    } as any)
+
+    expect(messages[0].parts[0].isError).toBe(false)
+
+    // Actual error message string should be isError: true
+    const errorMessages = [
+      {
+        id: 'msg-2',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal', isError: false }]
+      }
+    ] as any
+
+    applyStoredToolResult(errorMessages, {
+      role: 'tool',
+      tool_call_id: 'call-2',
+      content: JSON.stringify({ error: 'Command failed with exit code 1' }),
+      timestamp: 20
+    } as any)
+
+    expect(errorMessages[0].parts[0].isError).toBe(true)
+  })
 })

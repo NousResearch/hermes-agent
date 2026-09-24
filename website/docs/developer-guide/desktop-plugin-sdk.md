@@ -666,13 +666,19 @@ ctx.register({
 Nav ids are the rows' own ids. Core rows: `new-session`, `capabilities`,
 `messaging`, `artifacts`, `cron` (the `SidebarNavId` type; `artifacts` and
 `cron` only render in Advanced mode). A contributed row's id is its
-`SIDEBAR_NAV_AREA` contribution id.
+**registered** `SIDEBAR_NAV_AREA` id, which `ctx.register` namespaces to
+`${pluginId}:${id}` — a plugin that registered `{ id: 'kanban-nav', area:
+SIDEBAR_NAV_AREA }` as `kanban` names that row `'kanban:kanban-nav'` in
+`hide`/`order`.
 
 **Arbitration.** Hidden rows are the **union** of every contribution's `hide`
-(no plugin can un-hide another's row; hide beats order). Order is
-**first-registered wins**: the first contribution's `order` places its rows,
-later contributions place only ids not yet placed, rows no order names keep
-their default relative order after the named ones. Unknown ids are inert.
+(no plugin can un-hide another's row; hide beats order), except
+`capabilities`: the row hosting the Plugins tab is the user's path to a
+plugin's own off-switch, so it can be moved but never hidden. Contributions
+apply in the registry's area order — **lowest `order`, then registration** —
+and the first one's `order` wins: later contributions place only ids not yet
+placed, rows no order names keep their default relative order after the
+named ones. Unknown ids are inert.
 
 **Teardown.** The contribution lives in the registry, so disabling or reloading
 the plugin disposes it and the rows come straight back — nothing to clear.

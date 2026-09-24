@@ -1913,8 +1913,10 @@ export { cn } from '@/lib/utils'
  *  from, and the persisted half is bucketed per profile. */
 export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
 /** `sidebarNav.prefs`: hide / re-order the sidebar's nav rows by CONTRIBUTING a
- *  preference (union of hides; first-registered order wins). A contribution,
- *  not a `host.sidebar` verb, so it is attributed and dropped on disable. */
+ *  preference (union of hides, `capabilities` never hidden; the first order
+ *  in registry area order — lowest `order`, then registration — wins). A
+ *  contribution, not a `host.sidebar` verb, so it is attributed and dropped
+ *  on disable. */
 export { SIDEBAR_NAV_PREFS_AREA, type SidebarNavPrefsContribution } from '@/store/sidebar-nav'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the

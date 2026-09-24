@@ -51,6 +51,27 @@ def test_hold_seconds_only_from_rate_limited_auth_error_in_cause_chain():
     assert qh.hold_seconds_from_failure(structured) == 900.0
 
 
+def test_the_hold_reads_the_wait_the_real_codex_error_carries():
+    """Built by the producer, not by hand: ``parse_retry_after_seconds`` returns a float, so the
+    message reads "retry after 30.0s" and an integer-only fallback matched nothing. The wait now
+    rides the exception, so the hold no longer depends on parsing prose at all."""
+    from agent.retry_utils import parse_retry_after_seconds
+    from hermes_cli.auth_codex import _codex_quota_exhausted_error
+
+    error = _codex_quota_exhausted_error(parse_retry_after_seconds({"Retry-After": "30"}))
+
+    assert error.retry_after == 30.0
+    assert qh.hold_seconds_from_failure(error) == 30.0
+
+
+def test_the_message_fallback_reads_a_fractional_wait_too():
+    """Producers that only put the wait in their text still park the job."""
+    text_only = AuthError("quota exhausted (429); retry after 45.5s.", code=CODEX_RATE_LIMITED_CODE)
+
+    assert text_only.retry_after is None
+    assert qh.hold_seconds_from_failure(text_only) == 45.5
+
+
 def _raise_quota(**_kw):
     raise _quota_error()
 

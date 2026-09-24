@@ -154,8 +154,13 @@ class AuthError(RuntimeError):
 
 
 def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
-    def factory(message: str, code: Optional[str] = None, *, relogin: bool = False) -> AuthError:
-        return AuthError(message, provider=provider, code=code, relogin_required=relogin)
+    def factory(message: str, code: Optional[str] = None, *, relogin: bool = False,
+                retry_after: Optional[float] = None) -> AuthError:
+        # ``retry_after`` rides the exception, not just its prose: cron's quota hold and the
+        # gateway read the attribute, and a wait that lives only in the message is a wait that
+        # every consumer has to re-parse (and one of them got the format wrong — #119909 sibling).
+        return AuthError(message, provider=provider, code=code, relogin_required=relogin,
+                         retry_after=retry_after)
 
     return factory
 

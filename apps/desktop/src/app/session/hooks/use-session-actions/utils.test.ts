@@ -851,7 +851,7 @@ describe('preserveLocalPendingTurnMessages', () => {
 
   // #67603: the gateway persists model-switch / personality notices as role=user
   // ([System: …], tui_gateway/server.py). A single trailing marker is already
-  // handled by the latestAuthoritativeUser guard above, but TWO switches around
+  // handled by the authoritative-user text guard above, but TWO switches around
   // one turn put a marker BEFORE the committed prompt (shifting its ordinal) and
   // another AFTER it (so the prompt is no longer the last user row, so the text
   // guard can't rescue it). Naive ordinal pairing then pairs the optimistic row
@@ -876,6 +876,46 @@ describe('preserveLocalPendingTurnMessages', () => {
     ]
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('does not duplicate an acknowledged prompt when compaction puts a system row after it', () => {
+    const previous = [
+      msg('old-user', 'user', 'first question', { rowId: 10 }),
+      msg('old-assistant', 'assistant', 'first answer', { rowId: 11 }),
+      msg('user-optimistic', 'user', 'summarize the release')
+    ]
+
+    const next = [
+      msg('compaction', 'assistant', '[Earlier conversation compacted.]', { rowId: 20 }),
+      msg('stored-user', 'user', 'summarize the release', { rowId: 21 }),
+      msg('stored-assistant', 'assistant', 'Here is the summary.', { rowId: 22 }),
+      msg('system-user', 'user', '[System: Task context preserved after compaction.]', { rowId: 23 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('keeps a new same-text optimistic occurrence when its row identity conflicts', () => {
+    const previous = [
+      msg('old-user', 'user', 'first question', { rowId: 10 }),
+      msg('old-assistant', 'assistant', 'first answer', { rowId: 11 }),
+      msg('user-optimistic', 'user', 'summarize the release', { rowId: 30 })
+    ]
+
+    const next = [
+      msg('compaction', 'assistant', '[Earlier conversation compacted.]', { rowId: 20 }),
+      msg('stored-user', 'user', 'summarize the release', { rowId: 21 }),
+      msg('stored-assistant', 'assistant', 'Here is the summary.', { rowId: 22 }),
+      msg('system-user', 'user', '[System: Task context preserved after compaction.]', { rowId: 23 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      'compaction',
+      'stored-user',
+      'stored-assistant',
+      'system-user',
+      'user-optimistic'
+    ])
   })
 
   it('still keeps a genuinely uncommitted optimistic turn when a marker is present', () => {

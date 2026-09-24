@@ -4,12 +4,17 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import hmac
+import secrets
 import sys
 
 from rich.markup import escape as _escape
 
 from agent.i18n import t
 from utils import base_url_host_matches
+
+
+_ROUTE_CREDENTIAL_SALT = secrets.token_bytes(32)
 
 
 def _single_query_clarify_callback(questions: list) -> dict:
@@ -44,10 +49,15 @@ def _current_runtime(cli) -> dict:
 
 
 def _route_signature(model, runtime: dict) -> tuple:
-    """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
+    """Host-private client reuse identity; never include it in middleware DTOs or traces."""
+    api_key = runtime.get("api_key")
+    # Bearer-token callbacks refresh per request and may be recreated by the
+    # resolver each turn. Do not invoke them or key reuse on callable identity.
+    credential = ("per-request",) if callable(api_key) else (
+        "static", hmac.digest(_ROUTE_CREDENTIAL_SALT, (api_key or "").encode("utf-8"), "sha256"))
     return (
         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
-        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
+        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()), credential)
 
 
 def _cooldown_cause(entry) -> str:

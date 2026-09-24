@@ -1,8 +1,9 @@
 """Turn-route choices must select the matching warm CLI agent."""
 
 from contextlib import nullcontext
-from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 
 def _import_cli():
@@ -20,7 +21,8 @@ def _import_cli():
     return cli_mod
 
 
-def test_chat_rebuilds_and_reuses_agents_for_selected_model_and_provider_routes():
+@pytest.fixture
+def routed_chat():
     cli_mod = _import_cli()
     shell = cli_mod.HermesCLI(model="alpha", compact=True, max_turns=1)
     shell.provider = "provider-a"
@@ -42,6 +44,7 @@ def test_chat_rebuilds_and_reuses_agents_for_selected_model_and_provider_routes(
     shell._ensure_tirith_security = lambda: None
 
     selected = {"model": "alpha", "provider": "provider-a"}
+    credential = {"api_key": "key-b"}
     agents = []
     turn_agents = []
 
@@ -54,13 +57,18 @@ def test_chat_rebuilds_and_reuses_agents_for_selected_model_and_provider_routes(
             agents.append(self)
 
         def release_clients(self):
-            pass
+            self.released = True
 
-    def fake_apply(route, **_context):
-        payload = {**route, **selected}
-        changed = (payload["model"], payload["provider"]) != (
-            route["model"], route["runtime"]["provider"])
-        return SimpleNamespace(changed=changed, payload=payload, trace=[])
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+
+    def select_route(route, **context):
+        assert "api_key" not in repr((route, context))
+        assert "signature" not in repr((route, context))
+        return {"route": {**route, **selected}, "source": "test-router"}
+
+    manager._middleware["turn_route"] = [select_route]
 
     # Keep chat() and _init_agent() real through route comparison and agent
     # construction. Stub only the unrelated turn execution/rendering work.
@@ -90,11 +98,11 @@ def test_chat_rebuilds_and_reuses_agents_for_selected_model_and_provider_routes(
         patch.object(cli_mod, "_accent_hex", lambda: "white"),
         patch("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kwargs: None),
         patch("run_agent.AIAgent", CapturingAgent),
-        patch("hermes_cli.middleware.apply_turn_route_middleware", fake_apply),
+        patch("hermes_cli.plugins._delivery_manager", lambda: manager),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda *, requested, target_model: {
-                "api_key": "key-b",
+                "api_key": credential["api_key"],
                 "base_url": "https://provider-b.example/v1",
                 "provider": requested,
                 "requested_provider": requested,
@@ -108,17 +116,22 @@ def test_chat_rebuilds_and_reuses_agents_for_selected_model_and_provider_routes(
         patch("agent.notification_presentation.notification_policy_snapshot", lambda *_args: nullcontext()),
         patch("gateway.warning_notifications.diagnostic_turn_muted", lambda *_args: False),
     ):
-        # Configured A, model-only A→B, repeated B, provider A→B, repeated B,
-        # then back to configured A. The chat() cache gate owns reuse/rebuild.
-        assert shell.chat("turn 1") == "alpha"
-        selected.update(model="beta")
-        assert shell.chat("turn 2") == "beta"
-        assert shell.chat("turn 3") == "beta"
-        selected.update(model="gamma", provider="provider-b")
-        assert shell.chat("turn 4") == "gamma"
-        assert shell.chat("turn 5") == "gamma"
-        selected.update(model="alpha", provider="provider-a")
-        assert shell.chat("turn 6") == "alpha"
+        yield shell, selected, credential, agents, turn_agents
+
+
+def test_chat_rebuilds_and_reuses_agents_for_selected_model_and_provider_routes(routed_chat):
+    shell, selected, credential, agents, turn_agents = routed_chat
+    # Configured A, model-only A→B, repeated B, provider A→B, repeated B,
+    # then back to configured A. The chat() cache gate owns reuse/rebuild.
+    assert shell.chat("turn 1") == "alpha"
+    selected.update(model="beta")
+    assert shell.chat("turn 2") == "beta"
+    assert shell.chat("turn 3") == "beta"
+    selected.update(model="gamma", provider="provider-b")
+    assert shell.chat("turn 4") == "gamma"
+    assert shell.chat("turn 5") == "gamma"
+    selected.update(model="alpha", provider="provider-a")
+    assert shell.chat("turn 6") == "alpha"
 
     assert [agent.model for agent in agents] == ["alpha", "beta", "gamma", "alpha"]
     assert [agent.provider for agent in agents] == ["provider-a", "provider-a", "provider-b", "provider-a"]
@@ -127,3 +140,44 @@ def test_chat_rebuilds_and_reuses_agents_for_selected_model_and_provider_routes(
     assert turn_agents[0] is not turn_agents[1]
     assert turn_agents[1] is not turn_agents[3]
     assert turn_agents[3] is not turn_agents[5]
+
+
+@pytest.mark.parametrize("use_token_provider", [False, True])
+def test_routed_credentials_rotate_without_leaking_or_rebuilding_per_request_tokens(routed_chat, use_token_provider):
+    from hermes_cli.middleware import public_turn_route
+
+    shell, selected, credential, agents, turn_agents = routed_chat
+    selected.update(model="gamma", provider="provider-b")
+    token = {"value": "secret-b1", "calls": 0}
+
+    def token_provider():
+        token["calls"] += 1
+        return token["value"]
+
+    credential["api_key"] = token_provider if use_token_provider else token["value"]
+    shell.chat("first routed turn")
+    first = shell.agent
+    token["value"] = "secret-b2"
+    # Resolvers may create a fresh callable each turn; the existing callable
+    # remains responsible for obtaining the current token at request time.
+    credential["api_key"] = (lambda: token_provider()) if use_token_provider else token["value"]
+    shell.chat("rotated credential")
+    second = shell.agent
+    shell.chat("stable credential")
+    assert shell.agent is second
+    assert token["calls"] == 0  # Cache identity must never fetch bearer tokens.
+    if use_token_provider:
+        assert second is first
+        assert second.api_key() == "secret-b2"
+    else:
+        assert second is not first
+        assert first.released
+        assert second.api_key == "secret-b2"
+
+    route = shell._resolve_turn_agent_config("inspect public metadata")
+    public = public_turn_route(route["model"], route["runtime"])
+    assert route["middleware_trace"] == [{"source": "test-router"}]
+    for secret in ("secret-b1", "secret-b2"):
+        assert secret not in repr(public)
+        assert secret not in repr(route.get("middleware_trace"))
+        assert secret not in repr(route["signature"])

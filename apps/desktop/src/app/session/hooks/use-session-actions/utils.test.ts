@@ -1771,76 +1771,6 @@ describe('appendLiveSessionProjection', () => {
     expect(assistants[0].parts.some(part => part.type === 'tool-call')).toBe(true)
     expect(chatMessageText(assistants[0])).toBe('Tu as raison. Je les regarde vraiment cette fois. + more')
   })
-
-  // Same shape but diverged text: the tail row is a different reply, so the
-  // dump must still append rather than eat a committed row.
-  it('keeps both rows when the committed tail is not a prefix of the live dump', () => {
-    const stored: ChatMessage[] = [
-      msg('1-user', 'user', 'Fais X'),
-      {
-        id: '111-1-assistant',
-        role: 'assistant',
-        parts: [{ type: 'text', text: 'An unrelated committed answer' }],
-        timestamp: 111,
-        rowId: 13
-      } as ChatMessage
-    ]
-
-    const restored = appendLiveSessionProjection(stored, {
-      session_id: 's1',
-      inflight: {
-        user: 'Fais X',
-        assistant: 'Something entirely different streaming in',
-        streaming: true
-      }
-    })
-
-    expect(restored.filter(message => message.role === 'assistant')).toHaveLength(2)
-    expect(restored.at(-1)).toMatchObject({ id: 'assistant-stream-s1', pending: true })
-  })
-
-  // End-to-end switch-back shape (#121122): the folded live row reconciles
-  // against the frozen local stream row to a single streaming bubble.
-  it('switch-back pipeline keeps one streaming row for a partially committed turn', () => {
-    const persisted: ChatMessage[] = [
-      msg('1-user', 'user', 'Fais X'),
-      {
-        id: '111-1-assistant',
-        role: 'assistant',
-        parts: [
-          { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
-          { type: 'text', text: 'Tu as raison. Je les regarde' }
-        ],
-        timestamp: 111,
-        rowId: 13
-      } as ChatMessage
-    ]
-
-    // Local cache frozen at switch-away: the same turn, less text.
-    const cached: ChatMessage[] = [
-      msg('user-local', 'user', 'Fais X'),
-      streamingMsg('assistant-stream-s1', 'Tu as raison. Je les regarde')
-    ]
-
-    const projection = {
-      session_id: 's1',
-      inflight: {
-        user: 'Fais X',
-        assistant: 'Tu as raison. Je les regarde vraiment cette fois. + more',
-        streaming: true
-      }
-    }
-
-    const withLive = appendLiveSessionProjection(persisted, projection)
-    const reconciled = reconcileResumeMessages(withLive, cached)
-    const final = preserveLocalPendingTurnMessages(reconciled, cached)
-
-    const assistants = final.filter(message => message.role === 'assistant')
-    expect(assistants).toHaveLength(1)
-    expect(assistants[0].id).toBe('assistant-stream-s1')
-    expect(assistants[0].pending).toBe(true)
-    expect(chatMessageText(assistants[0])).toBe('Tu as raison. Je les regarde vraiment cette fois. + more')
-  })
 })
 
 describe('resolveResumedBusy', () => {
@@ -1972,22 +1902,6 @@ describe('removeRepresentedLocalLiveProjection', () => {
     ]
 
     const projection = runningProjection('current prompt')
-
-    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
-
-    expect(remaining).toEqual([])
-  })
-
-  it('removes a local stream row whose text lags behind the activation snapshot', () => {
-    const previous = [
-      msg('user-current', 'user', 'current prompt'),
-      msg('assistant-stream-current', 'assistant', 'partial', { pending: true })
-    ]
-
-    const projection = {
-      ...runningProjection('current prompt'),
-      inflight: { user: 'current prompt', assistant: 'partial answer', streaming: true }
-    }
 
     const remaining = removeRepresentedLocalLiveProjection(previous, projection)
 

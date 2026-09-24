@@ -3975,11 +3975,12 @@ class GatewayTurnMixin:
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
     async def _run_agent_edit_streamed_message(
-        self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
+        self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
-        ``response["already_sent"]`` and log ``ok``. ``fail_result`` (None = trust the call) logs a
-        returned failure as ``(session, error)``; ``fail_exc`` logs an exception as ``(session, exc)``."""
+        ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
+        ``(session, error)`` and an exception logs ``fail_exc`` as ``(session, exc)``; either way
+        ``already_sent`` stays unset so the normal final send delivers the content."""
         try:
             _res = await _sc.adapter.edit_message(
                 chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
@@ -3988,8 +3989,7 @@ class GatewayTurnMixin:
             logger.warning(fail_exc, _sk, _edit_err)
             return
         if not getattr(_res, "success", True):
-            if fail_result is not None:
-                logger.warning(fail_result, _sk, getattr(_res, "error", None))
+            logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
         logger.info(*ok)
@@ -4066,7 +4066,8 @@ class GatewayTurnMixin:
                 await self._run_agent_edit_streamed_message(
                     _sc, source, response, response["final_response"], _sk=_sk,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
-                    fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
+                    fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
+                    fail_exc="Failed to edit streamed message for session %s: %s",
                 )
         elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log

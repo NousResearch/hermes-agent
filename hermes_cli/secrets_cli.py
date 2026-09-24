@@ -172,9 +172,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "  Access tokens → Create access token\n\n"
         "Copy the token (starts with [cyan]0.[/cyan]…) — it cannot be retrieved later.",
         border_style="cyan"))
-    binary = _setup_binary(bw, console)
-    if binary is None:
-        return 1
+    # The headless flag check must run BEFORE the bws install step: a scripted or CI
+    # caller missing a flag is guaranteed to exit 1, so it should not pay the
+    # find/download cost first. The check reads only args and BWS_SERVER_URL.
     if not sys.stdin.isatty():
         missing = _missing_noninteractive_flags(args)
         if missing:
@@ -187,6 +187,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 "      --server-url 'https://vault.bitwarden.com' \\\n"
                 "      --project-id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'")
             return 1
+    binary = _setup_binary(bw, console)
+    if binary is None:
+        return 1
     cfg = load_config()
     secrets_cfg = cfg.setdefault("secrets", {}).setdefault("bitwarden", {})
     token_env = secrets_cfg.get("access_token_env", _DEFAULT_TOKEN_ENV)

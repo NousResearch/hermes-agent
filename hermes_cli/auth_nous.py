@@ -609,6 +609,10 @@ def _refresh_access_token(
         if "access_token" not in payload:
             raise _nous_err("Refresh response missing access_token", "invalid_token", relogin=True)
         return payload
+    if 500 <= response.status_code <= 599:
+        raise AuthError(
+            f"Nous Portal is temporarily unavailable (HTTP {response.status_code}); retry shortly.",
+            provider="nous", code="temporarily_unavailable", retryable=True)
     try:
         error_payload = response.json()
     except Exception as exc:

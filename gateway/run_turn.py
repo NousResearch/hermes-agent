@@ -116,7 +116,9 @@ _HYGIENE_SETUP_ROLES = ("system", "session_meta")
 def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[Any]:
     """Fail-closed in-context bound for a turn where hygiene has not landed (#111988).
 
-    Keeps the leading ``system``/``session_meta`` setup rows plus the newest tail, total <= ``limit``.
+    Keeps the leading ``system``/``session_meta`` setup rows plus the newest tail starting at
+    a user turn, total <= ``limit``. If no user turn fits, only setup rows remain; the current
+    user message is supplied separately by the gateway.
     Deterministic (the same transcript always yields the same cut) and payload-only: the stored
     transcript is never touched, so the agent's durable-prefix slice (``history_offset``) is
     unaffected. Returns ``history`` unchanged — same object — when nothing needs dropping, so the
@@ -128,12 +130,12 @@ def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[An
     while (head_end < len(history) and isinstance(history[head_end], dict)
            and history[head_end].get("role") in _HYGIENE_SETUP_ROLES):
         head_end += 1
-    # Always leave room for the newest row: a setup-only payload would answer nothing.
+    # Reserve capacity for a turn even when the bounded tail has no valid turn boundary.
     head_end = min(head_end, limit - 1)
     tail_start = len(history) - (limit - head_end)
     # A tool result or assistant call at the cut has lost its preceding turn. Start at the
     # next user turn instead, so providers never receive a dangling function call/response.
-    while (tail_start < len(history) - 1 and isinstance(history[tail_start], dict)
+    while (tail_start < len(history) and isinstance(history[tail_start], dict)
            and history[tail_start].get("role") != "user"):
         tail_start += 1
     return history[:head_end] + history[tail_start:]

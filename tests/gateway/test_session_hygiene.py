@@ -1950,6 +1950,25 @@ def test_bound_model_input_without_hygiene_starts_at_user_after_tool_round(limit
     assert rows[2]["role"] == "assistant" and rows[3]["role"] == "tool"
 
 
+@pytest.mark.parametrize("limit", [3, 4])
+def test_bound_model_input_without_hygiene_drops_assistant_only_tail(limit):
+    """A completed stored transcript has no current user row; never keep its orphan reply."""
+    from gateway.run_turn import bound_model_input_without_hygiene
+
+    rows = [
+        {"role": "system", "content": "instructions"},
+        {"role": "user", "content": "earlier request"},
+        {"role": "assistant", "tool_calls": [{"id": "call", "function": {"name": "t"}}]},
+        {"role": "tool", "tool_call_id": "call", "content": "result"},
+        {"role": "assistant", "content": "final reply"},
+    ]
+
+    bounded = bound_model_input_without_hygiene(rows, limit)
+
+    assert bounded == [rows[0]]
+    assert len(bounded) <= limit
+
+
 @pytest.mark.asyncio
 async def test_hygiene_miss_bounds_the_model_payload(monkeypatch, tmp_path):
     """Turn-hold expiry without a landed summary must not feed the model the whole transcript

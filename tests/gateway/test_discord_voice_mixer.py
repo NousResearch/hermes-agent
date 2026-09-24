@@ -148,3 +148,23 @@ class TestPlayAckInVoice:
         assert await adapter.play_ack_in_voice(111) is False
 
 
+
+
+def test_play_speech_streaming_reuses_live_child():
+    """A second stream while one is live appends to the SAME child (queued behind its
+    remaining audio) instead of creating an overlapping sibling."""
+    mixer = vm.VoiceMixer()
+    first = mixer.play_speech_streaming(gain=1.0)
+    second = mixer.play_speech_streaming(gain=1.0)
+    assert second is first
+    # After the first child drains to completion, a new one is created again.
+    first.push(b"\x00" * 64)
+    first.end()
+    frames = 0
+    while frames < 2000:
+        mixer.read()
+        frames += 1
+        if first._finished:
+            break
+    third = mixer.play_speech_streaming(gain=1.0)
+    assert third is not first

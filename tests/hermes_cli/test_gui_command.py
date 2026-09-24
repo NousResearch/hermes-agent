@@ -50,6 +50,19 @@ def _stable_keychain_detection(monkeypatch):
     monkeypatch.setenv("GNOME_KEYRING_CONTROL", "/run/user/1000/keyring")
 
 
+@pytest.fixture(autouse=True)
+def _pin_desktop_session_env(monkeypatch):
+    """Pin the Wayland session markers so exact-argv assertions stay host-independent.
+
+    ``cmd_gui`` appends Chromium's Wayland colour-management opt-out on Wayland
+    sessions, so the launch command now depends on the developer's session. Tests
+    that own the Wayland arm set the markers back explicitly.
+    """
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("ELECTRON_OZONE_PLATFORM_HINT", raising=False)
+
+
 def _ns(**kw):
     defaults = dict(
         skip_build=False,
@@ -1108,6 +1121,96 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
 
     launch_env = mock_run2.call_args_list[1].kwargs["env"]
     assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "wayland"
+
+
+# --- Chromium Wayland colour management (KDE wp_color_manager_v1) ----------
+
+
+@pytest.mark.parametrize(
+    ("platform", "session", "command", "user_flags", "expected"),
+    [
+        # Wayland session: opt out of the compositor protocol KWin rejects.
+        ("linux", {"XDG_SESSION_TYPE": "wayland"}, ["hermes"], (), ["hermes", "--disable-features=WaylandWpColorManagerV1"]),
+        # WAYLAND_DISPLAY alone identifies the session too.
+        ("linux", {"WAYLAND_DISPLAY": "wayland-0"}, ["hermes"], (), ["hermes", "--disable-features=WaylandWpColorManagerV1"]),
+        # An existing --disable-features list is extended, never clobbered.
+        (
+            "linux",
+            {"XDG_SESSION_TYPE": "wayland"},
+            ["hermes", "--disable-features=TabSearch"],
+            (),
+            ["hermes", "--disable-features=TabSearch,WaylandWpColorManagerV1"],
+        ),
+        # X11 and headless sessions never touch wp_color_manager_v1.
+        ("linux", {"XDG_SESSION_TYPE": "x11"}, ["hermes"], (), ["hermes"]),
+        ("linux", {}, ["hermes"], (), ["hermes"]),
+        # An explicit X11 backend (env hint or argv) keeps the opt-out out of the command.
+        (
+            "linux",
+            {"XDG_SESSION_TYPE": "wayland", "ELECTRON_OZONE_PLATFORM_HINT": "x11"},
+            ["hermes"],
+            (),
+            ["hermes"],
+        ),
+        ("linux", {"XDG_SESSION_TYPE": "wayland"}, ["hermes", "--ozone-platform=x11"], (), ["hermes", "--ozone-platform=x11"]),
+        (
+            "linux",
+            {"XDG_SESSION_TYPE": "wayland"},
+            ["hermes", "--ozone-platform-hint", "x11"],
+            (),
+            ["hermes", "--ozone-platform-hint", "x11"],
+        ),
+        # A launch that already names the feature (electron_flags) is left alone.
+        (
+            "linux",
+            {"XDG_SESSION_TYPE": "wayland"},
+            ["hermes"],
+            ("--enable-features=WaylandWpColorManagerV1",),
+            ["hermes"],
+        ),
+        # Off Linux the Wayland backend is not in play at all.
+        ("darwin", {"XDG_SESSION_TYPE": "wayland"}, ["hermes"], (), ["hermes"]),
+    ],
+)
+def test_wayland_color_management_fixup_applies_only_to_wayland_linux_launches(
+    platform, session, command, user_flags, expected
+):
+    """Chromium 144 renders wrong colours when KWin rejects its sRGB image
+    descriptions, so the opt-out lands exactly on Wayland launches — and nowhere
+    a user asked for the compositor's colour management (or an X11 backend)."""
+    assert (
+        main_desktop._wayland_color_management_fixup(
+            command, child_env=session, user_flags=user_flags, platform=platform
+        )
+        == expected
+    )
+
+
+@pytest.mark.linux_only
+def test_gui_wayland_launch_disables_compositor_color_management(tmp_path, monkeypatch):
+    """End-to-end: a Wayland launch carries ``--disable-features=WaylandWpColorManagerV1``
+    to the packaged executable, alongside the Linux sandbox flags."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.delenv("ELECTRON_OZONE_PLATFORM_HINT", raising=False)
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    assert mock_run.call_args.args[0] == [
+        str(packaged_exe),
+        "--disable-setuid-sandbox",
+        "--disable-features=WaylandWpColorManagerV1",
+    ]
 
 
 # --- desktop.password_store detection & bridging (linux) ------------------

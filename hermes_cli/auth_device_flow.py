@@ -20,8 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Optional
 from urllib.parse import parse_qs, urlparse
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
-    DEVICE_CODE_GRANT_TYPE, OAUTH_OVER_SSH_DOCS_URL, httpx)
+    AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_CODE_GRANT_TYPE, OAUTH_OVER_SSH_DOCS_URL, httpx)
 from utils import is_truthy_value
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
@@ -371,7 +370,8 @@ def _poll_for_token(
                 "grant_type": DEVICE_CODE_GRANT_TYPE, "client_id": client_id,
                 "device_code": device_code}),
         expires_in=expires_in,
-        poll_interval=max(1, min(poll_interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS)),
+        # RFC 8628 makes the server's interval a minimum; only invalid values need a local floor.
+        poll_interval=max(1, poll_interval),
         validate_success=_validate, on_error=_error,
         on_non_json_error=lambda _r: RuntimeError(
             "Token endpoint returned a non-JSON error response"),

@@ -967,3 +967,61 @@ def test_poll_for_token_timeout_raises_actionable_message():
         )
 
 
+@pytest.mark.parametrize(("server_interval", "expected_interval"), [(5, 5), (0, 1)])
+def test_poll_for_token_uses_server_interval_with_minimum_safety_floor(
+    monkeypatch, server_interval, expected_interval,
+):
+    """Nous polling must not make a server-provided RFC 8628 interval shorter."""
+    import hermes_cli.auth as auth_mod
+
+    class _PendingThenSuccessClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data=None):
+            self.calls += 1
+            request = httpx.Request("POST", url)
+            if self.calls == 1:
+                return httpx.Response(400, json={"error": "authorization_pending"}, request=request)
+            return httpx.Response(200, json={"access_token": "token"}, request=request)
+
+    sleeps = []
+    monkeypatch.setattr(auth_mod.time, "sleep", sleeps.append)
+    token = auth_mod._poll_for_token(
+        client=_PendingThenSuccessClient(), portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli", device_code="device", expires_in=60, poll_interval=server_interval,
+    )
+
+    assert token == {"access_token": "token"}
+    assert sleeps == [expected_interval]
+
+
+def test_nous_device_code_login_displays_server_poll_interval(monkeypatch, capsys):
+    """The CLI status line reports the interval passed through the Nous device-code path."""
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.auth_nous as auth_nous
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(auth_nous, "_nous_http_client", lambda *args: _Client())
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: False)
+    monkeypatch.setattr(auth_mod, "_request_device_code", lambda **kwargs: {
+        "device_code": "device", "user_code": "user", "verification_uri": "https://portal.example",
+        "verification_uri_complete": "https://portal.example/code", "expires_in": 60, "interval": 5,
+    })
+    seen_intervals = []
+    monkeypatch.setattr(auth_mod, "_poll_for_token", lambda **kwargs: (
+        seen_intervals.append(kwargs["poll_interval"]) or {"access_token": "token", "expires_in": 60}
+    ))
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", lambda state, **kwargs: state)
+
+    auth_nous._nous_device_code_login(open_browser=False)
+
+    assert seen_intervals == [5]
+    assert "Waiting for approval (polling every 5s)..." in capsys.readouterr().out
+

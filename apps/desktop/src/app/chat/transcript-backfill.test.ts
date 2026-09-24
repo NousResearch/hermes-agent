@@ -186,6 +186,21 @@ describe('graftRefreshedTailOntoBackfill', () => {
     expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
       662, 700, 701, 746
     ])
+
+    // A page that starts mid-turn opens with a tool fold that has no stored
+    // id. It stays in front of the stored row it preceded.
+    const behindEarlier = [chat('earlier', 500), ...previous]
+    const withFold = [chat('fold-tools'), ...refreshed, chat('next', 747)]
+
+    expect(graftRefreshedTailOntoBackfill(withFold, behindEarlier).map(message => message.id)).toEqual([
+      'earlier',
+      'fold-tools',
+      'kcsie',
+      'tail-a',
+      'tail-b',
+      'tail-c',
+      'next'
+    ])
   })
 
   it('keeps the fresh page copy when the same stored id is on both sides', () => {

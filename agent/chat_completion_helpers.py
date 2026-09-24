@@ -3159,11 +3159,11 @@ class _StreamingCall(StreamingWaitMonitor):
         return final_response
 
     @staticmethod
-    def _assemble_tool_calls(tool_calls_acc, finish_reason):
+    def _assemble_tool_calls(agent, tool_calls_acc, finish_reason):
         """Materialize accumulated tool calls; flag truncated/unrepairable args."""
         mock_tool_calls = []
         has_truncated_tool_args = False
-        for idx in sorted(tool_calls_acc):
+        for position, idx in enumerate(sorted(tool_calls_acc)):
             tc = tool_calls_acc[idx]
             arguments = tc["function"]["arguments"]
             if arguments and arguments.strip():
@@ -3180,8 +3180,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this
                 # becomes a "stop" turn executing "{}" with no retry.
                 has_truncated_tool_args = True
+            # A provider that streams tool deltas without ids leaves "" in the accumulator.
+            # The request builder would synthesize one for the assistant row while the tool
+            # result row kept "" (the executor persists ``tool_call.id``), so the call and its
+            # result stopped matching on replay (#114663). Claim the same deterministic id at
+            # the source — same inputs the request builder uses, so the wire bytes are unchanged.
+            call_id = tc["id"]
+            if not (isinstance(call_id, str) and call_id.strip()):
+                call_id = agent._deterministic_call_id(
+                    tc["function"]["name"] or "", arguments, position)
             mock_tool_calls.append(SimpleNamespace(
-                id=tc["id"], type=tc["type"], extra_content=tc.get("extra_content"),
+                id=call_id, type=tc["type"], extra_content=tc.get("extra_content"),
                 function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments)))
         return mock_tool_calls or None, has_truncated_tool_args
 
@@ -3194,7 +3203,7 @@ class _StreamingCall(StreamingWaitMonitor):
         args or stamping "stop"."""
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
-        mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
+        mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(self.agent, tool_calls_acc, finish_reason)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(

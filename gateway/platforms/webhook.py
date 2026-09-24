@@ -170,7 +170,52 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: Optional[str] = extra.get("host", DEFAULT_HOST) or None
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._global_secret: str = extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = extra.get("routes", {})
+        # Config-shape tolerance (2026-09-24 RCA): a LIST-form `routes:` crashed every
+        # gateway start for 5h with a cryptic ValueError('dictionary update sequence
+        # element #0 has length 4; 2 is required') at the dict() below — one bad config
+        # line took down every platform the gateway serves. Normalize the list form into
+        # the named mapping this adapter needs (name from path basename); keep an
+        # actionable error only for shapes we genuinely cannot recover.
+        routes_cfg = extra.get("routes", {})
+        if isinstance(routes_cfg, list):
+            normalized: Dict[str, dict] = {}
+            for entry in routes_cfg:
+                if not isinstance(entry, dict):
+                    raise ValueError(
+                        "[webhook] platforms.webhook.extra.routes: list entries must be "
+                        f"mappings, got {type(entry).__name__}: {entry!r}"
+                    )
+                name = (
+                    str(entry.get("path", "route")).strip("/").replace("/", "_") or "route"
+                )
+                base_name, suffix = name, 2
+                while name in normalized:
+                    name = f"{base_name}_{suffix}"
+                    suffix += 1
+                normalized[name] = dict(entry)
+            logger.warning(
+                "[webhook] platforms.webhook.extra.routes was a LIST; normalized to named "
+                "routes %s. Prefer the mapping form (routes: {name: {path: ...}}) or "
+                "'hermes webhook subscribe <name>'.",
+                sorted(normalized),
+            )
+            routes_cfg = normalized
+        elif not isinstance(routes_cfg, dict) or not all(
+            isinstance(v, dict) for v in routes_cfg.values()
+        ):
+            bad_keys = (
+                [k for k, v in routes_cfg.items() if not isinstance(v, dict)]
+                if isinstance(routes_cfg, dict)
+                else None
+            )
+            raise ValueError(
+                "[webhook] platforms.webhook.extra.routes must be a mapping of route name "
+                "to route config, or a list of route configs (auto-named); got "
+                f"{type(routes_cfg).__name__}"
+                + (f" with non-mapping value(s) {bad_keys!r}" if bad_keys else "")
+                + ". Fix config.yaml or use 'hermes webhook subscribe <name>'."
+            )
+        self._static_routes: Dict[str, dict] = routes_cfg
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)

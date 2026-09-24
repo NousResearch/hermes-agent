@@ -61,6 +61,11 @@ DEFAULT_CONFIG = {
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
+        # Optional sub-contexts inside one session.  When enabled, Hermes asks the main
+        # response to classify each turn, persists the label, and loads only the active
+        # topic on the next turn.  No auxiliary model call is made.  Off by default so
+        # existing sessions keep their historical all-message context unless opted in.
+        "topic_segmentation": {"enabled": False},
     },
     # Where the TUI/desktop gateway stages session file attachments (uploads, pasted
     # text). "hermes-home" (default) keeps <profile home>/attachments — the dir

@@ -286,6 +286,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 # (schema_read_probe_statements), never by this number, and its catch-up is the declarative
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
+# session_topics / messages.topic_id (topic segmentation) ride the same declarative catch-up: no bump.
 SCHEMA_VERSION = 32
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
@@ -445,6 +446,31 @@ def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=
         logger.warning("on_session_delete dispatch failed", exc_info=True)
 
 
+def _rehome_or_delete_session_topics(conn, owner_ids) -> None:
+    """Keep compression-lineage topics reachable when owner rows are deleted."""
+    doomed = [sid for sid in dict.fromkeys(owner_ids) if sid]
+    if not doomed:
+        return
+    doomed_ph = _placeholders(doomed)
+    for owner_id in doomed:
+        replacement = conn.execute(
+            f"""SELECT m.session_id, MAX(m.id) AS newest
+                FROM messages m
+                JOIN session_topics t ON t.id = m.topic_id
+                JOIN sessions s ON s.id = m.session_id
+                WHERE t.session_id = ? AND m.session_id NOT IN ({doomed_ph})
+                GROUP BY m.session_id ORDER BY newest DESC LIMIT 1""",
+            (owner_id, *doomed),
+        ).fetchone()
+        if replacement is not None:
+            conn.execute(
+                "UPDATE session_topics SET session_id = ? WHERE session_id = ?",
+                (replacement["session_id"], owner_id),
+            )
+        else:
+            conn.execute("DELETE FROM session_topics WHERE session_id = ?", (owner_id,))
+
+
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 
@@ -528,6 +554,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
 
+-- ``session_id`` is the compression-lineage root, not necessarily the row
+-- that currently receives messages.  It intentionally has no FK: a retained
+-- compression child may still reference the conversation's topics after the
+-- archived root is pruned.
+CREATE TABLE IF NOT EXISTS session_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    normalized_title TEXT,
+    summary TEXT,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at REAL NOT NULL,
+    last_active_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -558,7 +599,8 @@ CREATE TABLE IF NOT EXISTS messages (
     message_uid TEXT,
     absorbed_message_uids TEXT,
     tool_call_uids TEXT,
-    tool_call_uid TEXT
+    tool_call_uid TEXT,
+    topic_id INTEGER REFERENCES session_topics(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -796,6 +838,10 @@ BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_topic_active
+    ON messages(topic_id, active, id);
+CREATE INDEX IF NOT EXISTS idx_session_topics_conversation
+    ON session_topics(session_id, state, last_active_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
     ON messages(session_id, display_order, active DESC, id DESC)
     WHERE active = 1 OR compacted = 1;

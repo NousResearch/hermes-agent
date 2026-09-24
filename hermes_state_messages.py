@@ -35,8 +35,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
-                   tool_call_uid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   tool_call_uid, topic_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -111,6 +111,12 @@ def _tool_calls_len(raw: Any, scalar: int = 0) -> int:
 def _scrub_surrogates(value: Any) -> Any:
     """Lone surrogates make sqlite3 raise UnicodeEncodeError and abort the whole write."""
     return _sanitize_surrogates(value) if isinstance(value, str) else value
+
+
+def _normalized_topic_title(value: Any) -> str:
+    """Database comparison key for model/CLI supplied topic titles."""
+    text = " ".join(str(value or "").strip().lower().split())
+    return "-".join(re.findall(r"[a-z0-9]+", text))[:96]
 
 
 def _stale_holder(row, now: float) -> bool:
@@ -298,7 +304,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
             message_uid_or_none(msg), _absorbed_uids_json(msg),
-            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
+            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg),
+            msg.get("topic_id") if msg.get("topic_id") is not None else msg.get("_topic_id"))
 
     @staticmethod
     def _stamp_tool_call_uids(msg: dict[str, Any], tool_calls: Any, batch_index: dict[str, str]) -> None:
@@ -360,6 +367,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         if row["_compressed_summary"]:
             msg["_compressed_summary"] = True
         _restore_identity_columns(row, msg)
+        if row["topic_id"] is not None:
+            msg["_topic_id"] = row["topic_id"]
         if row["api_content"] is not None:
             msg["api_content"] = row["api_content"]
         if row["display_kind"] is not None:
@@ -378,6 +387,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                         row[column], None, f"Failed to deserialize repaired {column}, falling back to None"
                     )
         return msg
+
 
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
@@ -401,7 +411,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
-        message_uid: Optional[str] = None) -> int:
+        message_uid: Optional[str] = None, topic_id: Optional[int] = None) -> int:
         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
         the platform's own id. ``api_content``: byte-fidelity sidecar, the exact string sent to the API when
         it differed from ``content``, stored as sent except lone surrogates. ``message_uid``: the id a caller
@@ -424,6 +434,198 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    # ── Session topic persistence ────────────────────────────────────────
+
+    def _topic_conversation_id_on_conn(self, conn, session_id: str) -> str:
+        """Compression-lineage root used by topics and the session turn lease."""
+        return self._session_turn_lease_key_on_conn(conn, session_id)
+
+    def _topic_lineage_ids_on_conn(self, conn, session_id: str) -> List[str]:
+        """Current compression lineage, newest to oldest, on one connection."""
+        result: List[str] = []
+        current = session_id
+        seen: set[str] = set()
+        while current and current not in seen:
+            seen.add(current)
+            result.append(current)
+            row = conn.execute(
+                "SELECT id, parent_session_id, source, model_config, end_reason "
+                "FROM sessions WHERE id = ?", (current,),
+            ).fetchone()
+            if row is None:
+                break
+            current_row = dict(row)
+            parent_id = current_row.get("parent_session_id")
+            if not parent_id or self._is_explicit_fork_child_row(current_row, include_reset=True):
+                break
+            parent = conn.execute(
+                "SELECT end_reason FROM sessions WHERE id = ?", (parent_id,),
+            ).fetchone()
+            if parent is None or parent["end_reason"] != "compression":
+                break
+            current = str(parent_id)
+        return result
+
+    def _topics_for_conversation_on_conn(self, conn, conversation_id: str) -> List[Dict[str, Any]]:
+        rows = conn.execute(
+            """SELECT t.id, t.title, t.normalized_title, t.summary, t.state,
+                      t.created_at, t.last_active_at,
+                      (SELECT COUNT(*) FROM messages m
+                       WHERE m.topic_id = t.id AND m.active = 1) AS message_count
+               FROM session_topics t WHERE t.session_id = ?
+               ORDER BY t.last_active_at DESC, t.id DESC""",
+            (conversation_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_topics(self, session_id: str) -> List[Dict[str, Any]]:
+        """Topics for a session's compression lineage, most recently active first."""
+        if not session_id:
+            return []
+        with self._read_ctx() as conn:
+            conversation_id = self._topic_conversation_id_on_conn(conn, session_id)
+            return self._topics_for_conversation_on_conn(conn, conversation_id)
+
+    def get_active_topic(self, session_id: str) -> Optional[Dict[str, Any]]:
+        return next((topic for topic in self.get_topics(session_id) if topic["state"] == "active"), None)
+
+    def ensure_session_topic(self, session_id: str, title: str) -> Dict[str, Any]:
+        """Return/create one active topic and adopt unlabelled legacy rows atomically."""
+        clean_title = " ".join(str(title or "session").strip().split())[:64] or "session"
+        normalized = _normalized_topic_title(clean_title) or "session"
+        now = time.time()
+
+        def _do(conn):
+            conversation_id = self._topic_conversation_id_on_conn(conn, session_id)
+            topics = self._topics_for_conversation_on_conn(conn, conversation_id)
+            active = next((topic for topic in topics if topic["state"] == "active"), None)
+            if active is None and topics:
+                active = topics[0]
+                conn.execute(
+                    "UPDATE session_topics SET state = 'active', last_active_at = ? WHERE id = ?",
+                    (now, active["id"]),
+                )
+                active = {**active, "state": "active", "last_active_at": now}
+            if active is None:
+                topic_id = conn.execute(
+                    """INSERT INTO session_topics
+                       (session_id, title, normalized_title, summary, state, created_at, last_active_at)
+                       VALUES (?, ?, ?, NULL, 'active', ?, ?)""",
+                    (conversation_id, clean_title, normalized, now, now),
+                ).lastrowid
+                active = {
+                    "id": topic_id, "title": clean_title, "normalized_title": normalized,
+                    "summary": None, "state": "active", "created_at": now,
+                    "last_active_at": now, "message_count": 0,
+                }
+            lineage_ids = self._topic_lineage_ids_on_conn(conn, session_id)
+            conn.execute(
+                f"UPDATE messages SET topic_id = ? WHERE topic_id IS NULL "
+                f"AND session_id IN ({_placeholders(lineage_ids)})",
+                (active["id"], *lineage_ids),
+            )
+            return active
+
+        return self._execute_write(_do)
+
+    def create_topic(self, session_id: str, title: str, summary: Optional[str] = None) -> int:
+        """Archive the prior active topic and create a new active topic atomically."""
+        selected = self.activate_topic_for_messages(
+            session_id, title=title, summary=summary, message_ids=[]
+        )
+        return int(selected["id"])
+
+    def set_active_topic(self, session_id: str, topic_id: int) -> bool:
+        """Activate an existing topic; an invalid id leaves the prior topic unchanged."""
+        try:
+            self.activate_topic_for_messages(session_id, topic_id=topic_id, message_ids=[])
+            return True
+        except (LookupError, ValueError):
+            return False
+
+    def activate_topic_for_messages(
+        self, session_id: str, *, topic_id: Optional[int] = None,
+        title: Optional[str] = None, summary: Optional[str] = None,
+        message_ids: Optional[List[int]] = None,
+        turn_lease_holder: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Activate/create a topic and retag exact current-turn rows in one transaction."""
+        clean_title = " ".join(str(title or "").strip().split())[:64]
+        normalized = _normalized_topic_title(clean_title)
+        ids = list(dict.fromkeys(
+            int(row_id) for row_id in (message_ids or [])
+            if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0
+        ))
+        now = time.time()
+
+        def _do(conn):
+            self._check_transcript_write_guards(
+                conn, session_id, None, turn_lease_holder=turn_lease_holder
+            )
+            conversation_id = self._topic_conversation_id_on_conn(conn, session_id)
+            target = None
+            if topic_id is not None:
+                target = conn.execute(
+                    "SELECT * FROM session_topics WHERE id = ? AND session_id = ?",
+                    (int(topic_id), conversation_id),
+                ).fetchone()
+                if target is None:
+                    raise LookupError(f"Topic {topic_id} does not belong to session {session_id}")
+            else:
+                if not clean_title or not normalized:
+                    raise ValueError("topic title must not be empty")
+                target = conn.execute(
+                    """SELECT * FROM session_topics
+                       WHERE session_id = ? AND normalized_title = ?
+                       ORDER BY last_active_at DESC, id DESC LIMIT 1""",
+                    (conversation_id, normalized),
+                ).fetchone()
+                if target is None:
+                    new_id = conn.execute(
+                        """INSERT INTO session_topics
+                           (session_id, title, normalized_title, summary, state, created_at, last_active_at)
+                           VALUES (?, ?, ?, ?, 'warm', ?, ?)""",
+                        (conversation_id, clean_title, normalized, summary, now, now),
+                    ).lastrowid
+                    target = conn.execute(
+                        "SELECT * FROM session_topics WHERE id = ?", (new_id,),
+                    ).fetchone()
+            target_id = int(target["id"])
+            conn.execute(
+                "UPDATE session_topics SET state = 'warm' "
+                "WHERE session_id = ? AND state = 'active' AND id != ?",
+                (conversation_id, target_id),
+            )
+            conn.execute(
+                "UPDATE session_topics SET state = 'active', last_active_at = ? WHERE id = ?",
+                (now, target_id),
+            )
+            if ids:
+                rows = conn.execute(
+                    f"SELECT id, session_id FROM messages WHERE id IN ({_placeholders(ids)})",
+                    ids,
+                ).fetchall()
+                if len(rows) != len(ids) or any(
+                    self._topic_conversation_id_on_conn(conn, row["session_id"]) != conversation_id
+                    for row in rows
+                ):
+                    raise LookupError("message ids do not all belong to this conversation")
+                conn.execute(
+                    f"UPDATE messages SET topic_id = ? WHERE id IN ({_placeholders(ids)})",
+                    (target_id, *ids),
+                )
+            updated = conn.execute(
+                """SELECT t.id, t.title, t.normalized_title, t.summary, t.state,
+                          t.created_at, t.last_active_at,
+                          (SELECT COUNT(*) FROM messages m
+                           WHERE m.topic_id = t.id AND m.active = 1) AS message_count
+                   FROM session_topics t WHERE t.id = ?""",
+                (target_id,),
+            ).fetchone()
+            return dict(updated)
+
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def append_messages_batch(
@@ -851,7 +1053,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     def _archive_named_rows(
         self, conn, session_id: str, compacted_messages: list[dict[str, Any]], covered: list[int], *,
         tail_count: int, carried_messages: Optional[list[dict[str, Any]]], patched_model_config: Any,
-        patch: bool, merged_away: set[int],
+        patch: bool, merged_away: set[int], topic_id: Optional[int] = None,
     ) -> int:
         """Archive *covered* as summarized and clone every other active row after the new set.
 
@@ -859,9 +1061,15 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         in *covered*. They take the concurrent-append path: rewind the original, insert the
         compacted transcript, then clone them so they stay live and searchable once each.
         """
-        active_ids = [int(row["id"]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()]
+        topic_clause = " AND topic_id = ?" if topic_id is not None else ""
+        topic_params = (int(topic_id),) if topic_id is not None else ()
+        active_ids = [int(row["id"]) for row in conn.execute(
+            "SELECT id FROM messages WHERE session_id = ? AND active = 1"
+            f"{topic_clause} ORDER BY id",
+            (session_id, *topic_params)).fetchall()]
         covered_set = set(covered)
-        carried_ids = self._resolve_carried_row_ids(conn, session_id, carried_messages or [])
+        carried_ids = self._resolve_carried_row_ids(
+            conn, session_id, carried_messages or [], topic_id=topic_id)
         covered_set.update(carried_ids)
         unseen = [row_id for row_id in active_ids if row_id not in covered_set]
         covered_active = [row_id for row_id in active_ids if row_id in covered_set]
@@ -876,27 +1084,24 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 "UPDATE messages SET active = 0, compacted = 0 "
                 f"WHERE session_id = ? AND id IN ({placeholders})",
                 [session_id, *rewind_ids])
-        conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
-        # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
-        # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
-        # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
+        conn.execute(f"{_ARCHIVE_ACTIVE_SQL}{topic_clause}", (session_id, *topic_params))
+        # Preserve dedup identity across compaction; scoped writes label only this topic.
         self._carry_parent_timestamps(conn, session_id, compacted_messages)
-        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+        if topic_id is not None:
+            for message in compacted_messages:
+                if isinstance(message, dict):
+                    message["_topic_id"] = int(topic_id)
+        self._insert_message_rows(conn, session_id, compacted_messages)
         if unseen:
-            _ids, unseen_tool_calls = self._tail_rows_after_watermark(
-                conn,
-                f"SELECT id, tool_calls FROM messages WHERE id IN ({_placeholders(unseen)}) ORDER BY id",
-                tuple(unseen))
             self._clone_message_rows(conn, unseen)
-            inserted += len(unseen)
-            tool_calls_total += unseen_tool_calls
-        # A carried copy whose stored identity was computed differently lands in its own
-        # display_order group and would project twice; re-fold before publishing (#122167).
+        # Preserve display generation dedup and count all surviving topics, not just the rewritten one.
         self._reconcile_display_orders(conn, session_id)
+        active_count, active_tool_calls = self._active_transcript_counts(conn, session_id)
         conn.execute(
             f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
-            (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
-        return inserted
+            (active_count, active_tool_calls,
+             *((patched_model_config,) if patch else ()), session_id))
+        return active_count
 
     def archive_and_compact(self, session_id: str, compacted_messages: list[dict[str, Any]],
         model_config_patch: Optional[dict[str, Any]] = None, watermark: Optional[int] = None,
@@ -904,7 +1109,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         carried_messages: Optional[list[dict[str, Any]]] = None,
         covered_ids: Optional[list[int]] = None,
         unresolved_held: Optional[list[dict[str, Any]]] = None,
-        held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
+        held_for_cas: Optional[list[dict[str, Any]]] = None,
+        topic_id: Optional[int] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -926,6 +1132,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         row is archived (#124102). The lease path leaves it ``None``: its lease rules out an overlapping
         rewrite, and the turn's own writes are the ones a CAS here would misread.
         ``model_config_patch`` merges in the same txn (``None`` removes a key).
+        ``topic_id`` scopes the rewrite to one topic while leaving every other
+        active topic row untouched; ``None`` preserves the historical all-row
+        behavior.
 
         Concurrent-append safety (#75316): when *watermark* is provided (the value of
         :meth:`get_active_message_watermark` captured at compression START), rows that arrived during the
@@ -939,7 +1148,79 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             conn, session_id, compacted_messages, model_config_patch=model_config_patch,
             watermark=watermark, lock_holder=lock_holder, tail_count=tail_count,
             carried_messages=carried_messages, covered_ids=covered_ids,
-            unresolved_held=unresolved_held, held_for_cas=held_for_cas), compacted_messages)
+            unresolved_held=unresolved_held, held_for_cas=held_for_cas,
+            topic_id=topic_id), compacted_messages)
+        from hermes_state import SessionCompressionInProgressError
+        def _do(conn):
+            if lock_holder is not None:
+                lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
+                if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():
+                    raise SessionCompressionInProgressError(
+                        f"Compression lease for {session_id!r} lost before commit; refusing to publish a stale compaction")
+            patch = model_config_patch is not None
+            # on_missing="raise": never commit against a vanished session row (caller keeps the original).
+            patched_model_config = self._merge_model_config_json(
+                conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            selected_topic_id = int(topic_id) if topic_id is not None else None
+            if selected_topic_id is not None:
+                conversation_id = self._topic_conversation_id_on_conn(conn, session_id)
+                if conn.execute(
+                    "SELECT 1 FROM session_topics WHERE id = ? AND session_id = ?",
+                    (selected_topic_id, conversation_id),
+                ).fetchone() is None:
+                    raise LookupError(f"Topic {selected_topic_id} does not belong to session {session_id}")
+            topic_clause = " AND topic_id = ?" if selected_topic_id is not None else ""
+            topic_params = (selected_topic_id,) if selected_topic_id is not None else ()
+            proved = self._proved_coverage(
+                conn, session_id, covered_ids, unresolved_held, watermark,
+                topic_id=selected_topic_id)
+            if proved is not None:
+                return self._archive_named_rows(
+                    conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
+                    carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
+                    merged_away=proved[1], topic_id=selected_topic_id)
+            tail_ids, _tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
+                conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 "
+                f"AND id > ?{topic_clause} ORDER BY id",
+                (session_id, int(watermark), *topic_params))
+            # Rewind targets sit AT/BELOW the watermark (all the compressor saw); unbounded, a
+            # concurrent append would steal a LIMIT slot.
+            rewind_ids: list[int] = self._resolve_carried_row_ids(
+                conn, session_id, carried_messages or [], topic_id=selected_topic_id)
+            if tail_count > 0:
+                bound = watermark is not None
+                rewind_ids += [int(row["id"]) for row in conn.execute(
+                    f"SELECT id FROM messages WHERE session_id = ? AND active = 1"
+                    f"{' AND id <= ?' if bound else ''}{topic_clause} "
+                    "ORDER BY id DESC LIMIT ?",
+                    (session_id, *((int(watermark),) if bound else ()), *topic_params,
+                     int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
+            rewind_ids += tail_ids
+            rewind_ids = list(dict.fromkeys(rewind_ids))
+            if rewind_ids:
+                placeholders = _placeholders(rewind_ids)
+                conn.execute("UPDATE messages SET active = 0, compacted = 0 "
+                    f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
+                conn.execute(
+                    f"{_ARCHIVE_ACTIVE_SQL}{topic_clause} AND id NOT IN ({placeholders})",
+                    [session_id, *topic_params, *rewind_ids],
+                )
+            else:
+                conn.execute(f"{_ARCHIVE_ACTIVE_SQL}{topic_clause}", (session_id, *topic_params))
+            # Carry timestamp before archival if the donor is still active; historical ordering retained.
+            self._carry_parent_timestamps(conn, session_id, compacted_messages)
+            if selected_topic_id is not None:
+                for message in compacted_messages:
+                    if isinstance(message, dict):
+                        message["_topic_id"] = selected_topic_id
+            self._insert_message_rows(conn, session_id, compacted_messages)
+            if tail_ids:
+                self._clone_message_rows(conn, tail_ids)
+            self._reconcile_display_orders(conn, session_id)
+            active_count, active_tool_calls = self._active_transcript_counts(conn, session_id)
+            conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
+                (active_count, active_tool_calls, *((patched_model_config,) if patch else ()), session_id))
+            return active_count
 
     def _archive_and_compact_on_conn(
             self, conn, session_id: str, compacted_messages: list[dict[str, Any]], *,
@@ -948,9 +1229,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             carried_messages: Optional[list[dict[str, Any]]] = None,
             covered_ids: Optional[list[int]] = None,
             unresolved_held: Optional[list[dict[str, Any]]] = None,
-            held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
+            held_for_cas: Optional[list[dict[str, Any]]] = None,
+            topic_id: Optional[int] = None) -> int:
         """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
-        and the worker/canonical-mutation verbs share this one body so they cannot drift."""
+        and the worker/canonical-mutation verbs share this one body so they cannot drift.
+        ``topic_id`` scopes the rewrite to one topic (``None``: historical all-row behavior)."""
         from hermes_state import SessionCompressionInProgressError
         if lock_holder is not None:
             lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
@@ -961,6 +1244,16 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # on_missing="raise": never commit against a vanished session row (caller keeps the original).
         patched_model_config = self._merge_model_config_json(
             conn, session_id, model_config_patch, on_missing="raise") if patch else None
+        selected_topic_id = int(topic_id) if topic_id is not None else None
+        if selected_topic_id is not None:
+            conversation_id = self._topic_conversation_id_on_conn(conn, session_id)
+            if conn.execute(
+                "SELECT 1 FROM session_topics WHERE id = ? AND session_id = ?",
+                (selected_topic_id, conversation_id),
+            ).fetchone() is None:
+                raise LookupError(f"Topic {selected_topic_id} does not belong to session {session_id}")
+        topic_clause = " AND topic_id = ?" if selected_topic_id is not None else ""
+        topic_params = (selected_topic_id,) if selected_topic_id is not None else ()
         # The in-transaction half of the lease-less staleness gate (#124102): the caller's
         # rewritten_held_row_ids precheck runs outside the write lock, so a concurrent in-place
         # rewrite landing between precheck and BEGIN IMMEDIATE was archived and its stale held
@@ -971,25 +1264,29 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 from hermes_state_errors import HeldRowRewrittenError
                 raise HeldRowRewrittenError(
                     f"a held row of session {session_id} was rewritten in place before the commit")
-        proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
+        proved = self._proved_coverage(
+            conn, session_id, covered_ids, unresolved_held, watermark,
+            topic_id=selected_topic_id)
         if proved is not None:
             return self._archive_named_rows(
                 conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
                 carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
-                merged_away=proved[1])
+                merged_away=proved[1], topic_id=selected_topic_id)
         tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
-            conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
-            (session_id, int(watermark)))
+            conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 "
+            f"AND id > ?{topic_clause} ORDER BY id",
+            (session_id, int(watermark), *topic_params))
         # Rewind targets sit AT/BELOW the watermark (all the compressor saw); unbounded, a
         # concurrent append would steal a LIMIT slot.
         rewind_ids: list[int] = self._resolve_carried_row_ids(
-            conn, session_id, carried_messages or [])
+            conn, session_id, carried_messages or [], topic_id=selected_topic_id)
         if tail_count > 0:
             bound = watermark is not None
             rewind_ids += [int(row["id"]) for row in conn.execute(
-                f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
+                f"SELECT id FROM messages WHERE session_id = ? AND active = 1"
+                f"{' AND id <= ?' if bound else ''}{topic_clause} "
                 "ORDER BY id DESC LIMIT ?",
-                (session_id, *((int(watermark),) if bound else ()),
+                (session_id, *((int(watermark),) if bound else ()), *topic_params,
                  int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
         rewind_ids += tail_ids
         rewind_ids = list(dict.fromkeys(rewind_ids))
@@ -997,13 +1294,19 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             placeholders = _placeholders(rewind_ids)
             conn.execute("UPDATE messages SET active = 0, compacted = 0 "
                 f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
-            conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
+            conn.execute(
+                f"{_ARCHIVE_ACTIVE_SQL}{topic_clause} AND id NOT IN ({placeholders})",
+                [session_id, *topic_params, *rewind_ids])
         else:
-            conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+            conn.execute(f"{_ARCHIVE_ACTIVE_SQL}{topic_clause}", (session_id, *topic_params))
         # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
         # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
         # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
         self._carry_parent_timestamps(conn, session_id, compacted_messages)
+        if selected_topic_id is not None:
+            for message in compacted_messages:
+                if isinstance(message, dict):
+                    message["_topic_id"] = selected_topic_id
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if tail_ids:
             self._clone_message_rows(conn, tail_ids)
@@ -1012,6 +1315,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # A carried copy whose stored identity was computed differently lands in its own
         # display_order group and would project twice; re-fold before publishing (#122167).
         self._reconcile_display_orders(conn, session_id)
+        if selected_topic_id is not None:
+            # Count all surviving topics, not just the rewritten one.
+            inserted, tool_calls_total = self._active_transcript_counts(conn, session_id)
         conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
             (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
         return inserted
@@ -1465,15 +1771,17 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             return best if best is not None else session_id
 
     def _fetch_conversation_rows(self, session_ids: list[str], active_clause: str, *, with_session_id: bool,
-                                 with_compacted: bool = False):
+                                 with_compacted: bool = False, topic_id: Optional[int] = None):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
         and would break tool-call adjacency). ``with_compacted``: the display set (``active_clause`` is
         ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``."""
+        topic_clause = " AND topic_id = ?" if topic_id is not None else ""
         rows = self._read_all(
             f"SELECT {'session_id, ' if with_session_id else ''}{'compacted, ' if with_compacted else ''}"
             f"{self._CONVERSATION_ROW_COLUMNS} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
-            f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause} ORDER BY id", tuple(session_ids))
+            f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause}{topic_clause} ORDER BY id",
+            (*session_ids, *((int(topic_id),) if topic_id is not None else ())))
         return self._with_removed_identities(rows, session_ids) if with_compacted else rows
 
     def _with_removed_identities(self, rows, session_ids: list[str]) -> list[Any]:
@@ -1491,7 +1799,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
                                      include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> list[dict[str, Any]]:
+                                     include_compacted: bool = False,
+                                     topic_id: Optional[int] = None) -> list[dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
@@ -1500,7 +1809,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         display = include_compacted and not include_inactive  # removed rows too: see drop_removed
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
+            self._active_clause(include_inactive, include_compacted), with_session_id=False,
+            with_compacted=display, topic_id=topic_id)
         if include_compacted:
             rows = self._dedupe_display_generations(rows, drop_removed=display)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
@@ -1579,9 +1889,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             # the ENTIRE transcript on flush.
             if include_row_ids and row["id"] is not None:
                 msg["_row_id"] = row["id"]
-            # The durable identity is part of the message, like ``timestamp``: restored on EVERY projection
-            # (ACP, gateway, CLI, TUI, compression adoption), never opt-in like ``_row_id``.
+            # Durable identity and topic label are internal replay metadata, never provider payload.
             _restore_identity_columns(row, msg)
+            if row["topic_id"] is not None:
+                msg["_topic_id"] = row["topic_id"]
             msg.update((col, row[col]) for col in ("api_content", "display_kind") if row[col])
             if row["display_metadata"] and (decoded := self._decode_display_metadata(row["display_metadata"])) is not None:
                 msg["display_metadata"] = decoded

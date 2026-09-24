@@ -20,7 +20,8 @@ from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
-    escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _rehome_or_delete_session_topics, escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks,
+    _placeholders as _session_ids_placeholders,
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
@@ -227,6 +228,7 @@ def _delete_delegate_children(conn, parent_ids: list[str]) -> list[str]:
     for chunk in _id_chunks(ids):
         ph = _session_ids_placeholders(chunk)
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+        _rehome_or_delete_session_topics(conn, chunk)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
@@ -1776,6 +1778,7 @@ class SessionSessionsMixin:
             for sid in scope:  # orphan remaining children (branches) so FK is satisfied
                 conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (sid,))
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                _rehome_or_delete_session_topics(conn, [sid])
             conn.executemany("DELETE FROM sessions WHERE id = ?", [(sid,) for sid in scope])
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(scope)
@@ -1839,6 +1842,7 @@ class SessionSessionsMixin:
             # a user delete: its fence ages out at the horizon (an untitled row is never a Bot Chat).
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, [session_id], expiring=[session_id])
+            _rehome_or_delete_session_topics(conn, [session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True
@@ -1924,6 +1928,7 @@ class SessionSessionsMixin:
                     f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk,
                 )
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                _rehome_or_delete_session_topics(conn, chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(expanded)
@@ -1972,6 +1977,7 @@ class SessionSessionsMixin:
                 # DELETE FROM messages: a row inserted between the SELECT and here
                 # would otherwise dangle (clean FK state).
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                _rehome_or_delete_session_topics(conn, chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)

@@ -25,7 +25,13 @@ import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 // the standard hub action pipeline (background action + tailed log + Skills
 // list invalidation), scoped to the Capabilities profile selector.
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const FALLBACK_HUB_ORIGIN = 'https://nousresearch.github.io'
 const HUB_PICKER_URL = `${HUB_ORIGIN}/docs/skills?embed=picker`
+const FALLBACK_HUB_PICKER_URL = `${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`
+
+function isHubOrigin(origin: string) {
+  return origin === HUB_ORIGIN || origin === FALLBACK_HUB_ORIGIN
+}
 
 // Hub viewport height: persisted through the shared pane store (same one the
 // terminal/editor panes use), dragged from the section's TOP edge — "pull the
@@ -86,7 +92,33 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   const height = heightOverride ?? HUB_DEFAULT_PX
   const open = height > HUB_COLLAPSED_PX
   const [dragging, setDragging] = useState(false)
+  const [hubPickerUrl, setHubPickerUrl] = useState(HUB_PICKER_URL)
   const sectionRef = useRef<HTMLElement>(null)
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
+
+  // The Vercel docs endpoint can deny an entire IP range. Probe it before the
+  // iframe is used and fall back to the same static docs on GitHub Pages when
+  // it is unreachable. The iframe remains on the primary URL for the normal
+  // case, so no successful request pays a navigation penalty.
+  useEffect(() => {
+    let mounted = true
+
+    void fetch(HUB_PICKER_URL, { method: 'HEAD' })
+      .then(response => {
+        if (mounted && !response.ok) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   // Top-edge sash: dragging UP grows the hub (shrinking the skills list above,
   // which is the flex-1 sibling). Same gesture as DetailPane / the shell's
@@ -134,7 +166,11 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
     }
 
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== HUB_ORIGIN) {
+      if (!isHubOrigin(event.origin)) {
+        return
+      }
+
+      if (event.source !== frameRef.current?.contentWindow) {
         return
       }
 
@@ -231,8 +267,9 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             }}
           >
             <iframe
+              ref={frameRef}
               sandbox="allow-scripts allow-same-origin"
-              src={HUB_PICKER_URL}
+              src={hubPickerUrl}
               style={{
                 background: 'transparent',
                 border: 'none',

@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { translateBots } from './i18n-test-helper'
 
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const FALLBACK_HUB_ORIGIN = 'https://nousresearch.github.io'
 
 const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
@@ -81,13 +82,36 @@ function routedInstallCalls() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
 })
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
 })
 
 describe('hub pick messages', () => {
+  it('uses GitHub Pages when the Vercel hub probe is unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }))
+
+    const frame = openHubBrowser()
+
+    await waitFor(() =>
+      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`)
+    )
+  })
+
+  it('accepts an install message from the fallback picker frame', () => {
+    const frame = openHubBrowser()
+
+    postPick(
+      { identifier: 'nous/web-research', name: 'Web Research', type: 'hermes-skill-pick' },
+      { origin: FALLBACK_HUB_ORIGIN, source: frame.contentWindow }
+    )
+
+    expect(installCalls()).toEqual([['skills.manage', { action: 'install', query: 'nous/web-research' }]])
+  })
+
   it('installs the picked skill when it comes from our own frame', () => {
     const frame = openHubBrowser()
 

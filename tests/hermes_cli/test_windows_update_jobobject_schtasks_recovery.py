@@ -46,7 +46,7 @@ def _token(profiles: dict) -> dict:
 def _install_windows_resume_stubs(monkeypatch) -> None:
     monkeypatch.setattr(hm, "_is_windows", lambda: True)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
-    monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
+    monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda *a, **kw: None)
     monkeypatch.setattr(
         gateway, "launch_detached_profile_gateway_restart", lambda *_a: True
     )
@@ -81,7 +81,7 @@ class TestRelaunchSchtasksRecovery:
         self, monkeypatch
     ):
         _install_windows_resume_stubs(monkeypatch)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: True)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         _install_ready_then_recover(monkeypatch, schtasks_calls, after_run_pids=[4242])
 
@@ -94,7 +94,7 @@ class TestRelaunchSchtasksRecovery:
         assert token["resume_needed"] is False
 
     def test_verify_path_recovers_without_raising(self, monkeypatch):
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: True)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         monkeypatch.setattr(gateway_windows, "get_task_name", lambda *_a, **_kw: _TASK)
         monkeypatch.setattr(
             gateway_windows, "_write_start_attestation", lambda *_a, **_kw: None
@@ -109,7 +109,7 @@ class TestRelaunchSchtasksRecovery:
 
     def test_unregistered_task_raises_and_does_not_run(self, monkeypatch):
         _install_windows_resume_stubs(monkeypatch)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: False)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "query-failed")
         schtasks_calls: list[list[str]] = []
 
         def fake_wait(**_kw):
@@ -132,7 +132,7 @@ class TestRelaunchSchtasksRecovery:
 
     def test_first_liveness_ready_never_touches_schtasks(self, monkeypatch):
         _install_windows_resume_stubs(monkeypatch)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: True)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         monkeypatch.setattr(
             gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [777]
@@ -153,7 +153,7 @@ class TestRelaunchSchtasksRecovery:
 
     def test_schtasks_run_nonzero_stays_on_original_failure(self, monkeypatch):
         _install_windows_resume_stubs(monkeypatch)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: True)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
 
         def fake_wait(**_kw):
@@ -176,7 +176,7 @@ class TestRelaunchSchtasksRecovery:
 
     def test_second_liveness_still_empty_raises(self, monkeypatch):
         _install_windows_resume_stubs(monkeypatch)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: True)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         _install_ready_then_recover(monkeypatch, schtasks_calls, after_run_pids=[])
 
@@ -194,7 +194,7 @@ class TestRelaunchSchtasksRecovery:
         def boom():
             raise OSError("schtasks query failed")
 
-        monkeypatch.setattr(gateway_windows, "is_task_registered", boom)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: (_ for _ in ()).throw(boom()))
         schtasks_calls: list[list[str]] = []
 
         def fake_wait(**_kw):
@@ -231,7 +231,7 @@ class TestColdStartSchtasksRecovery:
         self, monkeypatch
     ):
         self._install_cold_start_stubs(monkeypatch)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: True)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         _install_ready_then_recover(monkeypatch, schtasks_calls, after_run_pids=[4242])
 
@@ -242,7 +242,7 @@ class TestColdStartSchtasksRecovery:
 
     def test_unregistered_task_raises_and_does_not_run(self, monkeypatch):
         self._install_cold_start_stubs(monkeypatch)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda **_kw: False)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "query-failed")
         schtasks_calls: list[list[str]] = []
         monkeypatch.setattr(
             gateway_windows, "_wait_for_gateway_ready", lambda **_kw: []
@@ -287,8 +287,8 @@ class TestAttestedProfileSchtasksRecovery:
         monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", ready)
         monkeypatch.setattr(
             gateway_windows,
-            "is_task_registered",
-            lambda *, home=None: task_homes.append(home) or home == beta_home,
+            "_task_registration_state",
+            lambda *, home=None: task_homes.append(home) or ("registered" if home == beta_home else "query-failed"),
         )
         monkeypatch.setattr(
             gateway_windows,
@@ -306,7 +306,7 @@ class TestAttestedProfileSchtasksRecovery:
         update_cmd_windows._cold_start_attested_profiles(token)
 
         assert spawned == [beta_home]
-        assert task_homes == [beta_home, beta_home]
+        assert task_homes == [beta_home]
         assert readiness_homes == [beta_home, beta_home]
         assert consumed == [("beta-generation", beta_home)]
         assert "cold_start_profiles" not in token
@@ -341,7 +341,7 @@ class TestAttestedProfileSchtasksRecovery:
         monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: homes[name])
         monkeypatch.setattr(gateway_windows, "_live_gateway_pids", lambda *, home: [])
         monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda *, home: 9001)
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda *, home=None: True)
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda *, home=None: "registered")
         monkeypatch.setattr(
             gateway_windows,
             "_run_scheduled_task_once",
@@ -365,7 +365,7 @@ class TestAttestedProfileSchtasksRecovery:
         with pytest.raises(RuntimeError, match="alpha"):
             update_cmd_windows._cold_start_attested_profiles(token)
 
-        assert runs == [homes["alpha"], homes["beta"]]
+        assert runs == [homes["alpha"]]
         assert consumed == [("beta-generation", homes["beta"])]
         assert token["cold_start_profiles"] == {"alpha": "alpha-generation"}
 
@@ -388,7 +388,7 @@ class TestTargetedRecoveryContract:
     @pytest.mark.parametrize(
         ("registered", "run", "ready", "diagnostic"),
         [
-            (False, (0, "", ""), [222], "No registered"),
+            (False, (0, "", ""), [222], "query failed"),
             (OSError("query failed"), (0, "", ""), [222], "query failed"),
             (True, (1, "", "denied"), [222], "trigger rejected"),
             (True, OSError("run failed"), [222], "trigger rejected"),
@@ -413,12 +413,17 @@ class TestTargetedRecoveryContract:
                 raise run
             return run
 
-        monkeypatch.setattr(gateway_windows, "is_task_registered", query)
+        monkeypatch.setattr(
+            gateway_windows, "_task_registration_state",
+            lambda *, home=None: (query(home=home) and "registered") or "query-failed",
+        )
         monkeypatch.setattr(gateway_windows, "_run_scheduled_task_once", trigger)
         monkeypatch.setattr(
             gateway_windows,
             "_wait_for_gateway_ready",
-            lambda *, home=None, **_kw: calls.append(("ready", home)) or ready,
+            lambda *, home=None, **_kw: calls.append(("ready", home)) or (
+                ready if any(kind == "run" for kind, _home in calls) else []
+            ),
         )
 
         assert update_cmd_windows._recover_windows_gateway_via_schtasks(
@@ -433,8 +438,8 @@ class TestTargetedRecoveryContract:
 
         _install_windows_resume_stubs(monkeypatch)
         monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: beta_home)
-        monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: order.append("refresh"))
-        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda *, home=None: True)
+        monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda *a, **kw: order.append("refresh"))
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda *, home=None: "registered")
 
         def trigger(*, home=None):
             assert home == beta_home
@@ -525,7 +530,7 @@ class TestPlannedManualProfileRecovery:
 
         monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", readiness)
         monkeypatch.setattr(
-            gateway_windows, "is_task_registered", lambda *, home=None: home == beta_home
+            gateway_windows, "_task_registration_state", lambda *, home=None: "registered" if home == beta_home else "query-failed"
         )
         monkeypatch.setattr(
             gateway_windows,
@@ -539,5 +544,260 @@ class TestPlannedManualProfileRecovery:
             update_cmd._resume_windows_gateways_after_update(token)
 
         assert run_homes == [beta_home]
-        assert readiness_attempts == 2
+        assert readiness_attempts == 3
         assert token["resume_needed"] is False
+
+
+class TestRegisteredTaskRecoveryFollowups:
+    def test_resume_refreshes_the_beta_launcher_not_active_default(
+        self, monkeypatch, tmp_path
+    ):
+        """R1: the update's real resume path must render the launcher under
+        beta before beta's registered task can be used; rendering default is
+        not a refresh for beta."""
+        default_home = tmp_path / "default"
+        beta_home = default_home / "profiles" / "beta"
+        default_home.mkdir(parents=True)
+        beta_home.mkdir(parents=True)
+        _install_windows_resume_stubs(monkeypatch)
+        monkeypatch.setattr(
+            hm, "_refresh_windows_gateway_launchers", update_cmd_windows._refresh_windows_gateway_launchers
+        )
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(default_home))
+        monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: default_home)
+        monkeypatch.setattr(gateway, "_native_service_homes", lambda: set())
+        monkeypatch.setattr(gateway, "_bare_unit_pinned_home", lambda: None)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway, "get_python_path", lambda: r"C:\\Hermes\\venv\\Scripts\\python.exe")
+        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda *, home=None: home == beta_home)
+        monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda **_kw: False)
+        monkeypatch.setattr(gateway_windows, "reconcile_scheduled_task", lambda *_a, **_kw: False)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: beta_home)
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [222])
+
+        _resume_windows_gateways_after_update(_token({"beta": 1111}))
+
+        scripts = list((beta_home / "gateway-service").glob("*.cmd"))
+        assert len(scripts) == 1
+        beta_script = scripts[0]
+        rendered = beta_script.read_text(encoding="utf-8")
+        assert f'HERMES_HOME={beta_home}' in rendered
+        assert "--profile beta gateway run" in rendered
+        assert not (default_home / "gateway-service" / "Hermes_Gateway.cmd").exists()
+
+    def test_custom_task_action_is_not_reconciled_over(self, monkeypatch, tmp_path):
+        """R1: updater refresh may rewrite its launcher files, but must not
+        replace an action it cannot identify as Hermes-managed."""
+        script = tmp_path / "gateway.cmd"
+        custom = gateway_windows._build_scheduled_task_xml(
+            "Hermes_Gateway", tmp_path / "custom-launcher.vbs", r"PC\\me"
+        )
+        calls: list[list[str]] = []
+
+        def schtasks(args):
+            calls.append(list(args))
+            if "/XML" in args and "/Query" in args:
+                return (0, custom, "")
+            return (0, "", "")
+
+        monkeypatch.setattr(gateway_windows, "_exec_schtasks", schtasks)
+        monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda *a, **kw: script)
+        monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\\me")
+        monkeypatch.setattr(gateway_windows, "_write_task_script", lambda *a, **kw: pytest.fail("must not overwrite custom action"))
+
+        assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
+        assert not any(call[0] in ("/Delete", "/Create") for call in calls)
+
+    def test_target_launcher_refresh_failure_is_not_reported_as_refreshed(self, monkeypatch, tmp_path, capsys):
+        """R1: a target write failure is retained as best-effort failure;
+        it cannot silently count as refreshing a different profile."""
+        beta_home = tmp_path / "beta"
+        monkeypatch.setattr(hm, "_is_windows", lambda: True)
+        monkeypatch.setattr(gateway_windows, "is_installed", lambda *, home=None: home == beta_home)
+        writes: list[Path | None] = []
+
+        def fail_write(*, home=None):
+            writes.append(home)
+            raise OSError("read-only")
+
+        monkeypatch.setattr(gateway_windows, "_write_task_script", fail_write)
+        monkeypatch.setattr(
+            gateway_windows, "reconcile_scheduled_task", lambda *_a, **_kw: pytest.fail("no reconcile after failed render")
+        )
+
+        update_cmd_windows._refresh_windows_gateway_launchers(home=beta_home)
+
+        assert writes == [beta_home]
+        assert "Refreshed Windows gateway launcher scripts" not in capsys.readouterr().out
+
+    def test_partial_relaunch_attests_alpha_and_keeps_only_beta_pending(self, monkeypatch, tmp_path):
+        """R2: a created watcher is not a recovered profile.  Alpha may be
+        attested and reconciled even while beta remains retryable."""
+        homes = {"alpha": tmp_path / "alpha", "beta": tmp_path / "beta"}
+        for home in homes.values():
+            home.mkdir()
+        _install_windows_resume_stubs(monkeypatch)
+        monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda *a, **kw: None)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: homes[name])
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "query-failed")
+        attestations: list[tuple[list[int], Path | None]] = []
+        monkeypatch.setattr(
+            gateway_windows,
+            "_write_start_attestation",
+            lambda pids, _via, home=None: attestations.append((list(pids), home)),
+        )
+        monkeypatch.setattr(
+            gateway_windows,
+            "_wait_for_gateway_ready",
+            lambda *, home=None, **_kw: [101] if home == homes["alpha"] else [],
+        )
+
+        token = _token({"alpha": 11, "beta": 22})
+        with pytest.raises(RuntimeError, match="not verified alive"):
+            _resume_windows_gateways_after_update(token)
+
+        assert attestations == [([101], homes["alpha"])]
+        assert token["profiles"] == {"beta": 22}
+        assert token["relaunched_profiles"] == ["alpha"]
+        assert token["resume_needed"] is True
+
+    def test_pure_unmapped_success_records_neutral_attestation(self, monkeypatch, tmp_path):
+        """R3: a verified unmapped restart gets a durable diagnostic record,
+        without putting an unknown gateway in the default profile marker."""
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [777])
+
+        _verify_relaunched_gateways_alive(
+            _token({}), {}, [{"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}]
+        )
+
+        assert (tmp_path / "state" / "gateway.unmapped-start-attestation.json").exists()
+        assert not (tmp_path / "state" / "gateway.start-attestation.json").exists()
+        warning = gateway_windows.check_unmapped_start_attestation(current_pids=[])
+        assert warning is not None and "unmapped gateway" in warning
+        assert "Task Scheduler" not in warning
+
+    def test_pure_unmapped_failure_keeps_recovery_obligation(self, monkeypatch, tmp_path):
+        """R3: no stable unmapped process means no neutral success marker and
+        the original argv remains available for a later recovery attempt."""
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [])
+        entry = {"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}
+        token = _token({})
+
+        with pytest.raises(RuntimeError, match="not verified alive"):
+            _verify_relaunched_gateways_alive(token, {}, [entry])
+
+        assert token["unmapped"] == [entry]
+        assert not (tmp_path / "state" / "gateway.unmapped-start-attestation.json").exists()
+
+    def test_mixed_mapped_and_unmapped_success_keeps_identities_separate(self, monkeypatch, tmp_path):
+        """R3: a mixed recovery records the mapped profile normally and the
+        unmapped process neutrally, without manufacturing a default profile."""
+        default_home = tmp_path / "default"
+        alpha_home = tmp_path / "alpha"
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(default_home))
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: alpha_home)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_wait_for_gateway_ready",
+            lambda *, home=None, all_profiles=False, **_kw: [777] if all_profiles else ([101] if home == alpha_home else []),
+        )
+        token = _token({})
+
+        _verify_relaunched_gateways_alive(
+            token,
+            {"alpha": 11},
+            [{"pid": 77, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}],
+        )
+
+        assert (alpha_home / "state" / "gateway.start-attestation.json").exists()
+        assert (default_home / "state" / "gateway.unmapped-start-attestation.json").exists()
+        assert not (default_home / "state" / "gateway.start-attestation.json").exists()
+        assert token["relaunched_profiles"] == ["alpha"]
+
+    def test_partial_retry_does_not_drop_or_restart_verified_alpha(self, monkeypatch, tmp_path):
+        """R2: after alpha was verified, a retry only attempts beta and
+        retains alpha in the outcome bookkeeping if beta still cannot start."""
+        beta_home = tmp_path / "beta"
+        _install_windows_resume_stubs(monkeypatch)
+        monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda *a, **kw: None)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: beta_home)
+        attempted: list[str] = []
+        monkeypatch.setattr(
+            gateway,
+            "launch_detached_profile_gateway_restart",
+            lambda profile, _pid: attempted.append(profile) or False,
+        )
+        token = _token({"beta": 22})
+        token["relaunched_profiles"] = ["alpha"]
+
+        with pytest.raises(RuntimeError, match="not verified alive"):
+            _resume_windows_gateways_after_update(token)
+
+        assert attempted == ["beta"]
+        assert token["relaunched_profiles"] == ["alpha"]
+        assert token["profiles"] == {"beta": 22}
+        assert token["resume_needed"] is True
+
+    def test_direct_and_readiness_failures_are_combined_for_retry(self, monkeypatch, tmp_path):
+        """R2: a beta watcher creation failure must not be overwritten when
+        alpha's created watcher later fails its target readiness check."""
+        homes = {"alpha": tmp_path / "alpha", "beta": tmp_path / "beta"}
+        _install_windows_resume_stubs(monkeypatch)
+        monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda *a, **kw: None)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: homes[name])
+        monkeypatch.setattr(
+            gateway,
+            "launch_detached_profile_gateway_restart",
+            lambda profile, _pid: profile == "alpha",
+        )
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "query-failed")
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [])
+        token = _token({"alpha": 11, "beta": 22})
+
+        with pytest.raises(RuntimeError, match="not verified alive"):
+            _resume_windows_gateways_after_update(token)
+
+        assert token["profiles"] == {"alpha": 11, "beta": 22}
+        assert token["relaunched_profiles"] == []
+        assert token["resume_needed"] is True
+
+    @pytest.mark.parametrize("failure", ["timeout", "oserror"])
+    def test_schtasks_query_failure_is_not_reported_as_no_task(self, monkeypatch, capsys, failure):
+        """R4: the real subprocess boundary returns 124/1 for a timeout or
+        invocation failure; neither is evidence that the task is absent."""
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows.shutil, "which", lambda _name: "schtasks.exe")
+        if failure == "timeout":
+            monkeypatch.setattr(
+                gateway_windows.subprocess,
+                "run",
+                lambda *_a, **_kw: (_ for _ in ()).throw(gateway_windows.subprocess.TimeoutExpired("schtasks", 1)),
+            )
+        else:
+            monkeypatch.setattr(
+                gateway_windows.subprocess,
+                "run",
+                lambda *_a, **_kw: (_ for _ in ()).throw(OSError("unavailable")),
+            )
+
+        assert update_cmd_windows._recover_windows_gateway_via_schtasks(gateway_windows) == []
+        out = capsys.readouterr().out
+        assert "query failed" in out
+        assert "No registered" not in out
+
+    def test_rechecks_target_before_run_when_task_query_races_recovery(self, monkeypatch):
+        """R5: a target that becomes stable during task lookup must be
+        returned directly; a second competing /Run is unnecessary."""
+        runs: list[object] = []
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [777])
+        monkeypatch.setattr(
+            gateway_windows,
+            "_run_scheduled_task_once",
+            lambda **_kw: runs.append(True) or (0, "", ""),
+        )
+
+        assert update_cmd_windows._recover_windows_gateway_via_schtasks(gateway_windows) == [777]
+        assert runs == []

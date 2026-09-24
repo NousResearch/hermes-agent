@@ -1956,6 +1956,28 @@ def test_local_environment_kills_broker_handle_through_lease(monkeypatch):
 
 
 @pytest.mark.linux_only
+def test_local_environment_force_kills_broker_handle_through_lease(monkeypatch):
+    from tools.environments import local as local_module
+    from tools.environments.local import LocalEnvironment, _BrokerProcessHandle
+
+    conn, peer = socket.socketpair()
+    stdout_r, stdout_w = os.pipe()
+    os.close(stdout_w)
+    handle = _BrokerProcessHandle(conn, 123, stdout_r, None)
+    monkeypatch.setattr(
+        local_module.os,
+        "getpgid",
+        lambda _pid: pytest.fail("broker handles must not inspect a host process group"),
+    )
+    try:
+        LocalEnvironment.__new__(LocalEnvironment)._force_kill_process(handle)  # type: ignore[arg-type]
+        assert handle.poll() == -signal.SIGKILL
+    finally:
+        peer.close()
+        handle.stdout.close()
+
+
+@pytest.mark.linux_only
 @pytest.mark.parametrize(
     "remainder",
     (

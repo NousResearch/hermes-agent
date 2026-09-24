@@ -1239,6 +1239,9 @@ class LocalEnvironment(BaseEnvironment):
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
+        if isinstance(proc, _BrokerProcessHandle):
+            proc.kill()
+            return
         if _IS_WINDOWS:  # already a forced tree kill
             return self._kill_process(proc)
         with contextlib.suppress(OSError):

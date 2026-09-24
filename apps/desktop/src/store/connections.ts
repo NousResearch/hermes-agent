@@ -7,6 +7,7 @@ import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
+import { cancelGatewayActivationLease } from '@/store/gateway'
 import {
   beginGatewaySwitch,
   endGatewaySwitch,
@@ -61,6 +62,7 @@ const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
+let phaseOneLeaseScope: null | { connectionId: string; profile: string } = null
 
 export const $pendingConnectionId = atom<null | string>(null)
 
@@ -394,22 +396,40 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   const revision = ++switchRevision
+
+  if (phaseOneLeaseScope) {
+    cancelGatewayActivationLease(phaseOneLeaseScope.connectionId, phaseOneLeaseScope.profile)
+  }
+
+  const phaseOneScope = { connectionId, profile: targetProfile }
+  phaseOneLeaseScope = phaseOneScope
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
   // Set by the commit hook once THIS switch has wiped — i.e. it owns the
   // barrier and, if the commit then fails, owes the still-active source a
   // repaint. Null while queued, or if it stepped aside before its turn.
   let token = null as GatewaySwitchToken | null
+  let releasePhaseOne: () => void = () => undefined
 
   try {
     // Phase 1 — open the target's socket; the active route is untouched.
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
-    await withTimeout(
+    const phaseOneLease = await withTimeout(
       openGatewayAgent(connectionId, targetProfile),
       SWITCH_DIAL_TIMEOUT_MS,
-      `Timed out connecting to "${targetConnection.label}".`
+      `Timed out connecting to "${targetConnection.label}".`,
+      () => {
+        if (phaseOneLeaseScope === phaseOneScope) {
+          cancelGatewayActivationLease(connectionId, targetProfile)
+        }
+      }
     )
+    // Older bridge/test implementations predate the explicit phase-one lease
+    // return. They have nothing to release; the real gateway path always
+    // supplies the owner cleanup function.
+
+    releasePhaseOne = typeof phaseOneLease === 'function' ? phaseOneLease : () => undefined
 
     // A newer click owns the switch from here on. The superseded dial never
     // activates, so the user doesn't flip through it on the way to the source
@@ -537,6 +557,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
       throw error
     }
   } finally {
+    releasePhaseOne()
+
+    if (phaseOneLeaseScope === phaseOneScope) {
+      phaseOneLeaseScope = null
+    }
+
     if (revision === switchRevision) {
       pendingTarget = null
       $pendingConnectionId.set(null)

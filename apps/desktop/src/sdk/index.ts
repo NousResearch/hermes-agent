@@ -1014,10 +1014,11 @@ export const host = {
       // not the registry-secondary path openGatewayForAgent takes for a 'local'
       // connection id. Behavior for a plain local open is unchanged.
       const dial = explicitRoute
-        ? () =>
-            openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile, {
+        ? async () => {
+            await openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile, {
               spawnPriority: 'foreground'
             })
+          }
         : plan.switchWorkspace
           ? () => ensureGatewayProfile(plan.switchWorkspace as string)
           : plan.dialWithoutSwitching

@@ -194,12 +194,18 @@ interface Secondary {
    * an orphaned lease self-heals.
    */
   activationLeaseUntil: number
+  /** Owner generation for activationLeaseUntil; stale cleanup must not clear a newer switch's lease. */
+  activationLeaseOwner: number
 }
 
 // How long a mid-dial activation holds its prune lease: covers a cold pool
 // backend spawn + socket connect with margin, while still letting a leaked
 // lease expire quickly enough for the reaper to reclaim the entry.
 const ACTIVATION_LEASE_MS = 30_000
+
+export interface GatewayActivationLease {
+  release: () => void
+}
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -224,6 +230,7 @@ interface GatewayRegistryState {
   primaryProfile: string
   activeKey: string
   activationEpoch: number
+  activationLeaseGeneration?: number
   secondaries: Map<string, Secondary>
   // Auth rejection outlives the disposable socket, including background request leases.
   reauthFailures: Map<string, { connectionId: string | null; error: Error }>
@@ -250,6 +257,7 @@ function createRegistryState(): GatewayRegistryState {
     primaryProfile: 'default',
     activeKey: 'default',
     activationEpoch: 0,
+    activationLeaseGeneration: 0,
     secondaries: new Map<string, Secondary>(),
     reauthFailures: new Map(),
     openedSecondaryScopes: new Set<string>(),
@@ -300,6 +308,54 @@ const g = gatewayState()
 const openedSecondaryScopes = (): Set<string> => (g.openedSecondaryScopes ??= new Set<string>())
 // Dev-HMR states predate this field, so read it through the same lazy accessor pattern.
 const reactivatingScopes = (): Set<string> => (g.reactivatingScopes ??= new Set<string>())
+
+function acquireActivationLease(entry: Secondary, signal?: AbortSignal): GatewayActivationLease {
+  const owner = (g.activationLeaseGeneration = (g.activationLeaseGeneration ?? 0) + 1)
+  let released = false
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    signal?.removeEventListener('abort', release)
+
+    // A later phase-one/phase-two owner may have taken over this scope. Its
+    // lease is independent; an old timeout or superseded switch cannot clear it.
+    if (entry.activationLeaseOwner === owner) {
+      entry.activationLeaseOwner = 0
+      entry.activationLeaseUntil = 0
+    }
+  }
+
+  entry.activationLeaseOwner = owner
+  // Ownership/cancellation, not an arbitrary wall-clock grace, determines
+  // phase one's lifetime. A queued phase two may legitimately outlast both
+  // the socket's min-lifetime and the former 30s lease; its controller releases
+  // this immediately on supersede, timeout, error, or abort.
+  entry.activationLeaseUntil = Number.MAX_SAFE_INTEGER
+
+  if (signal?.aborted) {
+    release()
+  } else {
+    signal?.addEventListener('abort', release, { once: true })
+  }
+
+  return { release }
+}
+
+/** Cancel the current phase-one owner for a superseded/timed-out source switch. */
+export function cancelGatewayActivationLease(connectionId: null | string, profile: string): void {
+  const entry = g.secondaries.get(registryBackendScopeKey(connectionId, profile))
+
+  if (!entry) {
+    return
+  }
+
+  entry.activationLeaseOwner = 0
+  entry.activationLeaseUntil = 0
+}
 
 // Re-exported as a stable binding: the atom instance lives in `g`, so every hot
 // reload of this module hands back the SAME atom subscribers are already wired
@@ -978,7 +1034,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     relayRetainCount: 0,
     wantOpen: true,
     retiredByPool: false,
-    activationLeaseUntil: 0
+    activationLeaseUntil: 0,
+    activationLeaseOwner: 0
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -1705,13 +1762,16 @@ export async function openGatewayForAgent(
   profile: string,
   {
     activationLease = false,
-    spawnPriority = 'background'
-  }: { activationLease?: boolean; spawnPriority?: SpawnPriority } = {}
-): Promise<void> {
+    spawnPriority = 'background',
+    signal
+  }: { activationLease?: boolean; spawnPriority?: SpawnPriority; signal?: AbortSignal } = {}
+): Promise<GatewayActivationLease> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile) || isPrimaryRegistryRoute(connectionId, profile)) {
-    return openGatewayForProfile(profile, { spawnPriority })
+    await openGatewayForProfile(profile, { spawnPriority })
+
+    return { release: () => undefined }
   }
 
   if (await ridesPrimaryBackend(connectionId, profile, spawnPriority)) {
@@ -1719,7 +1779,7 @@ export async function openGatewayForAgent(
       throw new Error('Hermes gateway unavailable')
     }
 
-    return
+    return { release: () => undefined }
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -1730,22 +1790,23 @@ export async function openGatewayForAgent(
   entry.retained = true
   rearmSecondary(entry, spawnPriority)
 
-  if (activationLease) {
-    // Stays held after a successful open: the activation that follows releases
-    // it (applyActive path), and one that never comes lets it expire.
-    entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
-  }
+  const lease = activationLease ? acquireActivationLease(entry, signal) : { release: () => undefined }
+  let opened = false
 
   try {
     if (!isOpen(entry.gateway)) {
       await openSecondary(entry, spawnPriority)
     }
+
+    opened = true
+
+    return lease
   } finally {
-    if (activationLease) {
-      // Phase one needs the lease only while its socket is still opening.
-      // Once it settles, a later phase two activation can use the open socket
-      // without pinning an otherwise-idle route for another full lease window.
-      entry.activationLeaseUntil = 0
+    // A successful phase one hands this owner to phase two. Failure or caller
+    // abandonment releases immediately; withTimeout does not cancel the dial,
+    // so the owner token remains the only cleanup authority when it settles.
+    if (!opened) {
+      lease.release()
     }
   }
 }
@@ -1791,7 +1852,7 @@ export async function ensureGatewayForAgent(
   // switch target is not yet active and has no live sessions, so a prune
   // recompute firing mid-spawn would otherwise dispose it and this
   // activation would fail (#89622).
-  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+  const activationLease = acquireActivationLease(entry, signal)
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -1805,7 +1866,7 @@ export async function ensureGatewayForAgent(
   }
 
   // The activation is settling either way — release the prune lease.
-  entry.activationLeaseUntil = 0
+  activationLease.release()
 
   // A timed-out owner may leave the dial running, but it no longer has the
   // right to move the foreground route when that work eventually settles.

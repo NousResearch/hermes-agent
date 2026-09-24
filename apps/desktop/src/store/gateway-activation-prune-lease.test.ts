@@ -147,21 +147,86 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
     await expect(switching).resolves.toBe(true)
   })
 
-  it('releases a settled phase-one lease so an older idle socket is not deferred to the next prune tick (#118856)', async () => {
+  it('keeps a settled phase-one target alive past min lifetime until phase two owns it (#93937)', async () => {
     vi.useFakeTimers()
 
-    // Make a normal pre-warmed registry socket old enough for pruning. A
-    // later source-switch phase one can find this same socket already open.
-    await openGatewayForAgent('homelab', 'research')
-    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
-
-    // The lease protects an in-flight dial only. Once phase one has settled,
-    // it must not add another 30-second idle window when phase two never
-    // follows (for example, when a newer source selection supersedes it).
+    // Phase one is allowed to finish before the serialized phase-two commit
+    // receives its turn. Age beyond #94769's min-lifetime grace so this can
+    // only pass because the phase-one lease itself remains owned.
     await openGatewayForAgent('homelab', 'research', { activationLease: true })
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+    pruneSecondaryGateways(new Set())
+
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+  })
+
+  it('releases an abandoned settled phase-one lease immediately', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+
+    await openGatewayForAgent('homelab', 'research', { activationLease: true, signal: controller.signal })
+    controller.abort()
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
     pruneSecondaryGateways(new Set())
 
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('releases the phase-one owner when phase two activates the target', async () => {
+    vi.useFakeTimers()
+
+    await openGatewayForAgent('homelab', 'research', { activationLease: true })
+    await expect(ensureGatewayForAgent('homelab', 'research')).resolves.toBe(true)
+    await ensureGatewayForProfile('default')
+
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+    pruneSecondaryGateways(new Set())
+
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('does not let an older owner release a newer same-scope phase-one lease', async () => {
+    vi.useFakeTimers()
+    const oldOwner = new AbortController()
+    const newOwner = new AbortController()
+
+    await openGatewayForAgent('homelab', 'research', { activationLease: true, signal: oldOwner.signal })
+    await openGatewayForAgent('homelab', 'research', { activationLease: true, signal: newOwner.signal })
+    oldOwner.abort()
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+    pruneSecondaryGateways(new Set())
+
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    newOwner.abort()
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('protects an in-flight phase-one dial until its caller abandons it', async () => {
+    vi.useFakeTimers()
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+    const controller = new AbortController()
+
+    const opening = openGatewayForAgent('homelab', 'research', {
+      activationLease: true,
+      signal: controller.signal
+    })
+
+    await flushUntilSecondaryRegistered()
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    controller.abort()
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+
+    releaseConnect()
+    await opening
   })
 
   it('the lease is released once the switch settles — a later prune reclaims the idle entry', async () => {

@@ -58,13 +58,19 @@ def test_dropped_repetitive_arguments_never_reach_dispatch(monkeypatch, repair_n
     assert set(response._dropped_tool_names) == {"read_file", "terminal"}
 
 
-@pytest.mark.parametrize("command,finish_reason", [
-    ("pwd", None),
-    ("\n".join(f"echo unique row {i}: value {i * 7}" for i in range(150)), None),
-    (REPEATED_COMMAND, "tool_calls"),
-])
-def test_healthy_or_confirmed_arguments_are_preserved(monkeypatch, command, finish_reason):
-    arguments = json.dumps({"command": command})
-    response = _stream_response(monkeypatch, arguments, finish_reason)
+def test_provider_confirmed_repetitive_arguments_are_preserved(monkeypatch):
+    arguments = json.dumps({"command": REPEATED_COMMAND})
+    response = _stream_response(monkeypatch, arguments, "tool_calls")
+    assert response.id != PARTIAL_STREAM_STUB_ID
+    assert response.choices[0].message.tool_calls[1].function.arguments == arguments
+
+
+def test_dropped_markdown_table_with_repeated_row_shape_is_not_rejected(monkeypatch):
+    # Legitimately repetitive payload: same row template, distinct cell values.
+    table = "| id | status | note |\n|---|---|---|\n" + "".join(
+        f"| {i} | ok | pending review |\n" for i in range(60)
+    )
+    arguments = json.dumps({"command": f"cat > /tmp/report.md <<'EOF'\n{table}EOF"})
+    response = _stream_response(monkeypatch, arguments)
     assert response.id != PARTIAL_STREAM_STUB_ID
     assert response.choices[0].message.tool_calls[1].function.arguments == arguments

@@ -131,6 +131,10 @@ opencode_go = OpenCodeGoProfile(
     # and the rejected row stays in history so every later call dies too. Images in user
     # messages are fine, so vision itself keeps working via the text-summary downgrade.
     supports_vision_tool_messages=False,
+    # The relay 400s json_schema with a bare ``{"model": "<id>"}`` body (deepseek-v4.1-flash), which
+    # the rejection retry can't recognise, so title generation fails every time. json_object and
+    # no response_format both work, so drop it up front like the native deepseek profile does.
+    unsupported_response_formats=("json_schema",),
 )
 
 register_provider(opencode_zen)

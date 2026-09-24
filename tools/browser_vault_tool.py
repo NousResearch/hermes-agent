@@ -521,9 +521,15 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # Register the secret bytes with the model-egress redaction boundary
     # BEFORE they touch the page: any later browser_* result (including
     # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
-    # Address values are not secrets but the card fields are: register every payment value.
-    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
-        register_vault_redaction_value(value)
+    # Login passwords are arbitrary opaque values and always need exact-value egress protection.
+    # For payment fills, only a plausible card number is suitable as a process-wide scrub key:
+    # expiry, CVC, postal, and cardholder fields are low-entropy or user-visible metadata.
+    if meta.kind == "payment":
+        card_number = secret.get("card_number", "")
+        if len(card_number) >= 12:
+            register_vault_redaction_value(card_number)
+    else:
+        register_vault_redaction_value(secret.get("password", ""))
 
     try:
         fill_result = _eval_js_secret(

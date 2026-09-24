@@ -31,6 +31,13 @@ FLY_API_SOCKET = "/.fly/api"
 # its own signed credential in the query string, like GATEWAY_RELAY_WAKE_URL.
 SLEEP_URL_ENV = "GATEWAY_RELAY_SLEEP_URL"
 
+# Touched by NAS on every relay wake where the platform resumes a paused VM in
+# place, so this process survives the pause and has to let its re-dial go.
+WAKE_MARKER_ENV = "HERMES_WAKE_MARKER_PATH"
+WAKE_MARKER_TICK_S = 0.5
+# Mirrors ws_transport.REDIAL_HOLD_MAX_S: the transport frees itself at that point anyway.
+WAKE_MARKER_WAIT_MAX_S = 60.0
+
 _malformed_sleep_url_logged = False
 
 # Short is safe: real work always blocks the suspend, resume is sub-second; longer bills idle RAM.
@@ -168,6 +175,20 @@ def suspend_available(environ: Optional[dict] = None) -> bool:
     """
     env = environ if environ is not None else os.environ
     return self_suspend_available(env) or brokered_sleep_url(env) is not None
+
+
+def wake_marker_path(environ: Optional[dict] = None) -> Optional[str]:
+    """Absolute path NAS touches on a wake, or None when this platform has no marker."""
+    path = _env_str(environ, WAKE_MARKER_ENV)
+    return path if os.path.isabs(path) else None
+
+
+def wake_marker_stamp(path: str) -> Optional[int]:
+    """The marker's mtime in ns, None while it does not exist."""
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
 
 
 # Must EXCEED the broker's own hard request ceiling (NAS route maxDuration = 30s),

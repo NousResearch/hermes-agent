@@ -805,3 +805,43 @@ def test_missing_api_adapter_is_not_work(monkeypatch):
     r = _work_count_runner(monkeypatch)
     r.adapters = {}
     assert r._scale_to_zero_is_idle() is True
+
+
+@pytest.mark.asyncio
+async def test_wake_marker_touch_releases_the_brokered_fence(monkeypatch, tmp_path):
+    """A platform that resumes the VM in place keeps this process alive, so the fence
+    taken for the brokered stop must let go the moment NAS touches the marker."""
+    r, adapter = _runner_with(monkeypatch, idle=True, brokered=True)
+    marker = tmp_path / "wake"
+    monkeypatch.setenv("HERMES_WAKE_MARKER_PATH", str(marker))
+    monkeypatch.setattr("gateway.scale_to_zero.WAKE_MARKER_TICK_S", 0.01)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.request_brokered_suspend", lambda *a, **k: True
+    )
+
+    task = asyncio.create_task(r._scale_to_zero_self_suspend())
+    await asyncio.sleep(0.05)
+    assert adapter.redial == [], "released before any wake"
+    marker.touch()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert adapter.redial == ["release"]
+
+
+@pytest.mark.asyncio
+async def test_wake_marker_left_alone_keeps_the_fence(monkeypatch, tmp_path):
+    """No touch, no release: a marker that predates the stop is only the baseline, and
+    the transport cap stays the one way out of a wake that never comes."""
+    r, adapter = _runner_with(monkeypatch, idle=True, brokered=True)
+    marker = tmp_path / "wake"
+    marker.touch()
+    monkeypatch.setenv("HERMES_WAKE_MARKER_PATH", str(marker))
+    monkeypatch.setattr("gateway.scale_to_zero.WAKE_MARKER_TICK_S", 0.01)
+    monkeypatch.setattr("gateway.scale_to_zero.WAKE_MARKER_WAIT_MAX_S", 0.05)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.request_brokered_suspend", lambda *a, **k: True
+    )
+
+    await asyncio.wait_for(r._scale_to_zero_self_suspend(), timeout=2)
+
+    assert adapter.redial == []

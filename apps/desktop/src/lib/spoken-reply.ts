@@ -14,12 +14,15 @@
 export interface SpokenReplyAnchor {
   id: string
   ordinal: number
+  /** Spoken body — used to ignore hydrate/history copies of the same answer. */
+  text?: string
 }
 
 export interface SpokenReplyMessage {
   hidden?: boolean
   id: string
   role: string
+  text?: string
 }
 
 const NO_SESSION = '\0'
@@ -86,7 +89,7 @@ export function absorbSpokenReplyRewrite(
     return spoken
   }
 
-  return { id: last.id, ordinal }
+  return { id: last.id, ordinal, text: spoken.text ?? last.text }
 }
 
 export function spokenReplyOf(sessionId: string | null | undefined): SpokenReplyAnchor | null {
@@ -108,7 +111,8 @@ export function markAssistantIdSpoken(
     return
   }
 
-  markSpokenReply(sessionId, { id, ordinal })
+  const spoken = messages.find(message => message.id === id)
+  markSpokenReply(sessionId, { id, ordinal, text: spoken?.text })
 }
 
 /**

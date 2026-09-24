@@ -16,7 +16,9 @@ import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
 
-import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from './focus'
+import { extractDroppedFiles } from '../hooks/use-composer-actions'
+
+import { requestComposerAttachFiles, requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from './focus'
 import { pathifyRefs } from './path-refs'
 import { extractClipboardImageBlobs } from './text-utils'
 import { linkifyUrls } from './url-refs'
@@ -24,6 +26,20 @@ import { linkifyUrls } from './url-refs'
 /** Route clipboard contents to the active composer. True when it carried
  *  something a composer can take (the caller should swallow the event). */
 export function routeClipboardToComposer(clipboard: DataTransfer): boolean {
+  // An OS file-list copy (Explorer / Finder / Nautilus) shows up as cloned
+  // File entries on the paste event. Files are checked before images: a
+  // screenshot may also appear as a File in the blob list, so we only fall
+  // through to the image pipeline when the file read produced no native
+  // entries and no bytes to attach.
+  if (clipboard.files.length > 0) {
+    const snapshot = extractDroppedFiles(clipboard)
+    const imageBlobs = extractClipboardImageBlobs(clipboard)
+    requestComposerAttachFiles(snapshot, imageBlobs)
+    requestComposerFocus('active')
+
+    return true
+  }
+
   const blobs = extractClipboardImageBlobs(clipboard)
   const text = sanitizeComposerInput(clipboard.getData('text').trim())
 

@@ -353,6 +353,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
   saveTextFileAs: request => ipcRenderer.invoke('hermes:saveTextFileAs', request),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
+  readClipboardFilePaths: () => ipcRenderer.invoke('hermes:readClipboardFilePaths'),
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
   saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),

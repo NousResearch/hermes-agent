@@ -125,6 +125,10 @@ import {
 } from './bundle-swap'
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
+import { detectBundleSkew } from './bundle-skew'
+import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
+import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { readClipboardFilePaths } from './clipboard-files'
 import { provisionCliLinks } from './cli-provision'
 import { readClipboardImagePng } from './clipboard-image'
 import { registerClipboardTextIpc } from './clipboard-ipc'
@@ -16522,6 +16526,13 @@ registerSaveDialogIpc(ipcMain, {
   defaultDir: () => app.getPath('documents'),
   showSaveDialog: options => dialog.showSaveDialog(mainWindow, options)
 })
+
+// Native file-list clipboard read (CF_HDROP on Windows / NSPasteboard on macOS
+// / text/uri-list on Linux). The DOM paste event's File objects are clones —
+// webUtils.getPathForFile returns '' for them — so the renderer asks main to
+// recover the original paths synchronously enough to attach by reference
+// (#118181).
+ipcMain.handle('hermes:readClipboardFilePaths', () => readClipboardFilePaths())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 

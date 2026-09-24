@@ -318,8 +318,9 @@ _DID_SUFFIX = (
 # Exact-file credential stores under HERMES_HOME / <root>. The agent never
 # needs these directly — provider tools consume them through internal channels.
 # bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
+# The recovery copy retains the original store's secrets even when its JSON is invalid.
 _CREDENTIAL_FILE_NAMES = (
-    "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
+    "auth.json", "auth.json.corrupt", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
 )
 

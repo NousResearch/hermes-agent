@@ -70,6 +70,7 @@ describe('ResponseLoadingIndicator timer', () => {
 
     expect(screen.getByText('⏳ waiting on local-model — 30s with no output yet')).toBeTruthy()
   })
+
   it('keeps the ticking timer out of the live region accessibility tree', () => {
     $activeSessionId.set('session-a')
     $turnStartedAt.set(Date.now())

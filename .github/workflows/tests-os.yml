@@ -61,7 +61,9 @@ jobs:
             runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            # This lane uses one pytest process; standard Windows keeps
+            # native OS coverage without paid larger-runner compute.
+            runner: windows-latest
             marker: windows_only
     steps:
       - name: Checkout code

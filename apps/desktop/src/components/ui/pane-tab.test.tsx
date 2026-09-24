@@ -94,6 +94,20 @@ describe('PaneTab close gestures', () => {
 })
 
 describe('PaneTab hover close button', () => {
+  it('reserves the close-button column so a long title keeps its ellipsis', () => {
+    render(
+      <PaneTab onClose={vi.fn()}>
+        <PaneTabLabel>Long session title that must truncate before the close button</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const label = screen.getByText('Long session title that must truncate before the close button')
+    const closeColumn = screen.getByRole('button', { name: 'Close' }).parentElement
+
+    expect(label.className).not.toContain('group-data-[closeable]/tab:text-clip')
+    expect(closeColumn?.className).not.toContain('absolute')
+  })
+
   it('clicking the ✕ closes without activating or dragging the tab', () => {
     const onClose = vi.fn()
     const onActivate = vi.fn()

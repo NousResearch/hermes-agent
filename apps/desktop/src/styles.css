@@ -1605,18 +1605,8 @@ body.guest-pointer-lock :is(webview, iframe) {
   width: 100%;
 }
 
-/* Remove label pixels under the hover close button; translucent paint would
-   stack the glass tint and still let the label bleed through. */
 [data-slot='pane-tab'][data-closeable] {
   --pane-tab-close-width: 1.5rem;
-}
-
-[data-slot='pane-tab'][data-closeable]:hover > .pane-tab-content {
-  mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - var(--pane-tab-close-width) - 1rem),
-    transparent calc(100% - var(--pane-tab-close-width))
-  );
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md,

@@ -466,7 +466,9 @@ def _try_dispatch_background_run(
         if not async_delivery_supported():
             return None
     except Exception:
-        pass
+        # A failed capability read proves nothing about the channel's ability to
+        # deliver a detached completion; fail closed to sync like the unsupported path.
+        return None
 
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).

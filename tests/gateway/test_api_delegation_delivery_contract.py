@@ -52,6 +52,26 @@ async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
     assert runs["declared_key"]["runtime"]["history"][0]["content"] == "DECLARED_HISTORY"
 
 
+def test_probe_failure_fails_closed_to_inline(monkeypatch):
+    """A raised async_delivery_supported probe must degrade to synchronous
+    execution (None), not detach into a lane whose capability is unproven."""
+    import gateway.session_context as sc
+
+    monkeypatch.setattr(
+        sc, "async_delivery_supported",
+        lambda: (_ for _ in ()).throw(RuntimeError("broken binding")))
+    assert _resolve_async_wake_sid("api-parent", True) is None
+
+
+def test_probe_import_failure_fails_closed_to_inline(monkeypatch):
+    """The same except branch wraps the lazy import itself: an unresolvable
+    probe symbol must also degrade to synchronous execution."""
+    import gateway.session_context as sc
+
+    monkeypatch.delattr(sc, "async_delivery_supported")
+    assert _resolve_async_wake_sid("api-parent", True) is None
+
+
 @pytest.mark.asyncio
 async def test_delivery_replay_is_atomic_across_continuation_and_busy_turn(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")

@@ -259,7 +259,10 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
         if async_delivery_supported():
             return ""
     except Exception:
-        return ""
+        # A failed capability read proves nothing about the channel's ability to
+        # deliver a detached completion; degrade to synchronous like the other
+        # unsupported paths rather than handing out a handle with no consumer.
+        return None
     if origin_wake_sid and origin_session_history_delivery:
         logger.info(
             "delegate_task: session %s resumes server history — detached result will be persisted "

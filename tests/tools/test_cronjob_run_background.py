@@ -178,6 +178,22 @@ class TestSyncFallbacks:
                 res = _try_dispatch_background_run(_job('job-bg-06'))
         assert res is None
 
+    def test_async_delivery_probe_failure_falls_back_to_sync(self):
+        """A raised capability probe proves nothing about delivery; fail closed
+        to sync instead of claiming and dispatching on an unproven lane."""
+        with _bound_session_key():
+            with patch("gateway.session_context.async_delivery_supported",
+                       side_effect=RuntimeError("broken binding")), \
+                 patch("tools.cronjob_tools.claim_job_for_fire",
+                       side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}) as m_claim, \
+                 patch("tools.cronjob_tools.get_job",
+                       return_value={"last_status": "ok", "last_error": None}), \
+                 patch("tools.async_delegation.dispatch_async_delegation") as m_disp:
+                res = _try_dispatch_background_run(_job('job-bg-06b'))
+        assert res is None
+        m_disp.assert_not_called()
+        m_claim.assert_not_called()  # no durable fire-claim side effect on an unproven lane
+
     def test_pool_at_capacity_runs_inline(self):
         """A rejected dispatch must not strand the already-taken claim."""
         with _bound_session_key():

@@ -1,6 +1,7 @@
 """Two lifecycle invariants, using real SQLite and a local GitHub HTTP contract."""
 import json
 import os
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -247,21 +248,64 @@ def test_restoring_archived_ancestor_fences_done_intermediate_and_running_descen
         assert kb.complete_task(conn, intermediate, summary="review completed while source archived")
         claimed = kb.claim_task(conn, running)
         assert claimed is not None
-        event_id = conn.execute(
-            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
-        ).fetchone()[0]
-        assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
-                                        completion_contract="acme/repo", reason="acceptance missing")
-        assert (unclaimed_task := kb.get_task(conn, unclaimed)) is not None
-        assert (running_task := kb.get_task(conn, running)) is not None
-        assert unclaimed_task.status == "todo"
-        assert running_task.status == "running"
-        assert kb.unsatisfied_parents(conn, unclaimed) == [(root, "blocked")]
-        assert kb.claim_task(conn, unclaimed) is None
-        assert not kb.complete_task(conn, running, summary="cannot bypass source",
-                                    expected_run_id=claimed.current_run_id)
-        kb.recompute_ready(conn)
-        assert (unclaimed_task := kb.get_task(conn, unclaimed)) is not None
-        assert (running_task := kb.get_task(conn, running)) is not None
-        assert unclaimed_task.status == "todo"
-        assert running_task.status == "running"
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            from hermes_cli import kanban_db_dispatch as dispatch
+            dispatch._set_worker_pid(conn, running, proc.pid)
+            event_id = conn.execute(
+                "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
+            ).fetchone()[0]
+            assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                            completion_contract="acme/repo", reason="acceptance missing")
+            assert proc.wait(timeout=10) is not None
+            assert kb.get_task(conn, unclaimed).status == "todo"
+            fenced = kb.get_task(conn, running)
+            assert fenced.status == "todo" and fenced.current_run_id is None
+            assert fenced.claim_lock is None and fenced.worker_pid is None
+            assert kb.latest_run(conn, running).outcome == "reclaimed"
+            assert any(e.kind == "archive_restore_worker_termination" and e.payload["terminated"]
+                       for e in kb.list_events(conn, running))
+            assert kb.unsatisfied_parents(conn, unclaimed) == [(root, "blocked")]
+            assert kb.claim_task(conn, unclaimed) is None
+            assert not kb.complete_task(conn, running, summary="cannot bypass source",
+                                        expected_run_id=claimed.current_run_id)
+            kb.recompute_ready(conn)
+            assert kb.get_task(conn, unclaimed).status == "todo"
+            assert kb.get_task(conn, running).status == "todo"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+@pytest.mark.linux_only
+def test_archive_restore_never_signals_recycled_worker_pid(github):
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="worker", parents=[root])
+        assert kb.archive_task(conn, root)
+        claimed = kb.claim_task(conn, child)
+        assert claimed is not None
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            from hermes_cli import kanban_db_dispatch as dispatch
+            dispatch._set_worker_pid(conn, child, proc.pid)
+            conn.execute("UPDATE tasks SET worker_started_at = worker_started_at - 1000000 WHERE id=?",
+                         (child,))
+            event_id = conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='archived'",
+                                    (root,)).fetchone()[0]
+            assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                            completion_contract="acme/repo", reason="acceptance missing")
+            assert proc.poll() is None
+            assert kb.get_task(conn, child).status == "todo"
+            assert kb.latest_run(conn, child).outcome == "reclaimed"
+            assert any(e.kind == "archive_restore_worker_termination" and e.payload["pid_recycled"]
+                       for e in kb.list_events(conn, child))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()

@@ -3927,10 +3927,12 @@ def restore_archived_task(conn: sqlite3.Connection, task_id: str, *, archive_eve
     """Operator-only restoration to blocked, fenced by archive receipt and contract.
 
     Archive may have released dependent tasks; restoring must reapply the parent
-    gate immediately. No prior claim or workspace is resurrected.
+    gate immediately, including terminating running descendants after commit.
+    No prior claim or workspace is resurrected.
     """
     if not reason.strip() or not completion_contract or archive_event_id <= 0:
         return False
+    terminations = []
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, completion_contract FROM tasks WHERE id = ?", (task_id,),
@@ -3956,23 +3958,47 @@ def restore_archived_task(conn: sqlite3.Connection, task_id: str, *, archive_eve
             "reason": "Restored archive requires acceptance and operator release",
             "kind": "needs_input", "archive_event_id": archive_event_id,
         })
-        # Archiving may already have promoted dependency children. Retract only
-        # unclaimed ready descendants; in-flight workers retain their own claims
-        # but cannot complete while this ancestor is blocked (_parents_satisfied).
-        ready = conn.execute(
+        # Archiving may have promoted or spawned descendants, even through a
+        # child completed in the interim. Close active runs and revoke claims
+        # atomically with restoration, then signal verified workers post-commit.
+        descendants = conn.execute(
             "WITH RECURSIVE descendants(id) AS ("
             " SELECT child_id FROM task_links WHERE parent_id = ? UNION "
             " SELECT l.child_id FROM task_links l JOIN descendants d ON l.parent_id = d.id) "
-            "SELECT id FROM tasks WHERE id IN (SELECT id FROM descendants) AND status = 'ready'",
+            "SELECT id, status, worker_pid, worker_started_at, claim_lock "
+            "FROM tasks WHERE id IN (SELECT id FROM descendants) AND status IN ('ready', 'running')",
             (task_id,),
         ).fetchall()
-        for child in ready:
-            conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                         (child["id"],))
+        for child in descendants:
+            run_id = None
+            if child["status"] == "running":
+                run_id = _end_run(conn, child["id"], outcome="reclaimed", status="todo",
+                                  summary=f"archived ancestor {task_id} restored")
+                terminations.append((child["id"], run_id, child["worker_pid"],
+                                     child["claim_lock"], child["worker_started_at"]))
+            conn.execute(
+                "UPDATE tasks SET status = 'todo', current_run_id = NULL, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL WHERE id = ?",
+                (child["id"],),
+            )
             _append_event(conn, child["id"], "status", {
                 "status": "todo", "reason": "archived_parent_restored", "parent": task_id,
-            })
+                "previous_status": child["status"],
+            }, run_id=run_id)
+    unverified_workers = []
+    for child_id, run_id, pid, lock, started_at in terminations:
+        termination = _terminate_reclaimed_worker(pid, lock, started_at=started_at)
+        with write_txn(conn):
+            _append_event(conn, child_id, "archive_restore_worker_termination",
+                          {"ancestor": task_id, **termination}, run_id=run_id)
+        if pid and not termination["terminated"]:
+            unverified_workers.append(child_id)
     recompute_ready(conn)
+    if unverified_workers:
+        # The restoration is already committed and no claim can be renewed,
+        # but an unverified/remote worker may still perform external writes.
+        raise RuntimeError("Archive restored, but descendant workers could not be stopped: "
+                           + ", ".join(unverified_workers))
     return True
 
 

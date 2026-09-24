@@ -800,11 +800,29 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
+            // #119566: a verify/continuation interim can seal the final
+            // candidate while the turn continues and completes with a rewrite
+            // that WRAPS it (prepended intro line, not a prefix extension).
+            // Prefix-either-way above cannot see it, so the rewrite appends a
+            // second bubble with the final verbatim in both. Settle instead —
+            // completeMessage replaces the candidate with the fuller final.
+            // One direction only (final contains interim): the reverse would
+            // delete interim-only text. Same-turn only — gated on
+            // interimBoundaryPending like responsePreviewed, so a new turn
+            // quoting old text still appends its own bubble.
+            const finalContainsInterim = Boolean(
+              existing.interim && finalText && existingText && finalText.includes(existingText)
+            )
+
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = settleAt(index)
-            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
+            } else if (
+              (interimBoundaryPending && responsePreviewed) ||
+              finalContinuesInterim ||
+              (interimBoundaryPending && finalContainsInterim)
+            ) {
               // Settle the interim in place instead of creating a duplicate —
-              // the DB has one row, so the live UI must agree. Two distinct
+              // the DB has one row, so the live UI must agree. Three distinct
               // settle paths with different boundary requirements:
               //
               // • responsePreviewed covers the verify-on-stop continuation-

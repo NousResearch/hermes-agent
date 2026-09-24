@@ -330,4 +330,77 @@ describe('useMessageStream interim text sealing', () => {
     await start()
     expect(getState().interimBoundaryPending).toBe(false)
   })
+
+  it('settles a rewritten final that wraps the sealed candidate instead of duplicating it (#119566)', async () => {
+    mountStream()
+    await start()
+
+    // Pre-tool intro seals at the tool boundary; the continued turn stops on
+    // the full answer, which seals as a candidate interim (never streamed, so
+    // not previewed); the post-nudge rewrite wraps it with a new intro line.
+    // Prefix-either-way cannot see the wrap — without the contains settle the
+    // rewrite appends a second bubble with the final verbatim in both.
+    await delta('All ten are on the Pile.')
+    await act(() =>
+      stream.handleEvent({
+        payload: { args: { path: 'f.ts' }, name: 'read_file', tool_id: 'call-1' },
+        session_id: SID,
+        type: 'tool.start'
+      })
+    )
+    await interim('All ten are on the Pile.')
+    await act(() =>
+      stream.handleEvent({
+        payload: { name: 'read_file', result: 'ok', tool_id: 'call-1' },
+        session_id: SID,
+        type: 'tool.complete'
+      })
+    )
+    // Second tool round streams into a fresh bubble; the stopped answer seals
+    // onto it as the candidate interim (never streamed, so not previewed).
+    await act(() =>
+      stream.handleEvent({
+        payload: { args: { path: 'g.ts' }, name: 'read_file', tool_id: 'call-2' },
+        session_id: SID,
+        type: 'tool.start'
+      })
+    )
+    await act(() =>
+      stream.handleEvent({
+        payload: { name: 'read_file', result: 'ok', tool_id: 'call-2' },
+        session_id: SID,
+        type: 'tool.complete'
+      })
+    )
+    await act(() =>
+      stream.handleEvent({ payload: { text: 'The full final answer body.' }, session_id: SID, type: 'message.interim' })
+    )
+    await complete('All ten are on the Pile, so nothing gets lost. The full final answer body.')
+
+    const assistants = getState().messages.filter(m => m.role === 'assistant' && !m.hidden)
+    const withFinal = assistants.filter(m => chatMessageText(m).includes('The full final answer body.'))
+    expect(withFinal).toHaveLength(1)
+    expect(chatMessageText(withFinal[0])).toBe(
+      'All ten are on the Pile, so nothing gets lost. The full final answer body.'
+    )
+    expect(withFinal[0].interim).toBeFalsy()
+    expect(withFinal[0].parts.some(part => part.type === 'tool-call')).toBe(true)
+    expect(assistants).toHaveLength(2)
+  })
+
+  it('still appends a new turn that quotes the old interim instead of overwriting it (#119566)', async () => {
+    mountStream()
+    await start()
+
+    await interim('old interim text')
+    // A genuinely new turn begins — the boundary flag resets, so the
+    // contains settle must not fire even though the reply quotes the interim.
+    await start()
+    await complete('new answer quoting old interim text here')
+
+    const texts = assistantMessages()
+    expect(texts).toContain('old interim text')
+    expect(texts).toContain('new answer quoting old interim text here')
+    expect(texts).toHaveLength(2)
+  })
 })

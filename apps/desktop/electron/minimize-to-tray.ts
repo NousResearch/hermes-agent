@@ -89,7 +89,11 @@ export function createMinimizeToTray(options: Options) {
         win.restore()
       }
 
-      win.showInactive()
+      // A tray restore is an explicit request to resume work. In particular on
+      // Windows, showInactive() can leave a restored window visible without an
+      // active native input target.
+      win.show()
+      win.focus()
     }
   }
 

@@ -53,6 +53,7 @@ class Window extends EventEmitter {
   minimized = false
   destroyed = false
   skipped = false
+  focused = false
   webContents = { send: vi.fn() }
   isDestroyed() {
     return this.destroyed
@@ -73,6 +74,13 @@ class Window extends EventEmitter {
   showInactive() {
     this.visible = true
     this.emit('show')
+  }
+  show() {
+    this.visible = true
+    this.emit('show')
+  }
+  focus() {
+    this.focused = true
   }
   restore() {
     this.minimized = false
@@ -187,6 +195,19 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   expect(main.destroyed).toBe(true)
   native.app.on.mock.calls.find(([event]) => event === 'will-quit')![1]()
   expect(native.trays[0].destroyed).toBe(true)
+})
+
+test('tray restore activates hidden windows so they accept input again', async () => {
+  const { controller, main } = setup()
+  await controller.start()
+  await controller.setEnabled(true)
+  main.minimize()
+
+  native.trays[0].menu[0].click()
+
+  expect(main.visible).toBe(true)
+  expect(main.minimized).toBe(false)
+  expect(main.focused).toBe(true)
 })
 
 test('persistence, disabling, failed tray creation, and handoff never strand hidden windows', async () => {

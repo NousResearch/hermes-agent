@@ -211,7 +211,7 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
         with _lock:
             generation = _generations.get(path)
             if generation is not None:
-                current = _stat_db_file_identity(path)
+                current = None if getattr(generation.db, "backend", "sqlite") == "postgres" else _stat_db_file_identity(path)
                 if current is not None and generation.identity is not None and current != generation.identity:
                     # File replaced: retire this generation so it is never lent again, then elect one
                     # caller to open the replacement. It stays alive for its holders, tracked in
@@ -244,7 +244,7 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
             with lifecycle_lock:
                 db = _open_session_db(path)
                 db._shared_registry_owned = True
-                identity = _stat_db_file_identity(path)
+                identity = None if getattr(db, "backend", "sqlite") == "postgres" else _stat_db_file_identity(path)
         except BaseException:
             with _lock:
                 _finish_opening(path, opening)

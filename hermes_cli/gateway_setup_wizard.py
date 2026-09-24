@@ -907,7 +907,7 @@ def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
     if _gw().is_managed():
         _gw().managed_error("run gateway setup")
-        return
+        sys.exit(1)
 
     print()
     for banner_line in _WIZARD_BANNER:

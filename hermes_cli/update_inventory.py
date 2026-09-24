@@ -157,7 +157,13 @@ def _collect_install_shape(plan: UpdatePlan) -> None:
                 plan.updatable_in_place = False
                 if provenance.valid and provenance.manager:
                     plan.install_method = provenance.manager
-        plan.update_mechanism = recommended_update_command_for_method(method)
+        # A managed install can carry a stale stamp whose method would name `hermes update`, the
+        # very path the managed guard refuses; name the refusal's remediation instead.
+        from hermes_cli.update_contract import managed_install_refusal
+
+        managed_refusal = managed_install_refusal()
+        plan.update_mechanism = (
+            managed_refusal.update_command if managed_refusal else recommended_update_command_for_method(method))
 
 
 def _supervisor_classifier() -> Callable[[int], str]:

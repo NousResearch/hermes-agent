@@ -655,7 +655,7 @@ def _run_setup_wizard_impl(args):
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
         managed_error("run setup wizard")
-        return
+        sys.exit(1)
     ensure_hermes_home()
     # Back up BEFORE --reset: save_config below overwrites the very file we copy (#3522, #77299).
     config_path = get_config_path()

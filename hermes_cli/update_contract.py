@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class UpdateRefusal:
     """Why an in-place update is refused, and what to run instead."""
 
-    code: str              # image-marker | image-marker-invalid | docker | nix | apt
+    code: str              # managed | image-marker | image-marker-invalid | docker | nix | apt
     message: str           # full user-facing text (multi-line ok)
     update_command: str    # the one-line remediation command
 
@@ -34,6 +34,24 @@ def _refusal(code: str, method: str, message: Optional[Callable[[str], str]] = N
     else:
         text = format_docker_update_message() if method == "docker" else command
     return UpdateRefusal(code=code, message=text, update_command=command)
+
+
+def managed_install_refusal() -> Optional[UpdateRefusal]:
+    """Return an :class:`UpdateRefusal` when a package manager owns this install (``HERMES_MANAGED`` or
+    the ``.managed`` marker), else ``None``.
+
+    Checked ahead of :func:`evaluate_update_admission`: the managed state outranks both the install-method
+    stamp and the image marker, so a stale ``git`` stamp cannot admit an update the package manager owns.
+    """
+    from hermes_cli.config import format_managed_message, get_managed_update_command, is_managed
+
+    if not is_managed():
+        return None
+    return UpdateRefusal(
+        code="managed",
+        message=format_managed_message("update Hermes Agent"),
+        update_command=get_managed_update_command() or "upgrade through the package manager that installed Hermes",
+    )
 
 
 def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:

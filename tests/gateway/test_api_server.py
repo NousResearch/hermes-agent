@@ -916,6 +916,45 @@ class TestCapabilitiesEndpoint:
             data = await response.json()
         assert data["features"]["runs_idempotency"]["durable"] is False
 
+    @pytest.mark.asyncio
+    async def test_capabilities_reports_model_context_from_gateway_resolver(self, adapter, monkeypatch):
+        """The context window comes from the gateway's credentialed resolver (same as /new)."""
+        from gateway.run import _GatewayModelContext
+
+        calls = []
+
+        def fake_resolve(model=None, route=None):
+            calls.append((model, route))
+            return _GatewayModelContext(
+                model="google/gemma-4-26b", provider="custom", base_url="http://lm:1234/v1",
+                context_length=131072, context_source="detected")
+
+        monkeypatch.setattr("gateway.run._resolve_gateway_model_context", fake_resolve)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await (await cli.get("/v1/capabilities")).json()
+            second = await (await cli.get("/v1/capabilities")).json()
+        assert first["model_context"] == {
+            "model": "google/gemma-4-26b", "provider": "custom",
+            "context_length": 131072, "source": "detected"}
+        assert second["model_context"] == first["model_context"]
+        # Resolution may probe the provider, so repeated polls are served from the cache.
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_capabilities_model_context_degrades_when_resolution_fails(self, adapter, monkeypatch):
+        def boom(model=None, route=None):
+            raise RuntimeError("no credentials")
+
+        monkeypatch.setattr("gateway.run._resolve_gateway_model_context", boom)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["model_context"] == {
+            "model": "", "provider": "", "context_length": 0, "source": "unavailable"}
+
 
 # ---------------------------------------------------------------------------
 # /v1/skills and /v1/toolsets endpoints

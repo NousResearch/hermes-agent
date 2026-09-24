@@ -1214,6 +1214,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._response_store_home = str(get_hermes_home())
         self._response_stores: Dict[str, ResponseStore] = {}
         self._response_store_lock = threading.Lock()
+        # /v1/capabilities "model_context": resolving the live context window may probe the
+        # provider, so it is cached briefly per profile instead of re-resolved on every poll.
+        self._model_context_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -2364,12 +2367,45 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.exception("[%s] GET /api/model/options failed", self.name)
             return _error_response("Failed to list model options.", 500, code="model_options_failed")
 
+    _MODEL_CONTEXT_CACHE_TTL = 60.0
+
+    async def _model_context_payload(self) -> Dict[str, Any]:
+        """Effective model route and context window for /v1/capabilities.
+
+        Reuses the gateway's own resolver (the one behind the ``/new`` session notice), so the
+        window is looked up with the provider's credentials and reflects what the agent will
+        actually get — e.g. the context a local server loaded, not the catalog maximum. The
+        resolver may block on a provider probe, so it runs off-loop and is cached per profile.
+        On failure ``context_length`` is 0 and ``source`` is ``"unavailable"``, so a client can
+        fall back instead of trusting a guess.
+        """
+        key = _api_request_profile.get() or ""
+        now = time.monotonic()
+        cached = self._model_context_cache.get(key)
+        if cached and now - cached[0] < self._MODEL_CONTEXT_CACHE_TTL:
+            return dict(cached[1])
+        try:
+            from gateway.run import _resolve_gateway_model_context
+            resolved = await asyncio.to_thread(_resolve_gateway_model_context)
+            payload = {
+                "model": resolved.model, "provider": resolved.provider,
+                "context_length": int(resolved.context_length or 0),
+                "source": resolved.context_source or "detected"}
+        except Exception:
+            logger.debug("capabilities: model context resolution failed", exc_info=True)
+            payload = {"model": "", "provider": "", "context_length": 0, "source": "unavailable"}
+        self._model_context_cache[key] = (now, payload)
+        return dict(payload)
+
     @_require_auth
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
+        model_context = await self._model_context_payload()
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
+            # Effective route + context window, via the same resolver as the gateway's /new notice.
+            "model_context": model_context,
             "auth": {"type": "bearer", "required": bool(self._api_key)},
             "runtime": {
                 "mode": "server_agent", "tool_execution": "server", "split_runtime": False,

@@ -73,10 +73,28 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # must be declared here. The list is the `ldd ... | grep "not found"` set of
 # the pinned chrome binary in this base image, mapped to trixie package
 # names (see .hermes/plans/termux-removal-commit-spec.md).
-RUN apt-get -o Acquire::Retries=3 update && \
+# The third list is the VAAPI runtime for the /dev/dri devices users pass in
+# for hardware video encode. pm stages a pinned BtbN ffmpeg (below) built
+# --enable-vaapi --enable-libvpl --enable-libdrm, but it reaches libva through
+# implib-gen stubs that dlopen libva-drm.so.2 on first use, and libva then
+# dlopens a per-vendor *_drv_video.so. Neither ships in the base image now
+# that ffmpeg no longer comes from apt, so -hwaccel vaapi aborts inside the
+# generated stub ("Assertion in generated code") instead of even falling back
+# to a software encode. ~18 MB, covering AMD (radeonsi, r600), nouveau and
+# virtio-gpu everywhere, plus Intel (iHD: Gen9+ / Arc) on amd64.
+#
+# intel-media-va-driver is built for amd64/i386 only in trixie, so it is
+# selected per TARGETARCH — unconditionally listing it exits apt 100 on the
+# arm64 leg of docker.yml's build matrix and takes this whole layer with it.
+# TARGETARCH is declared here (rather than beside the s6 ARGs below) because
+# this is now the first layer that branches on it.
+ARG TARGETARCH
+RUN case "${TARGETARCH:-amd64}" in amd64) intel_va=intel-media-va-driver ;; *) intel_va= ;; esac && \
+    apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
-    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
+    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+    mesa-va-drivers libva2 libva-drm2 $intel_va && \
     rm -rf /var/lib/apt/lists/*
 
 # Bot Screen (opt-in): PACKAGES["apt"] from tools/bot_desktop/runtime.py plus apt
@@ -129,7 +147,6 @@ db.close()"
 # CI reliability — cannot retry, so a single GitHub-release CDN blip fails
 # the whole 15-45 min build. curl -fsSL --retry 3 self-heals those blips,
 # and every tarball is still checksum-verified below before extraction.
-ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.3.0
 ARG S6_OVERLAY_NOARCH_SHA256=b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf
 ARG S6_OVERLAY_X86_64_SHA256=a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563

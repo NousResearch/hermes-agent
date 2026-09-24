@@ -464,8 +464,10 @@ export class JsonRpcGatewayClient {
 
   /**
    * Wait for this session's reconnect replay AND parked live frames to dispatch.
-   * True includes bounded timeout/unsupported-method fallback; false means the
-   * socket/epoch owner was lost and a pending history read must be abandoned.
+   * True includes bounded timeout/unsupported-method fallback and an epoch
+   * change on the still-open socket (backend restart: nothing will replay, so
+   * REST is authoritative); false means the socket was lost and a pending
+   * history read must be abandoned (the next open re-reads).
    * Unobserved sessions and replay-disabled feeds have no barrier.
    */
   sessionReplayBarrier(sessionId: string): Promise<boolean> | undefined {
@@ -613,8 +615,11 @@ export class JsonRpcGatewayClient {
     if (changed) {
       this.lastSeenSeq.clear()
       // Revoke requests/cursors from the old numbering, but retain live
-      // frames already received on this still-open socket.
-      const hold = this.cancelReplay()
+      // frames already received on this still-open socket. The socket is
+      // still ours and no replay can cover the old numbering, so waiting
+      // history reads proceed: REST is the only recovery left (#94779).
+      // Their continuations run after the parked frames below dispatch.
+      const hold = this.cancelReplay(true)
       const generation = this.replayGeneration
 
       for (const replay of hold?.values() ?? []) {
@@ -657,13 +662,13 @@ export class JsonRpcGatewayClient {
     replay.resolve(true)
   }
 
-  private cancelReplay(): Map<string, SessionReplay> | null {
+  private cancelReplay(readsMayProceed: boolean): Map<string, SessionReplay> | null {
     const hold = this.replayHold
     this.replayGeneration += 1
     this.replayHold = null
 
     for (const replay of hold?.values() ?? []) {
-      replay.resolve(false)
+      replay.resolve(readsMayProceed)
     }
 
     return hold
@@ -674,7 +679,7 @@ export class JsonRpcGatewayClient {
     // A replay belongs to the socket that started it. Detaching that socket
     // rejects its requests asynchronously, so clear its ownership now; the
     // next open can immediately schedule a replay of its own.
-    this.cancelReplay()
+    this.cancelReplay(false)
     this.socket = null
     this.channel.detach(error)
     this.setState('closed')

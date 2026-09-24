@@ -368,6 +368,65 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  // A backend restart announces a new epoch over the still-open socket. No
+  // replay can cover the old numbering, so waiting history reads must proceed
+  // (the reconnect backstop read, #94779) instead of being silently dropped.
+  it.each(['ready', 'response'] as const)(
+    'lets waiting history reads proceed when %s announces a new epoch, after parked frames',
+    async via => {
+      const client = makeClient()
+      const seen: number[] = []
+      client.on('message.delta', event => seen.push(event.seq!))
+
+      try {
+        const first = client.connect('ws://x')
+        sockets[0].open()
+        await first
+        sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'A' } } })
+
+        for (const sid of ['s1', 's2']) {
+          sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: sid, seq: 97 } })
+        }
+
+        client.invalidate()
+        const second = client.connect('ws://x')
+        sockets[1].open()
+        await second
+        const barriers = ['s1', 's2'].map(sid => client.sessionReplayBarrier(sid))
+        const requests = sockets[1].sent.map(text => JSON.parse(text))
+        // A fresh live frame parked behind the replay must survive the revoke.
+        sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
+        expect(seen).toEqual([97, 97])
+
+        const seenAtResolve = Promise.all(barriers).then(valid => ({ valid, seen: [...seen] }))
+
+        if (via === 'ready') {
+          sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'B' } } })
+        } else {
+          sockets[1].serverFrame({ jsonrpc: '2.0', id: requests[0].id, result: { events: [], epoch: 'B' } })
+        }
+
+        await expect(seenAtResolve).resolves.toEqual({ valid: [true, true], seen: [97, 97, 1] })
+        expect(client.sessionReplayBarrier('s1')).toBeUndefined()
+        expect(client.getSeqWatermarks()).toEqual({ s1: 1 })
+
+        // A late old-epoch response cannot restore the revoked window.
+        for (const request of requests) {
+          sockets[1].serverFrame({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: { events: [{ type: 'message.delta', session_id: request.params.session_id, seq: 98 }], epoch: 'A' }
+          })
+        }
+
+        await Promise.resolve()
+        expect(seen).toEqual([97, 97, 1])
+      } finally {
+        client.close()
+      }
+    }
+  )
+
   it('clears stale watermarks when the backend epoch changes (restart poisoning)', async () => {
     const client = makeClient()
 

@@ -1412,12 +1412,22 @@ export function removeRepresentedLocalLiveProjection(
 
   const assistantIndex = inflightUserIndex + 1
   const assistant = previousMessages[assistantIndex]
+  const localAssistant = assistant ? normalizedMessageText(assistant) : ''
+
+  // The activation snapshot and this local row are read at different times
+  // while the turn keeps streaming in the background, so neither is
+  // guaranteed to be textually identical to the other even though both
+  // represent the same running reply — one is simply further along.
+  const assistantTextRepresented =
+    localAssistant === inflightAssistant ||
+    isStrictAnswerTextExtension(localAssistant, inflightAssistant) ||
+    isStrictAnswerTextExtension(inflightAssistant, localAssistant)
 
   const assistantMatches =
     inflightUserIndex >= openTailStart &&
     assistant?.role === 'assistant' &&
     assistant.id.startsWith('assistant-stream-') &&
-    normalizedMessageText(assistant) === inflightAssistant
+    assistantTextRepresented
 
   if (!assistantMatches) {
     return previousMessages

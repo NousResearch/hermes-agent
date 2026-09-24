@@ -1965,6 +1965,35 @@ describe('removeRepresentedLocalLiveProjection', () => {
     expect(remaining.map(message => message.id)).toEqual(['user-old-optimistic', 'assistant-complete', 'user-racing'])
   })
 
+  it('removes a local stream row whose text has advanced past the activation snapshot', () => {
+    const previous = [
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial answer and more', { pending: true })
+    ]
+
+    const projection = runningProjection('current prompt')
+
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining).toEqual([])
+  })
+
+  it('removes a local stream row whose text lags behind the activation snapshot', () => {
+    const previous = [
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial', { pending: true })
+    ]
+
+    const projection = {
+      ...runningProjection('current prompt'),
+      inflight: { user: 'current prompt', assistant: 'partial answer', streaming: true }
+    }
+
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining).toEqual([])
+  })
+
   it('preserves an ambiguous text-identical local race prompt without a matching stream boundary', () => {
     const previous = [
       msg('runtime-assistant', 'assistant', 'finished answer'),

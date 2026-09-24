@@ -138,9 +138,11 @@ class DispatchResult:
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
-    """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
-    (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    """(task_id, reason) skipped by the respawn guard: "blocker_auth"
+    (quota/auth error — also auto-blocked), "crash_backoff" (last run
+    crashed within the exponential backoff window), "recent_success"
+    (completed run within guard window), "active_pr" (GitHub PR URL in a
+    recent comment)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -973,6 +975,23 @@ _PROTOCOL_VIOLATION_ERROR = (
     "matter what it did."
 )
 
+# Variant for the same rc=0 protocol-violation shape when the worker stamped
+# ``worker_partial`` in its run metadata before exiting: the turn was cut short by
+# the model output-token limit / exhausted context (09-14 run1057/1025 review-lane
+# hangs: 'Response truncated due to output length limit' as the last assistant
+# message). The prior run did NOT necessarily finish its work — the terminal call was
+# never reached because the model ran out of output budget. Retry guidance differs
+# from the generic protocol-violation case: prefer short answers + file attachments
+# over long inline output (base64/verbose reports are the usual trigger).
+_PARTIAL_EXIT_ERROR = (
+    "worker exited cleanly (rc=0) but its turn ended incomplete (output "
+    "truncated / context exhausted) — the terminal kanban call was never "
+    "reached. The prior run may not have finished its work; verify state and "
+    "re-do whatever is missing. To avoid re-truncation, keep responses short, "
+    "write large artifacts to files and attach them, and avoid inlining "
+    "base64/large output."
+)
+
 
 _EXIT_SUMMARY_MARKER = "Resume this session with:"
 # Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
@@ -1160,6 +1179,19 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            # A rc=0 protocol violation whose run metadata carries the worker's
+            # ``worker_partial`` stamp (written by cli._mark_kanban_worker_partial
+            # before the worker exited) is an output-truncation / context-exhaustion
+            # case, not a "finished work, skipped paperwork" case. Swap in the
+            # partial-exit guidance so the retry worker gets the right corrective
+            # message (short answers + file attachments, not "just report the result").
+            if (
+                dead.kind == "clean_exit"
+                and dead.protocol_violation
+                and _kb._run_metadata_flag(conn, _kb._current_run_id(conn, row["id"]), "worker_partial")
+            ):
+                dead.error_text = _PARTIAL_EXIT_ERROR
+                dead.event_payload["partial_exit"] = True
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -1488,6 +1520,59 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _count_consecutive_crashes(conn: sqlite3.Connection, task_id: str) -> int:
+    """Trailing run of crash-class runs for ``task_id`` (exponent for backoff).
+
+    Walks closed runs newest-first, counting ``crashed`` outcomes (which
+    include protocol violations — they are recorded with outcome ``crashed``
+    and the ``protocol_violation`` metadata marker) and breaking the streak on
+    any non-crash run (``completed`` / ``rate_limited`` / ``blocked`` /
+    ``gave_up``). Rate-limited runs are neutral: a quota wall says nothing
+    about the task's stability, so it neither extends nor breaks the streak.
+    """
+    count = 0
+    rows = conn.execute(
+        "SELECT outcome FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 50",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        outcome = row["outcome"] or ""
+        if outcome == "rate_limited":
+            continue
+        if outcome == "crashed":
+            count += 1
+            continue
+        break
+    return count
+
+
+def _crash_backoff_delay_seconds(conn: sqlite3.Connection, task_id: str) -> int:
+    """Exponential backoff delay for a task whose last run crashed.
+
+    ``min(base * 2 ** crashes, max)`` where ``crashes`` is the trailing run of
+    crash-class outcomes. A systemic outage therefore spaces respawns
+    60s → 120s → 240s → ... capped at the max, instead of every tick (~1/s in
+    the 09-10 incident). Returns 0 when backoff is disabled or the last run
+    was not a crash.
+    """
+    base = _kb._resolve_crash_backoff_seconds()
+    if base <= 0:
+        return 0
+    latest_run = conn.execute(
+        "SELECT outcome FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest_run is None or (latest_run["outcome"] or "") != "crashed":
+        return 0
+    crashes = _count_consecutive_crashes(conn, task_id)
+    delay = base * (2 ** max(0, crashes - 1))
+    return min(delay, _kb._resolve_crash_backoff_max_seconds())
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1499,7 +1584,9 @@ def check_respawn_guard(
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
+    path never increments ``consecutive_failures``), ``"crash_backoff"``
+    (latest run crashed and the exponential backoff window has not elapsed),
+    ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
@@ -1547,6 +1634,17 @@ def check_respawn_guard(
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
+
+
+    # 1b. Crash backoff — exponential respawn spacing after a crash, so a
+    #     systemic outage can't storm the dispatcher every tick. Latest run
+    #     must be ``crashed`` (protocol violations are recorded as crashed).
+    crash_backoff = _crash_backoff_delay_seconds(conn, task_id)
+    if crash_backoff > 0:
+        ended_at = latest_run["ended_at"] if latest_run is not None else None
+        if ended_at is not None and (now - int(ended_at)) < crash_backoff:
+            return "crash_backoff"
+        # Window elapsed — fall through to the normal checks.
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last

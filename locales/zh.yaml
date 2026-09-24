@@ -178,6 +178,7 @@ gateway:
       completed:           "已完成"
       gave_up:             "已放弃（重试次数耗尽）"
       crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
+      protocol_violation:  "worker 以 rc=0 退出但未完成——请检查网络/连接"
       timed_out:           "超时，dispatcher 将重试"
       blocked:             "被阻塞，需要处理"
       review_requested:    "已交付评审；实现已完成"

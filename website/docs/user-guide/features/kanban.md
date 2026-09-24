@@ -353,6 +353,34 @@ install give the user one with `sudo loginctl enable-linger <user>`.
   scope can be created, or set `KillMode=process` on that unit so its exit
   only kills the dispatcher itself.
 
+#### Crash retry backoff
+
+A task whose worker crashed (pid died, or exited cleanly without calling a
+terminal kanban verb) is not re-spawned on the very next tick. The
+dispatcher applies exponential backoff so a systemic outage (network/DNS
+blip, host OOM) can't storm the dispatcher with a crash+respawn cycle every
+~60s. The delay starts at `HERMES_KANBAN_CRASH_BACKOFF_SECONDS` (default
+60s) and doubles per consecutive crashed run, capped at
+`HERMES_KANBAN_CRASH_BACKOFF_MAX_SECONDS` (default 600s). A completed or
+rate-limited run resets the exponent; set the base to `0` to restore the
+old next-tick behavior.
+
+#### Crash alerts
+
+When a worker crashes, the board notifier tells the operator *why*, so the
+right remediation starts immediately:
+
+- **rc=0 / protocol violation** — the worker exited without calling
+  `kanban_complete` / `kanban_block`; overwhelmingly a network/connection
+  dead-end. The alert says to check network/connection.
+- **pid killed by a signal** — the worker was killed (e.g. OOM-killer);
+  the alert points at memory/CPU/process limits.
+- **nonzero exit** — the worker's own code failed.
+
+Crash alerts reach subscribers via the same notification channel as other
+terminal events. Set the base backoff to `0` if you prefer to disable the
+backoff part of the alert wording.
+
 Running `hermes kanban daemon` as a separate process is **deprecated**;
 use the gateway. If you truly cannot run the gateway (headless host
 policy forbids long-lived services, etc.) a `--force` escape hatch keeps

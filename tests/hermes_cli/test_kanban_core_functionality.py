@@ -1285,6 +1285,100 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
         conn.close()
 
 
+def _drive_stamped_partial_exit(conn, tid, fake_pid):
+    """Claim ``tid``, stamp its run ``worker_partial`` (the shape
+    ``cli._mark_kanban_worker_partial`` writes), then drive one clean-exit
+    protocol-violation reaper pass. Mirrors ``_drive_worker_exit`` but with the
+    partial stamp applied to the *active* run before the worker 'exits'."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+    host_prefix = _kb._claimer_id().split(":", 1)[0]
+    claimed = _kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+    assert claimed is not None, "task was not claimable for the next attempt"
+    run_id = _kb._current_run_id(conn, tid)
+    assert run_id is not None, "task must have an active run to stamp"
+    row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE id = ? AND ended_at IS NULL",
+        (run_id,),
+    ).fetchone()
+    merged = dict(_kb._json_dict(row["metadata"]))
+    merged["worker_partial"] = True
+    merged["worker_partial_reason"] = "model output truncated"
+    conn.execute(
+        "UPDATE task_runs SET metadata = ? WHERE id = ? AND ended_at IS NULL",
+        (_kb._json_or_null(merged), run_id),
+    )
+    conn.commit()
+    _kbd._set_worker_pid(conn, tid, fake_pid)
+    _kbd._record_worker_exit(fake_pid, 0)
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda p: False
+    try:
+        return _kbd.detect_crashed_workers(conn)
+    finally:
+        _kb._pid_alive = original_alive
+
+
+def test_worker_partial_protocol_violation_gets_corrective_guidance(kanban_home):
+    """M1 review-lane: a rc=0 protocol violation whose run is stamped
+    ``worker_partial`` (model output truncated — the terminal kanban call was
+    never reached) must be reclaimed with the PARTIAL guidance (short answers +
+    file attachments), not the generic 'you skipped the paperwork' text, and
+    the event must carry ``partial_exit`` so the notifier/board can tell the
+    two apart.
+
+    Regression for 09-14 run1057/1025 review-lane hangs: workers exited rc=0
+    with 'Response truncated due to output length limit' and no terminal call,
+    stranding review tasks. Pre-fix the retry worker got generic protocol
+    guidance and no marker existed to tell 'truncated mid-work' from 'finished,
+    skipped paperwork'."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="partial worker", assignee="worker")
+        crashed = _drive_stamped_partial_exit(conn, tid, 992001)
+        assert tid in crashed
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", "partial-exit violation must still retry"
+        # The retry worker must receive the PARTIAL corrective guidance, not the
+        # generic protocol-violation text.
+        assert _kbd._PARTIAL_EXIT_ERROR[:200] in (task.last_failure_error or "")
+        assert _kbd._PROTOCOL_VIOLATION_ERROR not in (task.last_failure_error or "")
+        # The event carries the partial_exit marker for the notifier/board.
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "protocol_violation"]
+        assert len(events) == 1
+        assert (events[0].payload or {}).get("partial_exit") is True
+        assert (events[0].payload or {}).get("protocol_violation") is True
+    finally:
+        conn.close()
+
+
+def test_worker_partial_flag_untouched_by_non_partial_worker(kanban_home):
+    """A normal (finished-work-but-skipped-paperwork) protocol violation must
+    NOT inherit the partial-exit guidance — only a run stamped
+    ``worker_partial`` gets it. Guards against over-broad matching."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="plain worker", assignee="worker")
+        # No worker_partial stamp — drive the violation directly.
+        crashed = _drive_protocol_violation(conn, tid, 992002)
+        assert tid in crashed
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert _kbd._PARTIAL_EXIT_ERROR not in (task.last_failure_error or "")
+        assert _kbd._PROTOCOL_VIOLATION_ERROR in (task.last_failure_error or "")
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "protocol_violation"]
+        assert len(events) == 1
+        assert not (events[0].payload or {}).get("partial_exit")
+    finally:
+        conn.close()
+
+
 
 
 

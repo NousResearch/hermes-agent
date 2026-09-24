@@ -70,6 +70,21 @@ def _json_dict(value: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _run_metadata_flag(conn: sqlite3.Connection, run_id: Optional[int], key: str) -> bool:
+    """True when ``task_runs.metadata`` for ``run_id`` (or the task's current run) has a
+    truthy ``key``. Best-effort: any read failure (missing run, closed run, bad JSON)
+    returns False so callers degrade to the generic path."""
+    if not run_id:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id = ?", (int(run_id),)
+        ).fetchone()
+    except Exception:
+        return False
+    return bool(row and _json_dict(row["metadata"]).get(key))
+
+
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
     """Integer env override: absent/empty/non-integer/below ``minimum`` falls back to ``default``."""
     raw = os.environ.get(name, "").strip()
@@ -309,6 +324,26 @@ KANBAN_RATE_LIMIT_EXIT_CODE = 75
 # (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
 KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
+
+
+# Exponential backoff before re-spawning a task whose last run crashed
+# (worker pid gone / protocol violation). The 09-10 incident showed a systemic
+# outage (network/DNS) respawning on the very next tick ~1/s, burning
+# dispatcher + tokens. Base delay is doubled per consecutive crash run, capped
+# at ``_resolve_crash_backoff_max_seconds``. 0 disables backoff entirely.
+DEFAULT_CRASH_BACKOFF_SECONDS = 60
+DEFAULT_CRASH_BACKOFF_MAX_SECONDS = 600  # 10 minutes
+
+
+def _resolve_crash_backoff_seconds() -> int:
+    """``HERMES_KANBAN_CRASH_BACKOFF_SECONDS`` (0 = respawn on next tick, for
+    tests) else default; the per-crash exponential multiplier."""
+    return _env_int("HERMES_KANBAN_CRASH_BACKOFF_SECONDS", DEFAULT_CRASH_BACKOFF_SECONDS)
+
+
+def _resolve_crash_backoff_max_seconds() -> int:
+    """Cap on the exponential backoff delay, ``HERMES_KANBAN_CRASH_BACKOFF_MAX_SECONDS``."""
+    return _env_int("HERMES_KANBAN_CRASH_BACKOFF_MAX_SECONDS", DEFAULT_CRASH_BACKOFF_MAX_SECONDS)
 
 
 def _resolve_crash_grace_seconds() -> int:

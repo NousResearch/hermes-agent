@@ -581,6 +581,9 @@ class TurnController {
   }
 
   recordError() {
+    // A failed turn discards the whole unsealed turn (flushed segments AND the
+    // streaming tail) — unlike recordMessageComplete, which must keep the tail
+    // (#61520), and interruptTurn, which preserves it as `partial`.
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()

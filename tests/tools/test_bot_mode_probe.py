@@ -209,6 +209,60 @@ def test_fingerprint_changes_on_each_capability_axis(tmp_path):
     assert bot_mode_probe.capability_fingerprint(home) != after_soul
 
 
+def test_fingerprint_changes_when_model_vision_override_flips(tmp_path):
+    """A Bot Chat prompt must rebuild when model.supports_vision flips."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    config = home / "config.yaml"
+
+    config.write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    vision_enabled = bot_mode_probe.capability_fingerprint(home)
+    stamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    assert vision_enabled == bot_mode_probe.capability_fingerprint(home)
+    assert not bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+
+    config.write_text("model:\n  supports_vision: false\n", encoding="utf-8")
+    vision_disabled = bot_mode_probe.capability_fingerprint(home)
+    assert vision_disabled != vision_enabled
+    assert bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+
+    restamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    assert not bot_mode_probe.stored_prompt_capability_stale(restamped, home)
+    config.write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) != vision_disabled
+
+
+def test_vision_override_spellings_share_one_fingerprint(tmp_path):
+    """YAML boolean tokens that image routing treats as the same override share an epoch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    config = home / "config.yaml"
+
+    config.write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    enabled = bot_mode_probe.capability_fingerprint(home)
+    config.write_text("model:\n  supports_vision: yes\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) == enabled
+    config.write_text("model:\n  supports_vision: false\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) != enabled
+
+
+def test_fingerprint_changes_when_model_context_length_override_changes(tmp_path):
+    """context_length truncates context files in the rebuilt prompt, so it is part of the epoch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    config = home / "config.yaml"
+
+    config.write_text("model:\n  context_length: 32768\n", encoding="utf-8")
+    narrow = bot_mode_probe.capability_fingerprint(home)
+    config.write_text("model:\n  context_length: 131072\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) != narrow
+    config.write_text("model:\n  context_length: 32768\n", encoding="utf-8")
+    assert bot_mode_probe.capability_fingerprint(home) == narrow
+
+
 def test_stored_prompt_staleness(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

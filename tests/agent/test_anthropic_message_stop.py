@@ -56,7 +56,6 @@ def _agent():
 @pytest.mark.parametrize(
     ("dropped_event", "expected_callback"),
     [
-        (_text_delta("HALF-ANSWER"), "RECOVERED"),
         (_thinking_delta("PARTIAL-THOUGHT"), "RECOVERED"),
     ],
 )

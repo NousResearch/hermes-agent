@@ -815,10 +815,8 @@ class AudioRecorder(_RecorderBase):
         def _do_close():
             with suppress(Exception):
                 stream.stop()
-            try:
+            with suppress(Exception):
                 stream.close()
-            except Exception:
-                pass
 
         t = threading.Thread(target=_do_close, daemon=True)
         t.start()

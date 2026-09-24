@@ -6,6 +6,90 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.parametrize('member_target', [{}, {'target': None}], ids=['missing-target', 'null-target'])
+@pytest.mark.parametrize('revocation', [None, 'member', 'room_epoch', 'owner', 'task_generation', 'stopping', 'disbanded', 'malformed_target'])
+def test_local_hosted_member_revoked_during_preparation_is_not_admitted(owner, monkeypatch, revocation, member_target):
+    """Revocation must fence admission, not merely pause execution afterward."""
+    import concurrent.futures
+    import json
+    from pathlib import Path
+    import time
+
+    from gateway import hosted_room_driver as tasks, session_hosted_attachments
+    from gateway.hosted_rooms import create_room, local_authority_gateway_id
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+
+    authority, loop, _, _ = owner
+    service = CanonicalHostedRoomService(authority, loop)
+    # The component fixture uses a synthetic profile identifier, not a daemon home.
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
+    service.authorize_room('alice', 'room', create=True)
+    gateway = local_authority_gateway_id()
+    members = [
+        {'member_id': 'one', 'profile': 'default', 'handle': 'one', **member_target},
+        {'member_id': 'two', 'profile': 'other', 'handle': 'two'},
+    ]
+    create_room(authority.db.db_path, room_id='room', name='Room',
+                authority_gateway_id=gateway, members=members)
+    identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+    payload = {'target_profile': 'default', 'target_member_id': 'one',
+               'source_event_seq': 1, 'prompt': 'frozen'}
+    tasks.admit_task(authority.db.db_path, identity, payload=payload, clock=time.time)
+    lease = tasks.acquire_lease(authority.db.db_path, room_id='room', gateway_id=gateway,
+        authority_epoch=1, process_generation='test', ttl_seconds=120, clock=time.time)
+    tasks.start_task(authority.db.db_path, identity, lease,
+                     expected_cancel_generation=0, clock=time.time)
+    task, = tasks.list_tasks(authority.db.db_path, room_id='room')
+    rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
+    coords = {'profile': 'default', 'source': 'bot_room'}
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    preparing, release = threading.Event(), threading.Event()
+    original = session_hosted_attachments.submission_payload
+
+    def paused_preparation(*args, **kwargs):
+        preparing.set()
+        assert release.wait(10), 'test did not release preparation'
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(session_hosted_attachments, 'submission_payload', paused_preparation)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        submitted = executor.submit(rpc.submit, **coords, session_id=sid, prompt='frozen',
+            task=identity, execution_generation=task['execution_generation'],
+            on_terminal=lambda receipt: None)
+        try:
+            assert preparing.wait(10), 'producer never reached preparation'
+            if revocation is not None:
+                if revocation == 'malformed_target':
+                    members[0]['target'] = []
+                else:
+                    members[0] = {'member_id': 'replacement', 'profile': 'default', 'handle': 'replacement'}
+                mutations = {
+                    'member': ('UPDATE hosted_rooms SET members_json=? WHERE room_id=?', (json.dumps(members), 'room')),
+                    'room_epoch': ('UPDATE hosted_rooms SET authority_epoch=2 WHERE room_id=?', ('room',)),
+                    'owner': ('UPDATE state_meta SET value=? WHERE key=?', ('bob', 'gateway.hosted.owner.v1:room')),
+                    'task_generation': ('UPDATE hosted_room_driver_tasks SET execution_generation=2 WHERE room_id=?', ('room',)),
+                    'stopping': ("UPDATE hosted_room_driver_tasks SET status='stopping' WHERE room_id=?", ('room',)),
+                    'disbanded': ('UPDATE hosted_rooms SET disbanded_at=? WHERE room_id=?', (time.time(), 'room')),
+                    'malformed_target': ('UPDATE hosted_rooms SET members_json=? WHERE room_id=?', (json.dumps(members), 'room')),
+                }
+                sql, args = mutations[revocation]
+                authority.db._execute_write(lambda conn: conn.execute(sql, args))
+        finally:
+            release.set()
+        if revocation is None:
+            receipt = submitted.result(timeout=10)
+            retry = rpc.submit(**coords, session_id=sid, prompt='frozen', task=identity,
+                execution_generation=task['execution_generation'], on_terminal=lambda receipt: None)
+            assert retry['admission_id'] == receipt['admission_id']
+        else:
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                submitted.result(timeout=10)
+    rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    assert len(rows) == (1 if revocation is None else 0)
+
+
 @pytest.fixture
 def owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig

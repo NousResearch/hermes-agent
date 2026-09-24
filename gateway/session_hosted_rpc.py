@@ -19,10 +19,11 @@ _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 
 class HostedRoomAuthorityRPC:
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
-                 authorize, timeout=30):
+                 authorize, authorize_write=None, timeout=30):
         self.authority, self.loop = authority, loop
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
+        self.authorize_write = authorize_write
         self.callbacks = {}
         binding = json.dumps([room_id, member_id, profile], separators=(',', ':'))
         self.creation_id = 'hosted:' + hashlib.sha256(binding.encode()).hexdigest()
@@ -137,8 +138,11 @@ class HostedRoomAuthorityRPC:
         from gateway.session_hosted_attachments import submission_payload
         payload = await asyncio.to_thread(
             submission_payload, self, params['prompt'], params.get('attachments'))
+        authorize_write = self.authorize_write
         receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, payload, 'queue'))
+            request_id, self.ref, payload, 'queue'),
+            _authorize_write=(lambda conn: authorize_write(conn, task, generation))
+            if authorize_write is not None else None)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)

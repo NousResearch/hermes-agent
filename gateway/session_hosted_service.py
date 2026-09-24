@@ -149,28 +149,53 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     source_home=self.authority.profile_id, room_id=binding.room_id,
                     member_id=member, profile=profile)
                 return self.member_rpcs[key]
-            def authorize(operation, identity, generation):
-                self.authorize_room(owner, binding.room_id)
-                room = self._room(binding.room_id)
+            def authorized(conn, operation, identity, generation):
+                # Admission checks must share the FIFO writer's snapshot. Opening
+                # another transaction here would reintroduce the revocation race.
+                from gateway.hosted_rooms import _room_from_row
+                from gateway.hosted_room_driver import _task_from_row
+                _epoch(conn, self.authority.epoch)
+                owned = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                     (_OWNER + binding.room_id,)).fetchone()
+                if owned is None or owned[0] != owner:
+                    return False
+                stored = conn.execute('SELECT * FROM hosted_rooms WHERE room_id=?',
+                                      (binding.room_id,)).fetchone()
+                if stored is None or stored['disbanded_at'] is not None:
+                    return False
+                room = _room_from_row(stored)
                 if (room['authority_gateway_id'], room['authority_epoch']) != (binding.gateway_id, binding.authority_epoch):
                     return False
                 members = room['members']
-                if not any(m.get('member_id') == member and m.get('profile') == profile for m in members):
+                if not any(m.get('member_id') == member and m.get('profile') == profile
+                           and (m.get('target') is None or (
+                               isinstance(m.get('target'), dict)
+                               and m['target'].get('kind', 'local') == 'local'))
+                           for m in members):
                     return False
                 if self.profile_homes().get(profile) != home:
                     return False
                 if identity is not None:
-                    from gateway.hosted_room_driver import list_tasks
-                    return any(t['identity'] == identity and t['execution_generation'] == generation
-                               and t['payload'].get('target_profile') == profile
-                               and t['status'] in {'running', 'stopping'}
-                               for t in list_tasks(self.db_path, room_id=binding.room_id))
+                    stored = conn.execute('SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND task_id=?',
+                                          (binding.room_id, identity.task_id)).fetchone()
+                    if stored is None:
+                        return False
+                    current = _task_from_row(stored)
+                    return (current['identity'] == identity and current['execution_generation'] == generation
+                            and current['payload'].get('target_profile') == profile
+                            and current['payload'].get('target_member_id', profile) == member
+                            and current['status'] in ({'running'} if operation in {'submit', 'execute'}
+                                                       else {'running', 'stopping'}))
                 return True
+            def authorize(operation, identity, generation):
+                with self.authority.db._read_ctx() as conn:
+                    return authorized(conn, operation, identity, generation)
             principal = Principal(owner, self.authority.profile_id,
                 frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}),
                 'hosted:' + binding.room_id + ':' + member)
             self.member_rpcs[key] = HostedRoomAuthorityRPC(self.authority, self.loop,
-                room_id=binding.room_id, member_id=member, profile=profile, principal=principal, authorize=authorize)
+                room_id=binding.room_id, member_id=member, profile=profile, principal=principal, authorize=authorize,
+                authorize_write=lambda conn, identity, generation: authorized(conn, 'submit', identity, generation))
         return self.member_rpcs[key]
 
     def check_admission(self, ref, row):

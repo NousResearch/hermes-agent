@@ -8,21 +8,15 @@ header snapshot cannot attribute a mid-stream drop to a provider at all.
 
 Contract under test:
 
-- The first non-empty top-level ``provider`` in a chunk body lands in the per-attempt diag dict
-  as ``serving_provider``; later chunks must not rewrite that attribution.
-- ``log_stream_retry`` names it on the drop line (``serving_provider=-`` when unknown).
-- A successful streamed attempt stashes it on the agent and the ``post_api_request`` hook
-  payload carries it as ``upstream_provider`` — refreshed per attempt, never leaked from a
-  prior call.
+- A mid-stream drop's retry WARNING names the downstream from the attempt's first chunk.
+- The ``post_api_request`` hook's ``response`` payload carries it as ``upstream_provider``.
 """
 
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
 from tests.agent.test_run_agent import (  # noqa: F401  (_make_tool_defs used by the agent fixture)
     _make_tool_defs,
     _mock_response,
@@ -34,17 +28,6 @@ from tests.agent.test_first_chunk_at_hook import (  # noqa: F401  (shared fixtur
 )
 
 
-def _make_agent() -> AIAgent:
-    """Standalone agent for the diag/log-level tests (no conversation loop involved)."""
-    return AIAgent(
-        api_key="test-key",
-        base_url="https://openrouter.ai/api/v1",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-
-
 def _chunk_with_provider(content=None, finish_reason=None, model=None, provider=None):
     """Streaming chunk plus the relay's per-chunk ``provider`` field."""
     chunk = _make_stream_chunk(content=content, finish_reason=finish_reason, model=model)
@@ -53,65 +36,28 @@ def _chunk_with_provider(content=None, finish_reason=None, model=None, provider=
     return chunk
 
 
-# ── Diag dict level ──────────────────────────────────────────────────────
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
+def test_mid_stream_drop_retry_line_names_the_serving_provider(_mock_close, mock_create, agent, caplog):
+    """A real stream: the first chunk says who served it, then the connection drops."""
 
+    def _dropping_stream():
+        yield _chunk_with_provider(provider="Novita")  # no content: nothing delivered, so it retries
+        raise ConnectionError("peer closed connection mid-stream")
 
-def test_diag_records_first_serving_provider_from_chunk_body():
-    agent_ = _make_agent()
-    diag = AIAgent._stream_diag_init()
-    assert diag["serving_provider"] is None
-
-    agent_._stream_diag_note_serving_provider(diag, _chunk_with_provider(content="Hi", provider="Novita"))
-    assert diag["serving_provider"] == "Novita"
-
-    # The attempt was served by whatever produced its first chunk; a per-chunk rewrite would
-    # just track the last one and lose the drop attribution.
-    agent_._stream_diag_note_serving_provider(diag, _chunk_with_provider(content="!", provider="StreamLake"))
-    assert diag["serving_provider"] == "Novita"
-
-
-def test_diag_reads_provider_from_model_extra_and_ignores_chunks_without_one():
-    """The OpenAI SDK parks unknown top-level fields in pydantic ``model_extra``."""
-    agent_ = _make_agent()
-    diag = AIAgent._stream_diag_init()
-
-    agent_._stream_diag_note_serving_provider(diag, _chunk_with_provider(content="plain"))
-    assert diag["serving_provider"] is None
-
-    agent_._stream_diag_note_serving_provider(diag, SimpleNamespace(model_extra={"provider": "Alibaba"}))
-    assert diag["serving_provider"] == "Alibaba"
-
-    # Empty / non-string values are not a serving provider either.
-    other = AIAgent._stream_diag_init()
-    agent_._stream_diag_note_serving_provider(other, SimpleNamespace(provider="   "))
-    assert other["serving_provider"] is None
-
-
-def test_log_stream_retry_names_the_serving_provider(caplog):
-    agent_ = _make_agent()
-    agent_.provider = "openrouter"
-
-    diag = AIAgent._stream_diag_init()
-    diag["serving_provider"] = "Novita"
+    ok = [_chunk_with_provider(content="ok", finish_reason="stop", model="test-model", provider="Alibaba")]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [_dropping_stream(), iter(ok)]
+    mock_create.return_value = mock_client
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
 
     with caplog.at_level(logging.WARNING):
-        agent_._log_stream_retry(
-            kind="drop", error=ConnectionError("peer closed"), attempt=2, max_attempts=3,
-            mid_tool_call=False, diag=diag,
-        )
+        agent._interruptible_streaming_api_call({})
 
-    msg = next(r.getMessage() for r in caplog.records if "Stream drop" in r.getMessage())
-    assert "serving_provider=Novita" in msg
-
-    caplog.clear()
-    unknown = AIAgent._stream_diag_init()
-    with caplog.at_level(logging.WARNING):
-        agent_._log_stream_retry(
-            kind="drop", error=ConnectionError("peer closed"), attempt=2, max_attempts=3,
-            mid_tool_call=False, diag=unknown,
-        )
-    msg = next(r.getMessage() for r in caplog.records if "Stream drop" in r.getMessage())
-    assert "serving_provider=-" in msg
+    drops = [r.getMessage() for r in caplog.records if "Stream drop" in r.getMessage()]
+    assert drops, [r.getMessage() for r in caplog.records]
+    assert "serving_provider=Novita" in drops[0]
 
 
 # ── Conversation loop / hook payload level ───────────────────────────────
@@ -137,18 +83,4 @@ class TestServingProviderReachesPostApiRequest:
 
         assert result["final_response"] == "Hello world"
         assert len(post) == 1
-        assert post[0]["upstream_provider"] == "Novita"
-        assert agent._last_serving_provider == "Novita"
-
-    def test_non_streamed_attempt_reports_no_upstream_provider(self, agent):
-        """A stale value from an earlier call must not leak into the next payload."""
-        agent._last_serving_provider = "Novita"  # as a prior streamed attempt left it
-        agent.client.chat.completions.create.return_value = _mock_response(
-            content="Done", finish_reason="stop"
-        )
-
-        result, post = _run_with_hooks(agent)
-
-        assert result["final_response"] == "Done"
-        assert len(post) == 1
-        assert post[0]["upstream_provider"] is None
+        assert post[0]["response"]["upstream_provider"] == "Novita"

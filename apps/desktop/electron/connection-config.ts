@@ -107,9 +107,22 @@ function isGatewayAuthRejection(error) {
   return statusCode === 401 || statusCode === 403
 }
 
+/** True when the rejected credential is the app's saved bearer, not the server session. */
+function isStaleAppTokenRejection(error: unknown) {
+  return Boolean(error && typeof error === 'object' && (error as any).appTokenRejected === true)
+}
+
 function gatewayTicketFailure(error, authMessage, transportMessage) {
   const needsOauthLogin = isGatewayAuthRejection(error)
-  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  const message = needsOauthLogin
+    ? isStaleAppTokenRejection(error)
+      ? 'Reached the gateway over HTTP, but the app token is invalid. ' +
+        "The app's saved gateway bearer is no longer valid. Sign out in the app and sign in again to replace it."
+      : authMessage
+    : transportMessage
+
+  const err = new Error(message)
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
@@ -229,6 +242,8 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
+      // Untagged 401s keep the server OAuth-session wording. A stale app
+      // bearer is named inside gatewayTicketFailure.
       throw gatewayTicketFailure(
         error,
         'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +

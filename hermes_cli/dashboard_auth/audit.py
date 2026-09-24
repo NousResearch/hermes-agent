@@ -31,6 +31,7 @@ class AuditEvent(enum.Enum):
     REFRESH_FAILURE = "refresh_failure"
     REVOKE = "revoke"
     SESSION_VERIFY_FAILURE = "session_verify_failure"
+    SESSION_REJECTED = "session_rejected"
     WS_TICKET_MINTED = "ws_ticket_minted"
     WS_TICKET_REJECTED = "ws_ticket_rejected"
     TOKEN_AUTH_SUCCESS = "token_auth_success"

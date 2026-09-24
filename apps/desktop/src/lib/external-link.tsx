@@ -104,10 +104,15 @@ export function urlSlugTitleLabel(value: string): string {
       continue
     }
 
-    const titled = cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+    // Only title-case multi-word slugs that carried `-`/`_` separators
+    // (`some-guide` → `Some Guide`). A separator-less token is likely a
+    // case-sensitive identifier — a release tag (`v1.0.1`) or a filename
+    // (`README.md`) — and must keep its exact casing rather than the link
+    // inventing a different identifier. (#121321)
+    const label = cleaned.includes(' ') ? cleaned.replace(/\b[a-z]/g, c => c.toUpperCase()) : cleaned
 
-    if (titled.length >= 4) {
-      return titled
+    if (label.length >= 4) {
+      return label
     }
   }
 

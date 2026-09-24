@@ -527,6 +527,9 @@ _DB_CONNSTR_RE = re.compile(
 # bare userinfo. ``user:pass@`` passes through (class forbids ``:``); DB schemes
 # belong to _DB_CONNSTR_RE. 8+ char floor skips short usernames; the class
 # forbids ``/`` so an ``@`` in a path/query (``?q=user@example.com``) never counts.
+# The class also forbids ``"``: a double quote is not URL userinfo, and
+# ``https://schema.org","@type`` is a JSON string boundary, not a credential
+# (src#903). A comma stays legal userinfo.
 # This is the ``git remote set-url origin https://PASSWORD@github.com/...`` shape from issue #6396 — a
 # single opaque credential in the userinfo position with NO ``user:pass`` colon. The colon form
 # ``user:pass@`` is deliberately left to pass through (commit "pass web URLs through unchanged", #34029) and
@@ -534,7 +537,7 @@ _DB_CONNSTR_RE = re.compile(
 # excluded here. Guards against false positives:
 _URL_BARE_TOKEN_RE = re.compile(
     r"((?:https?|wss?|git|ssh|ftp|ftps|sftp)://)"  # scheme
-    r"([^\s:@/]{8,})"                               # bare token (no colon/slash/@), 8+ chars
+    r"([^\s:@/\"]{8,})"                             # bare token, 8+ chars; no quote
     r"(@[^\s]+)",                                   # @host...
     re.IGNORECASE,
 )

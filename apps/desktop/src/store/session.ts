@@ -1487,6 +1487,17 @@ export const setCurrentModelSource = (source: ComposerModelSource) => {
   $currentModelSource.set(source)
 }
 
+// `model.sticky_composer_pick` mirror (published from use-hermes-config):
+// when false, a manual composer pick applies only to the draft it was made on
+// - new-chat drafts reseed from the Settings -> Model default and the
+// "pinned by you" claim (new chats will use it) is never made. Default true
+// keeps the documented sticky behaviour (#62055).
+export const $stickyComposerPick = atom(true)
+
+export const setStickyComposerPick = (next: boolean) => {
+  $stickyComposerPick.set(next)
+}
+
 // Monotonic intent token for async default refreshes. A profile/config request
 // may start before the user opens the picker and finish after their click; the
 // token lets that older response stand down even when the selected value is

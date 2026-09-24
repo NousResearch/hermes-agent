@@ -66,6 +66,15 @@ model:
 
 Re-selecting the model you're already on never prompts (the cache stays warm), and sessions with no measured context (fresh sessions, non-live surfaces) are exempt.
 
+### Sticky composer picks (desktop)
+
+The desktop composer's model pick is **sticky** by default: a manual pick is remembered and becomes the model for future new chats instead of the Settings → Model default (see [Desktop](./desktop.md#the-desktop-shell)). To opt out — the pick then applies only to the draft it was made on, and every new chat starts on your Settings default:
+
+```yaml
+model:
+  sticky_composer_pick: false
+```
+
 ### Unattended data-training tiers
 
 Models with a `-contributor` suffix (e.g. `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor`) are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.

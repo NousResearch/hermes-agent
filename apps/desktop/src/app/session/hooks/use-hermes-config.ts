@@ -15,7 +15,8 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setDefaultReasoningEffort,
-  setIntroPersonality
+  setIntroPersonality,
+  setStickyComposerPick
 } from '@/store/session'
 import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
@@ -143,6 +144,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
         setShowReasoningFromConfig(config.display?.show_reasoning)
+        setStickyComposerPick(config.model?.sticky_composer_pick !== false)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
 

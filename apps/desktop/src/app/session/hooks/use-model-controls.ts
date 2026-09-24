@@ -14,6 +14,7 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $stickyComposerPick,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
@@ -128,7 +129,15 @@ export function useModelControls({
       // A manual pick is sticky. It is never diffed against the catalog: rows
       // are hints, and a custom slug the row lacks is still the user's choice
       // (the gateway validates it on switch).
-      const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
+      // `model.sticky_composer_pick: false` opts out of stickiness: the pick
+      // still rides the draft it was made on (session.create ships it), but a
+      // refresh/fresh draft reseeds from the profile default instead of
+      // carrying it forward.
+      const keepManualPick = () =>
+        !force &&
+        $stickyComposerPick.get() &&
+        Boolean($currentModel.get()) &&
+        getCurrentModelSource() === 'manual'
 
       if (keepManualPick()) {
         return

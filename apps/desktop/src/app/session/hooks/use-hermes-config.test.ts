@@ -11,12 +11,14 @@ import {
   $currentFastMode,
   $currentReasoningEffort,
   $defaultReasoningEffort,
+  $stickyComposerPick,
   markComposerSelectionManual,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModelSource,
   setCurrentReasoningEffort,
-  setDefaultReasoningEffort
+  setDefaultReasoningEffort,
+  setStickyComposerPick
 } from '@/store/session'
 
 import { deferred } from '../../../test/deferred'
@@ -63,6 +65,25 @@ describe('useHermesConfig refreshHermesConfig', () => {
       await result.current.refreshHermesConfig()
     })
     expect($showReasoning.get()).toBe(true)
+  })
+
+  // model.sticky_composer_pick (default on): a missing key keeps picks
+  // sticky; an explicit false publishes the opt-out so fresh drafts reseed.
+  it('mirrors model.sticky_composer_pick and defaults to sticky when missing', async () => {
+    mockConfig({ model: { sticky_composer_pick: false } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($stickyComposerPick.get()).toBe(false)
+
+    mockConfig({})
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($stickyComposerPick.get()).toBe(true)
+    setStickyComposerPick(true)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the

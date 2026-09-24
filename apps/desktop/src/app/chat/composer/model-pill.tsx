@@ -14,7 +14,7 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import { $currentModelSource, setModelPickerOpen } from '@/store/session'
+import { $currentModelSource, $stickyComposerPick, setModelPickerOpen } from '@/store/session'
 
 import { useComposerModelPillLabel } from './contrib'
 import { onComposerModelMenuRequest } from './focus'
@@ -60,6 +60,7 @@ export function ModelPill({
   const fastMode = useStore(view.$fast)
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
+  const stickyComposerPick = useStore($stickyComposerPick)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
   const restoreSelection = useRef<(() => void) | null>(null)
@@ -120,8 +121,15 @@ export function ModelPill({
   // pin whenever a draft (no live session) is running on a manual override. A
   // live session's footer reflects that session's model, so no badge there.
   // Tiles always have a runtime — pin badge is primary-draft only.
+  // With `model.sticky_composer_pick: false` the pick is draft-scoped, so the
+  // badge's claim ("new chats use this instead of the Settings default") is
+  // untrue and the pin stays hidden.
   const pinnedOverride =
-    view.kind === 'primary' && !runtimeId && modelSource === 'manual' && Boolean(currentModel.trim())
+    view.kind === 'primary' &&
+    !runtimeId &&
+    stickyComposerPick &&
+    modelSource === 'manual' &&
+    Boolean(currentModel.trim())
 
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text

@@ -706,3 +706,34 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert "HERMES_SESSION_ID" not in env
     assert "HERMES_SESSION_PROFILE" not in env
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
+
+
+def test_delivery_env_resolves_the_launch_home_instead_of_failing_closed():
+    """A relayed DM into the LAUNCH profile's Bot Chat must spawn its turn.
+
+    ``_profile_home`` answers None for the launch profile *by design* ("already the launch profile,
+    no override needed"), and a relay RPC is sessionless so it binds no secret scope. That
+    combination left ``served_profile_child_env`` failing closed under multiplex, so every relayed
+    DM into a *default* profile died with "Hermes could not read this profile's API key" while
+    deliveries to named secondary profiles — which do resolve a home — kept working.
+    """
+    from agent.secret_scope import (
+        current_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope)
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
+
+    assert get_hermes_home_override() is None, "precondition: no host home override in this process"
+    assert current_secret_scope() is None, "precondition: no scope bound on a sessionless relay RPC"
+
+    set_multiplex_active(True)
+    try:
+        env = bot_relay.delivery_env(None, None)
+        assert Path(env["HERMES_HOME"]).resolve() == Path(get_routing_process_hermes_home()).resolve()
+
+        # A bound scope is still the truth when one exists: it must win over the launch-home fallback.
+        token = set_secret_scope({"OPENROUTER_API_KEY": "sentinel-value"})
+        try:
+            assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "sentinel-value"
+        finally:
+            reset_secret_scope(token)
+    finally:
+        set_multiplex_active(False)

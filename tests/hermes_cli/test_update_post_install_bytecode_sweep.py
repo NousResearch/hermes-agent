@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import os
 import py_compile
+import subprocess
 import sys
 from pathlib import Path
 
@@ -88,3 +90,49 @@ def test_unchecked_hash_pyc_shadows_source_until_swept(tmp_path, monkeypatch):
     finally:
         sys.modules.pop("_sweep_regression_pkg.mod", None)
         sys.modules.pop("_sweep_regression_pkg", None)
+
+
+def test_fresh_interpreter_sees_stale_pyc_until_trailing_sweep(tmp_path):
+    """Probe-boundary version of the shadow contract above (external review of
+    #120039): the critical-import health check launches a FRESH subprocess, and
+    a same-process import cannot witness what that subprocess would see. A
+    stale unchecked-hash ``.pyc`` left by the last install step keeps shadowing
+    the pulled source for fresh interpreters too; only the trailing sweep
+    restores the new definitions at the probe boundary."""
+    pkg = tmp_path / "_sweep_regression_pkg"
+    pkg.mkdir()
+    (pkg / "mod.py").write_text("VALUE = 'old'\n")
+    pyc = py_compile.compile(
+        str(pkg / "mod.py"),
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+        doraise=True,
+    )
+    assert Path(pyc).exists()
+    # the pull swaps the source underneath the build-cache bytecode
+    (pkg / "mod.py").write_text("VALUE = 'new'\n")
+
+    def fresh_import_value() -> str:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import _sweep_regression_pkg.mod as m; print(m.VALUE)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(tmp_path),
+            env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        )
+        assert proc.returncode == 0, f"fresh import died: {proc.stderr}"
+        return proc.stdout.strip()
+
+    assert fresh_import_value() == "old", (
+        "precondition: the stale unchecked-hash .pyc shadows the pulled source "
+        "for a fresh interpreter, exactly like it would at the probe boundary"
+    )
+    removed = update_cmd._m()._clear_bytecode_cache(tmp_path)
+    assert removed >= 1
+    assert fresh_import_value() == "new", (
+        "post-sweep, the probe's fresh interpreter must resolve to the pulled source"
+    )

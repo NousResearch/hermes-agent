@@ -2405,6 +2405,36 @@ def _rejects_stream_options(exc: BaseException) -> bool:
         k in body for k in ("extra", "not supported", "unrecognized", "unexpected", "unknown"))
 
 
+_STREAM_RETRY_BACKOFF_BASE_S = 1.0
+_STREAM_RETRY_BACKOFF_CAP_S = 4.0
+
+
+def _stream_retry_backoff_seconds(attempt: int) -> float:
+    """Delay before stream-level reconnect ``attempt`` (0-based): 1s, 2s, 4s, capped."""
+    return min(_STREAM_RETRY_BACKOFF_BASE_S * (2 ** max(0, attempt)), _STREAM_RETRY_BACKOFF_CAP_S)
+
+
+def _wait_stream_retry_backoff(agent, delay: float) -> bool:
+    """Sleep ``delay`` seconds in 0.1s steps, returning False as soon as the
+    agent is interrupted (so /stop is never held hostage by a backoff)."""
+    deadline = time.monotonic() + max(0.0, delay)
+    while True:
+        if getattr(agent, "_interrupt_requested", False):
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        time.sleep(min(0.1, remaining))
+
+
+def _anthropic_connection_error_types() -> tuple:
+    try:
+        from anthropic import APIConnectionError as _AnthropicConnErr
+    except Exception:
+        return ()
+    return (_AnthropicConnErr,)
+
+
 def _is_sse_connection_error(exc: BaseException) -> bool:
     from openai import APIError as _APIError
     if not isinstance(exc, _APIError) or getattr(exc, "status_code", None):
@@ -3370,6 +3400,9 @@ class _StreamingCall(StreamingWaitMonitor):
             buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
+        # Exponential backoff between stream-level reconnects (back-to-back retries
+        # hammer a provider that just dropped us). Interruptible: /stop exits at once.
+        _wait_stream_retry_backoff(self.agent, _stream_retry_backoff_seconds(attempt))
 
     def _maybe_disable_streaming(self, e) -> None:
         """Flip to non-streaming for failures streaming itself cannot survive, or that
@@ -3421,7 +3454,10 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
         # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
         # ECONNRESET) — the retry loop owns recovery.
-        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError))
+        # anthropic.APIConnectionError: the Anthropic SDK wraps connect/read drops
+        # (incl. stale-kill aborts) in its own type, not httpx's.
+        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError,
+                                      *_anthropic_connection_error_types()))
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)

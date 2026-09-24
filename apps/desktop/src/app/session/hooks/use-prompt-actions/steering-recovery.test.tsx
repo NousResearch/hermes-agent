@@ -426,3 +426,39 @@ it.each(rebuiltRuntimeCases)(
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   }
 )
+
+it.each(steeringActions)(
+  '$action steers the active runtime when route and selection retain an evicted rotation tip',
+  async ({ action, method, status }) => {
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({ status })
+    seed()
+
+    act(() => {
+      // Auto-compression can replace a non-root tip before the route-follow
+      // effect sees it. Route and selection still agree on that old tip, while
+      // the active runtime is authoritatively bound to the new one.
+      setSessions([
+        {
+          id: 'stored-B-next',
+          _lineage_root_id: 'stored-B',
+          profile: 'default',
+          connection_id: 'connection-B',
+          source: 'desktop',
+          message_count: 2
+        }
+      ] as SessionInfo[])
+      handle.cache.updateSessionState('rt-B', state => state, 'stored-B-next')
+      routedStoredId = 'stored-B-evicted-tip'
+      setSelectedStoredSessionId('stored-B-evicted-tip')
+    })
+
+    await act(async () => {
+      expect(await handle.actions[action]('same chat correction')).toBe(true)
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('connection-B', 'default', method, {
+      session_id: 'rt-B',
+      text: 'same chat correction'
+    })
+  }
+)

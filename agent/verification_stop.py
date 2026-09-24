@@ -5,9 +5,10 @@ when the model tries to finish right after editing code without fresh evidence."
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Iterable
+
+from hermes_constants import get_hermes_home, get_scratch_dir
 
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
@@ -204,14 +205,16 @@ def build_verify_on_stop_nudge(
             "Read any failure, repair the code, and summarize what passed."
         )
     else:
-        temp_dir = os.path.realpath(tempfile.gettempdir())
+        root = Path(str(facts.get("root"))).resolve()
+        scratch_dir = get_scratch_dir(get_hermes_home(), prune=False).resolve()
         command_instruction = (
             "No canonical test/lint/build command was detected. Create a focused "
-            f"temporary verification script under `{temp_dir}` using an OS-safe "
-            "`tempfile` path with a `hermes-verify-` filename prefix, run it "
-            "against the changed behavior, clean it up when possible, and "
+            f"`hermes-verify-` script in the active Hermes scratch `{scratch_dir}` "
+            f"if the task scope permits it; otherwise use the workspace `{root}` "
+            "only when within scope. Run it against the changed behavior, "
+            "delete the script before finishing, never stage or commit it, and "
             "summarize it explicitly as ad-hoc verification rather than suite "
-            "green."
+            "green. This nudge does not authorize writes outside the task scope."
         )
 
     return (

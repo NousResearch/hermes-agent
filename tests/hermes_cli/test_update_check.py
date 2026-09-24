@@ -158,3 +158,60 @@ def test_upstream_main_sha_ls_remote_fallback_disables_git_prompts(monkeypatch):
     assert kwargs["stdin"] is banner.subprocess.DEVNULL
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"
+
+
+def test_cached_up_to_date_is_busted_when_local_origin_main_is_ahead(tmp_path, monkeypatch):
+    """A cached ``behind: 0`` must not outlive a ``git fetch`` that already shows newer commits.
+
+    The cache is keyed on HEAD, so a day-old "up to date" survived upstream moving on even when the
+    checkout's own ``origin/main`` (updated by a manual fetch or ``hermes update --check``) was
+    128 commits ahead — ``hermes --version`` kept printing "Up to date".
+    """
+    import subprocess
+
+    from hermes_cli import __version__
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"]}
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo_dir, env=env, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("remote", "add", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    git("commit", "-q", "--allow-empty", "-m", "one")
+    head = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/main", head)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: repo_dir)
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda root: "git")
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: repo_dir)
+    tip = MagicMock(return_value=None)
+    monkeypatch.setattr(banner, "_github_branch_tip", tip)
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time() - 13 * 3600, "behind": 0, "rev": None,
+                                      "ver": __version__, "head": head, "target": head}))
+
+    # origin/main == HEAD: the cached "up to date" is still trusted, no network.
+    assert banner.check_for_updates(passive=True) == 0
+    tip.assert_not_called()
+
+    # A fetch advances origin/main past HEAD: the stale 0 must be re-checked, not served.
+    git("commit", "-q", "--allow-empty", "-m", "two")
+    newer = git("rev-parse", "HEAD")
+    git("reset", "-q", "--hard", head)
+    git("update-ref", "refs/remotes/origin/main", newer)
+    cache_file.write_text(json.dumps({"ts": time.time() - 13 * 3600, "behind": 0, "rev": None,
+                                      "ver": __version__, "head": head, "target": head}))
+    tip.return_value = newer
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt: 1)
+
+    assert banner.check_for_updates(passive=True) == 1
+    tip.assert_called_once()

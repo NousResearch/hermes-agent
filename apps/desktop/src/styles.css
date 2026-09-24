@@ -1628,6 +1628,20 @@ body.guest-pointer-lock :is(webview, iframe) {
   font-size: inherit;
 }
 
+/* Keep assistant Markdown links recognizable without relying on hover or
+   theme-specific color contrast. Other `.ref` surfaces stay text-only. */
+[data-slot='aui_assistant-message-content'] .aui-md a.ref {
+  text-decoration-line: underline;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 0.1em;
+  text-underline-offset: 0.2em;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md a.ref:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
 /* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
    `overflow-hidden` so wide code/tables don't blow the column; that same clip
    shears the first pill's left cap. Cards opt the surface out; tables/code keep

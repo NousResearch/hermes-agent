@@ -2103,16 +2103,6 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token."""
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
-    return _read_codex_singleton_token()
-
-
 def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled

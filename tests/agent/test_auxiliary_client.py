@@ -20,7 +20,7 @@ from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
     _build_call_kwargs,
-    _read_codex_access_token,
+    _resolve_codex_credential_and_base,
     _is_payment_error,
     _is_rate_limit_error,
     _is_model_not_found_error,
@@ -488,7 +488,9 @@ class TestNormalizeAuxProvider:
             assert _normalize_aux_provider(alias) == canonical, alias
 
 
-class TestReadCodexAccessToken:
+class TestResolveCodexCredentialToken:
+    """Token half of ``_resolve_codex_credential_and_base`` with no pool (auth.json only)."""
+
     def test_valid_auth_store(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
@@ -501,14 +503,9 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _resolve_codex_credential_and_base()[0]
         assert result == "tok-123"
-
-
-
-
-
-
 
     def test_expired_jwt_returns_none(self, tmp_path, monkeypatch):
         """Expired JWT tokens should be skipped so auto chain continues."""
@@ -533,7 +530,7 @@ class TestReadCodexAccessToken:
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
-            result = _read_codex_access_token()
+            result = _resolve_codex_credential_and_base()[0]
         assert result is None, "Expired JWT should return None"
 
     def test_valid_jwt_returns_token(self, tmp_path, monkeypatch):
@@ -557,7 +554,8 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _resolve_codex_credential_and_base()[0]
         assert result == valid_jwt
 
 
@@ -1157,7 +1155,8 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_codex_credential_and_base",
+                   return_value=(None, "https://chatgpt.com/backend-api/codex")), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
@@ -1951,7 +1950,7 @@ class TestAuxiliaryFallbackLayering:
 
         with patch("agent.auxiliary_client._select_pool_entry",
                    return_value=(True, pool_entry)), \
-             patch("agent.auxiliary_client._read_codex_access_token",
+             patch("agent.auxiliary_client._read_codex_singleton_token",
                    side_effect=AssertionError("should use pool token")), \
              patch("agent.auxiliary_client.OpenAI", return_value=real_client) as mock_openai:
             client, model = _resolve_fallback_entry({

@@ -597,7 +597,7 @@ def resolve_codex_runtime_credentials(
     usable access_token but the pool (``credential_pool.openai-codex``) does.
 
     This closes the divergence between the chat path (singleton-only via this function) and the auxiliary
-    path (pool-first via ``_read_codex_access_token``). Without this fallback, a user whose tokens live only
+    path (pool-first via ``auxiliary_client._resolve_codex_credential_and_base``). Without this fallback, a user whose tokens live only
     in the pool — for example after a manual pool seed, a partial re-auth, or pool-only restoration from a
     backup — gets a bare HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.

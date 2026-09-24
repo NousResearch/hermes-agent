@@ -210,7 +210,8 @@ test('classifySshError detects unreachable', () => {
 })
 
 // A fake child process that emits a scripted result on next tick.
-function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang = false }: any = {}) {
+// Node's `close` is `(code, signal)`: a signal death has `code === null`.
+function fakeChild({ code = 0, signal = null, stdout = '', stderr = '', errorEvent = null, hang = false }: any = {}) {
   const child: any = new EventEmitter()
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
@@ -238,10 +239,19 @@ function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang
       child.stderr.emit('data', Buffer.from(stderr))
     }
 
-    child.emit('close', code)
+    child.emit('close', signal ? null : code, signal)
   })
 
   return child
+}
+
+function assertSignalDeathNotUnreachable(err, signal) {
+  assert.notEqual(err.kind, SSH_ERROR.UNREACHABLE)
+  assert.equal(err.signal, signal)
+  assert.doesNotMatch(err.message, /Could not reach/)
+  assert.match(err.message, new RegExp(signal))
+
+  return true
 }
 
 // Build a spawnFn that returns scripted children per ssh invocation, recording
@@ -513,6 +523,110 @@ test('no-mux: open() classifies auth failure', async () => {
   const spawnFn = scriptedSpawn([{ code: 255, stderr: 'me@box: Permission denied (publickey).' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
   await assert.rejects(conn.open(), (err: any) => err.kind === 'auth-failed')
+})
+
+test('runSsh keeps Node close signal on the result', async () => {
+  const spawnFn = () => fakeChild({ signal: 'SIGTERM', stderr: '' })
+  const result: any = await runSsh(['box'], { timeoutMs: 5000, spawnFn })
+
+  assert.equal(result.code, null)
+  assert.equal(result.signal, 'SIGTERM')
+  assert.equal(result.stderr, '')
+})
+
+test('no-mux open() does not classify a signal death with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ signal: 'SIGTERM', stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGTERM'))
+})
+
+test('mux open() does not classify a signal-killed master with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return { code: 255, stderr: 'no control path' }
+    }
+
+    return { signal: 'SIGHUP', stderr: '' }
+  })
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+
+  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGHUP'))
+})
+
+test('exec() does not classify a signal death with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ signal: 'SIGKILL', stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+
+  await assert.rejects(() => conn.exec('uname -s'), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGKILL'))
+})
+
+test('forward() does not classify a signal death with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ signal: 'SIGPIPE', stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+
+  await assert.rejects(() => conn.forward(5000, 6000), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGPIPE'))
+})
+
+test('close() does not report a signal-killed -O exit with empty stderr as unreachable', async () => {
+  const logs: string[] = []
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return { code: 255 }
+    }
+
+    if (args.includes('-M')) {
+      return { code: 0 }
+    }
+
+    return { signal: 'SIGINT', stderr: '' }
+  })
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, controlDir: '/tmp/d', rememberLog: line => logs.push(line) }
+  )
+
+  await conn.open()
+  await conn.close()
+
+  const logged = logs.join('\n')
+  assert.match(logged, /SIGINT/)
+  assert.doesNotMatch(logged, /Could not reach/)
+})
+
+test('no-mux open() still classifies a normal non-zero exit with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ code: 255, stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.UNREACHABLE)
+      assert.equal(err.signal, undefined)
+
+      return true
+    }
+  )
+})
+
+test('a signal death that already printed an unreachable ssh error stays unreachable', async () => {
+  const spawnFn = scriptedSpawn([
+    {
+      signal: 'SIGTERM',
+      stderr: 'ssh: connect to host box port 22: Connection refused'
+    }
+  ])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.UNREACHABLE)
+      assert.equal(err.signal, 'SIGTERM')
+
+      return true
+    }
+  )
 })
 
 test('no-mux: forward spawns a persistent -N -L child; cancel + close kill it', async () => {

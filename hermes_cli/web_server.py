@@ -1277,6 +1277,7 @@ def _on_server_started(
     host: str,
     port: int,
     headless: bool,
+    isolated: bool,
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
@@ -1334,7 +1335,7 @@ def _on_server_started(
 
         register_self(
             "serve" if headless else "dashboard",
-            detail={"host": host, "port": actual_port, "profile": initial_profile or ""},
+            detail={"host": host, "port": actual_port, "profile": initial_profile or "", "isolated": isolated},
         )
         attach_self_to_kill_on_close_job()
 
@@ -1468,6 +1469,7 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
@@ -1477,6 +1479,8 @@ def start_server(
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
     (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
     JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
+    discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state, never persisted or exported to children.
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
@@ -1562,6 +1566,7 @@ def start_server(
                 host=host,
                 port=port,
                 headless=headless,
+                isolated=isolated,
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,

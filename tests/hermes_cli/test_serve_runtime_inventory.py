@@ -55,6 +55,16 @@ def test_register_self_records_structured_detail(tmp_path, monkeypatch):
     assert e["port"] == 9119
     assert e["profile"] == "work"
 
+
+def test_register_self_records_isolated_marker(tmp_path, monkeypatch):
+    from hermes_cli import process_identity as pi
+
+    monkeypatch.setattr(pi, "_ledger_path", lambda: tmp_path / "ledger.json")
+    monkeypatch.setattr(pi, "install_id", lambda *a, **k: "inst")
+    assert pi.register_self("serve", detail={"host": "127.0.0.1", "port": 9119, "isolated": True})
+    assert pi._read_ledger(tmp_path / "ledger.json")[-1]["isolated"] is True
+
+
 def test_register_self_without_detail_stays_backward_compatible(
     tmp_path, monkeypatch
 ):

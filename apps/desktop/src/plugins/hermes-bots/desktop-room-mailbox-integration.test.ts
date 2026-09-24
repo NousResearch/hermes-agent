@@ -522,7 +522,7 @@ describe('classic Desktop mailbox with the real room engine', () => {
     host.request = async (method: string, params: Record<string, unknown>) => {
       const result = await originalRequest(method, params)
 
-      if (method === 'session.create' && params.title === 'Group: old-room') {
+      if (method === 'session.create' && String(params.title).startsWith('Group: old-room · ')) {
         created = true
         await blocked
       }

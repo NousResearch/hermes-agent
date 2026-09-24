@@ -64,6 +64,25 @@ beforeEach(async () => {
 })
 
 describe('membership metadata', () => {
+  it('disband clears orphaned metadata without treating its display key as a writable owner', () => {
+    const orphan: RosterRow = { name: 'reviewer', sourceScoped: true }
+    const owned: RosterRow = { name: 'reviewer', sourceScoped: true, connectionId: 'gateway-a' }
+    const meta: BotMeta = { groups: ['Workshop', 'Other'], group: 'Workshop' }
+    const orphanKey = modules.data.botMetaKey(orphan)
+    const ownedKey = modules.data.botMetaKey(owned)
+    const plan = modules.membership.groupDisbandMetadataPlan(
+      'Workshop',
+      [orphan, owned],
+      { log: [], members: [orphan, owned], watermarks: {} },
+      [orphan, owned],
+      { [orphanKey]: meta, [ownedKey]: meta }
+    )
+
+    expect(plan.patches.get(orphanKey)).toEqual({ groups: ['Other'], group: 'Other' })
+    expect(plan.patches.get(ownedKey)).toEqual({ groups: ['Other'], group: 'Other' })
+    expect([...plan.owners]).toEqual([[ownedKey, owned]])
+  })
+
   it('botGroups normalizes canonical and legacy membership without duplicates', () => {
     const { botGroups } = modules.membership
 

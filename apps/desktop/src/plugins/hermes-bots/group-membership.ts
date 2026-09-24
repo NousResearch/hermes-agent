@@ -171,7 +171,9 @@ export function groupDisbandMetadataPlan(
       return
     }
 
-    if (!owners.has(key)) {
+    // A degraded display key still needs local cleanup, but cannot authorize
+    // a server metadata write through a missing connection owner.
+    if (resolveBotConnectionRoute(owner).status !== 'owner_removed' && !owners.has(key)) {
       owners.set(key, owner)
     }
 

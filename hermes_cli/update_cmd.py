@@ -799,12 +799,18 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
     has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
     if not has_common_ancestor and pre_pull_sha:
         from datetime import datetime as _dt, timezone
-        # SHA suffix so two updates in the same second get distinct refs.
+        # Full OID in the ref name: a name collision can only mean the same
+        # backup (12-char prefixes are ambiguous and `update-ref` will silently
+        # overwrite them on second use — exactly the silent-loss case this
+        # backup exists to prevent). The create-only write below is the second
+        # half of that defense.
         rescue_ref = (
             f"refs/hermes-update-backups/orphan-{branch}-"
-            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
+            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha}")
         head = f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — "
-        if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode == 0:
+        # Create-only: pass an empty <oldvalue> so `update-ref` will not silently
+        # overwrite an existing ref (which would lose the previous backup).
+        if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha, ""]).returncode == 0:
             print(
                 f"{head}backed up current HEAD to {rescue_ref} before resetting. "
                 f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")

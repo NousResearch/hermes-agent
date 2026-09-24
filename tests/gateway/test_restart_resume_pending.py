@@ -45,6 +45,8 @@ from gateway.run import (
     build_resume_recovery_note,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.turn_context import TurnContext
+from gateway.run_turn_runner import TurnRunner
 from tests.gateway.restart_test_helpers import (
     RestartTestAdapter,
     make_restart_runner,
@@ -80,6 +82,33 @@ def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
 
 def _make_store(tmp_path):
     return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+
+def test_startup_resume_placeholder_still_gets_recovery_note_after_marker_clears():
+    """The scheduled startup event retains its recovery semantics after its DB marker clears.
+
+    Startup dispatches an empty internal event, then an independent recovery path may clear
+    ``resume_pending`` before TurnRunner prepares the model input.  The empty placeholder must
+    never become a normal blank user turn in that race.
+    """
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source()
+    session_key = runner._session_key_for_source(source)
+    # Model the marker having been cleared after scheduling but before this turn runs.
+    runner.session_store._entries = {}
+    ctx = TurnContext(
+        source=source,
+        message="",
+        session_key=session_key,
+        history=[],
+        startup_resume_placeholder=True,
+    )
+
+    persist_override, _persist_timestamp = TurnRunner(runner, ctx)._prepare_turn_message([])
+
+    assert persist_override is None
+    assert ctx.message.startswith("[System note:")
+    assert "interrupted" in ctx.message.lower()
 
 
 def _build_agent_history(history: list) -> list:
@@ -1042,8 +1071,10 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
     # Slow mock: hold the task open so we can inspect _running_agents
     # while it's in-flight.
     gate = asyncio.Event()
+    resume_events = []
 
     async def _slow_handle(event):
+        resume_events.append(event)
         await gate.wait()
 
     adapter.handle_message = _slow_handle
@@ -1055,6 +1086,8 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
     assert pending_entry.session_key in runner._running_agents
     assert runner._running_agents[pending_entry.session_key] is _AGENT_PENDING_SENTINEL
     assert pending_entry.session_key in runner._running_agents_ts
+    await asyncio.sleep(0)
+    assert getattr(resume_events[0], "_startup_resume_placeholder", False) is True
 
     # Release the task and let it complete.
     gate.set()
@@ -1316,4 +1349,3 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._send_restart_notification.assert_awaited_once()
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
-

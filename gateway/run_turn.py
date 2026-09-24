@@ -2199,6 +2199,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
+                startup_resume_placeholder=bool(getattr(event, "_startup_resume_placeholder", False)),
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )

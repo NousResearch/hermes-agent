@@ -609,6 +609,9 @@ class GatewayStartupMixin:
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
+            # Keep the startup-resume provenance with the event.  The durable marker can be cleared
+            # by another recovery path before this asynchronously scheduled turn prepares its input.
+            event._startup_resume_placeholder = True
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
             )

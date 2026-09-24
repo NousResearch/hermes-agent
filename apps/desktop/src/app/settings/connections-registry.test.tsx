@@ -214,7 +214,15 @@ describe('ConnectionsRegistrySection', () => {
     // Cloud never takes a pasted token: no token box, a sign-in button instead.
     expect(screen.queryByPlaceholderText('Paste session token')).toBeNull()
     fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
-    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://team.hermes.cloud'))
+    // The draft identity rides along (#99989): a pre-save sign-in must name the
+    // connection whose jar the login writes into — connectionId null (unset draft)
+    // plus the draft label here.
+    await waitFor(() =>
+      expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://team.hermes.cloud', {
+        connectionId: null,
+        label: 'Team cloud'
+      })
+    )
 
     fireEvent.click(screen.getByText('Save connection').closest('button')!)
 

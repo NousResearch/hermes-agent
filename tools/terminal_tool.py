@@ -21,6 +21,8 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import posixpath
+import re
 import sys
 import time
 import threading
@@ -906,31 +908,119 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
-    Raises :class:`_Rejected` when the command may not run (denied, or pending
-    gateway approval)."""
+
+_GUARD_PATH_CANDIDATE_RE = re.compile(
+    r'(?<![\\w.~-])(?P<path>(?:/|\\.\\.?/)[^\\s;&|<>()"\\'\x60]+)'
+)
+_DISK_MUTATION_HINT_RE = re.compile(
+    r'(?:\\b(?:wipefs|blkdiscard|sgdisk|shred|dd|mkfs(?:\\.[a-z0-9]+)?|mke2fs|mkswap|'
+    r'newfs(?:_[a-z0-9]+)?|diskutil|cp|mv|install|tee)\\b|>{1,2})',
+    re.IGNORECASE,
+)
+_MAX_GUARD_PATH_RESOLUTIONS = 16
+
+
+def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
+    """Project literal path operands through the backend filesystem before approval matching.
+
+    The regex classifiers deliberately remain pure/text-only. This pre-exec projection is the
+    authority bridge for paths whose spelling is not their mutation target: ``../dev/sda``,
+    ``/tmp/../dev/sda`` and symlink aliases all resolve through the same backend that will run
+    the command. Only commands with a disk/write-shaped verb/operator pay the resolver cost.
+
+    The returned variant is detection-only; the original command is what eventually executes.
+    """
+    if not _DISK_MUTATION_HINT_RE.search(command):
+        return []
+    matches = list(_GUARD_PATH_CANDIDATE_RE.finditer(command))
+    if not matches:
+        return []
+
+    edits = []
+    seen_inputs = set()
+    for match in matches[:_MAX_GUARD_PATH_RESOLUTIONS]:
+        raw_path = match.group("path")
+        if raw_path in seen_inputs:
+            continue
+        seen_inputs.add(raw_path)
+        if any(ch in raw_path for ch in "$*?[]{}"):
+            continue
+
+        candidate = (
+            posixpath.normpath(raw_path)
+            if raw_path.startswith("/")
+            else posixpath.normpath(posixpath.join(cwd or "/", raw_path))
+        )
+        try:
+            resolved = env.fetch_realpath(candidate)
+        except Exception:
+            logger.debug("guard path resolution failed for %r", candidate, exc_info=True)
+            continue
+        if not isinstance(resolved, str) or not resolved.strip():
+            continue
+        resolved = resolved.strip()
+        if resolved == raw_path:
+            continue
+        edits.append((match.start("path"), match.end("path"), resolved))
+
+    if not edits:
+        return []
+    parts, cursor = [], 0
+    for start, end, replacement in edits:
+        parts.extend((command[cursor:start], replacement))
+        cursor = end
+    parts.append(command[cursor:])
+    variant = "".join(parts)
+    return [variant] if variant != command else []
+
+
+def _raise_rejected_approval(approval: dict, command: str) -> None:
+    """Raise the terminal-tool rejection envelope for a guard decision."""
+    if approval.get("status") == "pending_approval":
+        raise _Rejected(_error_json(
+            "", status="pending_approval",
+            approval_pending=True,
+            command=approval.get("command", command),
+            description=approval.get("description", "command flagged"),
+            pattern_key=approval.get("pattern_key", ""),
+            smart_denied=approval.get("smart_denied", False),
+            allow_permanent=approval.get("allow_permanent", True),
+        ))
+    desc = approval.get("description", "command flagged")
+    fallback_msg = (
+        f"Command denied: {desc}. "
+        "Use the approval prompt to allow it, or rephrase the command."
+    )
+    raise _Rejected(_error_json(
+        approval.get("message", fallback_msg),
+        status="blocked",
+        **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {}),
+    ))
+
+
+def _run_approval_guards(
+    command: str, env_type: str, config: Dict[str, Any], *,
+    force: bool, env: Any = None, cwd: str = "",
+) -> _ApprovalVerdict:
+    """Run canonical-target floors plus tirith/dangerous-command guards.
+
+    ``force`` skips the recoverable approval layer after a human confirmation, but it never
+    bypasses a hardline match discovered only after backend path resolution.
+    """
+    resolved_variants = _resolved_guard_variants(command, env, cwd) if env is not None else []
+    for resolved_command in resolved_variants:
+        resolved_approval = _check_all_guards(
+            resolved_command, env_type, has_host_access=_docker_has_host_access(config)
+        )
+        if not resolved_approval["approved"]:
+            if resolved_approval.get("hardline") or resolved_approval.get("user_deny") or not force:
+                _raise_rejected_approval(resolved_approval, command)
+
     if force:
         return _ApprovalVerdict(approved_run=True)
     approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
     if not approval["approved"]:
-        if approval.get("status") == "pending_approval":  # gateway ask mode
-            raise _Rejected(_error_json(
-                "", status="pending_approval",
-                approval_pending=True,
-                command=approval.get("command", command),
-                description=approval.get("description", "command flagged"),
-                pattern_key=approval.get("pattern_key", ""),
-                smart_denied=approval.get("smart_denied", False),
-                allow_permanent=approval.get("allow_permanent", True),
-            ))
-        desc = approval.get("description", "command flagged")
-        fallback_msg = (
-            f"Command denied: {desc}. "
-            "Use the approval prompt to allow it, or rephrase the command."
-        )
-        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
-                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
+        _raise_rejected_approval(approval, command)
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(
@@ -1325,7 +1415,12 @@ def terminal_tool(
             ))
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        guard_cwd = _resolve_command_cwd(
+            workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        )
+        verdict = _run_approval_guards(
+            command, env_type, plan.config, force=force, env=env, cwd=guard_cwd,
+        )
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:

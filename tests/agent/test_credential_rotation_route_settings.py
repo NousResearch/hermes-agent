@@ -131,3 +131,47 @@ def test_codex_rotation_keeps_proxy_override(monkeypatch):
     assert agent.base_url == "http://127.0.0.1:8787/backend-api/codex"
     assert agent._client_kwargs["base_url"] == "http://127.0.0.1:8787/backend-api/codex"
     assert agent.api_key == "tok-second"
+
+
+def test_nous_rotation_keeps_inference_base_url_override(monkeypatch):
+    """#121323: a 401 rotation must not replace the operator's Nous route.
+
+    Pool entries intentionally persist the Portal-provided production URL.  The
+    runtime overlay is therefore required both for the initial entry and for a
+    refreshed entry adopted by ``_swap_credential``.
+    """
+    from agent.credential_pool import PooledCredential
+
+    override = "https://staging-inference.example/v1/"
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override)
+    entry = PooledCredential(
+        provider="nous", id="refreshed", label="Nous", auth_type="oauth",
+        priority=1, source="device_code", access_token="tok-second",
+        inference_base_url="https://inference-api.nousresearch.com/v1",
+    )
+    agent = SimpleNamespace(
+        api_mode="chat_completions", provider="nous", model="Hermes-4-70B", api_key="tok-first",
+        base_url=override.rstrip("/"),
+        _client_kwargs={"api_key": "tok-first", "base_url": override.rstrip("/")},
+        _reapply_route_client_config=MagicMock(), _replace_primary_openai_client=MagicMock(),
+    )
+
+    assert entry.runtime_base_url == override.rstrip("/")
+    assert AIAgent._swap_credential(agent, entry) is True
+    assert agent.base_url == override.rstrip("/")
+    assert agent._client_kwargs["base_url"] == override.rstrip("/")
+
+
+def test_nous_rotation_uses_stored_inference_url_without_override(monkeypatch):
+    """No override preserves the Portal-provided route for regular Nous users."""
+    from agent.credential_pool import PooledCredential
+
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    stored_url = "https://inference-api.nousresearch.com/v1"
+    entry = PooledCredential(
+        provider="nous", id="stored", label="Nous", auth_type="oauth",
+        priority=0, source="device_code", access_token="tok",
+        inference_base_url=stored_url,
+    )
+
+    assert entry.runtime_base_url == stored_url

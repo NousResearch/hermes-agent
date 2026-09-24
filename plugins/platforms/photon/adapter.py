@@ -297,6 +297,25 @@ def _markdown_enabled() -> bool:
     return _get_scoped_secret("PHOTON_MARKDOWN", "true").strip().lower() not in {"false", "0", "no"}
 
 
+# Mirrors URL_RE in plugins/platforms/photon/sidecar/send-format.mjs. Keep the
+# two in sync: the sidecar owns the builder choice, this owns the payload that
+# choice implies.
+_SIDECAR_URL_RE = re.compile(r"https?://[^\s)'\"<>]+", re.IGNORECASE)
+
+
+def _sidecar_payload_text(text: str, send_markdown: bool) -> str:
+    """The ``/send`` text: verbatim only when the sidecar will really use spectrum-ts' markdown builder.
+
+    ``chooseSendFormat`` routes markdown containing a raw URL through the verbatim ``text()`` builder
+    (the markdown builder's data detection 500s on those), and a plain send has no renderer at all, so
+    both are stripped here or iMessage shows literal ``**``/fences. Link targets survive as bare URLs:
+    iMessage auto-links those and nothing else.
+    """
+    if send_markdown and not _SIDECAR_URL_RE.search(text or ""):
+        return text
+    return strip_markdown(text, keep_link_targets=True)
+
+
 def _url_only_candidate(text: str) -> Optional[str]:
     candidate = (text or "").strip()
     if not re.fullmatch(r"https?://\S+", candidate, flags=re.IGNORECASE):
@@ -501,7 +520,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
         self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
         self._probe_enabled = self._probe_interval > 0
-        self.supports_code_blocks = _markdown_enabled()  # markdown on => fences pass through
+        # Never advertise fences: a URL-bearing message goes out as raw text (literal ```), and the
+        # markdown path renders a fence as inline Unicode monospace, not a block.
+        self.supports_code_blocks = False
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._respawn_lock: Optional[asyncio.Lock] = None
@@ -1293,7 +1314,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         # Markdown passes through verbatim (sidecar markdown() builder); PHOTON_MARKDOWN=false strips.
-        return content if _markdown_enabled() else strip_markdown(content)
+        return content if _markdown_enabled() else strip_markdown(content, keep_link_targets=True)
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -1349,11 +1370,15 @@ class PhotonAdapter(BasePlatformAdapter):
                 return rich_result
             logger.warning("[photon] rich-link send failed, falling back to plain text: %s", rich_result.error)
             markdown = False
+        send_markdown = markdown and _markdown_enabled()
+        # The format key stays even when the text is stripped: the sidecar owns the builder choice,
+        # and an older sidecar without chooseSendFormat must keep rendering natively.
+        text = _sidecar_payload_text(text, send_markdown)
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning("[photon] truncating outbound from %d to %d chars", len(text), self.MAX_MESSAGE_LENGTH)
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
-        if markdown and _markdown_enabled():  # key omitted when disabled: pre-`format` sidecars still accept
+        if send_markdown:  # key omitted when disabled: pre-`format` sidecars still accept
             body["format"] = "markdown"
         return await self._post_send("/send", body, structured=True)
 
@@ -1515,8 +1540,10 @@ async def _standalone_send(
                 if rich_url:
                     _resp, data = await _post("/send-richlink", {"spaceId": chat_id, "url": rich_url})
                 if not data:  # no URL-only message, or the rich-link send failed: plain text
-                    send_body: Dict[str, Any] = {"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]}
-                    if _markdown_enabled() and not rich_url:
+                    send_markdown = _markdown_enabled() and not rich_url
+                    send_body: Dict[str, Any] = {
+                        "spaceId": chat_id, "text": _sidecar_payload_text(message, send_markdown)[:_MAX_MESSAGE_LENGTH]}
+                    if send_markdown:
                         send_body["format"] = "markdown"
                     resp, data = await _post("/send", send_body)
                     if not data:
@@ -1559,13 +1586,20 @@ def register(ctx) -> None:
         allow_all_env="PHOTON_ALLOW_ALL_USERS", max_message_length=_MAX_MESSAGE_LENGTH, emoji="📱",
         pii_safe=True,  # E.164 phone numbers: redact session descriptions before they reach the LLM
         allow_update_command=True,
+        # Grounded in spectrum-ts markdownToIMessageText + sidecar send-format.mjs: headings -> bold, tables ->
+        # "a | b" rows, code -> Unicode math-monospace; any message containing a URL is stripped to plain text.
         platform_hint=(
-            "You are communicating via Photon Spectrum (iMessage). "
-            "Treat replies like regular text messages — short and friendly. "
-            "Markdown is rendered (bold, italics, lists, code), but keep "
-            "formatting light and conversational. Recipient identifiers are "
-            "E.164 phone numbers; never expose them in responses unless the "
-            "user asked. Attachments arrive as metadata only."))
+            "You are texting via iMessage (Photon). Write like a person texting: short and conversational, "
+            "answer first, no preamble or recap. Markdown mostly does not survive here: any message containing "
+            "a link is sent as plain text with all formatting stripped, headings flatten to bold, tables to "
+            "pipe-separated lines, and backtick or code-block text turns into Unicode look-alike "
+            "glyphs that break when copied. So no headers, tables, code fences or backticks; an occasional "
+            "**bold** word is fine in a message without links. Put a command or code snippet on its own line "
+            "as plain text so it copies and runs. Write links as bare URLs; a message that is only a URL "
+            "sends as a rich preview card. You can send files natively: write MEDIA:/absolute/path/to/file "
+            "in your response (images and video appear inline, audio as voice notes, other files as "
+            "attachments). Recipient identifiers are E.164 phone numbers; never expose them in responses "
+            "unless the user asked."))
     ctx.register_cli_command(
         name="photon", help="Set up and manage the Photon iMessage integration",
         setup_fn=_cli.register_cli, handler_fn=_cli.dispatch)

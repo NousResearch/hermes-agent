@@ -447,7 +447,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(agent, "enabled_toolsets", None) or ["hermes-acp"],
+                getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
             agent.tools = get_tool_definitions(

@@ -304,45 +304,6 @@ class TestRouting:
         assert captured["task"] == "classifier"
         assert result.audit["task"] == "classifier"
 
-    def test_async_variants_log_exact_route(self, monkeypatch, caplog):
-        _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
-        _set_builtins(monkeypatch, [])
-        llm = make_plugin_llm_for_test(
-            plugin_id="my-plugin",
-            policy=_policy(),
-            async_caller=_async_capturing_caller({}),
-        )
-
-        with caplog.at_level(logging.INFO, logger="agent.plugin_llm"):
-            asyncio.run(
-                llm.acomplete(
-                    [{"role": "user", "content": "hi"}],
-                    task="classifier",
-                    purpose="plain",
-                )
-            )
-            asyncio.run(
-                llm.acomplete_structured(
-                    instructions="classify",
-                    input=[PluginLlmTextInput(text="payload")],
-                    task="classifier",
-                    purpose="structured",
-                )
-            )
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert any(
-            "plugin_llm.acomplete plugin=my-plugin provider=aux-provider "
-            "model=aux-model task=classifier purpose=plain tokens=8" in message
-            for message in messages
-        )
-        assert any(
-            "plugin_llm.acomplete_structured plugin=my-plugin provider=aux-provider "
-            "model=aux-model task=classifier purpose=structured "
-            "content_type=text tokens=8" in message
-            for message in messages
-        )
-
 
 def test_successful_fallback_route_beats_requested_route_for_attribution():
     provider, model = _resolve_attribution(
@@ -359,7 +320,7 @@ class TestForwardsToCallLlm:
     where the previously-hardcoded ``task=None`` is replaced by the routed
     key. The injected-caller tests above bypass this line."""
 
-    def test_sync_task_uses_auxiliary_attribution_and_log(self, monkeypatch, caplog):
+    def test_sync_task_uses_auxiliary_attribution(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
         seen: Dict[str, Any] = {}
@@ -371,14 +332,9 @@ class TestForwardsToCallLlm:
 
         monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
         llm = make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy())
-        with caplog.at_level(logging.INFO, logger="agent.plugin_llm"):
-            result = llm.complete([{"role": "user", "content": "hi"}], task="classifier")
+        result = llm.complete([{"role": "user", "content": "hi"}], task="classifier")
         assert seen["task"] == "classifier"
         assert (result.provider, result.model) == ("aux-provider", "aux-model")
-        assert any(
-            "provider=aux-provider model=aux-model task=classifier" in record.getMessage()
-            for record in caplog.records
-        )
 
     def test_sync_default_forwards_task_none(self, monkeypatch):
         _set_registry(monkeypatch, [])

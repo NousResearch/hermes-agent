@@ -12,7 +12,7 @@ import {
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberAuthor, groupMemberKey } from './group-membership'
-import { buildGroupChatTurnPrompt, formatGroupDeltaLines } from './group-round-prompt'
+import { buildGroupChatTurnPrompt, formatGroupDeltaLines, isGroupChatSelf } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -302,10 +302,7 @@ export async function runGroupRoundMember(
 }
 
 function authoredByMember(entry: GroupMessage, member: GroupMember): boolean {
-  const from = entry?.from
-  const source = member.remoteSource ? member.connectionLabel || member.connectionId : undefined
-
-  return from?.kind === 'member' && from.name === member.name && String(from.source || '') === String(source || '')
+  return entry?.from?.kind === 'member' && isGroupChatSelf(entry.from, member)
 }
 
 export async function runGroupContinuationMembers(

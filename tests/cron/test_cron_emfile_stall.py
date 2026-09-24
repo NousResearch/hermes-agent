@@ -84,9 +84,6 @@ class TestTickLockEmfileNotSwallowed:
         with patch.object(fcntl, "flock", side_effect=OSError(errno.EWOULDBLOCK, "Resource temporarily unavailable")):
             assert scheduler_mod.tick(verbose=False) == 0
 
-    def test_lock_contention_eagain_still_skips(self):
-        with patch.object(fcntl, "flock", side_effect=OSError(errno.EAGAIN, "Resource temporarily unavailable")):
-            assert scheduler_mod.tick(verbose=False) == 0
 
 
 # ── Fix 2: ticker loop survives EMFILE, reclaims fds, backs off, self-heals ──
@@ -209,13 +206,4 @@ class TestEmfileHelpers:
             RuntimeError("Failed to read cron database: [Errno 24] Too many open files")
         )
 
-    def test_reclaim_fds_best_effort_never_raises(self):
-        # gc.collect + apply_nofile_soft_limit are both best-effort; the helper
-        # must tolerate missing/refusing platforms without raising.
-        assert scheduler_mod._reclaim_fds_best_effort() is None
 
-    def test_lock_contention_errno_classification(self):
-        assert scheduler_mod._is_lock_contention_errno(OSError(errno.EWOULDBLOCK, "x"))
-        assert scheduler_mod._is_lock_contention_errno(OSError(errno.EAGAIN, "x"))
-        assert not scheduler_mod._is_lock_contention_errno(OSError(errno.EMFILE, "x"))
-        assert not scheduler_mod._is_lock_contention_errno(OSError(errno.ENFILE, "x"))

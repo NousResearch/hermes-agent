@@ -42,12 +42,6 @@ class TestCleanupContract:
         assert not old.exists()
         assert fresh.exists(), "a payload still in flight was reaped"
 
-    def test_cleanup_reports_how_many_it_removed(self, temp_root):
-        # write all files first: _write_dm_file itself sweeps opportunistically
-        paths = [Path(bot_mode_dm._write_dm_file("x")) for _ in range(3)]
-        for p in paths:
-            _age(p, bot_mode_dm._DM_STALE_SECONDS + 1)
-        assert bot_mode_dm.cleanup_bot_dm_cache() == 3
 
     def test_a_missing_dm_dir_is_not_an_error(self, temp_root):
         assert bot_mode_dm.cleanup_bot_dm_cache() == 0

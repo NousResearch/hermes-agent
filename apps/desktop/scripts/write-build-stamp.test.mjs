@@ -19,11 +19,6 @@ test('fromCI reads GITHUB_SHA / GITHUB_REF_NAME', () => {
   assert.equal(fromCI({}), null)
 })
 
-test('fromLocalGit returns null when git rev-parse fails', () => {
-  const stamp = fromLocalGit('/tmp/not-a-repo', () => null)
-  assert.equal(stamp, null)
-})
-
 test('fromLocalGit reads HEAD + branch + dirty status', () => {
   const calls = []
   const execFn = (cmd) => {

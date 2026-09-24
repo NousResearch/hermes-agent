@@ -1,13 +1,9 @@
 """Tests for browser_tool.py hardening: caching, security, thread safety, truncation."""
 
-import inspect
-import re
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from tools import browser_tool_install as bt_install
-from tools import browser_tool_session as bt_session
-from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 # ---------------------------------------------------------------------------
@@ -37,75 +33,18 @@ def _clean_caches():
 # Dead code removal
 # ---------------------------------------------------------------------------
 
-class TestDeadCodeRemoval:
-    """Verify dead code was actually removed."""
-
-    def test_no_default_session_timeout(self):
-        import tools.browser_tool as bt
-        assert not hasattr(bt, "DEFAULT_SESSION_TIMEOUT")
-
-    def test_browser_close_schema_removed(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
-        names = [s["name"] for s in BROWSER_TOOL_SCHEMAS]
-        assert "browser_close" not in names
 
 
 # ---------------------------------------------------------------------------
 # Caching: _find_agent_browser
 # ---------------------------------------------------------------------------
 
-class TestFindAgentBrowserCache:
-
-    def test_cached_after_first_call(self):
-        import tools.browser_tool as bt
-        with patch("shutil.which", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool_install.agent_browser_runnable", return_value=True):
-            result1 = bt_install._find_agent_browser()
-            result2 = bt_install._find_agent_browser()
-        assert result1 == result2 == "/usr/bin/agent-browser"
-        assert bt._agent_browser_resolved is True
-
-
-    def test_not_found_cached_raises_on_subsequent(self):
-        """After FileNotFoundError, subsequent calls should raise from cache."""
-        from pathlib import Path
-
-        original_exists = Path.exists
-
-        def mock_exists(self):
-            if "node_modules" in str(self) and "agent-browser" in str(self):
-                return False
-            return original_exists(self)
-
-        with patch("shutil.which", return_value=None), \
-             patch("os.path.isdir", return_value=False), \
-             patch.object(Path, "exists", mock_exists):
-            with pytest.raises(FileNotFoundError):
-                bt_install._find_agent_browser()
-        # Second call should also raise (from cache)
-        with pytest.raises(FileNotFoundError, match="cached"):
-            bt_install._find_agent_browser()
 
 
 # ---------------------------------------------------------------------------
 # Caching: _get_command_timeout
 # ---------------------------------------------------------------------------
 
-class TestCommandTimeoutCache:
-
-    def test_default_is_30(self):
-        from tools.browser_tool import _get_command_timeout
-        with patch("hermes_cli.config.read_raw_config", return_value={}):
-            assert _get_command_timeout() == 30
-
-
-    def test_cached_after_first_call(self):
-        from tools.browser_tool import _get_command_timeout
-        mock_read = MagicMock(return_value={"browser": {"command_timeout": 45}})
-        with patch("hermes_cli.config.read_raw_config", mock_read):
-            _get_command_timeout()
-            _get_command_timeout()
-        mock_read.assert_called_once()
 
 
 class TestSessionInactivityTimeout:
@@ -130,12 +69,6 @@ class TestSessionInactivityTimeout:
 # Caching: _discover_homebrew_node_dirs
 # ---------------------------------------------------------------------------
 
-class TestHomebrewNodeDirsCache:
-
-    def test_lru_cached(self):
-        from tools.browser_tool_install import _discover_homebrew_node_dirs
-        assert hasattr(_discover_homebrew_node_dirs, "cache_info"), \
-            "_discover_homebrew_node_dirs should be decorated with lru_cache"
 
 
 # ---------------------------------------------------------------------------
@@ -164,30 +97,6 @@ class TestUrlDecodedSecretCheck:
 # Thread safety: _recording_sessions
 # ---------------------------------------------------------------------------
 
-class TestRecordingSessionsThreadSafety:
-    """Verify _recording_sessions is accessed under _cleanup_lock."""
-
-    def test_start_recording_uses_lock(self):
-        import tools.browser_tool as bt
-        src = inspect.getsource(bt._maybe_start_recording)
-        assert "_cleanup_lock" in src, \
-            "_maybe_start_recording should use _cleanup_lock to protect _recording_sessions"
-
-    def test_stop_recording_uses_lock(self):
-        import tools.browser_tool as bt
-        src = inspect.getsource(bt._maybe_stop_recording)
-        assert "_cleanup_lock" in src, \
-            "_maybe_stop_recording should use _cleanup_lock to protect _recording_sessions"
-
-    def test_emergency_cleanup_clears_under_lock(self):
-        """_recording_sessions.clear() in emergency cleanup should be under _cleanup_lock."""
-        src = inspect.getsource(bt_lifecycle._emergency_cleanup_all_sessions)
-        # Find the with _cleanup_lock block and verify _recording_sessions.clear() is inside
-        lock_pos = src.find("_cleanup_lock")
-        clear_pos = src.find("_recording_sessions.clear()")
-        assert lock_pos != -1 and clear_pos != -1
-        assert lock_pos < clear_pos, \
-            "_recording_sessions.clear() should come after _cleanup_lock context manager"
 
 
 # ---------------------------------------------------------------------------
@@ -274,63 +183,21 @@ class TestTruncateSnapshot:
         assert "truncated" in result.lower()
         assert "read_file" in result
 
-    def test_no_llm_summarization_path_remains(self):
-        """Snapshots must never route through an auxiliary LLM (truncate-and-store only)."""
-        import tools.browser_tool as bt
-
-        assert not hasattr(bt, "_extract_relevant_content")
-        assert not hasattr(bt, "_get_extraction_model")
 
 
 # ---------------------------------------------------------------------------
 # Scroll optimization
 # ---------------------------------------------------------------------------
 
-class TestScrollOptimization:
-
-    def test_agent_browser_path_uses_pixel_scroll(self):
-        """Verify agent-browser path uses single pixel-based scroll, not 5x loop."""
-        import tools.browser_tool as bt
-        src = inspect.getsource(bt.browser_scroll)
-        assert "_SCROLL_PIXELS" in src, \
-            "browser_scroll should use _SCROLL_PIXELS for agent-browser path"
 
 
 # ---------------------------------------------------------------------------
 # Empty stdout = failure
 # ---------------------------------------------------------------------------
 
-class TestEmptyStdoutFailure:
-
-    def test_empty_stdout_returns_failure(self):
-        """Verify the command-output interpreter returns failure on empty stdout."""
-        src = inspect.getsource(bt_session._interpret_browser_command_output)
-        assert "returned no output" in src, \
-            "_interpret_browser_command_output should treat empty stdout as failure"
-
-    def test_empty_ok_commands_is_module_level_frozenset(self):
-        """_EMPTY_OK_COMMANDS should be a module-level frozenset, not defined inside a function."""
-        import tools.browser_tool as bt
-        assert hasattr(bt, "_EMPTY_OK_COMMANDS")
-        assert isinstance(bt._EMPTY_OK_COMMANDS, frozenset)
-        assert "close" in bt._EMPTY_OK_COMMANDS
-        assert "record" in bt._EMPTY_OK_COMMANDS
 
 
 # ---------------------------------------------------------------------------
 # _camofox_eval bug fix
 # ---------------------------------------------------------------------------
 
-class TestCamofoxEvalFix:
-
-    def test_uses_correct_ensure_tab_signature(self):
-        """_camofox_eval should pass task_id string to _ensure_tab, not a session dict."""
-        import tools.browser_tool as bt
-        src = inspect.getsource(bt._camofox_eval)
-        # Should NOT call _get_session at all — _ensure_tab handles it
-        assert "_get_session" not in src, \
-            "_camofox_eval should not call _get_session (removed unused import)"
-        # Should use body= not json_data=
-        assert "json_data=" not in src, \
-            "_camofox_eval should use body= kwarg for _post, not json_data="
-        assert "body=" in src

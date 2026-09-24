@@ -8,7 +8,6 @@ import argparse
 import sqlite3
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -26,8 +25,6 @@ def _wal_store(path):
 
 
 def _args(mode, db=None, force=True):
-    # --force only waives the Windows "no holder scan" refusal; on POSIX the scan still gates the flip,
-    # so passing it keeps the happy path exercised on every lane including windows-latest.
     return argparse.Namespace(sessions_action="set-journal-mode", mode=mode, db=db, force=force)
 
 
@@ -47,47 +44,58 @@ def test_set_journal_mode_converts_wal_store_offline(tmp_path, monkeypatch, caps
     assert "wal → delete" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="foreign_state_db_holders has no Windows scan; the --force refusal covers that lane")
-def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("force", [False, True], ids=["normal", "force"])
+def test_set_journal_mode_refuses_while_another_process_holds_the_store(
+    force, tmp_path, monkeypatch, capsys
+):
     db = tmp_path / "state.db"
     _wal_store(db)
     monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", db)
     holder = subprocess.Popen(
-        [sys.executable, "-c",
-         f"import sqlite3, time; c = sqlite3.connect({str(db)!r}); c.execute('SELECT 1'); time.sleep(60)"],
-        stdin=subprocess.DEVNULL,
+        [
+            sys.executable, "-c",
+            (
+                "import os,sqlite3,sys,time; "
+                "c=sqlite3.connect(sys.argv[1]); c.execute('SELECT 1'); "
+                "print(f'held:{os.getpid()}', flush=True); time.sleep(60)"
+            ),
+            str(db),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
     )
     try:
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not (tmp_path / "state.db-shm").exists():
-            time.sleep(0.05)
-        assert cmd_sessions(_args("delete", force=False)) == 1
+        marker, pid_text = holder.stdout.readline().strip().split(":", 1)
+        assert marker == "held"
+        sqlite_pid = int(pid_text)
+        # --force never waives a process the scan actually found.
+        assert cmd_sessions(_args("delete", force=force)) == 1
     finally:
         holder.kill()
         holder.wait()
 
     out = capsys.readouterr().out
-    assert f"pid {holder.pid}" in out
+    assert f"pid {sqlite_pid}" in out
     assert db.read_bytes()[18:20] == b"\x02\x02", "a refused switch must leave the file untouched"
 
+    # A failed scan (pid <= 0 sentinel) is refused too, and is the ONLY thing --force waives.
+    monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda path: [(-1, "scan failed")])
+    assert cmd_sessions(_args("delete", force=force)) == (0 if force else 1)
+    assert db.read_bytes()[18:20] == (b"\x01\x01" if force else b"\x02\x02")
+    assert ("scan: scan failed" in capsys.readouterr().out) is not force
 
-@pytest.mark.parametrize("target,current,platform,cross_vm,force,expected", [
-    # Windows has no holder scan (foreign_state_db_holders returns []): an empty list must never read
-    # as "nobody holds it", so the gate refuses instead of issuing a silent all-clear.
-    ("delete", "wal", "win32", False, False, "no holder scan"),
-    ("delete", "wal", "win32", False, True, None),
-    ("delete", "wal", "linux", False, False, None),
-    # WAL shared memory corrupts on virtiofs/9p, so ENABLING it there is refused, --force or not.
-    ("wal", "delete", "linux", True, False, "cross-VM filesystems"),
-    ("wal", "delete", "win32", True, True, "cross-VM filesystems"),
-    ("delete", "wal", "linux", True, False, None),
+
+@pytest.mark.parametrize("target,current,cross_vm,expected", [
+    ("delete", "wal", False, None),
+    # WAL shared memory corrupts on virtiofs/9p, so ENABLING it there is refused.
+    ("wal", "delete", True, "cross-VM filesystems"),
+    ("delete", "wal", True, None),
     # A garbage or unrecognised header is reported, never handed to sqlite3 for a raw traceback.
-    ("delete", "not-a-database", "linux", False, False, "not a Hermes SQLite store"),
-    ("delete", "unknown(3/3)", "linux", False, True, "not a Hermes SQLite store"),
+    ("delete", "not-a-database", False, "not a Hermes SQLite store"),
+    ("delete", "unknown(3/3)", False, "not a Hermes SQLite store"),
 ])
-def test_refusal_admission_invariants(target, current, platform, cross_vm, force, expected):
-    reason = _refusal(target, current, platform, on_cross_vm_fs=cross_vm, force=force)
+def test_refusal_admission_invariants(target, current, cross_vm, expected):
+    reason = _refusal(target, current, on_cross_vm_fs=cross_vm)
     if expected is None:
         assert reason is None
     else:

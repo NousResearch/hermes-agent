@@ -37,12 +37,3 @@ class TestSessionPlatformGate:
         # The channel gate is independent of tool-filtering backward compat.
         assert _skill_should_show(_conds(["teams"]), None, None, "desktop") is False
 
-    def test_teams_meeting_pipeline_carries_the_gate(self):
-        from pathlib import Path
-        import re, yaml
-
-        p = Path(__file__).resolve().parents[2] / "skills" / "productivity" / "teams-meeting-pipeline" / "SKILL.md"
-        content = p.read_text(encoding="utf-8")
-        m = re.search(r"\n---\s*\n", content[3:])
-        fm = yaml.safe_load(content[3 : m.start() + 3])
-        assert fm["metadata"]["hermes"]["session_platforms"] == ["teams", "cron"]

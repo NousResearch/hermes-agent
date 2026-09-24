@@ -62,6 +62,59 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 def _is_host_cwd(path: str) -> bool:
     return path.startswith(_HOST_CWD_PREFIXES) or bool(_WINDOWS_DRIVE_RE.match(path))
 
+
+def _is_windows_drive_path(path: str) -> bool:
+    """True for any ``D:\\...`` / ``e:/...`` path. Not a username check."""
+    return bool(path) and bool(_WINDOWS_DRIVE_RE.match(path))
+
+
+def _host_path_key(path: str) -> str:
+    """Compare host paths without caring about slash style or drive-letter case.
+
+    A trailing slash is not significant, except we never collapse a drive root
+    (``C:/``) into a bare ``C:`` that would prefix-match every path on that drive.
+    """
+    text = (path or "").replace("\\", "/")
+    if len(text) >= 2 and text[1] == ":":
+        text = text[0].lower() + text[1:]
+    if len(text) > 3:
+        text = text.rstrip("/")
+    return text
+
+
+def translate_mounted_host_path(path: str, host_root: str, container_root: str) -> str | None:
+    """Map *path* onto *container_root* when it is *host_root* or a child of it.
+
+    Returns None when *path* is not under that host directory. Slash style and
+    drive-letter case do not matter; a sibling directory (``proj`` vs ``proj-other``)
+    is not a child.
+    """
+    if not path or not host_root or not container_root:
+        return None
+    key = _host_path_key(path)
+    root = _host_path_key(host_root)
+    if not key or not root:
+        return None
+    mount = container_root.rstrip("/") or "/"
+    if key == root:
+        return mount
+    prefix = root if root.endswith("/") else root + "/"
+    if not key.startswith(prefix):
+        return None
+    return f"{mount}/{key[len(prefix):]}"
+
+
+def cwd_follows_host_mount(cwd: str, mount: str) -> bool:
+    """True when *cwd* was the host workspace (or the assumed ``/workspace`` view of it).
+
+    An explicit in-container path other than that assumption is left alone.
+    """
+    if not mount or not cwd or cwd == mount:
+        return False
+    if _is_unusable_container_cwd(cwd):
+        return True
+    return cwd == "/workspace" and mount != "/workspace"
+
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
 

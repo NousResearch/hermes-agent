@@ -179,7 +179,15 @@ async def test_telegram_stream_flood_sleeps_inline_and_retries_same_message(monk
     adapter._bot = MagicMock()
     ok = MagicMock()
     adapter._bot.edit_message_text = AsyncMock(side_effect=[FloodError("Retry after 33"), ok])
-    sleep = AsyncMock()
+    adapter._rich_send_disabled = True
+    adapter._bot.send_message = AsyncMock()
+    concurrent_sends = []
+
+    async def fake_sleep(_s):
+        if not concurrent_sends:  # a send during the held penalty
+            concurrent_sends.append(await adapter.send("123", "fallback final"))
+
+    sleep = AsyncMock(side_effect=fake_sleep)
     monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
 
     result = await adapter.edit_message("123", "456", "Final answer", finalize=False)
@@ -188,6 +196,30 @@ async def test_telegram_stream_flood_sleeps_inline_and_retries_same_message(monk
     assert result.message_id == "456"
     sleep.assert_awaited_once_with(33.0)
     assert adapter._bot.edit_message_text.await_count == 2
+    # A concurrent send neither fires into the penalty (#116312) nor sleeps past its 5s cap (#91969):
+    # it fails closed with the flood result so the gateway ledgers it.
+    assert concurrent_sends[0].error.startswith("flood_control:")
+    assert concurrent_sends[0].retry_after > 30
+    adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{"finalize": True}, {}])
+async def test_telegram_finalize_and_non_stream_edits_keep_short_flood_cap(monkeypatch, kwargs):
+    """Finalize (cancelled by turn cleanup after 5s) and heartbeat/progress edits never sleep 33s."""
+    class FloodError(Exception):
+        retry_after = 33.0
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._bot = MagicMock()
+    adapter._bot.edit_message_text = AsyncMock(side_effect=FloodError("Retry after 33"))
+    sleep = AsyncMock()
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
+
+    result = await adapter.edit_message("123", "456", "Final answer", **kwargs)
+
+    assert result.error == "flood_control:33.0"
+    sleep.assert_not_awaited()
 
 
 

@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from unittest.mock import AsyncMock, MagicMock
+
 from gateway.config import PlatformConfig
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -82,14 +84,12 @@ async def test_truncated_preview_never_confirms_unseen_tail():
 
 @pytest.mark.asyncio
 async def test_short_flood_retry_preserves_partial_preview_receipt():
-    from unittest.mock import AsyncMock, MagicMock
-
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token='offline-test'))
     adapter._bot = MagicMock()
     flood = FloodError()
     flood.retry_after = 0.001
     adapter._bot.edit_message_text = AsyncMock(side_effect=[flood, None])
     result = await adapter.edit_message('123', '1', 'preview text\n' * 700, finalize=False)
-    assert not result.success
-    assert result.raw_response['partial_overflow'] is True
+    assert result.success is True
+    assert result.raw_response['truncated_preview'] is True
     assert result.raw_response['delivered_prefix'] == adapter._bot.edit_message_text.call_args.kwargs['text']

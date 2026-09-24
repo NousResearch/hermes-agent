@@ -3699,6 +3699,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Shared per-chat budget (#116312): a send WAITS for its slot (a send that waits
         # is delivered; one that is skipped would drop a message).
         slot_remaining = self._chat_outbound_slot_remaining(chat_id)
+        if slot_remaining > _FLOOD_INLINE_WAIT_CAP_SECS:
+            # Slot held for a live edit flood penalty: keep send's 5s inline bound (#91969) and fail
+            # closed to the ledger exactly like an over-cap RetryAfter, never sleep it under the lock.
+            return self._record_send_flood_cooldown(chat_id, slot_remaining)
         if slot_remaining > 0:
             logger.debug(
                 "[%s] pacing send for chat %s (shared send+edit budget: slot in %.1fs)",
@@ -3863,7 +3867,8 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, message_id: str, content: str, *, finalize: Optional[bool] = None,
+        metadata: Optional[Dict[str, Any]] = None,
    ) -> SendResult:
         """Edit a previously sent Telegram message.
 
@@ -3922,17 +3927,21 @@ class TelegramAdapter(BasePlatformAdapter):
             # Saturated-preview dedup: past the cap every progressive edit truncates to the same text;
             # re-sending is a visual no-op that still burns flood budget (200s+ penalties).
             if self._last_overflow_preview.get(_preview_key) == content:
-                return self._stream_preview_partial_result(message_id, content)
+                return self._stream_preview_truncated_result(message_id, content)
         elif not finalize:
             # Content shrank back under the cap — clear stale saturation state so dedup can't mask an edit.
             self._last_overflow_preview.pop(_preview_key, None)
+
+        def _edited_ok(shown: str = content) -> SendResult:
+            if _saturated_preview:
+                self._last_overflow_preview[_preview_key] = shown  # saturated-preview dedup key
+                return self._stream_preview_truncated_result(message_id, shown)
+            return SendResult(success=True, message_id=message_id)
+
         try:
             if not finalize:
                 await self._edit_text(chat_id, message_id, content)
-                if _saturated_preview:
-                    self._last_overflow_preview[_preview_key] = content
-                    return self._stream_preview_partial_result(message_id, content)
-                return SendResult(success=True, message_id=message_id)
+                return _edited_ok()
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
                 "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
@@ -3940,9 +3949,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             err_str = str(e).lower()
             if "not modified" in err_str:
-                if _saturated_preview:
-                    return self._stream_preview_partial_result(message_id, content)
-                return SendResult(success=True, message_id=message_id)
+                return _edited_ok()
             # Reactive split: MarkdownV2 escapes can inflate the payload past the limit even when raw text fit.
             if "message_too_long" in err_str or "too long" in err_str:
                 logger.debug(
@@ -3952,35 +3959,39 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Mid-stream: truncate and retry instead of splitting (saturated-preview dedup as above).
                 # See #48648.
                 truncated = self._truncate_stream_overflow_preview(content)
+                _saturated_preview = True
                 if self._last_overflow_preview.get(_preview_key) == truncated:
-                    return self._stream_preview_partial_result(message_id, truncated)
+                    return self._stream_preview_truncated_result(message_id, truncated)
                 try:
                     await self._edit_text(chat_id, message_id, truncated)
                 except Exception as retry_err:
                     if "not modified" not in str(retry_err).lower():
                         raise
-                self._last_overflow_preview[_preview_key] = truncated
-                return self._stream_preview_partial_result(message_id, truncated)
+                return _edited_ok(truncated)
             # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
-            # to a normal final send instead of a clipped partial. Edits use their own ceiling (#102402):
-            # routine 18–35s stream penalties sleep inline and retry the same message_id.
+            # to a normal final send instead of a clipped partial. Interim stream edits (explicit
+            # finalize=False from the stream consumer) use their own ceiling (#102402): routine 18–35s
+            # penalties sleep inline and retry the same message_id. Finalize edits (turn cleanup cancels
+            # after 5s) and non-stream edits (heartbeat/progress, finalize unset) keep the 5s cap.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
-                if wait > _FLOOD_EDIT_INLINE_WAIT_CAP_SECS:
+                wait = float(retry_after) if retry_after else 1.0
+                cap = _FLOOD_EDIT_INLINE_WAIT_CAP_SECS if finalize is False else _FLOOD_INLINE_WAIT_CAP_SECS
+                if wait > cap:
                     # Log AFTER the cap check: "waiting 33.0s" followed by no wait misled an investigation.
                     logger.warning(
                         "[%s] Telegram flood control, refusing edit (retry_after %.1fs > %.0fs inline cap)",
-                        self.name, wait, _FLOOD_EDIT_INLINE_WAIT_CAP_SECS)
+                        self.name, wait, cap)
                     return _flood_cap_result(wait)
                 logger.warning("[%s] Telegram flood control, waiting %.1fs", self.name, wait)
+                # Hold the shared send+edit slot for the penalty so concurrent sends pace behind it
+                # instead of firing into the live flood window (#116312).
+                self._hold_chat_outbound_slot(chat_id, wait)
                 await asyncio.sleep(wait)
                 try:
                     await self._edit_text(chat_id, message_id, content)
-                    if _saturated_preview:
-                        self._last_overflow_preview[_preview_key] = content
-                        return self._stream_preview_partial_result(message_id, content)
-                    return SendResult(success=True, message_id=message_id)
+                    self._hold_chat_outbound_slot(chat_id)
+                    return _edited_ok()
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error("[%s] Edit retry failed after flood wait: %s", self.name, safe_retry_error)
@@ -4004,32 +4015,11 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Telegram message %s: %s", self.name, message_id, safe_error)
             return SendResult(success=False, error=safe_error)
 
-    def _stream_preview_partial_result(
-        self, message_id: str, delivered_prefix: str,
-    ) -> SendResult:
-        """Report a truncated mid-stream preview as partial delivery.
-
-        The preview edit succeeded (or deduped), but the screen holds only a
-        truncated prefix of the accumulated text.  Returning plain success
-        lets the stream consumer record the full text as visible; the gateway
-        then matches the final response against that bookkeeping and
-        suppresses the normal final send, so the truncated preview becomes
-        the only delivery the user ever sees.  Reuse the ``partial_overflow``
-        contract (see ``SendResult.raw_response`` docs): the consumer's
-        existing branch switches into fallback-final mode and delivers the
-        missing tail on completion.
-        """
-        return SendResult(
-            success=False,
-            message_id=message_id,
-            error="mid-stream preview truncated at platform limit",
-            error_kind="too_long",
-            raw_response={
-                "partial_overflow": True,
-                "last_message_id": message_id,
-                "delivered_prefix": delivered_prefix,
-            },
-        )
+    def _stream_preview_truncated_result(self, message_id: str, delivered_prefix: str) -> SendResult:
+        """Truncated mid-stream preview: success flagged ``skipped`` so the consumer keeps its visible prefix
+        (not the full text) and the finalize edit still runs and delivers the tail in place (#118372)."""
+        return SendResult(success=True, message_id=message_id, raw_response={
+            "skipped": True, "truncated_preview": True, "delivered_prefix": delivered_prefix})
 
     def _truncate_stream_overflow_preview(self, content: str) -> str:
         """One-message preview for oversized streaming edits (edits must keep targeting the original id;
@@ -5602,10 +5592,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return 0.0
         return remaining
 
-    def _hold_chat_outbound_slot(self, chat_id: Any) -> None:
-        """Arm/re-arm this chat's slot after an actual send/edit API call fires."""
+    def _hold_chat_outbound_slot(self, chat_id: Any, secs: Optional[float] = None) -> None:
+        """Arm/re-arm this chat's slot after an actual send/edit API call fires (or for ``secs``)."""
         slot_until: Dict[str, float] = self.__dict__.setdefault("_telegram_chat_outbound_slot_until", {})
-        budget = getattr(self, "_telegram_chat_outbound_slot_secs", _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS)
+        budget = secs if secs is not None else getattr(
+            self, "_telegram_chat_outbound_slot_secs", _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS)
         slot_until[str(normalize_telegram_chat_id(chat_id))] = (
             asyncio.get_running_loop().time() + max(0.0, budget))
 

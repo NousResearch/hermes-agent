@@ -24,9 +24,10 @@ from hermes_constants import get_hermes_home
 
 # A replay ``fit`` with no room: nothing is replayed.
 _NO_REPLAY = (0, 0, False, None)
-# How long a resize drag holds output before its next width change runs a recovery anyway
-# (seconds): output freezes this long plus one signal interval at most.
+# How long a resize drag holds output before its next width change runs a recovery anyway,
+# that long after the change (seconds): output freezes about their sum plus one signal interval.
 _RESIZE_HOLD_MAX = 0.85
+_RESIZE_SETTLE = 0.03
 
 
 def _is_eio(exc: BaseException) -> bool:
@@ -213,14 +214,14 @@ class CLITerminalMixin:
         3J the older transcript stays in scrollback, so the replay may only repaint what the
         viewport held (#95375); the viewport is erased row by row because CSI 2J makes
         scroll-on-clear terminals (tmux, VTE) copy the whole screen into scrollback first,
-        stacking a duplicate. With ``keep_above`` (a resize) and the whole history on screen,
-        only its rows and the chrome are erased — what sits above them (the startup banner) was
-        never recorded and a replay could not restore it. Counted as painted, the replay leaves the chrome's top at a known
-        row: the chrome is drawn from there to the bottom (``_set_chrome_floor``), where the next
-        count assumes it. A clear that fails replays nothing: the history is already on screen or
-        in scrollback.
+        stacking a duplicate. With ``keep_above`` (a resize), on a terminal that keeps rows in
+        place, and the whole history on screen, only its rows and the chrome are erased — what
+        sits above them (the startup banner) was never recorded and a replay could not restore
+        it. Counted as painted, the replay leaves the chrome's top at a known row: the chrome is
+        drawn from there to the bottom (``_set_chrome_floor``), where the next count assumes it.
+        A clear that fails replays nothing: the history is already on screen or in scrollback.
         """
-        from cli import _output_history_rows
+        from cli import _output_history_rows, _terminal_reflows
         if getattr(self, "_terminal_io_broken", False):
             return _NO_REPLAY
         try:
@@ -237,6 +238,8 @@ class CLITerminalMixin:
             else:
                 room, columns, painted = self._transcript_room(app)
                 room += _take_suspect_rows()
+                # Only where rows stay in place: the erase below counts up from the cursor.
+                keep_above = keep_above and _terminal_reflows() is False
                 history_rows = _output_history_rows(room, columns, painted) if keep_above else None
                 if keep_above and history_rows is not None:
                     # Rows stay where prompt_toolkit's cursor has them: its oldest row is
@@ -417,8 +420,9 @@ class CLITerminalMixin:
         every 250 ms, so mid-drag the width a recovery reads is stale — also over ssh from a
         tmux pane, where nothing says tmux is there (#95375). A width change also holds output
         paints and redraws until its recovery; while a drag keeps signalling, a recovery still
-        runs on the first width change after ``_RESIZE_HOLD_MAX`` seconds of holding, so output
-        never freezes for the whole drag. A signal that leaves the width alone holds nothing.
+        runs ``_RESIZE_SETTLE`` after the first width change once output was held for
+        ``_RESIZE_HOLD_MAX`` seconds, so output never freezes for the whole drag. A signal that
+        leaves the width alone holds nothing.
         """
         try:
             lock = getattr(self, "_resize_recovery_lock", None)
@@ -454,10 +458,10 @@ class CLITerminalMixin:
                     if isinstance(width, int) and width > 0:  # truncated rows at the narrowest
                         self._resize_narrowest = min(width, getattr(self, "_resize_narrowest", None) or width)
                     if now - self._resize_hold_since >= _RESIZE_HOLD_MAX:
-                        # Right after a width change, not on a timer: the next one of a drag is
-                        # then furthest away, and landing mid-recovery would truncate rows its
-                        # replay scrolls into scrollback.
-                        delay = 0.0
+                        # Shortly after a width change, not on a timer: between two of a drag,
+                        # once the terminal (a multiplexer re-wrapping its rows) has settled;
+                        # one landing mid-recovery would move rows under its erase and replay.
+                        delay = _RESIZE_SETTLE
                 self._restart_debounce_timer("_resize_recovery_timer", delay, _timer_fired)
         except Exception:
             self._resize_recovery_pending = False

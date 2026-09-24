@@ -11578,7 +11578,7 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
             }
         )
 
-        stored = home / "attachments" / "report.txt"
+        stored = home / "attachments" / server._sessions["sid"]["attachment_dir_token"] / "report.txt"
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
         assert resp["result"]["path"] == str(stored)
@@ -11612,7 +11612,7 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
             }
         )
 
-        stored = home / "attachments" / "outside.txt"
+        stored = home / "attachments" / server._sessions["sid"]["attachment_dir_token"] / "outside.txt"
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
         assert resp["result"]["ref_text"] == f"@file:{stored}"
@@ -11620,6 +11620,46 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
     finally:
         server._sessions.pop("sid", None)
 
+
+def test_file_attach_only_authorizes_own_staged_files(monkeypatch, tmp_path):
+    """A staged @file: expands, but a neighbor and another session's copy cannot."""
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "profile"
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    first = _session(cwd=str(workspace), profile_home=str(home))
+    second = _session(cwd=str(workspace), profile_home=str(home))
+    server._sessions["sid"] = first
+    token = set_hermes_home_override(home)
+    try:
+        response = server.handle_request({"id": "1", "method": "file.attach", "params": {
+            "session_id": "sid", "name": "pasted.txt", "data_url": "data:text/plain;base64,aGVsbG8="}})
+        assert response["result"]["attached"]
+        stored = Path(response["result"]["path"])
+        sibling = stored.parent / "other.txt"
+        sibling.write_text("not attached", encoding="utf-8")
+
+        def expand(path, session):
+            return preprocess_context_references(
+                f"@file:{path}", cwd=workspace, allowed_root=workspace,
+                allowed_files=session.get("staged_file_attachments", ()), context_length=10000)
+
+        assert "hello" in expand(stored, first).message
+        assert "outside the allowed workspace" in expand(stored, second).message
+        assert "outside the allowed workspace" in expand(sibling, first).message
+        secret = home / ".env"
+        secret.write_text("SECRET=private", encoding="utf-8")
+        first["staged_file_attachments"].add(secret.resolve())
+        assert "SECRET=private" not in expand(secret, first).message
+    finally:
+        reset_hermes_home_override(token)
+        server._sessions.pop("sid", None)
 
 def test_file_attach_uses_in_workspace_file_without_copying(monkeypatch, tmp_path):
     """Local case: file already inside the workspace → ref it directly, no copy."""
@@ -11707,7 +11747,8 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
             }
         )
 
-        stored = tmp_path / "home" / "attachments" / "my exam schedule.csv"
+        stored = (tmp_path / "home" / "attachments" /
+                  server._sessions["sid"]["attachment_dir_token"] / "my exam schedule.csv")
         assert resp["result"]["attached"] is True
         assert resp["result"]["ref_text"] == f"@file:`{stored}`"
         assert stored.read_text(encoding="utf-8") == "a,b\n"

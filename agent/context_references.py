@@ -13,7 +13,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
@@ -177,11 +177,12 @@ def parse_context_references(message: str) -> list[ContextReference]:
 
 def preprocess_context_references(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | None = None, allowed_files: Iterable[Path] = (),
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
-        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root
+        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher,
+        allowed_root=allowed_root, allowed_files=allowed_files
     )
     try:
         asyncio.get_running_loop()
@@ -197,7 +198,7 @@ def preprocess_context_references(
 
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | None = None, allowed_files: Iterable[Path] = (),
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -205,6 +206,7 @@ async def preprocess_context_references_async(
     cwd_path = Path(cwd).expanduser().resolve()
     # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
     allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+    staged_files = frozenset(Path(path).resolve() for path in allowed_files)
     # Expand concurrently (each ref is independent; several @url: refs would otherwise
     # serialize web_extract round-trips). gather preserves order, so warnings/blocks
     # are assembled in ref order; the token-budget check runs once afterwards.
@@ -212,7 +214,7 @@ async def preprocess_context_references_async(
     soft_limit = max(1, int(context_length * 0.25))
     tasks = (
         _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
-                          max_inline_tokens=hard_limit)
+                          allowed_files=staged_files, max_inline_tokens=hard_limit)
         for ref in refs[:_MAX_EXPANDED_REFERENCES]
     )
     expanded = await asyncio.gather(*tasks)
@@ -257,11 +259,12 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 
 async def _expand_reference(
     ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
-    max_inline_tokens: int | None = None,
+    allowed_files: frozenset[Path] = frozenset(), max_inline_tokens: int | None = None,
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
-            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
+            return _expand_path_reference(ref, cwd, allowed_root=allowed_root,
+                                          allowed_files=allowed_files, max_inline_tokens=max_inline_tokens)
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
@@ -284,10 +287,12 @@ async def _expand_reference(
 
 
 def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
+                           allowed_files: frozenset[Path] = frozenset(),
                            max_inline_tokens: int | None = None) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
-    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root,
+                         allowed_files=allowed_files if not is_folder else frozenset())
     _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: {ref.kind} not found", None
@@ -459,7 +464,8 @@ def _composer_paste_roots() -> list[Path]:
     return [hermes_dir / COMPOSER_PASTES_DIRNAME for hermes_dir in _hermes_dirs()]
 
 
-def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None,
+                  allowed_files: frozenset[Path] = frozenset()) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
@@ -468,6 +474,7 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
         allowed_root is not None
         and not _is_under(resolved, allowed_root)
         and not any(_is_under(resolved, root) for root in _composer_paste_roots())
+        and resolved not in allowed_files
     ):
         raise ValueError("path is outside the allowed workspace")
     return resolved

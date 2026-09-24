@@ -173,7 +173,9 @@ def _stage_session_file_attachment(
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
-    root = _session_home_dir(session, "attachments")
+    import uuid
+    root = _session_home_dir(session, "attachments") / session.setdefault(
+        "attachment_dir_token", uuid.uuid4().hex)
     root.mkdir(parents=True, exist_ok=True)
     filename = _sanitize_attachment_name(filename)
     target = root / filename
@@ -184,7 +186,9 @@ def _stage_session_file_attachment(
         while (target := root / f"{stem}-{counter}{suffix}").exists():
             counter += 1
     target.write_bytes(payload)
-    return target.resolve(), True
+    stored = target.resolve()
+    session.setdefault("staged_file_attachments", set()).add(stored)
+    return stored, True
 
 
 def register(server) -> None:

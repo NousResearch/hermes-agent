@@ -80,6 +80,10 @@ class TestIsStructuredOutputRejection:
         "Gemini HTTP 400 (INVALID_ARGUMENT): Function calling with a response mime type: 'application/json' is unsupported",
         "Gemini HTTP 400 (INVALID_ARGUMENT): Invalid JSON payload received. Unknown name \"response_json_schema\" at 'generation_config'",
         "Gemini HTTP 400 (INVALID_ARGUMENT): Invalid value at 'generation_config.response_schema.properties[0].value.type'",
+        # OpenCode Zen/Go relay: json_schema rejected for a model without the capability, body is a
+        # bare {"model": ...} echo with no error struct and no marker (#121973, both observed renderings)
+        "Error code: 400 - {'model': 'deepseek-v4.1-flash'}",
+        'Auxiliary title generation failed: HTTP 400: {"model":"deepseek-v4.1-flash"}',
     ])
     def test_matches_real_provider_messages(self, message):
         assert _is_structured_output_rejection(RuntimeError(message)) is True
@@ -93,6 +97,11 @@ class TestIsStructuredOutputRejection:
         "Connection reset by peer",
         # Alternation errors that happen to mention messages
         "messages: Extra inputs are not permitted",
+        # 400s that carry a real error struct say why they failed; only the echo shape counts
+        "Error code: 400 - {'error': {'message': 'Model not found', 'type': 'invalid_request_error'}}",
+        "Error code: 400 - {'model': 'x', 'error': 'bad request'}",
+        # An echo of an empty model name matches nothing
+        "Error code: 400 - {'model': ''}",
     ])
     def test_does_not_match_unrelated_errors(self, message):
         assert _is_structured_output_rejection(RuntimeError(message)) is False
@@ -101,6 +110,9 @@ class TestIsStructuredOutputRejection:
         exc = RuntimeError("output_config: Extra inputs are not permitted")
         exc.status_code = 500
         assert _is_structured_output_rejection(exc) is False
+        echo_at_500 = RuntimeError("Error code: 400 - {'model': 'deepseek-v4.1-flash'}")
+        echo_at_500.status_code = 500
+        assert _is_structured_output_rejection(echo_at_500) is False
 
 
 class TestWithoutStructuredOutputFormat:

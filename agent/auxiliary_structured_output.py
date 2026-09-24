@@ -22,7 +22,10 @@ must be false"), which the ladder still retries once but which say nothing about
 """
 from __future__ import annotations
 
+import ast
+import json
 import logging
+import re
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
@@ -37,6 +40,10 @@ _CAPABILITY_REJECTION_MARKERS = (
     "unsupported_parameter", "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "extra inputs are not permitted",
 )
+
+# A 400 status line whose trailing brace payload is the whole error body, on either rendering the
+# logs show (the SDK's ``Error code: 400 - {...}`` repr or the ``HTTP 400: {...}`` JSON form).
+_BARE_ECHO_400 = re.compile(r"400\s*[-:]\s*(\{.*\})\s*$")
 
 
 def _route_key(provider: Optional[str], base_url: Optional[str]) -> str:
@@ -68,13 +75,45 @@ def _profile_unsupported_formats(provider: Optional[str], base_url: Optional[str
     return tuple(getattr(profile, "unsupported_response_formats", ()) or ()) if profile is not None else ()
 
 
+def is_bare_model_echo_rejection(error: Optional[BaseException]) -> bool:
+    """Whether *error* is a 400 whose entire body is a ``{"model": ...}`` echo — no error struct, no
+    marker wording. OpenCode's Zen/Go relay rejects ``response_format: json_schema`` for models without
+    the capability with exactly this shape (#121973), so no marker-based branch hears it. The recovery
+    rung that consumes this only fires when the request actually carried a structured-output field
+    (the strip returns None otherwise), keeping an unrelated bare 400 from being rerouted."""
+    if error is None:
+        return False
+    status = getattr(error, "status_code", None)
+    if status is not None and status != 400:
+        return False
+    match = _BARE_ECHO_400.search(str(error))
+    if not match:
+        return False
+    body = None
+    for parse in (json.loads, ast.literal_eval):
+        try:
+            body = parse(match.group(1))
+        except (ValueError, SyntaxError, TypeError):
+            continue
+        if isinstance(body, dict):
+            break
+    return (
+        isinstance(body, dict)
+        and set(body) == {"model"}
+        and bool(str(body["model"]).strip())
+    )
+
+
 def is_capability_rejection(error: Optional[BaseException]) -> bool:
     """Whether a structured-output rejection speaks to the route/model's capability (memoisable) rather
     than to this request's schema (retry once, remember nothing)."""
     err_lower = str(error or "").lower()
     if "invalid schema" in err_lower:
         return False
-    return any(marker in err_lower for marker in _CAPABILITY_REJECTION_MARKERS)
+    if any(marker in err_lower for marker in _CAPABILITY_REJECTION_MARKERS):
+        return True
+    # The bare-model echo names no wording at all, yet still speaks to the model's capability.
+    return is_bare_model_echo_rejection(error)
 
 
 def remember_structured_output_rejection(

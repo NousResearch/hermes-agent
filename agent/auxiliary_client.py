@@ -32,7 +32,10 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
-from agent.auxiliary_structured_output import remember_structured_output_rejection
+from agent.auxiliary_structured_output import (
+    is_bare_model_echo_rejection,
+    remember_structured_output_rejection,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -3356,6 +3359,11 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     # "Unknown name"/"Invalid value" 400 on response_schema / response_json_schema for a schema the
     # surface cannot express. Same remedy: one retry without the format.
     if _contains_any(err_lower, ("response mime type", "response_schema", "response_json_schema")):
+        return True
+    # OpenCode's Zen/Go relay rejects json_schema for models without the capability with a 400 whose
+    # whole body is a {"model": ...} echo — no field name, no marker (#121973). The rung's strip only
+    # returns kwargs when the request actually carried the field, so this cannot reroute an unrelated 400.
+    if is_bare_model_echo_rejection(exc):
         return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 

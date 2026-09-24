@@ -3458,6 +3458,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 events.enqueue("assistant.commentary", {
                     "message_id": message_id, "text": text, "already_streamed": bool(already_streamed)})
 
+        approval_notify = self._register_session_stream_approval(run_id, events, message_id)
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -3469,7 +3471,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
-                    active_run_id=run_id, **ctx["run_kwargs"])
+                    active_run_id=run_id, approval_notify_callback=approval_notify,
+                    approval_session_key=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3500,6 +3503,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
                 self._active_run_agents.pop(run_id, None)
+                self._run_approval_sessions.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
@@ -3535,6 +3539,26 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    def _register_session_stream_approval(self, run_id: str, events: "_SessionEventQueue", message_id: str):
+        """Route a session-stream turn's dangerous-command approvals to its SSE queue and to
+        ``POST /v1/runs/{run_id}/approval`` (#58856). Keyed by the run id (never the shared
+        session key) so concurrent turns on one session can't cross-resolve."""
+        self._run_approval_sessions[run_id] = run_id
+
+        def _approval_notify(approval_data: Dict[str, Any]) -> None:
+            event = dict(approval_data or {})
+            if "command" in event:
+                from gateway.run import _redact_approval_command
+                event["command"] = _redact_approval_command(event.get("command"))
+            event.update({
+                "message_id": message_id,
+                "choices": _approval_event_choices(
+                    smart_denied=bool(event.get("smart_denied")),
+                    allow_session=event.get("allow_session") is not False,
+                    allow_permanent=event.get("allow_permanent") is not False)})
+            events.enqueue("approval.request", event)  # executor thread -> loop hop inside
+        return _approval_notify
 
     async def _drain_session_stream_task_on_disconnect(
         self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool

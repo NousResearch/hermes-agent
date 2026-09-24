@@ -74,15 +74,15 @@ def test_allowlist_matches_identity_not_profile_when_both_are_present(hermes_hom
     estop.engage(allow={"user_ids": [OPERATOR]}, reason="window")
 
     assert _gate(user_id=OPERATOR, profile="some-other-profile") is None
-    assert _gate(user_id=PEER, profile="platform-coder") is not None
+    assert _gate(user_id=PEER, profile="other-lane") is not None
 
 
 def test_profile_key_is_the_secondary_fallback_for_a_lane(hermes_home):
     """A maintenance lane can be admitted by profile when its user id is not the operator's."""
-    estop.engage(allow={"profiles": ["platform-stl"]}, reason="window")
+    estop.engage(allow={"profiles": ["primary-lane"]}, reason="window")
 
-    assert _gate(user_id=PEER, profile="platform-stl") is None
-    assert _gate(user_id=PEER, profile="research-coder") is not None
+    assert _gate(user_id=PEER, profile="primary-lane") is None
+    assert _gate(user_id=PEER, profile="other-lane") is not None
 
 
 def test_missing_allowlist_admits_nobody(hermes_home):

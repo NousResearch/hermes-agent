@@ -852,10 +852,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     _explicit = (agent.provider or "").strip().lower()
     from hermes_cli.fallback_config import fallback_halt_active
 
+    _fallback_chain = _fallback_entries(fallback_model)
     _halt_active, _halt_message = fallback_halt_active()
-    if _halt_active:
+    if _halt_active and _fallback_chain:
         logger.warning(_halt_message)
-    _fallback_chain = [] if _halt_active else _fallback_entries(fallback_model)
+        _fallback_chain = []
     _refused_entries = []
     for _fb in _fallback_chain:
         _fb_provider = str(_fb["provider"])

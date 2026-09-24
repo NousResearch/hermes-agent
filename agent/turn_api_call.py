@@ -260,7 +260,13 @@ def nous_rate_limit_guard(
                         reset=anon_auth.friendly_wait(_nous_remaining))
                 else:
                     _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
-                agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
+                has_pending_fallback = getattr(agent, "_has_pending_fallback", None)
+                fallback_pending = (
+                    bool(has_pending_fallback()) if callable(has_pending_fallback) else True
+                )
+                agent._buffer_vprint(
+                    f"⏳ {_nous_msg}" + (" Trying fallback..." if fallback_pending else "")
+                )
                 agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():
                     active_system_prompt = _arm_fallback_restart(

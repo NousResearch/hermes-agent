@@ -1755,10 +1755,11 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         chain = _job_fallback_chain(job, jc.cfg) or []
-        halt_active, halt_message = fallback_halt_active()
-        if halt_active and chain:
-            logger.warning("Job '%s': %s Primary provider error: %s", job_id, halt_message, resolve_exc)
-            raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+        if chain:
+            halt_active, halt_message = fallback_halt_active()
+            if halt_active:
+                logger.warning("Job '%s': %s Primary provider error: %s", job_id, halt_message, resolve_exc)
+                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
         logger.warning(
             "Job '%s': primary provider resolve failed (%s: %s), %s",
             job_id, "auth" if is_auth else "transient network", resolve_exc,

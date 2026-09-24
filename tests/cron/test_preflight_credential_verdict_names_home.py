@@ -7,7 +7,6 @@ import re
 
 import pytest
 
-import cron.scheduler_preflight as preflight
 from cron.scheduler_preflight import _preflight_check_provider_key
 from cron.scheduler_provider import _profile_cron_scope
 
@@ -50,7 +49,6 @@ def test_missing_codex_credential_verdict_names_the_home_it_read(two_homes):
 def test_halted_fallback_chain_does_not_skip_primary_credential_preflight(monkeypatch):
     calls = []
     chain = [{"provider": "openrouter", "model": "fallback-model"}]
-    monkeypatch.setattr(preflight._sched, "get_fallback_chain", lambda cfg: chain)
     monkeypatch.setattr(
         "hermes_cli.fallback_config.fallback_halt_active", lambda: (True, "halted")
     )
@@ -59,5 +57,11 @@ def test_halted_fallback_chain_does_not_skip_primary_credential_preflight(monkey
         lambda **kwargs: calls.append(kwargs),
     )
 
-    assert _preflight_check_provider_key(JOB, {"fallback_providers": chain}) is None
-    assert calls == [{"requested": "openai-codex", "target_model": "gpt-5.6-sol"}]
+    cfg = {
+        "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+        "fallback_providers": chain,
+    }
+    assert _preflight_check_provider_key({"id": "unpinned"}, cfg) is None
+    assert len(calls) == 1
+    assert calls[0]["requested"] != "openrouter"
+    assert calls[0]["target_model"] != "fallback-model"

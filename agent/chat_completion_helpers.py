@@ -2030,7 +2030,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     from hermes_cli.fallback_config import fallback_halt_active
 
     halt_active, halt_message = fallback_halt_active()
-    if halt_active:
+    raw_pending = getattr(agent, "_fallback_index", 0) < len(
+        getattr(agent, "_fallback_chain", None) or []
+    )
+    if halt_active and raw_pending:
         agent._emit_diagnostic_status(halt_message)
         return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset

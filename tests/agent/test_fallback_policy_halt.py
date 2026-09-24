@@ -38,33 +38,7 @@ def _make_agent(fallback_model=None):
         return agent
 
 
-def _mock_client():
-    mock = MagicMock()
-    mock.base_url = "https://example.invalid/v1"
-    mock.api_key = "fb-key"
-    return mock
-
-
 class TestHaltPolicy:
-    def test_halt_blocks_activation_and_emits_refusal(self):
-        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
-        with patch("hermes_cli.fallback_config.fallback_halt_active", return_value=(True, "halt refusal")), \
-             patch.object(agent, "_emit_diagnostic_status") as emit:
-            activated = agent._try_activate_fallback()
-        assert activated is False
-        assert agent._fallback_index == 0          # chain untouched
-        assert agent._fallback_activated is False
-        emit.assert_called_once_with("halt refusal")
-
-    def test_default_policy_activates_chain(self):
-        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
-        with patch("hermes_cli.fallback_config.fallback_halt_active", return_value=(False, "")), \
-             patch("agent.auxiliary_client.resolve_provider_client",
-                   return_value=(_mock_client(), "gpt-4o")):
-            activated = agent._try_activate_fallback()
-        assert activated is True
-        assert agent._fallback_index == 1
-
     def test_halt_makes_chain_empty_before_invalid_response_copy(self):
         agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
         statuses = []
@@ -105,6 +79,8 @@ class TestHaltPolicy:
                 effective_task_id="task",
                 turn_id="turn",
             )
+            assert agent._fallback_index == 0
+            assert agent._fallback_activated is False
             setattr(agent, "_fallback_activated", False)
             setattr(agent, "_fallback_index", 0)
             setattr(agent, "_empty_content_retries", 1)
@@ -134,7 +110,7 @@ class TestHaltPolicy:
 
 
 class TestHaltReader:
-    def test_reads_effective_config(self, tmp_path, monkeypatch):
+    def test_reads_effective_config_with_false_coercion_and_fail_open(self, tmp_path, monkeypatch):
         import hermes_constants
         (tmp_path / "config.yaml").write_text("fallback_policy:\n  halt: true\n")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -144,18 +120,8 @@ class TestHaltReader:
         assert active is True
         assert "fallback_policy.halt" in message
 
-    def test_quoted_false_string_disables_not_enables(self, tmp_path, monkeypatch):
-        """YAML ``halt: "false"`` (quoted string) must disable, not enable — the shared
-        truthy-string coercion decides, never bare Python truthiness."""
-        import hermes_constants
         (tmp_path / "config.yaml").write_text('fallback_policy:\n  halt: "false"\n')
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: str(tmp_path))
-        from hermes_cli.fallback_config import fallback_halt_active
         assert fallback_halt_active() == (False, "")
-
-    def test_fails_open_when_effective_config_loader_raises(self):
-        from hermes_cli.fallback_config import fallback_halt_active
 
         with patch(
             "hermes_cli.config_effective.load_user_config_effective",

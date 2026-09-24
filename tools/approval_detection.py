@@ -1130,8 +1130,13 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 
 def _is_shell_comment_start(command: str, index: int) -> bool:
-    return command[index] == "#" and (index == 0 or command[index - 1].isspace()
-                                      or command[index - 1] in ";&|()<>")
+    # Bash opens a comment only at a word start: string start, IFS whitespace
+    # (space/tab/newline — NOT \r, NBSP, \v, \f, which are ordinary word chars)
+    # or a command operator. `)` is excluded (#121759): it closes `$(...)`,
+    # so `echo hi\r#x; reboot` and `$(...)\r#x; ...` hide a real `;` tail
+    # inside a fake comment span. `(` stays: `$(#...)` is a genuine comment.
+    return command[index] == "#" and (
+        index == 0 or command[index - 1] in " \t\n;&|(<>")
 
 
 def _iter_shell_command_starts(command: str):

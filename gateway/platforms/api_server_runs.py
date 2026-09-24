@@ -358,8 +358,10 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
     if record is None:
         return None
     status = dict(record["status"])
-    if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
-        int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
+    owner_alive = record.get("owner_alive")
+    if owner_alive is None:
+        owner_alive = _owner_alive(int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0))
+    if status.get("status") not in TERMINAL_STATUSES and not owner_alive:
         status.update(
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())

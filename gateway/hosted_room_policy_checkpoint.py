@@ -113,6 +113,10 @@ class HostedRoomPolicyCheckpoint:
         # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
         from hermes_cli.sqlite_util import open_db
 
+        from gateway.hosted_rooms_postgres import open_database
+        postgres = open_database(self.db_path)
+        if postgres is not None:
+            return postgres
         return open_db(self.db_path, db_label="shared-state.db (room policy checkpoint)", busy_timeout_ms=10_000)
 
     def _transaction(self):
@@ -123,9 +127,9 @@ class HostedRoomPolicyCheckpoint:
     @staticmethod
     def _store_active_event(
         conn: sqlite3.Connection, *, event: Mapping[str, Any], thread_id: str, discussion_event_id: str) -> None:
-        conn.execute("""INSERT OR IGNORE INTO hosted_room_policy_events(
+        conn.execute("""INSERT INTO hosted_room_policy_events(
                    room_id, thread_id, discussion_event_id, seq, event_json
-               ) VALUES (?, ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
             (event["room_id"], thread_id, discussion_event_id, int(event["seq"]), compact_json(dict(event))))
 
     @staticmethod
@@ -218,9 +222,9 @@ class HostedRoomPolicyCheckpoint:
         task_id = _text(payload, "task_id")
         execution_generation = int(payload.get("execution_generation") or 0) if kind == "turn.deferred" else 0
         if task_id:
-            conn.execute("""INSERT OR IGNORE INTO hosted_room_policy_publications(
+            conn.execute("""INSERT INTO hosted_room_policy_publications(
                        room_id, task_id, kind, execution_generation, seq
-                   ) VALUES (?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
                 (room_id, task_id, kind, execution_generation, seq))
         member_id = _text(payload, "member_id")
         seen_through_seq = int(payload.get("seen_through_seq") or 0)
@@ -234,7 +238,7 @@ class HostedRoomPolicyCheckpoint:
                        room_id, thread_id, member_id, seen_through_seq
                    ) VALUES (?, ?, ?, ?)
                    ON CONFLICT(room_id, thread_id, member_id) DO UPDATE SET
-                       seen_through_seq=MAX(hosted_room_policy_watermarks.seen_through_seq, excluded.seen_through_seq)""",
+                       seen_through_seq=CASE WHEN hosted_room_policy_watermarks.seen_through_seq > excluded.seen_through_seq THEN hosted_room_policy_watermarks.seen_through_seq ELSE excluded.seen_through_seq END""",
                 (room_id, thread_id, member_id, seen_through_seq))
 
     def _apply_room_activity(
@@ -246,7 +250,7 @@ class HostedRoomPolicyCheckpoint:
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         conn.execute("""UPDATE hosted_room_policy_cursors
-               SET stopped_through_seq=MAX(stopped_through_seq, ?) WHERE room_id=?""",
+               SET stopped_through_seq=(SELECT CASE WHEN stopped_through_seq > bound THEN stopped_through_seq ELSE bound END FROM (SELECT ? AS bound) AS limits) WHERE room_id=?""",
             (int(event["seq"]), str(event["room_id"])))
 
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
@@ -263,9 +267,9 @@ class HostedRoomPolicyCheckpoint:
     def _ensure_cursor_and_transcript(self, conn: sqlite3.Connection, room_id: str) -> int:
         """Create the room cursor if absent, backfill the transcript once, return through_seq."""
         _require_room(conn, room_id)
-        conn.execute("""INSERT OR IGNORE INTO hosted_room_policy_cursors(
+        conn.execute("""INSERT INTO hosted_room_policy_cursors(
                    room_id, through_seq, stopped_through_seq, updated_at
-               ) VALUES (?, 0, 0, 0)""", (room_id,))
+               ) VALUES (?, 0, 0, 0) ON CONFLICT DO NOTHING""", (room_id,))
         cursor = int(
             conn.execute("SELECT through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()[
                 "through_seq"])
@@ -282,7 +286,8 @@ class HostedRoomPolicyCheckpoint:
     def sync(self, *, room_id: str, latest_seq: int) -> int:
         """Materialize each unseen event exactly once by durable cursor."""
         with self._transaction() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            if getattr(conn, "backend", "sqlite") != "postgres":
+                conn.execute("BEGIN IMMEDIATE")
             cursor = self._ensure_cursor_and_transcript(conn, room_id)
         if cursor > latest_seq:
             raise RuntimeError("room policy cursor is ahead of the durable log")
@@ -294,7 +299,8 @@ class HostedRoomPolicyCheckpoint:
             if not rows or next_cursor <= cursor:
                 raise RuntimeError("hosted room policy cursor did not advance")
             with self._transaction() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                if getattr(conn, "backend", "sqlite") != "postgres":
+                    conn.execute("BEGIN IMMEDIATE")
                 _require_room(conn, room_id)
                 for event in rows:
                     self._apply_event(conn, event)

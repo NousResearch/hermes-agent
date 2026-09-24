@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -60,6 +61,8 @@ _STALE_CHECK_INTERVAL = 30.0
 _STALE_IDLE_SECONDS = 450.0
 _STALE_IN_TOOL_SECONDS = 1200.0
 _STALL_GRACE_SECONDS = 120.0
+_OWNER_LEASE_SECONDS = 120.0
+_OWNER_TOKEN = uuid.uuid4().hex
 
 _monitor_lock = threading.Lock()
 _monitor_thread: Optional[threading.Thread] = None
@@ -115,10 +118,23 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     reconcile_state_schema(conn)
 
 
+@contextmanager
 def _transaction():
+    from hermes_state_backend import resolve_database_settings
     from hermes_cli.sqlite_util import transaction
-
-    return transaction(_connect())
+    path = _db_path()
+    settings = resolve_database_settings(path)
+    if settings.backend == "postgres":
+        from hermes_state_registry import acquire, release_or_close
+        database = acquire(path)
+        try:
+            with database._write_ctx(lock_scope="async_delegations") as connection:
+                yield connection
+        finally:
+            release_or_close(database)
+        return
+    with transaction(_connect()) as connection:
+        yield connection
 
 
 def _capture_routing_origin() -> Dict[str, Any]:
@@ -148,15 +164,32 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
     except OSError:
         pass
     with _DB_LOCK, _transaction() as conn:
-        conn.execute("""INSERT OR REPLACE INTO async_delegations
+        postgres = getattr(conn, "backend", "sqlite") == "postgres"
+        owner_columns = ", owner_token, owner_lease_expires_at" if postgres else ""
+        owner_values = ", ?, ?" if postgres else ""
+        owner_update = (
+            ", owner_token=excluded.owner_token, owner_lease_expires_at=excluded.owner_lease_expires_at"
+            if postgres else ""
+        )
+        conn.execute(f"""INSERT INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id{owner_columns})
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?{owner_values})
+               ON CONFLICT(delegation_id) DO UPDATE SET
+                 origin_session=excluded.origin_session,
+                 origin_ui_session_id=excluded.origin_ui_session_id,
+                 parent_session_id=excluded.parent_session_id,
+                 state=excluded.state, dispatched_at=excluded.dispatched_at,
+                 updated_at=excluded.updated_at, delivery_state=excluded.delivery_state,
+                 delivery_attempts=excluded.delivery_attempts, owner_pid=excluded.owner_pid,
+                 owner_started_at=excluded.owner_started_at, task_json=excluded.task_json,
+                 origin_session_id=excluded.origin_session_id{owner_update}""",
             (record["delegation_id"], record.get("session_key", ""), record.get("origin_ui_session_id", ""),
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
-             json.dumps(task_payload), record.get("origin_session_id", "")))
+             json.dumps(task_payload), record.get("origin_session_id", ""),
+             *((_OWNER_TOKEN, now + _OWNER_LEASE_SECONDS) if postgres else ())))
     _prune_durable_records()
 
 
@@ -234,15 +267,20 @@ def recover_abandoned_delegations() -> int:
         return 0
     now, recovered = time.time(), 0
     with _DB_LOCK, _transaction() as conn:
+        postgres = getattr(conn, "backend", "sqlite") == "postgres"
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id, result_json, state
+                      owner_started_at, task_json, origin_session_id, result_json, state"""
+               + (", owner_lease_expires_at" if postgres else "") + """
                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
         for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
-            if pid and _pid_exists(int(pid)) and (
-                started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0)
-            ):
+            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row[:11]
+            owner_alive = row[11] is not None and float(row[11]) > now if postgres else (
+                pid and _pid_exists(int(pid)) and (
+                    started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0)
+                )
+            )
+            if owner_alive:
                 continue
             task = json.loads(task_json or "{}")
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
@@ -392,7 +430,8 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 def defer_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Return an unadmitted completion to pending without spending a delivery attempt."""
     return _update_delivery("""UPDATE async_delegations SET delivery_claim=NULL,
-                  delivery_claimed_at=NULL, delivery_attempts=MAX(0, delivery_attempts-1),
+                  delivery_claimed_at=NULL,
+                  delivery_attempts=CASE WHEN delivery_attempts > 0 THEN delivery_attempts-1 ELSE 0 END,
                   updated_at=?
            WHERE delegation_id=? AND delivery_state='pending' AND delivery_claim=?""",
         (time.time(), delegation_id, claim_id))
@@ -629,8 +668,7 @@ def _dispatch_admitted(
         with _DB_LOCK, _transaction() as conn:
             conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
         return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
-    if progress_fn is not None:
-        _ensure_stale_monitor()
+    _ensure_stale_monitor()
     return {"status": "dispatched", "delegation_id": delegation_id}
 
 
@@ -834,10 +872,12 @@ def _sweep_stale_locked(now: float):
             if now - (record.get("_interrupted_at") or now) >= _STALL_GRACE_SECONDS:
                 expired.append(record["delegation_id"])
             continue
-        progress_fn = record.get("progress_fn")
-        if status != "running" or progress_fn is None:
+        if status != "running":
             continue
         any_monitorable = True
+        progress_fn = record.get("progress_fn")
+        if progress_fn is None:
+            continue
         if not record.get("_started"):
             continue  # queued behind a full pool: not stalled, but keep the monitor alive for when it starts
         try:
@@ -879,6 +919,16 @@ def _stale_monitor_loop() -> None:
     grace window is force-finalized with a terminal ``stalled`` event."""
     while not _monitor_stop.wait(_STALE_CHECK_INTERVAL):
         now = time.time()
+        try:
+            with _DB_LOCK, _transaction() as connection:
+                if getattr(connection, "backend", "sqlite") == "postgres":
+                    connection.execute(
+                        "UPDATE async_delegations SET owner_lease_expires_at=? "
+                        "WHERE owner_token=? AND state IN ('running','finalizing')",
+                        (now + _OWNER_LEASE_SECONDS, _OWNER_TOKEN),
+                    )
+        except Exception:
+            logger.warning("Could not renew async delegation ownership leases", exc_info=True)
         with _records_lock:
             stalled, expired, any_monitorable = _sweep_stale_locked(now)
         for delegation_id, quiet_for, in_tool in stalled:

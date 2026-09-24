@@ -703,9 +703,11 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+from gateway.platforms.api_server_postgres import response_transaction
+
+
 class ResponseStore:
-    """SQLite-backed LRU store for Responses API state (full conversation history per response
-    for ``previous_response_id`` chaining). Persists across restarts; in-memory fallback."""
+    """Durable LRU store for Responses API state and ``previous_response_id`` chaining."""
 
     def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
         self._max_size = max_size
@@ -715,6 +717,15 @@ class ResponseStore:
                 from hermes_cli.config import get_hermes_home
                 db_path = str(get_hermes_home() / "response_store.db")
         self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
+        from hermes_state_backend import resolve_database_settings
+        settings = resolve_database_settings(db_path)
+        if settings.backend == "postgres":
+            from hermes_cli.postgres_util import connect
+            from gateway.platforms.api_server_postgres import RESPONSE_SCHEMA
+            self._conn = connect(settings, "api_responses", initialize=lambda conn: conn.executescript(RESPONSE_SCHEMA))
+            self._postgres_lock = threading.RLock()
+            self._db_path = None
+            return
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
@@ -728,7 +739,7 @@ class ResponseStore:
             "response_id TEXT PRIMARY KEY, data TEXT NOT NULL, accessed_at REAL NOT NULL)")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS conversations (name TEXT PRIMARY KEY, response_id TEXT NOT NULL)")
-        self._conn.commit()
+        self._commit()
         # Conversation history lives here: owner-only perms, once at init (not per commit).
         self._tighten_file_permissions()
 
@@ -743,6 +754,11 @@ class ResponseStore:
             except OSError:
                 logger.debug("Failed to restrict response store permissions for %s", candidate, exc_info=True)
 
+    def _commit(self):
+        if getattr(self._conn, "backend", "sqlite") != "postgres":
+            self._conn.commit()
+
+    @response_transaction
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
         row = self._conn.execute(
@@ -752,19 +768,21 @@ class ResponseStore:
         self._conn.execute(
             "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
             (time.time(), response_id))
-        self._conn.commit()
+        self._commit()
         try:
             return json.loads(row[0])
         except (json.JSONDecodeError, TypeError):
             logger.warning("Corrupted JSON in response store for id=%s, evicting entry", response_id)
             self._conn.execute("DELETE FROM responses WHERE response_id = ?", (response_id,))
-            self._conn.commit()
+            self._commit()
             return None
 
+    @response_transaction
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
+            "INSERT INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(response_id) DO UPDATE SET data=excluded.data, accessed_at=excluded.accessed_at",
             (response_id, json.dumps(data, default=str), time.time()))
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
@@ -776,30 +794,34 @@ class ResponseStore:
                 # Conversation mappings pointing at evicted responses go too.
                 self._conn.execute(f"DELETE FROM conversations WHERE response_id IN ({placeholders})", evict_ids)
                 self._conn.execute(f"DELETE FROM responses WHERE response_id IN ({placeholders})", evict_ids)
-        self._conn.commit()
+        self._commit()
 
+    @response_transaction
     def delete(self, response_id: str) -> bool:
         """Remove a response (and conversation mappings to it). True if found and deleted."""
         self._conn.execute("DELETE FROM conversations WHERE response_id = ?", (response_id,))
         cursor = self._conn.execute("DELETE FROM responses WHERE response_id = ?", (response_id,))
-        self._conn.commit()
+        self._commit()
         return cursor.rowcount > 0
 
+    @response_transaction
     def get_conversation(self, name: str) -> Optional[str]:
         """Get the latest response_id for a conversation name."""
         row = self._conn.execute("SELECT response_id FROM conversations WHERE name = ?", (name,)).fetchone()
         return row[0] if row else None
 
+    @response_transaction
     def set_conversation(self, name: str, response_id: str) -> None:
         """Map a conversation name to its latest response_id."""
-        self._conn.execute("INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)", (name, response_id))
-        self._conn.commit()
+        self._conn.execute("INSERT INTO conversations (name, response_id) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET response_id=excluded.response_id", (name, response_id))
+        self._commit()
 
     def close(self) -> None:
         """Close the database connection."""
         with suppress(Exception):
             self._conn.close()
 
+    @response_transaction
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
         return row[0] if row else 0

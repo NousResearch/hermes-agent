@@ -118,6 +118,11 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     idempotent (``CREATE TABLE IF NOT EXISTS`` + additive migrations) and cached per-path per-process.
     """
     path = db_path if db_path is not None else projects_db_path()
+    from hermes_state_backend import resolve_database_settings
+    settings = resolve_database_settings(path)
+    if settings.backend == "postgres":
+        from hermes_cli.postgres_util import connect as open_postgres
+        return open_postgres(settings, "projects", initialize=lambda conn: conn.executescript(SCHEMA_SQL))
     resolved = str(path.resolve())
 
     def _initialize(conn: sqlite3.Connection) -> None:
@@ -311,7 +316,8 @@ def add_folder(conn: sqlite3.Connection, project_id: str, path: str, *, label: O
         raise ValueError(f"no such project: {project_id}")
     with write_txn(conn):
         conn.execute(
-            "INSERT OR IGNORE INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, 0, ?)",
+            "INSERT INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, 0, ?) "
+            "ON CONFLICT (project_id, path) DO NOTHING",
             (project_id, norm, label, _now()),
         )
         if label is not None:

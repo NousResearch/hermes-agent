@@ -89,8 +89,28 @@ limit.
 
 ## Database Settings
 
-The `database:` section controls how Hermes opens its SQLite state database
-(`state.db`), which stores sessions, messages, and gateway routing:
+The `database:` section selects SQLite (the default) or PostgreSQL 17 or later for
+Hermes database state. This includes sessions and messages, gateway delivery and
+hosted-room coordination, API response and run-idempotency records, projects,
+shared metrics, cron runtime ledgers, Kanban rows, verification evidence, Discord
+recovery, plugin databases, and the optional Holographic and RetainDB stores.
+PostgreSQL requires the optional `postgres` install extra and
+`HERMES_DATABASE_URL` in the profile's `.env`:
+
+```yaml
+database:
+  backend: postgres
+  schema: hermes_personal
+```
+
+Kanban is shared across profiles, so it reads this setting and `.env` from the
+shared Hermes root. It creates an isolated schema for every board. Matrix E2EE
+uses a profile-scoped PostgreSQL schema when this backend is selected. Model
+credentials, configuration, cron definitions, skills, logs, attachments, Kanban
+workspaces, and worker files remain on the filesystem.
+
+SQLite-specific durability settings remain available when `backend` is omitted or
+set to `sqlite`:
 
 ```yaml
 database:

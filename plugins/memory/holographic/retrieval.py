@@ -169,9 +169,20 @@ class FactRetriever:
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:
         """Raw FTS5 MATCH candidates with rank normalized to [0, 1] as 'fts_rank'."""
         category_clause = "AND f.category = ? " if category else ""
-        params = [self._sanitize_fts_query(query)] + ([category] if category else []) + [min_trust, limit]
-        sql = ("SELECT f.*, facts_fts.rank as fts_rank_raw FROM facts_fts JOIN facts f ON f.fact_id = facts_fts.rowid "
-               f"WHERE facts_fts MATCH ? {category_clause}AND f.trust_score >= ? ORDER BY facts_fts.rank LIMIT ?")
+        if getattr(self.store._conn, "backend", "sqlite") == "postgres":
+            params = [query] + ([category] if category else []) + [min_trust, limit]
+            vector = "to_tsvector('simple', f.content || ' ' || f.tags)"
+            query_sql = "plainto_tsquery('simple', ?)"
+            sql = (
+                f"SELECT f.*, ts_rank({vector}, {query_sql}) AS fts_rank_raw FROM facts f "
+                f"WHERE {vector} @@ {query_sql} {category_clause}"
+                "AND f.trust_score >= ? ORDER BY fts_rank_raw DESC LIMIT ?"
+            )
+            params.insert(1, query)
+        else:
+            params = [self._sanitize_fts_query(query)] + ([category] if category else []) + [min_trust, limit]
+            sql = ("SELECT f.*, facts_fts.rank as fts_rank_raw FROM facts_fts JOIN facts f ON f.fact_id = facts_fts.rowid "
+                   f"WHERE facts_fts MATCH ? {category_clause}AND f.trust_score >= ? ORDER BY facts_fts.rank LIMIT ?")
         try:
             results = [dict(row) for row in self.store._conn.execute(sql, params).fetchall()]
         except Exception:

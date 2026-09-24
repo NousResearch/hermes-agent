@@ -226,12 +226,23 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
     b-tree pages.  ``quick_check(1)`` stops at the first problem (~2s on a healthy
     500MB store): cheap once per unclean boot, too costly every boot.  Opened
     normally: a WAL store needs its -shm sidecar for read-only, and the PRAGMA writes nothing.
-
     Holds a phase-owned startup-watchdog lease for the check duration
     (renewed from a SQLite progress handler, #115542) so a long healthy check
     on a huge store is not mistaken for a parked deadlock.
+
+    PostgreSQL checks connectivity and the session schema, not server page integrity.
     """
     path = _home_path(home, "state.db")
+    try:
+        from hermes_state_backend import resolve_database_settings
+        settings = resolve_database_settings(path)
+        if settings.backend == "postgres":
+            from hermes_state import SessionDB
+            with SessionDB(path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
+                conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
+            return "ok"
+    except Exception as exc:
+        return f"check-failed: {type(exc).__name__}"
     if not path.exists():
         return "absent"
     try:

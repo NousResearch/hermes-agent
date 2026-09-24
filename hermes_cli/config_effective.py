@@ -55,8 +55,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     here, so ``{}`` sentinels and presence-sensitive bridges keep working. An absent file is an
     empty user layer (the managed layer still applies). Returns a fresh deepcopy.
 
-    Broken YAML: ``fail_closed=True`` raises the parse error (for callers that keep their own
-    last-good state); otherwise the last successfully parsed user file — in-process first, then
+    Broken YAML: ``fail_closed=True`` reads afresh and rejects parse errors or non-mapping roots
+    (for callers making authority decisions or keeping their own last-good state); otherwise
+    the last successfully parsed user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
     Cached on the user + managed file signatures and the values of every referenced env var."""
@@ -66,14 +67,14 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
+        if not fail_closed and cached is not None and cache_sig is not None and cached[:8] == cache_sig:
             if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
                 return copy.deepcopy(cached[8])
 
         raw: Dict[str, Any] = {}
         recovered = False
         raw_hit = _config._RAW_CONFIG_CACHE.get(path_key)
-        if user_sig is not None and raw_hit is not None and raw_hit[:4] == user_sig:
+        if not fail_closed and user_sig is not None and raw_hit is not None and raw_hit[:4] == user_sig:
             raw = copy.deepcopy(raw_hit[4])  # one parse per process, shared with read_raw_config()
             _LAST_GOOD_USER_RAW.setdefault(path_key, copy.deepcopy(raw))
         elif user_sig is not None:
@@ -85,6 +86,8 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                     raise
                 raw, recovered = _recover_user_raw(config_path, path_key, exc), True
             else:
+                if fail_closed and loaded is not None and not isinstance(loaded, dict):
+                    raise ValueError("config.yaml must contain a mapping at the top level")
                 raw = loaded if isinstance(loaded, dict) else {}
                 _config._RAW_CONFIG_CACHE[path_key] = (*user_sig, copy.deepcopy(raw))
                 _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)

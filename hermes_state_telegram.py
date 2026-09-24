@@ -107,8 +107,8 @@ class SessionTelegramTopicsMixin:
         write-only migration is never reached and topic mode silently reads as off forever."""
         try:
             return read()
-        except sqlite3.OperationalError as exc:
-            if "no such column: profile_name" not in str(exc):
+        except self.database_operational_errors as exc:
+            if not isinstance(exc, sqlite3.OperationalError) or "no such column: profile_name" not in str(exc):
                 return empty
         try:
             self.apply_telegram_topic_migration()
@@ -211,7 +211,7 @@ class SessionTelegramTopicsMixin:
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
 
         def _do(conn):
-            with contextlib.suppress(sqlite3.OperationalError):
+            with contextlib.suppress(*self.database_operational_errors):
                 conn.execute(
                     "UPDATE telegram_dm_topic_mode SET enabled = 0, updated_at = ? "
                     "WHERE profile_name = ? AND chat_id = ?",
@@ -287,13 +287,14 @@ class SessionTelegramTopicsMixin:
                     DELETE FROM telegram_dm_topic_bindings
                     WHERE profile_name = ? AND chat_id = ? AND thread_id = ?
                     """, (profile_name, chat_id, thread_id)).rowcount or 0
-            except sqlite3.OperationalError:
+            except self.database_operational_errors:
                 return 0
             if not deleted:
                 return 0
             # Last binding gone → disable topic mode in the same transaction (no
             # read-after-prune race). telegram_dm_topic_mode absent — binding prune still stands.
-            with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("SAVEPOINT topic_mode_cleanup")
+            try:
                 remaining = conn.execute("""
                     SELECT 1 FROM telegram_dm_topic_bindings
                     WHERE profile_name = ? AND chat_id = ? LIMIT 1
@@ -304,6 +305,10 @@ class SessionTelegramTopicsMixin:
                         "WHERE profile_name = ? AND chat_id = ?",
                         (time.time(), profile_name, chat_id),
                     )
+            except self.database_operational_errors:
+                conn.execute("ROLLBACK TO SAVEPOINT topic_mode_cleanup")
+            finally:
+                conn.execute("RELEASE SAVEPOINT topic_mode_cleanup")
             return deleted
 
         return self._execute_write(_do)
@@ -364,14 +369,11 @@ class SessionTelegramTopicsMixin:
         See #76423.
         """
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        with self._read_ctx() as conn:
-            try:
-                rows = conn.execute(
-                    _UNLINKED_SELECT_HEAD + _UNLINKED_SCOPE_CLAUSES + _UNLINKED_SELECT_TAIL,
-                    (str(user_id), profile_name, int(limit)),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                rows = conn.execute(
-                    _UNLINKED_SELECT_HEAD + _UNLINKED_SELECT_TAIL, (str(user_id), int(limit)),
-                ).fetchall()
+        try:
+            rows = self._read_all(
+                _UNLINKED_SELECT_HEAD + _UNLINKED_SCOPE_CLAUSES + _UNLINKED_SELECT_TAIL,
+                (str(user_id), profile_name, int(limit)),
+            )
+        except self.database_operational_errors:
+            rows = self._read_all(_UNLINKED_SELECT_HEAD + _UNLINKED_SELECT_TAIL, (str(user_id), int(limit)))
         return [self._rich_row(row) for row in rows]

@@ -116,17 +116,28 @@ def _pet_changed_payload() -> dict:
 
 
 def _sessions_sig():
-    """Newest mtime across state.db + WAL: the one thing messaging-gateway turns and cron runs
-    all move. Served sibling profile homes are probed too, else a routed Bot Chat never refreshes.
+    """Per-profile revisions detect writes made by other gateway/CLI processes."""
+    import hashlib
 
-    signal. Messaging-gateway turns and cron runs are written by OTHER processes that never touch this
-    gateway's transports; the shared SQLite file is the one thing they all move (#58671). A backend serving
-    several profiles owns one store per profile, so every served sibling home is
-    """
-    return _newest_mtime_ns(
-        root / name
-        for root in (_watcher_home(), *_served_profile_homes)
-        for name in ("state.db", "state.db-wal"))
+    from hermes_state import SessionDB
+    from hermes_state_backend import resolve_database_settings
+
+    signatures = []
+    for home in sorted({_watcher_home(), *_served_profile_homes}, key=str):
+        path = home / "state.db"
+        try:
+            settings = resolve_database_settings(path)
+            if settings.backend == "postgres":
+                with SessionDB(path, read_only=True, database_settings=settings) as db:
+                    revision = db.get_change_revision()
+                database_id = hashlib.sha256(settings.database_url.encode()).hexdigest()
+                signature = ("postgres", database_id, settings.schema, revision)
+            else:
+                signature = _newest_mtime_ns((path, home / "state.db-wal"))
+        except Exception:
+            signature = "unavailable"
+        signatures.append((str(home), signature))
+    return tuple(signatures)
 
 
 def _pairing_sig():

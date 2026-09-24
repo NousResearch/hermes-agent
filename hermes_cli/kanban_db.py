@@ -1,12 +1,12 @@
-"""SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
+"""Durable Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
 back-compat), other boards at ``<root>/kanban/boards/<slug>/``; a worker on one board never sees
 another. Board resolution: ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` (pins the
 file path) > ``<root>/kanban/current`` > ``default``; the dispatcher injects these into workers.
-Concurrency: WAL + ``BEGIN IMMEDIATE`` + compare-and-swap on ``tasks.status``/``claim_lock`` —
-SQLite serializes writers so one claimer wins, losers see zero rows (no retries, no distributed
-locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attachments, notify subs.
+SQLite uses WAL + ``BEGIN IMMEDIATE``; PostgreSQL uses per-board advisory locks. Both keep the
+existing compare-and-swap transitions on ``tasks.status``/``claim_lock`` so one claimer wins.
+Schema: tasks, task_links, task_comments, task_events, task_runs, attachments, notify subs.
 """
 
 from __future__ import annotations
@@ -68,6 +68,15 @@ def _json_dict(value: Any) -> dict:
     """Decode a JSON text column that must be an object; anything else yields ``{}``."""
     parsed = _json_or(value, {})
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _is_integrity_error(conn: Any, exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    if getattr(conn, "backend", "sqlite") != "postgres":
+        return False
+    import psycopg
+    return isinstance(exc, psycopg.IntegrityError)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -556,6 +565,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
+        "database_id": DEFAULT_BOARD if slug == DEFAULT_BOARD else None,
         "created_at": None,
         "archived": False,
     }
@@ -587,6 +597,8 @@ def write_board_metadata(
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
     meta.pop("db_path", None)
+    if not meta.get("database_id"):
+        meta["database_id"] = secrets.token_hex(16)
     if name is not None:
         meta["name"] = str(name).strip() or _default_board_display_name(slug)
     for key, value in (("description", description), ("icon", icon), ("color", color)):
@@ -606,6 +618,17 @@ def write_board_metadata(
     )
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
+
+
+def board_database_id(board: Optional[str] = None) -> str:
+    """Durable identity used for a board's PostgreSQL schema."""
+    slug = _slug_or_default(board)
+    if slug == DEFAULT_BOARD:
+        return DEFAULT_BOARD
+    database_id = read_board_metadata(slug).get("database_id")
+    if database_id:
+        return str(database_id)
+    return str(write_board_metadata(slug).get("database_id"))
 
 
 def create_board(
@@ -678,6 +701,9 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
             suffix += 1
         d.rename(target)
         return {"slug": normed, "action": "archived", "new_path": str(target)}
+    from hermes_cli.kanban_db_postgres import drop_board, uses_postgres
+    if uses_postgres():
+        drop_board(normed)
     import shutil
     shutil.rmtree(d)
     return {"slug": normed, "action": "deleted", "new_path": ""}
@@ -1416,8 +1442,8 @@ def create_task(
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
-        except sqlite3.IntegrityError:
-            if attempt == 1:
+        except Exception as exc:
+            if not _is_integrity_error(conn, exc) or attempt == 1:
                 raise
     raise RuntimeError("unreachable")
 
@@ -1437,7 +1463,8 @@ def _project_branch_name(project_obj: Any, task_id: str, title: Optional[str]) -
 
 def _link(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+        "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?) "
+        "ON CONFLICT (parent_id, child_id) DO NOTHING",
         (parent_id, child_id),
     )
 
@@ -1477,7 +1504,7 @@ def _inherit_notify_subs(
     placeholders = ",".join("?" * len(parent_ids))
     conn.execute(
         f"""
-        INSERT OR IGNORE INTO kanban_notify_subs
+        INSERT INTO kanban_notify_subs
             (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
              chat_type, notifier_profile, delivery_mode, delivery_metadata,
              created_at, last_event_id)
@@ -1486,6 +1513,7 @@ def _inherit_notify_subs(
                COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
           FROM kanban_notify_subs
          WHERE task_id IN ({placeholders})
+        ON CONFLICT (task_id, platform, chat_id, thread_id) DO NOTHING
         """,
         (child_id, int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
     )
@@ -1760,6 +1788,14 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 
 # --- Comments & events ---
 
+def _insert_generated_id(conn: sqlite3.Connection, statement: str, params: tuple) -> int:
+    """Insert one identity row and return its id on either database backend."""
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        row = conn.execute(statement.rstrip() + " RETURNING id", params).fetchone()
+        return int(row["id"])
+    cursor = conn.execute(statement, params)
+    return int(cursor.lastrowid or 0)
+
 def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
     if not body or not body.strip():
         raise ValueError("comment body is required")
@@ -1770,12 +1806,14 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
     # compose comment writes under one outer commit.
     with write_txn(conn, allow_nested=True):
         _require_task(conn, task_id)
-        cur = conn.execute(
+        comment_id = _insert_generated_id(
+            conn,
             "INSERT INTO task_comments (task_id, author, body, created_at) "
-            "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
+            "VALUES (?, ?, ?, ?)",
+            (task_id, author.strip(), body.strip(), now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
-        return int(cur.lastrowid or 0)
+        return comment_id
 
 
 def _require_task(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1878,7 +1916,8 @@ def add_attachment(
     now = int(time.time())
     with write_txn(conn):
         _require_task(conn, task_id)
-        cur = conn.execute(
+        attachment_id = _insert_generated_id(
+            conn,
             "INSERT INTO task_attachments "
             "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1888,7 +1927,7 @@ def add_attachment(
             conn, task_id, "attached",
             {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
         )
-        return int(cur.lastrowid or 0)
+        return attachment_id
 
 
 def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]:
@@ -2048,7 +2087,8 @@ def _synthesize_ended_run(
     if profile is _UNSET:
         profile = trow["assignee"] if trow else None
     step_key = trow["current_step_key"] if trow else None
-    cur = conn.execute(
+    return _insert_generated_id(
+        conn,
         """
         INSERT INTO task_runs (
             task_id, profile, step_key,
@@ -2062,7 +2102,6 @@ def _synthesize_ended_run(
             now, now,
         ),
     )
-    return int(cur.lastrowid or 0)
 
 
 # --- Dependency resolution (todo -> ready) ---
@@ -2238,7 +2277,8 @@ def _claim_and_open_run(
         "SELECT assignee, max_runtime_seconds, current_step_key "
         "FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
-    run_cur = conn.execute(
+    run_id = _insert_generated_id(
+        conn,
         """
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
@@ -2251,7 +2291,6 @@ def _claim_and_open_run(
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
         ),
     )
-    run_id = run_cur.lastrowid
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",

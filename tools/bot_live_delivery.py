@@ -33,11 +33,14 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
     from hermes_cli.active_sessions import active_session_registry_snapshot
     from hermes_state import SessionDB
+    from hermes_state_backend import resolve_database_settings
 
     home = Path(profile_home).resolve()
-    if not (home / "state.db").is_file():
+    db_path = home / "state.db"
+    settings = resolve_database_settings(db_path)
+    if settings.backend == "sqlite" and not db_path.is_file():
         return None
-    db = SessionDB(db_path=home / "state.db", read_only=True)
+    db = SessionDB(db_path=db_path, read_only=True, database_settings=settings)
     try:
         row = db.get_session_by_title("Bot Chat")
         session_id = db.get_compression_tip(row["id"]) if row else None

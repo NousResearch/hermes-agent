@@ -207,8 +207,8 @@ def _create_task_table(conn: sqlite3.Connection, table: str = "hosted_room_drive
             execution_generation INTEGER NOT NULL DEFAULT 0 CHECK (execution_generation >= 0),
             cancel_generation INTEGER NOT NULL DEFAULT 0 CHECK (cancel_generation >= 0),
             run_gateway_id TEXT, run_process_generation TEXT, run_lease_generation INTEGER, cancel_id TEXT,
-            settlement_id TEXT, settlement_status TEXT, result_json TEXT, created_at REAL NOT NULL,
-            updated_at REAL NOT NULL, started_at REAL, terminal_at REAL, indeterminate_at REAL,
+            settlement_id TEXT, settlement_status TEXT, result_json TEXT, created_at DOUBLE PRECISION NOT NULL,
+            updated_at DOUBLE PRECISION NOT NULL, started_at DOUBLE PRECISION, terminal_at DOUBLE PRECISION, indeterminate_at DOUBLE PRECISION,
             PRIMARY KEY (room_id, task_id), UNIQUE (room_id, thread_id, turn_id),
             FOREIGN KEY (room_id) REFERENCES hosted_rooms(room_id))""")
 
@@ -218,7 +218,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             room_id TEXT PRIMARY KEY, gateway_id TEXT NOT NULL,
             authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1), process_generation TEXT NOT NULL,
             lease_generation INTEGER NOT NULL CHECK (lease_generation >= 1),
-            expires_at REAL NOT NULL, acquired_at REAL NOT NULL, updated_at REAL NOT NULL, released_at REAL,
+            expires_at DOUBLE PRECISION NOT NULL, acquired_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL, released_at DOUBLE PRECISION,
             FOREIGN KEY (room_id) REFERENCES hosted_rooms(room_id))""")
     _create_task_table(conn)
     _validate_schema(conn)
@@ -231,6 +231,8 @@ def _validate_schema(conn: sqlite3.Connection) -> None:
         raise DriverStateError(
             "unsupported unpublished hosted-room driver schema; "
             "recreate the driver tables before starting the driver")
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        return
     for table in ("hosted_room_driver_leases", "hosted_room_driver_tasks"):
         if not any(
             row[2] == "hosted_rooms" and row[3] == "room_id" and row[4] == "room_id"
@@ -263,6 +265,10 @@ def _migrate_task_status_constraint(conn: sqlite3.Connection) -> None:
 def _connect(db_path: DbPath) -> sqlite3.Connection:
     """Open the store; existing tables are validated (after the status-constraint migration when needed).
     The driver schema never shipped, so an incompatible draft fails closed in ``_validate_schema``."""
+    from gateway.hosted_rooms_postgres import open_database
+    postgres = open_database(db_path)
+    if postgres is not None:
+        return postgres
     existing: list[bool] = []
     def ready(conn: sqlite3.Connection) -> bool:
         existing.append(_schema_objects_exist(conn))
@@ -836,9 +842,8 @@ def prune_published_terminal_tasks(
         raise DriverValidationError("retention_seconds must be positive")
     _bounded_int(retain, message="retain must be a non-negative integer")
     with _transaction(db_path) as conn:
-        publications = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_policy_publications'").fetchone()
-        if publications is None:
+        from gateway.hosted_rooms_common import table_exists
+        if not table_exists(conn, "hosted_room_policy_publications"):
             return 0
         rows = conn.execute("""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
                 WHERE t.room_id=? AND t.status IN ('settled', 'failed', 'cancelled')

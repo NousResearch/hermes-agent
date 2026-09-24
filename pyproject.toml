@@ -201,6 +201,7 @@ dependencies = [
 uvloop = [
   "uvloop>=0.15.1,<0.24; sys_platform != 'win32' and sys_platform != 'cygwin' and sys_platform != 'android' and platform_python_implementation != 'PyPy'",
 ]
+postgres = ["psycopg[binary]>=3.3.4,<4", "psycopg-pool>=3.3.0,<4"]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452

@@ -150,7 +150,7 @@ def reconcile_send_consent(
     connection.execute(
         """
         INSERT INTO consent_marks(name, stamp) VALUES ('obs', ?)
-        ON CONFLICT(name) DO UPDATE SET stamp = MAX(stamp, excluded.stamp)
+        ON CONFLICT(name) DO UPDATE SET stamp = CASE WHEN consent_marks.stamp > excluded.stamp THEN consent_marks.stamp ELSE excluded.stamp END
         """,
         (stamp,),
     )
@@ -173,7 +173,7 @@ def reconcile_send_consent(
         else:
             connection.execute(
                 "UPDATE send_consent_windows"
-                " SET last_confirmed_at = MAX(last_confirmed_at, ?)"
+                " SET last_confirmed_at = (SELECT CASE WHEN last_confirmed_at > bound THEN last_confirmed_at ELSE bound END FROM (SELECT ? AS bound) AS limits)"
                 " WHERE rowid = ?",
                 (obs, open_row[0]),
             )
@@ -185,7 +185,7 @@ def reconcile_send_consent(
         # revoke moment. A rolled-back clock only closes EARLIER — fail-closed.
         connection.execute(
             "UPDATE send_consent_windows"
-            " SET closed_at = MIN(last_confirmed_at, ?)"
+            " SET closed_at = (SELECT CASE WHEN last_confirmed_at < bound THEN last_confirmed_at ELSE bound END FROM (SELECT ? AS bound) AS limits)"
             " WHERE rowid = ?",
             (raw_stamp, open_row[0]),
         )

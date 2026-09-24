@@ -1,4 +1,4 @@
-"""Session Insights Engine: aggregates the SQLite state DB into usage insights (tokens, cost estimates, tool/skill
+"""Session Insights Engine: aggregates the session DB into usage insights (tokens, cost estimates, tool/skill
 usage, activity, model/platform breakdowns). ``InsightsEngine(db).generate(days=30)`` → ``format_terminal(report)``."""
 
 import json
@@ -83,7 +83,7 @@ def _scoped(before: str, after: str = "", *, src: str = " AND s.source = ?") -> 
 
 
 class InsightsEngine:
-    """Analyzes session history from a SessionDB (or raw sqlite3 connection)."""
+    """Analyzes session history from a SessionDB or SQLite connection owner."""
 
     _SESSION_COLS = ("id, source, model, started_at, ended_at, "
                      "message_count, tool_call_count, input_tokens, output_tokens, "
@@ -153,12 +153,14 @@ class InsightsEngine:
 
     def __init__(self, db):
         self.db = db
-        self._conn = db._conn
-        try:
-            self._has_assistant_calls_index = bool(self._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
-        except sqlite3.Error:
-            self._has_assistant_calls_index = False
+        self._conn = db._conn if getattr(db, "backend", "sqlite") == "sqlite" else None
+        self._has_assistant_calls_index = False
+        if self._conn is not None:
+            try:
+                self._has_assistant_calls_index = bool(self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
+            except sqlite3.Error:
+                pass
         if not self._has_assistant_calls_index:
             strip = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}"
             for base in self._PINNED:
@@ -168,7 +170,10 @@ class InsightsEngine:
     def _query(self, base: str, cutoff: float, source: Optional[str]) -> list:
         """Rows of ``<base>_WITH_SOURCE`` or ``<base>_ALL`` (instance attrs, so the unpinned fallback applies)."""
         sql, params = (getattr(self, base + "_WITH_SOURCE"), (cutoff, source)) if source else (getattr(self, base + "_ALL"), (cutoff,))
-        return self._conn.execute(sql, params).fetchall()
+        if self._conn is not None:
+            return self._conn.execute(sql, params).fetchall()
+        with self.db._read_ctx() as conn:
+            return conn.execute(sql, params).fetchall()
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""

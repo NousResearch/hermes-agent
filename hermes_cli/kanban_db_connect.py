@@ -1,4 +1,8 @@
-"""SQLite connection lifecycle for the Kanban DB: open/configure, cross-process init and dispatch-tick locks, WAL checkpoints, corruption detection + quarantine + repair, additive migrations and the busy-retrying ``write_txn`` boundary.
+"""Kanban connection routing and the SQLite connection lifecycle.
+
+PostgreSQL opens are delegated to ``kanban_db_postgres``. SQLite owns the
+open/configure path, cross-process locks, WAL checkpoints, corruption repair,
+additive migrations, and the busy-retrying ``write_txn`` boundary here.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
@@ -44,6 +48,25 @@ _CORRUPT_BACKUP_RETENTION = 10
 # then proceed without the lock (in-process _INIT_LOCK + idempotent init backstop).
 _INIT_LOCK_TIMEOUT_SECONDS = 10.0
 _INIT_LOCK_POLL_SECONDS = 0.05
+
+
+def uses_postgres(db_path: Optional[Path] = None) -> bool:
+    """Whether the root-shared Kanban store is configured for PostgreSQL."""
+    if str(db_path) == ":memory:":
+        return False
+    from hermes_cli import kanban_db_postgres as _pg
+    return _pg.uses_postgres()
+
+
+def storage_key(*, board: Optional[str] = None) -> str:
+    """Stable identity used to deduplicate one board's backing store."""
+    if uses_postgres():
+        from hermes_cli import kanban_db_postgres as _pg
+        return _pg.storage_key(board)
+    try:
+        return "sqlite:" + str(_kb.kanban_db_path(board=board).expanduser().resolve())
+    except Exception:
+        return "sqlite:" + str(_kb.kanban_db_path(board=board))
 
 
 def _resolve_busy_timeout_ms() -> int:
@@ -158,7 +181,7 @@ def _cross_process_init_lock(path: Path):
 
 
 @contextlib.contextmanager
-def _dispatch_tick_lock(db_path: Path):
+def _dispatch_tick_lock(db_path: Path, *, conn=None):
     """Non-blocking single-writer guard around one dispatcher tick; yields
     ``True`` if this process holds the board's ``.dispatch.lock``, else
     ``False`` (caller skips the tick).
@@ -177,6 +200,20 @@ def _dispatch_tick_lock(db_path: Path):
     lock is the defense-in-depth that prevents two dispatchers from ever writing concurrently *regardless of
     how the second one got there*.
     """
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        lock_name = f"{conn.schema}:dispatch"
+        acquired = bool(conn.execute(
+            "SELECT pg_try_advisory_lock(hashtextextended(?, 0))", (lock_name,),
+        ).fetchone()[0])
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(?, 0))", (lock_name,),
+                )
+        return
+
     lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
     handle = None
     acquired = False
@@ -225,6 +262,8 @@ def _maybe_checkpoint_wal(conn: sqlite3.Connection, db_path: Path) -> None:
     """``PRAGMA wal_checkpoint(PASSIVE)`` at most once per interval per board,
     from the dispatcher tick under the dispatch lock. Never raises: pure
     hygiene, must not fail a tick."""
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        return
     try:
         key = str(db_path.resolve())
     except OSError:
@@ -564,6 +603,7 @@ class RepairResult:
     post_repair_messages: list[str] = field(default_factory=list)
     backup_path: Optional[Path] = None
     reindexed: list[str] = field(default_factory=list)
+    backend: str = "sqlite"
 
 
 def repair_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> RepairResult:
@@ -575,6 +615,20 @@ def repair_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) ->
     (locked/busy) still propagates raw: a locked healthy DB must not be
     quarantined."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if str(path) != ":memory:":
+        from hermes_cli import kanban_db_postgres as _pg
+        if _pg.uses_postgres():
+            try:
+                with contextlib.closing(_pg.connect(board=board, read_only=True)) as conn:
+                    conn.execute("SELECT version FROM kanban_schema_version").fetchone()
+            except PermissionError:
+                return RepairResult(status="missing", db_path=path, backend="postgres")
+            return RepairResult(
+                status="ok",
+                db_path=path,
+                messages=[f"PostgreSQL schema {_pg.board_schema(board)} is reachable"],
+                backend="postgres",
+            )
     try:
         resolved = path.resolve()
     except OSError:
@@ -674,7 +728,15 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import kanban_path_is_fenced
-    if kanban_path_is_fenced(path):
+    fenced = kanban_path_is_fenced(path)
+    if str(path) != ":memory:":
+        from hermes_cli import kanban_db_postgres as _pg
+        if _pg.uses_postgres():
+            return _pg.connect(
+                board=board,
+                read_only=fenced,
+            )
+    if fenced:
         # Reads must not enter schema/backfill write transactions. Never create a
         # missing board or migrate on a descendant's behalf; the owner initializes it.
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
@@ -758,6 +820,11 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if str(path) != ":memory:":
+        from hermes_cli import kanban_db_postgres as _pg
+        if _pg.uses_postgres():
+            _pg.initialize_board(board)
+            return path
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:
@@ -1198,6 +1265,25 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     (``complete_task`` & co.) must never run under an open outer transaction,
     since those side effects would fire while the outer txn can still roll back.
     """
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        _kb._assert_not_delegated_child_mutation()
+        nested = bool(conn.in_transaction)
+        if nested and not allow_nested:
+            raise RuntimeError(
+                "write_txn: already inside a transaction. Nested composition "
+                "must opt in explicitly with write_txn(conn, allow_nested=True) "
+                "(savepoint semantics; the inner RELEASE is not durable until "
+                "the outer transaction commits)."
+            )
+        with conn.transaction():
+            if not nested:
+                conn.execute("SELECT set_config('lock_timeout', '120000', true)")
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                    (f"{conn.schema}:write",),
+                )
+            yield conn
+        return
     _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
     if getattr(conn, "in_transaction", False):
         if not allow_nested:

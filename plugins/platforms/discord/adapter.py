@@ -2738,7 +2738,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         def _op(conn):
             conn.execute(
-                "INSERT OR REPLACE INTO discord_recovery_scans (scan_id, started_at, status, channels, window_seconds, limit_count) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO discord_recovery_scans "
+                "(scan_id, started_at, status, channels, window_seconds, limit_count) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(scan_id) DO UPDATE SET "
+                "started_at=excluded.started_at, status=excluded.status, "
+                "channels=excluded.channels, window_seconds=excluded.window_seconds, "
+                "limit_count=excluded.limit_count",
                 (scan_id, now, "running", json.dumps(sorted(channels)), self._missed_message_backfill_window_seconds(), self._missed_message_backfill_limit()),
             )
         self._with_discord_recovery_db(_op)

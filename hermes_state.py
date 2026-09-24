@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""SQLite state store for Hermes Agent: session metadata, message history, model
-config, FTS5 search. WAL mode (concurrent readers + one writer); compression
-splits sessions via parent_session_id chains; sessions are source-tagged
-('cli', 'telegram', ...). Batch-runner / RL trajectories live elsewhere.
+"""Session storage for Hermes Agent, using SQLite by default or optional PostgreSQL.
+
+The shared API persists session metadata, messages, model configuration and search.
+Compression links sessions through parent_session_id; source tags identify callers.
+Batch-runner / RL trajectories live elsewhere.
 """
 
 import asyncio
@@ -454,7 +455,27 @@ class SessionDB(
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
     SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
 ):
-    """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
+    """Profile-scoped session API with SQLite storage by default and optional PostgreSQL."""
+
+    backend = "sqlite"
+    database_errors = (sqlite3.Error,)
+    database_operational_errors = (sqlite3.OperationalError,)
+    _unlimited_sql_limit = -1
+    _messages_session_index_hint = "INDEXED BY idx_messages_session_id"
+
+    def __new__(cls, db_path=None, read_only=False, *, database_settings=None):
+        if cls is SessionDB:
+            from hermes_state_backend import resolve_database_settings
+            settings = database_settings or resolve_database_settings(db_path or _default_db_path())
+            if settings.backend == "postgres":
+                try:
+                    from hermes_state_postgres import PostgresSessionDB
+                except ImportError as exc:
+                    raise RuntimeError("PostgreSQL support requires pip install 'hermes-agent[postgres]'") from exc
+                instance = object.__new__(PostgresSessionDB)
+                instance._database_settings = settings
+                return instance
+        return super().__new__(cls)
 
     # Only these state-owned producers join automatic stale-open reconciliation; messaging/UI
     # sources have their own lifecycle owners; unknown sources fail closed.
@@ -504,7 +525,7 @@ class SessionDB(
             return None
         prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
         conn.execute(
-            "INSERT OR IGNORE INTO system_prompts (hash, prompt) VALUES (?, ?)",
+            "INSERT INTO system_prompts (hash, prompt) VALUES (?, ?) ON CONFLICT DO NOTHING",
             (prompt_hash, system_prompt),
         )
         return prompt_hash
@@ -544,7 +565,7 @@ class SessionDB(
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(self, db_path: Path = None, read_only: bool = False, *, database_settings=None):
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only

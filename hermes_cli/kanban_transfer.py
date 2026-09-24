@@ -67,6 +67,17 @@ def _snapshot_db(source: Path, target: Path) -> None:
         src.backup(dst)
 
 
+def _snapshot_board(board: str, source: Path, target: Path) -> None:
+    """Create the archive's portable SQLite snapshot from either backend."""
+    if not kbc.uses_postgres():
+        _snapshot_db(source, target)
+        return
+    from hermes_cli.kanban_db_postgres import copy_postgres_to_sqlite
+
+    with kbc.connect_closing(board=board) as connection:
+        copy_postgres_to_sqlite(connection, target)
+
+
 def _scrub_local_state(conn: sqlite3.Connection) -> None:
     """Strip machine-local runtime state (claims, PIDs, and above all the
     gateway chat ids subscribed to task events). Caller owns the transaction.
@@ -126,7 +137,7 @@ def export_board(
         raise ValueError(f"board {slug!r} does not exist")
 
     db_path = kb.kanban_db_path(slug)
-    if not db_path.exists():
+    if not kbc.uses_postgres() and not db_path.exists():
         raise FileNotFoundError(f"board {slug!r} has no database at {db_path}")
 
     base = str(Path(output_path).expanduser()).removesuffix(".tar.gz").removesuffix(".tgz")
@@ -136,7 +147,7 @@ def export_board(
         staged = Path(tmpdir) / slug
         staged.mkdir(parents=True)
 
-        _snapshot_db(db_path, staged / "kanban.db")
+        _snapshot_board(slug, db_path, staged / "kanban.db")
         # The snapshot is a private file with no other writers, so plain
         # commit/close is enough — no need for the board DB's WAL dance.
         with contextlib.closing(sqlite3.connect(str(staged / "kanban.db"))) as snapshot:
@@ -148,6 +159,7 @@ def export_board(
         # Both name a location on the exporting machine; the importer
         # resolves its own.
         meta.pop("db_path", None)
+        meta.pop("database_id", None)
         meta["default_workdir"] = None
         meta["project_id"] = None
         _write_json(staged / "board.json", meta)
@@ -326,7 +338,9 @@ def import_board(
 
         board_root = kb.board_dir(target)
         board_root.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(staged_db), str(board_root / "kanban.db"))
+        postgres = kbc.uses_postgres()
+        imported_db = board_root / (".kanban-import.db" if postgres else "kanban.db")
+        shutil.move(str(staged_db), str(imported_db))
         for tree in ("attachments", "logs"):
             src = extracted / tree
             if src.is_dir():
@@ -346,6 +360,15 @@ def import_board(
     # Bring the imported schema up to this install's version before the
     # relocation pass writes to it.
     kb.init_db(board=target)
+
+    if postgres:
+        from hermes_cli.kanban_db_postgres import copy_sqlite_to_postgres
+        try:
+            with kbc.connect_closing(board=target) as conn:
+                copy_sqlite_to_postgres(imported_db, conn)
+        finally:
+            with contextlib.suppress(OSError):
+                imported_db.unlink()
 
     with kbc.connect_closing(board=target) as conn:
         stats, warnings = _relocate_imported_rows(conn, target)

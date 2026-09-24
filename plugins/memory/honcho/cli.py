@@ -1067,10 +1067,12 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
     A session row keeps only its last routing peer, so a shared thread contributes its most recent
     author and not every participant. The row's origin does not record whether the author was a bot.
     """
-    if not db_path.exists():
+    from hermes_state_backend import resolve_database_settings
+    settings = resolve_database_settings(db_path)
+    if settings.backend == "sqlite" and not db_path.exists():
         return []
     import sqlite3
-    from contextlib import closing
+    from contextlib import closing, nullcontext
     # profile_name marks which profile a multiplexing gateway routed the
     # session to; older state.db files predate the column.
     query = """SELECT source, user_id,
@@ -1082,14 +1084,25 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
                 GROUP BY source, user_id
                 ORDER BY MAX(COALESCE(started_at, 0)) DESC"""
     try:
-        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+        if settings.backend == "postgres":
+            from hermes_state import SessionDB
+            database = SessionDB(db_path, read_only=True, database_settings=settings)
+            context = database._read_ctx()
+        else:
+            database = None
+            context = closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True))
+        with database if database is not None else nullcontext(), context as conn:
             try:
                 rows = conn.execute(query.format(
-                    profiles_col=", GROUP_CONCAT(DISTINCT COALESCE(profile_name, 'default'))",
+                    profiles_col=(
+                        ", STRING_AGG(DISTINCT COALESCE(profile_name, 'default'), ',')"
+                        if settings.backend == "postgres"
+                        else ", GROUP_CONCAT(DISTINCT COALESCE(profile_name, 'default'))"
+                    ),
                 )).fetchall()
             except sqlite3.OperationalError:
                 rows = [r + (None,) for r in conn.execute(query.format(profiles_col="")).fetchall()]
-    except sqlite3.Error as e:
+    except Exception as e:
         print(f"  (state.db unreadable: {e}; the accounts list is unavailable)", file=sys.stderr)
         return []
 

@@ -99,6 +99,14 @@ describe('host.settings', () => {
     expect(() => (host.settings.get as (key: string) => unknown)('pluginDecisions.v2')).toThrow(
       'Unsupported desktop setting: pluginDecisions.v2'
     )
+    // Inherited keys are not settings: a plain-object lookup would hand back
+    // `Function.prototype.toString` and TypeError on `.get()`.
+    expect(() => (host.settings.get as (key: string) => unknown)('toString')).toThrow(
+      'Unsupported desktop setting: toString'
+    )
+    expect(() => (host.settings.set as (key: string, value: unknown) => void)('constructor', true)).toThrow(
+      'Unsupported desktop setting: constructor'
+    )
     expect(() => (host.settings.set as (key: string, value: unknown) => void)('backdrop.v1', 'on')).toThrow(
       'Invalid value for desktop setting: backdrop.v1'
     )

@@ -60,13 +60,13 @@ const settingBindings = {
 const bindingsByKey = settingBindings as unknown as Record<string, SettingBinding<unknown>>
 
 const bindingFor = (key: string): SettingBinding<unknown> => {
-  const binding = bindingsByKey[key]
-
-  if (!binding) {
+  // Own keys only: `toString`/`constructor` would otherwise resolve to
+  // `Object.prototype` functions and TypeError instead of being refused.
+  if (!Object.hasOwn(settingBindings, key)) {
     throw new Error(`Unsupported desktop setting: ${key}`)
   }
 
-  return binding
+  return bindingsByKey[key]
 }
 
 export const desktopSettings = {

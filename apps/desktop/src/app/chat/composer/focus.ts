@@ -13,6 +13,8 @@
 import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
+import type { DroppedFile } from '../hooks/use-composer-actions'
+
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -54,10 +56,17 @@ interface AttachImagesDetail {
   target: ComposerTarget
 }
 
+interface AttachFilesDetail {
+  snapshot: DroppedFile[]
+  imageBlobs: Blob[]
+  target: ComposerTarget
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REPLY_EVENT = 'hermes:composer-insert-reply'
 const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
+const ATTACH_FILES_EVENT = 'hermes:composer-attach-files'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
@@ -381,6 +390,21 @@ export const requestComposerAttachImages = (
 
 export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDetail) => void) =>
   subscribe<AttachImagesDetail>(ATTACH_IMAGES_EVENT, handler)
+
+/** Attach OS-copied files to a composer's attachment set — the unfocused-paste
+ *  path (paste-to-focus) hands a clipboard file-list snapshot over here so the
+ *  focused composer can resolve original paths and route them through the
+ *  drop pipeline. */
+export const requestComposerAttachFiles = (
+  snapshot: DroppedFile[],
+  imageBlobs: Blob[],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  dispatch<AttachFilesDetail>(ATTACH_FILES_EVENT, { snapshot, imageBlobs, target: resolve(target) })
+}
+
+export const onComposerAttachFilesRequest = (handler: (detail: AttachFilesDetail) => void) =>
+  subscribe<AttachFilesDetail>(ATTACH_FILES_EVENT, handler)
 
 /** Insert typed ref chips (carrying a display label) into a composer — the
  * structured cousin of {@link requestComposerInsert}, used for session links. */

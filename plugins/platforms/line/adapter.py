@@ -806,7 +806,8 @@ class LineAdapter(BasePlatformAdapter):
         return web.FileResponse(path, headers={"Content-Type": content_type})
 
     async def send_image_file(
-        self, chat_id: str, image_path: str, caption: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, image_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         path, err = self._check_media_file("image", image_path)
         if err:
@@ -829,7 +830,7 @@ class LineAdapter(BasePlatformAdapter):
 
     async def send_video(
         self, chat_id: str, video_path: str, preview_path: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         path, err = self._check_media_file("video", video_path)
         if err:
             return err

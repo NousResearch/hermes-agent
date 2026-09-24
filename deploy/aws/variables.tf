@@ -341,3 +341,13 @@ variable "snapshot_retain_count" {
     error_message = "snapshot_retain_count must be between 1 and 1000."
   }
 }
+
+variable "console_iam_group_enabled" {
+  description = <<-EOT
+    Create an IAM group whose members may open the Control Centre (SSM port forward, no
+    shell) and must use MFA. For accounts without IAM Identity Center; with it, attach the
+    console_access_policy_arn output to a permission set instead (deploy/aws/ACCESS.md).
+  EOT
+  type        = bool
+  default     = false
+}

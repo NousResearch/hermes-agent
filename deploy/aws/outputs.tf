@@ -53,3 +53,18 @@ output "bootstrap_sha256" {
   DESC
   value       = sha256(local.bootstrap)
 }
+
+output "console_access_policy_arn" {
+  description = "Attach to an IAM Identity Center permission set (or a group) to let people open the Control Centre."
+  value       = aws_iam_policy.console_access.arn
+}
+
+output "console_iam_group" {
+  description = "IAM group for Control Centre access with MFA required, when console_iam_group_enabled."
+  value       = var.console_iam_group_enabled ? aws_iam_group.console[0].name : ""
+}
+
+output "console_command" {
+  description = "Open the Control Centre on http://localhost:8787 (needs the Session Manager plugin)."
+  value       = "deploy/aws/console.sh ${aws_instance.runtime.id} ${aws_ssm_document.console.name} ${var.region}"
+}

@@ -3269,6 +3269,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # Eventless stream: the SDK's get_final_message() raises AssertionError (no
         # message_start); shims may fabricate a contentless Message. All -> EmptyStreamError.
         saw_stream_event = False
+        saw_message_stop = False
+        pending_deltas = []
         self.last_chunk_time["t"] = time.time()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
@@ -3309,6 +3311,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 if self.agent._interrupt_requested:
                     break
                 event_type = getattr(event, "type", None)
+                if event_type == "message_stop":
+                    saw_message_stop = True
                 if event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
@@ -3324,11 +3328,15 @@ class _StreamingCall(StreamingWaitMonitor):
                     if delta_type == "text_delta":
                         text = getattr(delta, "text", "")
                         if text and not has_tool_use:
-                            self._emit_text(text)
+                            pending_deltas.append(("text", text))
                     elif delta_type == "thinking_delta" and getattr(delta, "thinking", ""):
-                        self._emit_reasoning(delta.thinking)
+                        pending_deltas.append(("reasoning", delta.thinking))
             raw_stream = _stream_context["stream"]
             if not self.agent._interrupt_requested and raw_stream is not None:
+                if not saw_message_stop:
+                    raise EmptyStreamError(
+                        "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
+                    )
                 try:
                     base_final_message = raw_stream.get_final_message()
                     # The SDK snapshot keeps only stop_reason/stop_sequence from message_delta; the
@@ -3351,11 +3359,21 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if self.agent._interrupt_requested:
             return None
+        def _flush_completed_deltas():
+            for kind, text in pending_deltas:
+                if kind == "text":
+                    self._emit_text(text)
+                else:
+                    self._emit_reasoning(text)
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
-                return self._check_anthropic_message(base_final_message)
-        return self._check_anthropic_message(accumulator.response(base_final_message))
+                response = self._check_anthropic_message(base_final_message)
+                _flush_completed_deltas()
+                return response
+        response = self._check_anthropic_message(accumulator.response(base_final_message))
+        _flush_completed_deltas()
+        return response
 
     # ── retry loop ──────────────────────────────────────────────────────
 

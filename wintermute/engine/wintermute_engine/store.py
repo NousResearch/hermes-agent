@@ -546,6 +546,8 @@ def _wipe_locked(deep: bool) -> List[str]:
         for label, paths in targets:
             if any(_unlink(pth) for pth in paths):
                 done.append(label)
+        if _wipe_dir(hermes_home() / "memories"):        # user.md and any other memory notes
+            done.append("memories/ (user notes, incl. any name)")
         if _wipe_conversations():
             done.append("conversations (every session, and the searchable history)")
         if _wipe_witness_flags():
@@ -606,6 +608,18 @@ def _wipe_witness_flags() -> bool:
     data["status"] = {}
     _write_json(path, data)
     return True
+
+
+def _wipe_dir(directory: Path) -> bool:
+    """Delete every file directly inside ``directory`` (Hermes' memories/), keeping the folder."""
+    cleared = False
+    try:
+        for child in directory.iterdir():
+            if child.is_file() and _unlink(child):
+                cleared = True
+    except OSError:
+        return False
+    return cleared
 
 
 def _unlink(path: Path) -> bool:

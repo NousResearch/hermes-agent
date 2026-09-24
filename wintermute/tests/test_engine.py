@@ -909,6 +909,8 @@ def test_wipe_emotions_keeps_memory_self_and_secrets(home):
 def test_wipe_all_is_a_rebirth(home):
     from wintermute_engine import status, dream
     (home / "MEMORY.md").write_text("remember")
+    (home / "memories").mkdir(exist_ok=True)
+    (home / "memories" / "user.md").write_text("their name is z")
     store.write_self("who I am", T0)
     with store.locked_state():
         store.add_kept("a secret", T0)
@@ -917,6 +919,7 @@ def test_wipe_all_is_a_rebirth(home):
     assert store.read_self() == "" and store.read_kept() == []
     assert not dream.dream_path().exists() and not (home / "MEMORY.md").exists()
     assert _peers() == {}
+    assert not (home / "memories" / "user.md").exists()
 
 
 def test_wipe_all_clears_the_witness_ledger_but_keeps_the_baseline(home):

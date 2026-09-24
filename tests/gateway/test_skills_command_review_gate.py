@@ -7,6 +7,7 @@ subcommand must never fall through to the hub. This is the backend guard the
 desktop ``desktop_subcommands`` scope mirrors client-side (#98330 review).
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -77,21 +78,19 @@ def hermes_home(monkeypatch, tmp_path):
     return home
 
 
-@pytest.mark.asyncio
-async def test_hub_mutations_are_refused_not_routed_to_the_hub(hermes_home):
+def test_hub_mutations_are_refused_not_routed_to_the_hub(hermes_home):
     runner = _make_runner()
 
     for sub in ("search", "browse", "inspect", "install my-skill", "audit"):
-        out = await runner._handle_skills_command(_make_event(f"/skills {sub}"))
+        out = asyncio.run(runner._handle_skills_command(_make_event(f"/skills {sub}")))
         assert out is not None
         assert "Unknown /skills subcommand on this platform" in out, sub
         assert "Search/install are CLI-only" in out, sub
 
 
-@pytest.mark.asyncio
-async def test_review_subcommands_answer_with_pending_state(hermes_home):
+def test_review_subcommands_answer_with_pending_state(hermes_home):
     runner = _make_runner()
 
-    out = await runner._handle_skills_command(_make_event("/skills pending"))
+    out = asyncio.run(runner._handle_skills_command(_make_event("/skills pending")))
     assert out is not None
     assert "CLI-only" not in out

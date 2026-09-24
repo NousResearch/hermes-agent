@@ -27,6 +27,21 @@ class TestToolProgressProvenance:
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
 
+    def test_cli_default_config_preserves_gateway_reasoning_opt_in(self):
+        """The generated CLI config must not override chat-platform defaults."""
+        from gateway.display_config import resolve_display_setting
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert resolve_display_setting(DEFAULT_CONFIG, "qqbot", "show_reasoning") is False
+        assert resolve_display_setting(
+            {"display": {"show_reasoning": True}}, "qqbot", "show_reasoning"
+        ) is True
+        assert resolve_display_setting(
+            {"display": {"show_reasoning": True, "platforms": {"qqbot": {"show_reasoning": False}}}},
+            "qqbot",
+            "show_reasoning",
+        ) is False
+
     def test_explicit_platform_override_wins(self):
         """display.platforms.<plat>.<key> takes top priority."""
         from gateway.display_config import resolve_display_setting
@@ -220,7 +235,6 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
-
 
 
 

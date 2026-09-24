@@ -205,7 +205,8 @@ def _cli_config_defaults():
         },
         "display": {
             "compact": False,
-            # /resume recap tuning and show_reasoning: keep in sync with hermes_cli/config.py DEFAULT_CONFIG
+            # /resume recap tuning mirrors hermes_cli/config.py DEFAULT_CONFIG. show_reasoning stays
+            # CLI-local so a generated config cannot override gateway platform defaults.
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,
             "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "interrupt",

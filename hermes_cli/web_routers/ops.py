@@ -157,16 +157,19 @@ async def list_webhooks(profile: Optional[str] = None):
         import hermes_cli.webhook as wh
 
         base_url = wh._get_webhook_base_url()
+        subs = wh._read_subscriptions_strict()
+        for name in subs:
+            wh._existing_route(subs, name)
         return {
             "enabled": wh._is_webhook_enabled(),
             "base_url": base_url,
             "subscriptions": [
                 _webhook_route_summary(name, route, base_url)
-                for name, route in wh._load_subscriptions().items()
+                for name, route in subs.items()
             ],
         }
 
-    return await config_scoped_to_thread(profile, _run)
+    return await _webhook_write(profile, _run)
 
 
 @router.post("/api/webhooks/enable")
@@ -228,8 +231,11 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     def _save():
         with wh._subscription_transaction() as subs:
             existing = wh._existing_route(subs, name) if name in subs else {}
+            # A replacement must not silently re-enable a disabled route.
+            # Only PUT /api/webhooks/{name}/enabled changes that flag.
             subs[name] = wh._replace_route(existing, route)
-        return _webhook_route_summary(name, route, wh._get_webhook_base_url())
+            persisted = subs[name]
+        return _webhook_route_summary(name, persisted, wh._get_webhook_base_url())
 
     summary = await _webhook_write(profile, _save)
     summary["secret"] = secret  # surfaced exactly once, on create

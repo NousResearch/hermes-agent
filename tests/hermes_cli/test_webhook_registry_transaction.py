@@ -127,6 +127,76 @@ def test_planted_lock_symlink_does_not_chmod_target_or_write_registry(tmp_path, 
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
     assert json.loads(path.read_text()) == {"keep": {"secret": "safe"}}
 
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink and fchmod regression")
+def test_planted_lock_hardlink_does_not_chmod_target_or_write_registry(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    path.write_text('{"keep":{"secret":"safe"}}')
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_text("untouched")
+    unrelated.chmod(0o644)
+    lock = path.with_name(path.name + ".lock")
+    os.link(unrelated, lock)
+    before = unrelated.stat()
+    assert before.st_ino == lock.stat().st_ino and before.st_nlink == 2
+    _cli("subscribe", "new")
+    assert "singly-linked regular file" in capsys.readouterr().out
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(ops.create_webhook(WebhookCreate(name="new")))
+    assert error.value.status_code == 409
+    after = unrelated.stat()
+    assert (after.st_dev, after.st_ino, after.st_nlink) == (before.st_dev, before.st_ino, 2)
+    assert (lock.stat().st_ino, lock.stat().st_nlink) == (before.st_ino, 2)
+    assert stat.S_IMODE(after.st_mode) == 0o644
+    assert unrelated.read_text() == "untouched"
+    assert json.loads(path.read_text()) == {"keep": {"secret": "safe"}}
+
+
+def test_dashboard_overwrite_reports_persisted_enabled_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    path.write_text(json.dumps({"route": {"enabled": False, "secret": "old", "custom": 1}}))
+    result = asyncio.run(ops.create_webhook(WebhookCreate(name="route", secret="new")))
+    stored = json.loads(path.read_text())["route"]
+    assert stored["enabled"] is False and result["enabled"] is False
+    assert stored["secret"] == result["secret"] == "new"
+    assert stored["custom"] == 1
+    asyncio.run(ops.set_webhook_enabled("route", WebhookEnabledToggle(enabled=True)))
+    result = asyncio.run(ops.create_webhook(WebhookCreate(name="route")))
+    assert result["enabled"] is True
+    assert json.loads(path.read_text())["route"]["enabled"] is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync")
+def test_transaction_surfaces_directory_fsync_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    def fail_directory_sync(_path):
+        raise OSError("directory fsync failed")
+    monkeypatch.setattr(wh, "_sync_registry_directory", fail_directory_sync)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(ops.create_webhook(WebhookCreate(name="route")))
+    assert error.value.status_code == 500
+    # The rename already occurred; this is a durability warning, not rollback.
+    assert "route" in json.loads(wh._subscriptions_path().read_text())
+
+
+@pytest.mark.parametrize("bad", ["{broken", "[]", '{"bad": "not-a-route"}'])
+def test_administrative_reads_report_malformed_registry(tmp_path, monkeypatch, capsys, bad):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    path.write_text(bad)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(ops.list_webhooks())
+    assert error.value.status_code == 409
+    _cli("list", "")
+    assert "Error: Could not read webhook subscriptions" in capsys.readouterr().out
+    assert path.read_text() == bad
+
 def test_malformed_target_refused_without_clobbering_other_routes(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)

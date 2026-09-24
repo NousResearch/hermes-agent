@@ -1,5 +1,6 @@
 """hermes webhook — manage dynamic webhook subscriptions from the CLI."""
 
+import errno
 import hashlib
 import hmac
 import json
@@ -58,9 +59,37 @@ def _existing_route(subs: dict, name: str) -> dict:
         raise ValueError(f"Webhook subscription '{name}' is not an object.")
     return route
 
+
+def _read_subscriptions_strict() -> Dict[str, dict]:
+    """Administrative reads must not turn corruption into an empty registry."""
+    try:
+        data = json.loads(_subscriptions_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise ValueError("Webhook subscriptions registry is invalid JSON.") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Webhook subscriptions registry is not an object.")
+    return data
+
 def _replace_route(existing: dict, route: dict) -> dict:
     return {**{key: value for key, value in existing.items()
                if key not in _ROUTE_FORM_FIELDS}, **route}
+
+
+def _sync_registry_directory(path: Path) -> None:
+    """Surface POSIX parent-directory fsync errors to the transaction writer.
+
+    The shared atomic_json_write(fsync_dir=True) helper is best-effort.
+    Windows has no equivalent directory open here; its file fsync still applies.
+    """
+    if os.name == "nt":
+        return
+    fd = os.open(path.resolve(strict=False).parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 @contextmanager
@@ -74,36 +103,41 @@ def _subscription_transaction():
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(path.parent)
     lock_path = path.with_name(path.name + ".lock")
-    # The plugin uses the same persistent sibling inode. Never follow a planted
-    # lock symlink: fchmod below would otherwise change its unrelated target.
+    # The POSIX plugin uses this persistent sibling inode. Windows locks only
+    # coordinate native writers; the plugin's fcntl lock is POSIX-only.
+    # Never follow a planted symlink or chmod a multiply-linked regular file.
     if not hasattr(os, "O_NOFOLLOW") and lock_path.is_symlink():
         raise ValueError("Webhook subscriptions lock must not be a symlink.")
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("Webhook subscriptions lock must be a regular file.")
+        lock_stat = os.fstat(fd)
+        if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1:
+            raise ValueError("Webhook subscriptions lock must be a singly-linked regular file.")
         if os.name == "nt":
             import msvcrt
-            # Lock one byte of the persistent file; seek before every operation.
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            # LK_LOCK retries only ten times. Retry the nonblocking primitive
+            # until ownership is available, matching POSIX flock's blocking
+            # behavior without imposing an arbitrary writer timeout.
+            while True:
+                os.lseek(fd, 0, os.SEEK_SET)
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN) and getattr(exc, "winerror", None) not in (33, 36):
+                        raise
+                    time.sleep(0.05)
         else:
             import fcntl
             fcntl.flock(fd, fcntl.LOCK_EX)
             os.fchmod(fd, 0o600)
         try:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except FileNotFoundError:
-                data = {}
-            except (json.JSONDecodeError, UnicodeError) as exc:
-                raise ValueError("Webhook subscriptions registry is invalid JSON.") from exc
-            if not isinstance(data, dict):
-                raise ValueError("Webhook subscriptions registry is not an object.")
+            data = _read_subscriptions_strict()
             original = deepcopy(data)
             yield data
             if data != original:
                 atomic_json_write(path, data, mode=_SUBSCRIPTIONS_FILE_MODE, fsync_dir=True)
+                _sync_registry_directory(path)
         finally:
             if os.name == "nt":
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -282,7 +316,13 @@ def _cmd_subscribe(args):
 
 
 def _cmd_list(args):
-    subs = _load_subscriptions()
+    try:
+        subs = _read_subscriptions_strict()
+        for name in subs:
+            _existing_route(subs, name)
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not read webhook subscriptions: {exc}")
+        return
     if not subs:
         print("  No dynamic webhook subscriptions.")
         print("  Create one with: hermes webhook subscribe <name>")
@@ -329,12 +369,23 @@ def _cmd_remove(args):
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
     name = args.name.strip().lower()
-    subs = _load_subscriptions()
+    try:
+        subs = _read_subscriptions_strict()
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not read webhook subscriptions: {exc}")
+        return
     if name not in subs:
         print(f"  No subscription named '{name}'.")
         return
-    secret = subs[name].get("secret", "")
-    url = _route_url(name, subs[name])
+    try:
+        route = _existing_route(subs, name)
+        secret = route.get("secret", "")
+        if not isinstance(secret, str):
+            raise ValueError(f"Webhook subscription '{name}' has an invalid secret.")
+        url = _route_url(name, route)
+    except ValueError as exc:
+        print(f"Error: Could not read webhook subscriptions: {exc}")
+        return
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
     sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     print(f"  Sending test POST to {url}")

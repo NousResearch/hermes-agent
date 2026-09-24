@@ -527,6 +527,7 @@ class MCPServerRunMixin:
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
+        self._session_generation += 1
         self._shutdown_event.set()
         # Also set reconnect: closes any race where _wait_for_lifecycle_event misses the
         # shutdown flag after returning "reconnect".

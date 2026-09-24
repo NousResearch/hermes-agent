@@ -213,10 +213,15 @@ class MCPServerTransportMixin:
         breaker state but leaves the session UNPROVEN: flapping transports handshake fine and drop
         moments later, so only keepalive/tool-call success clears the reconnect budget."""
         self.initialize_result = await self._negotiate_session(session, connect_timeout)
+        self._session_generation += 1
         self.session = session
         if mark_lifecycle:
             self._mark_lifecycle_started()
-        await self._discover_tools()
+        try:
+            await self._discover_tools()
+        except BaseException:
+            self._session_generation += 1  # discovery can fail before the lifecycle wait starts
+            raise
         self._ready.set()
         self._ever_connected = True
         _core._reset_server_error(self.name)
@@ -236,7 +241,12 @@ class MCPServerTransportMixin:
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # Unproven until keepalive/tool-call success (#62212).
         self._session_proven = False
-        reason = await self._wait_for_lifecycle_event()
+        try:
+            reason = await self._wait_for_lifecycle_event()
+        finally:
+            # Invalidate before ClientSession.__aexit__ closes the transport; the
+            # pointer is still non-None while a background refresh may be in flight.
+            self._session_generation += 1
         if label and reason == "reconnect":
             logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
         return reason

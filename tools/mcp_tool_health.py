@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from typing import Iterable, Optional
-from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
+from tools.mcp_tool_errors import _is_method_not_found_error, _is_session_expired_error, _unwrap_exception_group
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_registration as _registration
@@ -56,7 +56,11 @@ class MCPServerHealthMixin:
     def _mark_stdio_recycled(self, reason: str) -> None:
         """Mark a stdio session dormant before its transport finishes closing."""
         self._recycled_reason = reason
+        self._session_generation += 1
         self.session = None
+
+    def _refresh_generation_stale(self, generation: int, session) -> bool:
+        return generation != self._session_generation or session is not self.session
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
         """Schedule a background tool refresh (failures logged) and keep it strongly referenced."""
@@ -132,8 +136,6 @@ class MCPServerHealthMixin:
     async def _refresh_tools(self):
         """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire
         notifications; after the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
-        if not self._advertises_tools():
-            return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:
             old_tool_names = set(self._registered_tool_names)
             async with self._rpc_lock:
@@ -143,10 +145,22 @@ class MCPServerHealthMixin:
                 # (#109824). Skipping is correct — the reconnect's own discovery re-lists tools
                 # and the next tools/list_changed re-arms this refresh against the live session.
                 session = self.session
+                generation = self._session_generation
                 if session is None:
                     logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
                     return
-                new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
+                if not self._advertises_tools():
+                    return  # tools/list would raise MCPError(-32601); use this session's capabilities
+                try:
+                    new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
+                except Exception as exc:
+                    if _is_session_expired_error(exc) and self._refresh_generation_stale(generation, session):
+                        logger.debug("MCP server '%s': skipping refresh from a closing session", self.name)
+                        return
+                    raise
+            if self._refresh_generation_stale(generation, session):
+                logger.debug("MCP server '%s': discarding refresh from a superseded session", self.name)
+                return
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})

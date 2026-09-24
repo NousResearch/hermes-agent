@@ -165,6 +165,100 @@ class TestRefreshTools:
             assert "mcp__reconnect_srv__old_tool" not in mock_registry.get_all_tool_names()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("config", [{}, {"url": "https://example.test/mcp"}], ids=["stdio", "http"])
+    async def test_refresh_during_transport_exit_does_not_log_or_publish(self, mock_registry, caplog, config):
+        """A referenced ClientSession may already be closing when tools/list fails."""
+        from anyio import ClosedResourceError
+
+        server = MCPServerTask("retiring_srv")
+        server._config = config
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def list_tools():
+            started.set()
+            await finish.wait()
+            raise ClosedResourceError()
+
+        session = SimpleNamespace(list_tools=list_tools)
+        server._registered_tool_names = ["mcp__retiring_srv__old"]
+        mock_registry.register(
+            name="mcp__retiring_srv__old", toolset="mcp-retiring_srv", schema={},
+            handler=lambda x: x, check_fn=lambda: True, is_async=False,
+            description="", emoji="",
+        )
+        with patch("tools.registry.registry", mock_registry), caplog.at_level(logging.ERROR), \
+             patch.object(MCPServerTask, "_negotiate_session", new_callable=AsyncMock), \
+             patch.object(MCPServerTask, "_discover_tools", new_callable=AsyncMock):
+            serving = asyncio.create_task(server._serve_session(session, 1))
+            await asyncio.wait_for(server._ready.wait(), 2)
+            task = server._schedule_tools_refresh()
+            await asyncio.wait_for(started.wait(), 2)
+            server._shutdown_event.set()
+            # The run loop returns before ClientSession.__aexit__ clears the pointer.
+            assert await asyncio.wait_for(serving, 2) == "shutdown"
+            assert server.session is session
+            finish.set()
+            await task
+        assert "dynamic tool refresh failed" not in caplog.text
+        assert server._registered_tool_names == ["mcp__retiring_srv__old"]
+        assert "mcp__retiring_srv__old" in mock_registry.get_all_tool_names()
+        assert task not in server._pending_refresh_tasks
+
+        # A closed transport on the current generation is still an error, not a blanket skip.
+        live = MCPServerTask("live_srv")
+        live.session = SimpleNamespace(list_tools=AsyncMock(side_effect=ClosedResourceError()))
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            await live._schedule_tools_refresh()
+        assert "dynamic tool refresh failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_superseded_refresh_keeps_replacement_surface(self, mock_registry):
+        """An old response must not overwrite tools published by a replacement session."""
+        server = MCPServerTask("swap_srv")
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def old_list():
+            started.set()
+            await finish.wait()
+            return SimpleNamespace(tools=[_make_mcp_tool("stale")])
+
+        old_session = SimpleNamespace(list_tools=old_list)
+        server.session = old_session
+        with patch("tools.registry.registry", mock_registry):
+            task = asyncio.create_task(server._refresh_tools())
+            await asyncio.wait_for(started.wait(), 2)
+            # Reconnect publishes a replacement while the previous RPC is still pending.
+            replacement = SimpleNamespace(list_tools=AsyncMock(
+                return_value=SimpleNamespace(tools=[_make_mcp_tool("replacement")])
+            ))
+            server.session = replacement
+            finish.set()
+            await task
+            assert "mcp__swap_srv__stale" not in mock_registry.get_all_tool_names()
+            await server._refresh_tools()
+            assert "mcp__swap_srv__replacement" in mock_registry.get_all_tool_names()
+            assert server._registered_tool_names == ["mcp__swap_srv__replacement"]
+
+        # A queued refresh must evaluate capabilities of the session it actually calls.
+        cap_server = MCPServerTask("cap_srv")
+        cap_server.session = SimpleNamespace(list_tools=AsyncMock())
+        cap_server.initialize_result = SimpleNamespace(
+            capabilities=SimpleNamespace(tools=SimpleNamespace())
+        )
+        await cap_server._rpc_lock.acquire()
+        queued = asyncio.create_task(cap_server._refresh_tools())
+        await asyncio.sleep(0)
+        prompt_only = SimpleNamespace(list_tools=AsyncMock())
+        cap_server.session = prompt_only
+        cap_server.initialize_result = SimpleNamespace(
+            capabilities=SimpleNamespace(tools=None, prompts=SimpleNamespace())
+        )
+        cap_server._rpc_lock.release()
+        await queued
+        prompt_only.list_tools.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_refresh_after_session_restored_succeeds(self, mock_registry):
         """The skip applies only while the session is genuinely absent: once the restart
         re-establishes it, a refresh from an empty registration publishes the live tools."""

@@ -51,14 +51,23 @@ _THINKING_EXHAUSTED = (
     "Model used all output tokens on reasoning with none left "
     "for the response. Try lowering reasoning effort or increasing max_tokens.",
 )
-_REPETITION_DOMINATED = (
-    "🔁 Response dominated by repeated text — stopping instead of continuing a degenerate response.",
-    "⚠️ **Response Stopped — Repetition Detected**\n\nThe model fell into a repetition loop while "
-    "writing this response, so continuing would only produce more repeated text. The partial response "
-    "was discarded.\n\n→ Switch to a different model with `/model`\n"
-    "→ Or resend your message (your conversation history is preserved)",
-    "Model output entered a repetition loop and was truncated mid-loop; refusing to continue a "
-    "degenerate response.",
+
+def repetition_copy(stopping: str, outcome: str, refusal: str) -> Tuple[str, str, str]:
+    """(log line, user copy, error) for a repetition-dominated abort; only the clauses naming
+    where the turn stopped differ between the length path and the stop path."""
+    return (
+        f"🔁 Response dominated by repeated text — stopping {stopping}.",
+        "⚠️ **Response Stopped — Repetition Detected**\n\nThe model fell into a repetition loop while "
+        f"writing this response, {outcome}\n\n→ Switch to a different model with `/model`\n"
+        "→ Or resend your message (your conversation history is preserved)",
+        f"Model output entered a repetition loop{refusal} degenerate response.",
+    )
+
+
+_REPETITION_DOMINATED = repetition_copy(
+    "instead of continuing a degenerate response",
+    "so continuing would only produce more repeated text. The partial response was discarded.",
+    " and was truncated mid-loop; refusing to continue a",
 )
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "

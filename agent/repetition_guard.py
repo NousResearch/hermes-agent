@@ -40,6 +40,11 @@ _MAX_ANCHOR_MATCHES = 8
 # scan, but every line is distinct; a loop re-emits the same line(s).
 _RUNAWAY_DISTINCT_LINE_RATIO = 0.5
 
+# The finish_reason="stop" path discards a COMPLETED answer, so it only aborts at runaway scale:
+# real stop-path loops (#100716) run 80k-350k chars, while asked-for repeats ("say X 50 times",
+# identical table rows, templated YAML) stay in the low KB and must be delivered.
+STOP_PATH_MIN_CHARS = 16_000
+
 
 def is_repetition_dominated(text: str) -> bool:
     """True when a contiguous run of at least five exact repetitions covers at least half

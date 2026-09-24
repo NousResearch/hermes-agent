@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.repetition_guard import STOP_PATH_MIN_CHARS
 from hermes_constants import FINISH_REASON_LENGTH, PARTIAL_STREAM_STUB_ID
 
 # The exact sentence from the #86581 incident.
@@ -62,10 +63,6 @@ def _response(
     )
 
 
-def _stub(content):
-    return _response(content)
-
-
 def _run(agent, message):
     with (
         patch.object(agent, "_persist_session"),
@@ -78,7 +75,7 @@ def _run(agent, message):
 class TestContinuationRepetitionGuard:
     def test_repetition_dominated_truncation_aborts(self, loop_agent):
         echo = _INCIDENT_ECHO * 2000
-        loop_agent.client.chat.completions.create.side_effect = [_stub(echo)]
+        loop_agent.client.chat.completions.create.side_effect = [_response(echo)]
 
         result = _run(loop_agent, "write me a long report")
 
@@ -93,33 +90,45 @@ class TestContinuationRepetitionGuard:
         # Exactly one API call — no continuation was attempted.
         assert loop_agent.client.chat.completions.create.call_count == 1
 
-    def test_repetition_dominated_stop_response_aborts(self, loop_agent):
-        paragraph = (
-            "A long paragraph that should never be delivered hundreds of times "
-            "when a model enters a repetition loop.\n"
-            "The second line makes this a multiline repeating unit.\n"
-        )
-        echo = paragraph * 500
+    @pytest.mark.parametrize("requested_repeat", [False, True], ids=["loop", "repeat-on-request"])
+    def test_repetition_dominated_stop_response_aborts(self, loop_agent, requested_repeat):
+        if requested_repeat:
+            # Asked-for repetition (identical lines, ~3.6k chars) is below runaway scale: a
+            # completed answer must be delivered, not discarded.
+            echo = "Hello world, this is a sentence the user asked me to repeat many times.\n" * 50
+        else:
+            paragraph = (
+                "A long paragraph that should never be delivered hundreds of times "
+                "when a model enters a repetition loop.\n"
+                "The second line makes this a multiline repeating unit.\n"
+            )
+            echo = paragraph * 500
+            assert len(echo) >= STOP_PATH_MIN_CHARS
         loop_agent.client.chat.completions.create.side_effect = [
             _response(echo, finish_reason="stop", response_id="completed-response")
         ]
 
         result = _run(loop_agent, "write me a long report")
 
+        assert loop_agent.client.chat.completions.create.call_count == 1
+        if requested_repeat:
+            assert result["completed"] is True
+            assert result["final_response"] == echo.strip()
+            return
         assert result["completed"] is False
         assert result["partial"] is True
+        assert (result["failure_reason"], result["failure_retryable"]) == ("truncated", True)
         assert "Repetition" in (result["final_response"] or "")
         assert not any(
             isinstance(m, dict) and m.get("content") == echo
             for m in result["messages"]
         )
-        assert loop_agent.client.chat.completions.create.call_count == 1
 
     def test_legit_truncation_still_continues(self, loop_agent):
         # Ordinary short truncated fragments still get continuation retries.
         loop_agent.client.chat.completions.create.side_effect = [
-            _stub("part one "), _stub("part two "),
-            _stub("part three "), _stub("part four."),
+            _response("part one "), _response("part two "),
+            _response("part three "), _response("part four."),
         ]
 
         result = _run(loop_agent, "write me a long report")

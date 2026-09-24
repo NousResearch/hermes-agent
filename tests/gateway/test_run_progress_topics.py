@@ -160,7 +160,7 @@ class MatrixStreamingProgressCaptureAdapter(ProgressCaptureAdapter):
         return result
 
     async def edit_message(
-        self, chat_id, message_id, content, *, finalize: bool = False
+        self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
     ) -> SendResult:
         self.edits.append(
             {

@@ -417,6 +417,32 @@ manual pick. To tint the *active* theme rather than replace it, use
 [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
 plugin is the worked example (it is also a complete, installable disk plugin).
 
+#### Fully transparent themes and the compositor
+
+The app's docked chrome (composer status cards, queue, the jump-to-bottom
+button) ships a live `backdrop-filter` frost on top of the theme's fill. On an
+opaque theme the frost samples a flat color and costs nothing. A theme that
+drives the surface tokens fully transparent (`--ui-chat-surface-background` and
+friends) and paints anything non-trivial behind everything — a wallpaper, a
+gradient — turns that frost into a full-screen backdrop re-sample on every
+frame the backdrop subtree animates, which it does constantly while the status
+stack shows spinners or timers. The compositor then intermittently drops the
+blur pass and the whole bottom area visibly strobes (see #121910).
+
+Two rules keep a transparent theme flicker-free:
+
+1. **Promote your background to its own compositing layer.** A full-window
+   background painted on `::before`/`::after` (or a dedicated fixed element)
+   needs `transform: translateZ(0)` (or `will-change: transform`) so backdrop
+   sampling reads a cached layer instead of repainting the image every frame.
+2. **Drop the frost where content animates.** Within regions that host live
+   status rows, override `backdrop-filter: none` and let the theme's fill
+   alpha carry legibility alone — the fills are alpha-mixed by design, so the
+   blur is decoration there, not contrast.
+
+This is also the contract future first-party wallpaper support will follow, so
+theme authors should treat these as the supported way to go transparent.
+
 ### Composer extensions
 
 `COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,

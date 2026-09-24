@@ -5,7 +5,8 @@ transcript around them keeps every word exactly once.
 
 Real ``hermes --tui`` in a private tmux server, ``approvals.mode: manual`` (the shipped default,
 never yolo), local terminal backend, scripted fake provider issuing ``clarify`` /
-``terminal(rm -rf <victim>)`` / a slow printing ``terminal`` command.
+``terminal(rm -rf <victim>)`` / a slow printing ``terminal`` command whose output the TUI shows
+once ``/verbose verbose`` is on: every printed line is on screen exactly once after the drags.
 """
 
 from __future__ import annotations
@@ -30,7 +31,10 @@ pytestmark = [
 CONFIG = ("approvals:\n  mode: manual\n  timeout: 180\nclarify:\n  timeout: 180\n"
           "terminal:\n  backend: local\n")
 QUESTION = "Which colour for zeta?"
-TOOL_LINES = [f"tout{i:02d}" for i in range(1, 41)]
+# Few and short enough that the verbose Result block shows them all on one unbroken row at 120
+# cols (the block is capped at 12 lines / 800 chars; a longer word is hard-wrapped mid-token).
+TOOL_LINES = [f"tout{i:02d}" for i in range(1, 11)]
+TOOL_RE = r"tout\d{2}(?!\d)"  # the Result block is JSON: lines arrive as "\ntout02"
 REPLIES = {k: " ".join(words(k, 8)) for k in ("c1", "a1", "t1")}
 TOKEN = r"\b(?:c1|a1|t1)w\d{3}\b"
 
@@ -38,12 +42,14 @@ CELLS = [
     "clarify_card_survives_resize", "clarify_answer_reaches_tool", "clarify_tool_call_rendered_once",
     "clarify_answer_not_a_user_turn",
     "approval_card_survives_resize", "approval_deny_honoured",
-    "tool_output_reaches_model_in_order", "tool_output_rendered_at_most_once",
+    "tool_output_reaches_model_in_order", "tool_output_rendered_once",
     "transcript_ledger", "exits_clean",
 ]
-# cell -> "#<issue> <symptom>"; each entry is a strict xfail that turns red once fixed.
-KNOWN: dict[str, str] = {
-    "clarify_tool_call_rendered_once": "#121267 answering clarify renders its tool call twice",
+# cell -> (regex on the bug's own failure message, "#<issue> <symptom>"): XFAILs only while the cell
+# fails exactly that way, passes once the fix lands, and any other failure stays red.
+KNOWN: dict[str, tuple[str, str]] = {
+    "clarify_tool_call_rendered_once": (r"clarify tool call rendered [2-9]x",
+                                        "#121267 answering clarify renders its tool call twice"),
 }
 
 
@@ -63,7 +69,7 @@ def _visible_once(tui: TmuxTui, needles: list[str]) -> str:
 
 
 def _scenario(root, victim) -> object:
-    command = "for i in $(seq -w 1 40); do echo tout$i; sleep 0.08; done"
+    command = f"for i in $(seq -w 1 {len(TOOL_LINES)}); do echo tout$i; sleep 0.3; done"
     script = [
         ToolCall("clarify", {"question": QUESTION, "choices": ["red", "blue"]}), Text(REPLIES["c1"]),
         ToolCall("terminal", {"command": f"rm -rf {victim}"}), Text(REPLIES["a1"]),
@@ -75,12 +81,14 @@ def _scenario(root, victim) -> object:
             tui = TmuxTui(root, llm.base_url, cols=120, rows=70, extra_config=CONFIG, args=())
             try:
                 _drive(tui, llm, cells)
+                cells.phase = "exit"
                 cells.add("exits_clean", tui.exit_problem())
             finally:
                 tui.close()
 
     def _drive(tui: TmuxTui, llm: FakeLLMServer, cells) -> None:
         tui.wait_ready()
+        cells.phase = "clarify"
         # 1. clarify card open across a shrink and a grow, answered afterwards.
         tui.submit("pick a colour mq1")
         tui.wait_for("quick pick")
@@ -110,6 +118,7 @@ def _scenario(root, victim) -> object:
                   else f"persisted user rows {users!r}; wire user messages {wire_users!r}")
 
         # 2. approval card open across resizes, then denied with its quick-pick key.
+        cells.phase = "approval"
         tui.submit("remove the dir mq2")
         tui.wait_for("approval required")
         for cols in (140, 85):
@@ -125,25 +134,31 @@ def _scenario(root, victim) -> object:
         ok = victim.exists() and (victim / "keep.txt").exists() and "denied" in denied.lower()
         cells.add("approval_deny_honoured", "" if ok else f"victim exists={victim.exists()} result={denied[:200]}")
 
-        # 3. a tool printing 40 lines while the window is dragged.
+        # 3. a slow printing tool while the window is dragged, its output rendered (verbose tool
+        # progress: the default mode shows no tool output at all) and dragged again once shown.
+        cells.phase = "tool_output"
         tui.resize(120)
+        tui.submit("/verbose verbose")
+        tui.wait_for("verbose: verbose")
         tui.submit("print lines mq3")
         llm.wait_for_requests(5, timeout=60)
         for cols in (100, 80, 110, 95, 120):
             tui.resize(cols)
             time.sleep(0.3)
         tui.wait_replies(3)
+        tui.wait_for(lambda t: len(re.findall(TOOL_RE, t)) >= len(TOOL_LINES), timeout=30)
+        for cols in (90, 70, 130, 120):
+            tui.resize(cols)
+            tui.wait_quiet(0.5)
         tui.wait_quiet(1.0)
         result = _tool_results(llm)[-1]
         try:
             output = str(json.loads(result).get("output"))
         except ValueError:
             output = result
-        problem = ledger_problems(output, TOOL_LINES, r"\btout\d{2}\b")
+        problem = ledger_problems(output, TOOL_LINES, TOOL_RE)
         cells.add("tool_output_reaches_model_in_order", problem and f"{problem}\nresult: {result[:400]}")
-        counts = {w: len(re.findall(rf"\b{w}\b", tui.text())) for w in TOOL_LINES}
-        cells.add("tool_output_rendered_at_most_once",
-                  "; ".join(f"{w}x{c}" for w, c in counts.items() if c > 1), tui.dump())
+        cells.add("tool_output_rendered_once", ledger_problems(tui.text(), TOOL_LINES, TOOL_RE), tui.dump())
         cells.add("transcript_ledger",
                   ledger_problems(tui.text(), [w for k in ("c1", "a1", "t1") for w in words(k, 8)], TOKEN),
                   tui.dump())
@@ -161,6 +176,6 @@ def run(tmp_path_factory):
     return _scenario(root, victim)
 
 
-@pytest.mark.parametrize("cell", cell_params(CELLS, KNOWN))
+@pytest.mark.parametrize("cell", cell_params(CELLS))
 def test_modals_and_tool_output_survive_resize(run, cell: str) -> None:
-    run.check(cell)
+    run.check(cell, KNOWN)

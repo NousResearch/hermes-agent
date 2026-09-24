@@ -2,7 +2,7 @@
 
 tmux is the terminal emulator here: it owns the grid, reflows it on resize and keeps the
 scrollback, exactly as it does for a user running the TUI inside tmux. We read it back with
-``capture-pane`` (``-S -`` for scrollback, ``-J`` to join rows tmux re-wrapped) and ask tmux for
+``capture-pane`` (``-S -`` for scrollback) and ask tmux for
 the cursor position, the alternate-screen flag and the scrollback size.
 
 Every transcript word the fake provider streams is a unique token (``<tag>w<NNN>``), so a
@@ -15,6 +15,7 @@ the tmux server and every process of the pane's session by session id, never by 
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -22,16 +23,17 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 import unicodedata
-import uuid
 from collections import Counter
 from pathlib import Path
 from typing import Callable, Iterable
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.terminal._pty import cmdline, poll, session_members
 from tests.fakes.fake_llm_provider import write_hermes_home
 
@@ -43,6 +45,12 @@ _SCROLLBAR = "│┃║▐▕█░▒▓"
 _DIGITS = re.compile(r"\d")
 _SPINNER = re.compile(r"[\u2800-\u28ff]")
 _STATUS_BAR = re.compile(r"│ fake model")
+# The status bar's first cell once the startup session is live: "─ ready │ fake model │ …". Before
+# that it reads "summoning hermes…" / "forging session…" / "starting agent…" / "resuming…".
+_READY = re.compile(r"─ ready │")
+_STATUS_ROW = re.compile(r"^ ─ (.+?) │")
+# AF_UNIX sun_path is 108 bytes; stay well inside it.
+_SOCK_MAX = 100
 
 # A quiet sandbox: no update probe, no title call eating scripted turns, no memory/skills noise.
 BASE_CONFIG = (
@@ -117,55 +125,92 @@ def ledger_problems(text: str, expected: Iterable[str], pattern: str) -> str:
     return "; ".join(f"{k}={v[:8]}{'…' if len(v) > 8 else ''} ({len(v)})" for k, v in report.items() if v)
 
 
+class CellFailed(AssertionError):
+    """A cell's verdict is a failure. Raised ONLY by ``Cells.check`` for an evaluated cell, so a
+    KNOWN cell (``known_failure(..., raises=CellFailed)``) never swallows a harness failure
+    (timeout, crash, precondition), which ``Cells.check`` raises as ``RuntimeError``."""
+
+
 class Cells:
     """Named verdicts of one scenario run. Each becomes its own test id so a known bug can be
-    marked ``xfail(strict=True)`` on exactly the cell it breaks while the rest stay enforced."""
+    pinned (``known_failure``) on exactly the cell it breaks while the rest stay enforced."""
 
     def __init__(self) -> None:
         self.results: dict[str, tuple[bool, str]] = {}
         self.error: str | None = None
+        self.errors: dict[str, str] = {}
+        self.phase = "setup"
 
     def add(self, name: str, problem: str, screen: str = "") -> None:
         self.results[name] = (not problem, f"{problem}\n--- screen ---\n{screen}" if problem else "")
 
-    def check(self, name: str) -> None:
+    def harness_error(self, name: str, detail: str) -> None:
+        """The cell could not be judged (its precondition never held): a real failure, never a
+        KNOWN xfail, and it leaves the scenario's other cells alone."""
+        self.errors[name] = f"PHASE={self.phase}: {detail}"
+
+    def check(self, name: str, known: dict[str, tuple[str, str]] | None = None) -> None:
+        """Enforce one cell. ``known`` maps a cell to ``(pattern, "#<issue> …")``: while the cell
+        fails with a message matching ``pattern`` it XFAILs; once the fix lands it passes; any
+        other failure (including every harness error) stays a failure."""
         if self.error is not None:
             raise RuntimeError(f"scenario failed before its cells could be evaluated:\n{self.error}")
+        if name in self.errors:
+            raise RuntimeError(f"cell {name!r} could not be evaluated:\n{self.errors[name]}")
         if name not in self.results:
             raise RuntimeError(f"cell {name!r} was never evaluated (scenario ended early)")
         ok, detail = self.results[name]
-        assert ok, f"[{name}] {detail}"
+        entry = (known or {}).get(name)
+        guard = known_failure(*entry, raises=CellFailed) if entry else contextlib.nullcontext()
+        with guard:
+            if not ok:
+                raise CellFailed(f"[{name}] {detail}")
 
 
-def cell_params(names: Iterable[str], known: dict[str, str]) -> list:
-    """pytest params for ``names``; a KNOWN cell is a strict xfail that turns red once fixed."""
-    return [pytest.param(n, id=n, marks=[pytest.mark.xfail(strict=True, raises=AssertionError,
-                                                           reason=known[n])] if n in known else [])
-            for n in names]
+def cell_params(names: Iterable[str]) -> list:
+    return [pytest.param(n, id=n) for n in names]
 
 
 def run_cells(body: Callable[[Cells], None]) -> Cells:
-    """Run one scenario; a harness failure (timeout, crash) is kept and re-raised by every cell."""
+    """Run one scenario; a harness failure (timeout, crash) is kept, tagged with the phase it hit
+    (``cells.phase``), and re-raised by every cell."""
     cells = Cells()
     try:
         body(cells)
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim by Cells.check
-        cells.error = f"{type(exc).__name__}: {exc}"
+        cells.error = f"PHASE={cells.phase}: {type(exc).__name__}: {exc}"
     return cells
 
 
-def reply_rows_width(rows: list[str], token_re: str) -> int:
-    """Widest rendered row (in columns) holding a token of the given paragraph."""
-    return max((display_width(r) for r in rows if re.search(token_re, r)), default=0)
+def layout_problem(rows: list[str], cols: int, tag: str, slack: int | None = 12) -> str:
+    """The paragraph of ``<tag>wNNN`` words on the visible frame is laid out for the current width
+    (#35804). tmux never shows a row wider than the pane, so "fits" alone proves nothing; instead:
 
-
-def width_problem(rows: list[str], token_re: str, cols: int, slack: int = 12) -> str:
-    """Content width follows the terminal: the paragraph wraps within ``slack`` of the edge and
-    never past it (#35804)."""
-    widest = reply_rows_width(rows, token_re)
-    if widest > cols:
-        return f"reply rows are {widest} cols wide on a {cols}-col terminal"
-    if widest < cols - slack:
+    * every row holding its words is only those words: a blank/``┊`` gutter, then whole words
+      separated by single spaces. A frame painted for another width leaves fragments, box rules
+      or words of other rows spliced into a row;
+    * the rows read on from one another: each row starts with the word after the previous row's
+      last one (no word missing, repeated or moved between rows);
+    * the widest row reaches within ``slack`` columns of the edge (a narrower stale layout);
+      ``slack=None`` skips this (and tolerates the paragraph being scrolled off) for a paragraph
+      too short to fill a row.
+    """
+    word = rf"{tag}w\d{{3}}"
+    clean = re.compile(rf"^[ ┊]*({word}(?: {word})*)$")
+    para = [r for r in rows if re.search(rf"{tag}w\d", r)]
+    if not para:
+        return f"no row of the {tag} paragraph on screen" if slack is not None else ""
+    seq: list[int] = []
+    for r in para:
+        m = clean.match(r)
+        if not m:
+            return f"a {tag} paragraph row is not whole words at this width: {r!r}"
+        idx = [int(w[len(tag) + 1:]) for w in m.group(1).split(" ")]
+        if (seq and idx[0] != seq[-1] + 1) or idx != list(range(idx[0], idx[0] + len(idx))):
+            return f"{tag} paragraph rows do not read on (after {tag}w{seq[-1] if seq else -1:03d}): {r!r}"
+        seq += idx
+    widest = max(display_width(r) for r in para)
+    if slack is not None and widest < cols - slack:
         return f"reply wraps at {widest} cols on a {cols}-col terminal (content width did not follow)"
     return ""
 
@@ -175,11 +220,19 @@ class TmuxTui:
 
     def __init__(self, root: Path, base_url: str, *, cols: int = 120, rows: int = 50,
                  extra_config: str = "", args: Iterable[str] = ("--yolo",), inline: bool = False,
-                 env_extra: dict[str, str] | None = None, write_home: bool = True) -> None:
+                 env_extra: dict[str, str] | None = None, write_home: bool = True,
+                 tui_dir: Path | None = None) -> None:
         self.root = root
         self.home = root / "home"
         self.hermes_home = self.home / ".hermes"
-        self.sock = f"hermes-tui-e2e-{uuid.uuid4().hex[:10]}"
+        # A socket path of our own (never the shared default dir tmux-<uid> under the system temp
+        # dir, where a crashed run would leave it behind); close() removes it.
+        self._sock_dir: str | None = None
+        sock = root / "tmux.sock"
+        if len(str(sock)) > _SOCK_MAX:
+            self._sock_dir = tempfile.mkdtemp(prefix="htui-")
+            sock = Path(self._sock_dir) / "s"
+        self.sock = str(sock)
         if write_home:
             write_hermes_home(self.hermes_home, base_url, extra_config=BASE_CONFIG + extra_config)
         for sub in ("tmp", "work"):
@@ -194,10 +247,10 @@ class TmuxTui:
         env.update(HOME=str(self.home), HERMES_HOME=str(self.hermes_home), PYTHONPATH=str(REPO_ROOT),
                    TMPDIR=str(root / "tmp"), LANG="C.UTF-8", LC_ALL="C.UTF-8", PYTHONUNBUFFERED="1",
                    HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_TUI_INLINE="1" if inline else "0",
-                   HERMES_TUI_DIR=str(private_tui_dir(root)))
+                   HERMES_TUI_DIR=str(tui_dir or private_tui_dir(root)))
         env.update(env_extra or {})
         argv = [sys.executable, "-m", "hermes_cli.main", "--tui", *args]
-        subprocess.run(["tmux", "-L", self.sock, "-f", str(conf), "new-session", "-d", "-s", "p",
+        subprocess.run(["tmux", "-S", self.sock, "-f", str(conf), "new-session", "-d", "-s", "p",
                         "-x", str(cols), "-y", str(rows), "-c", str(root / "work"), *argv],
                        env=env, check=True, timeout=30)
         self.tmux("set", "-g", "window-size", "manual")
@@ -208,7 +261,7 @@ class TmuxTui:
     # -- tmux ------------------------------------------------------------------------------------
 
     def tmux(self, *args: str) -> str:
-        return subprocess.run(["tmux", "-L", self.sock, *args], capture_output=True, text=True,
+        return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True,
                               timeout=30).stdout
 
     def fmt(self, spec: str) -> str:
@@ -245,11 +298,6 @@ class TmuxTui:
                 line = line[:-1]
             out.append(line.rstrip())
         return out
-
-    def joined(self, *, history: bool = False) -> str:
-        """Rows tmux re-wrapped on a resize joined back into logical lines (``-J``)."""
-        span = ("-S", "-", "-E", "-") if history else ()
-        return self.tmux("capture-pane", "-p", "-J", "-t", "p", *span)
 
     def text(self) -> str:
         return "\n".join(self.rows(history=True))
@@ -317,8 +365,15 @@ class TmuxTui:
             os.close(fd)
         return not (lflag & (termios.ICANON | termios.ECHO) or iflag & termios.ICRNL)
 
-    def wait_ready(self, timeout: float = 120.0) -> None:
-        """The Ink UI owns the terminal (raw mode) and its composer frame has settled."""
+    def status(self) -> str:
+        """The status bar's first cell (``ready``, ``summoning hermes…``, ``running…``), or ''."""
+        for row in reversed(self.rows()):
+            if m := _STATUS_ROW.match(row):
+                return m.group(1)
+        return ""
+
+    def wait_raw(self, timeout: float = 120.0) -> None:
+        """The Ink UI owns the terminal (raw mode): keys typed from now on reach the composer."""
         try:
             poll(lambda: not self.alive() or self._raw_mode(), timeout=timeout,
                  what="the TUI to take the terminal (raw mode)")
@@ -328,6 +383,18 @@ class TmuxTui:
         assert state.startswith("0 "), (
             f"hermes --tui exited during startup (pane_dead pid status={state!r}, "
             f"tmux server {'up' if state else 'gone'})\n{self.dump()}")
+
+    def wait_ready(self, timeout: float = 120.0) -> None:
+        """Raw mode, the startup session is live (status bar ``ready`` -- the composer accepts
+        input long before: a slash command sent while the gateway still starts races the startup
+        session and loses), and the frame has settled."""
+        self.wait_raw(timeout)
+        try:
+            poll(lambda: not self.alive() or _READY.search("\n".join(self.rows())), timeout=timeout,
+                 what="the startup session (status bar 'ready')")
+        except AssertionError as exc:
+            raise AssertionError(f"{exc} (status {self.status()!r})\n{self.dump()}") from None
+        assert self.alive(), f"hermes --tui exited during startup\n{self.dump()}"
         self.wait_quiet(1.5, timeout=timeout)
 
     # -- processes -------------------------------------------------------------------------------
@@ -357,6 +424,9 @@ class TmuxTui:
         that needed a SIGKILL (pid: cmdline) for diagnostics."""
         self.track()
         self.tmux("kill-server")
+        Path(self.sock).unlink(missing_ok=True)
+        if self._sock_dir:
+            shutil.rmtree(self._sock_dir, ignore_errors=True)
         survivors = []
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:

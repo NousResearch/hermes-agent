@@ -39,8 +39,6 @@ CELLS = [
     "interrupt_turn_stops", "interrupt_prefix_on_screen_once", "interrupt_screen_matches_db",
     "interrupt_next_request_carries_partial", "interrupt_next_reply_once", "exits_clean",
 ]
-# cell -> "#<issue> <symptom>"; each entry is a strict xfail that turns red once fixed.
-KNOWN: dict[str, str] = {}
 
 
 def _cursor_problem(tui: TmuxTui, typed: str) -> str:
@@ -54,7 +52,9 @@ def _cursor_problem(tui: TmuxTui, typed: str) -> str:
 
 
 def _cjk(tui: TmuxTui, llm: FakeLLMServer, cells) -> None:
+    cells.phase = "cjk_startup"
     tui.wait_ready()
+    cells.phase = "cjk_typing"
     tui.type(CJK_TYPED[0])
     tui.wait_for(CJK_TYPED[0], history=False)
     first = _cursor_problem(tui, CJK_TYPED[0])
@@ -63,6 +63,7 @@ def _cjk(tui: TmuxTui, llm: FakeLLMServer, cells) -> None:
     tui.wait_for(both, history=False)
     cells.add("cjk_cursor_after_typed_text", first or _cursor_problem(tui, both), tui.dump())
     tui.key("Enter")
+    cells.phase = "cjk_reply"
     tui.wait_for(CJK_TOKENS[20])
     tui.resize(61)
     tui.wait_replies(1)
@@ -86,8 +87,25 @@ def _cjk(tui: TmuxTui, llm: FakeLLMServer, cells) -> None:
         cells.add("cjk_frame_settles", str(exc)[:2000])
 
 
+def _screen_partial(rows: list[str]) -> str:
+    """The interrupted reply as the screen shows it, character for character (a trailing
+    half-streamed word included): the rows from its first word up to the ``[interrupted]`` mark,
+    gutter stripped, joined on single spaces."""
+    start = next((i for i, r in enumerate(rows) if "i1w000" in r), None)
+    if start is None:
+        return ""
+    text = " ".join(rows[start:]).split("[interrupted]")[0]
+    return " ".join(tok for tok in text.split() if tok != "┊")
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text).split())
+
+
 def _interrupt(tui: TmuxTui, llm: FakeLLMServer, cells) -> None:
+    cells.phase = "interrupt_startup"
     tui.wait_ready()
+    cells.phase = "interrupt_stream"
     tui.submit("stream then stop ix1")
     tui.wait_for("i1w060")
     tui.key("C-c")
@@ -105,20 +123,25 @@ def _interrupt(tui: TmuxTui, llm: FakeLLMServer, cells) -> None:
               else f"{len(shown)} words shown, not a once-each prefix: {shown[:3]}…{shown[-3:]}", tui.dump())
     rows = tui.messages()
     partial = [c for _s, r, c in rows if r == "assistant"]
-    db_words = re.findall(r"\bi1w\d{3}\b", partial[0]) if partial else []
+    db_raw = _norm(partial[0]) if partial else ""
+    screen_raw = _screen_partial(tui.rows(history=True))
+    # Raw text, not whole tokens: the cut lands mid-word, and that half word counts too.
     cells.add("interrupt_screen_matches_db",
-              "" if db_words and db_words == shown
-              else f"state.db assistant words {len(db_words)} vs screen {len(shown)}: {partial[:1]!r:.200}")
+              "" if db_raw and db_raw == screen_raw
+              else f"state.db partial ends {db_raw[-60:]!r} ({len(db_raw)} chars), screen shows "
+                   f"{screen_raw[-60:]!r} ({len(screen_raw)} chars)", tui.dump())
 
+    cells.phase = "interrupt_next_turn"
     tui.submit("carry on ix2")
     tui.wait_replies(2)
     tui.wait_quiet(1.0)
     history = llm.main_requests()[-1].get("messages") or []
     carried = [m for m in history if m.get("role") == "assistant" and "i1w000" in str(m.get("content"))]
-    carried_words = re.findall(r"\bi1w\d{3}\b", str(carried[0].get("content"))) if carried else []
+    carried_raw = _norm(carried[0].get("content")) if carried else ""
     cells.add("interrupt_next_request_carries_partial",
-              "" if len(carried) == 1 and carried_words == db_words
-              else f"{len(carried)} assistant messages with the partial; words {len(carried_words)} vs db {len(db_words)}")
+              "" if len(carried) == 1 and carried_raw == db_raw
+              else f"{len(carried)} assistant messages with the partial; wire ends {carried_raw[-60:]!r} "
+                   f"vs state.db {db_raw[-60:]!r}")
     cells.add("interrupt_next_reply_once",
               ledger_problems(tui.text(), words("n1", 12), r"\bn1w\d{3}\b")
               or ("" if re.findall(r"\bi1w\d{3}\b", tui.text()) == shown else "the partial reply re-rendered"),
@@ -140,6 +163,7 @@ def _scenario(kind: str, root) -> object:
             try:
                 drive(tui, llm, cells)
                 if kind == "interrupt":
+                    cells.phase = "exit"
                     cells.add("exits_clean", tui.exit_problem())
             finally:
                 tui.close()
@@ -153,7 +177,7 @@ def runs() -> dict:
     return {}
 
 
-@pytest.mark.parametrize("cell", cell_params(CELLS, KNOWN))
+@pytest.mark.parametrize("cell", cell_params(CELLS))
 def test_wide_chars_and_interrupt(runs: dict, cell: str, tmp_path_factory) -> None:
     kind = "cjk" if cell.startswith("cjk") else "interrupt"
     if kind not in runs:

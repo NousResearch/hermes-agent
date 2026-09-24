@@ -198,8 +198,6 @@ export function createMinimizeToTray(options: Options) {
       return true
     }
 
-    win.on('minimize', hide)
-
     if (closeToTray) {
       win.on('close', event => {
         if (hide()) {

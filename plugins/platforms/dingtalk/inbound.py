@@ -127,7 +127,12 @@ def extract_media(message: Any) -> Tuple[MessageType, List[str], List[str]]:
         mime, promoted = ("audio", MessageType.VOICE if item_type == "voice" else MessageType.AUDIO) if mapped == "audio" else _RICH_MEDIA[mapped]
         media_urls.append(dl_code)
         media_types.append(mime)
-        if msg_type == MessageType.TEXT:
+        # A later DOCUMENT sibling must still win over an earlier PHOTO promotion: a mixed
+        # rich-text payload (image + file) has to stay DOCUMENT so the document-context
+        # injection runs for the file sibling. Never downgrade an existing promotion.
+        if msg_type == MessageType.TEXT or (
+            msg_type == MessageType.PHOTO and promoted == MessageType.DOCUMENT
+        ):
             msg_type = promoted
     msg_type_str = getattr(message, "message_type", "") or ""
     if msg_type_str == "picture" and not media_urls:

@@ -3,6 +3,8 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.conversation_compression import compress_context
 from agent.context_compressor import ContextCompressor
 
@@ -102,6 +104,8 @@ def test_compression_attempt_telemetry_is_metadata_only(caplog):
     assert payload["chunk_count"] in {0, 1}
     assert payload["commit_status"] == "committed"
     assert payload["split_status"] == "not_applicable"
+    assert payload.get("persisted") is False
+    assert payload.get("execution_scope") == "in_memory"
     assert payload["fallback_used"] is False
     assert isinstance(payload["total_duration_ms"], int)
     assert isinstance(payload["commit_ms"], int)
@@ -115,6 +119,53 @@ def test_compression_attempt_telemetry_is_metadata_only(caplog):
     assert "SANITIZED SUMMARY" not in raw_log
     assert "user message" not in raw_log
     assert "assistant reply" not in raw_log
+
+
+@pytest.mark.parametrize("mode", ["fork", "durable", "failed", "fallback"])
+def test_telemetry_distinguishes_local_compaction_from_durable_commit(tmp_path, caplog, mode):
+    """#118361: sharing a session id does not mean a fork committed its parent."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", quiet_mode=True,
+            config_context_length=100_000,
+        )
+        compressor.tail_token_budget = 10
+        agent = _Agent(compressor)
+        agent.compression_in_place = True
+        agent._persist_disabled = mode == "fork"
+        agent._session_db = None if mode == "fork" else db
+        db.create_session(agent.session_id, source="cli")
+        messages = _messages()
+        for message in messages:
+            db.append_message(agent.session_id, message["role"], message["content"])
+        before = db.get_messages_as_conversation(agent.session_id)
+
+        def summarize(*args, **kwargs):
+            compressor._last_summary_fallback_used = mode == "fallback"
+            return "SANITIZED SUMMARY"
+
+        with patch.object(compressor, "_generate_summary", side_effect=summarize), \
+                patch("agent.conversation_compression._refresh_agent_tool_definitions", return_value=False), \
+                caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            if mode == "failed":
+                with patch.object(db, "archive_and_compact", side_effect=OSError("fixture write failure")):
+                    compress_context(agent, messages, "system prompt", approx_tokens=75_000, force=True)
+            else:
+                compress_context(agent, messages, "system prompt", approx_tokens=75_000, force=True)
+
+        payload = _extract_telemetry(caplog)
+        after = db.get_messages_as_conversation(agent.session_id)
+        persisted = mode in {"durable", "fallback"}
+        assert (after != before) is persisted
+        assert payload.get("persisted") is persisted
+        assert payload.get("execution_scope") == ("in_memory" if mode == "fork" else "session")
+        assert payload["fallback_used"] is (mode == "fallback")
+        assert payload["commit_status"] == ("aborted" if mode == "failed" else "committed")
+    finally:
+        db.close()
 
 
 def test_aux_call_telemetry_records_durations_without_content(caplog):

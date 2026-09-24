@@ -7,6 +7,22 @@ Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (de
 `agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
+## Compression attempt telemetry
+
+The content-free `compression_attempt` JSON in the local agent log separates
+successful computation from durable transcript changes:
+
+- `commit_status` retains its existing meaning: the attempt completed or aborted.
+  `committed` alone is not proof that the live session was persisted.
+- `execution_scope` is `in_memory` for DB-detached agents (including background
+  review and `/btw` forks), or `session` for a DB-bound agent.
+- `persisted` identifies a durable in-place or rotated compaction. A successful
+  in-memory fork reports `false`, even when it shares its parent's `session_id`.
+
+Consumers monitoring durable session recovery should require `persisted: true`,
+not just a matching session id and `commit_status: committed`. These fields add no
+transcript content and do not change compression, persistence, or status delivery.
+
 ## Bedrock context window cache
 
 Bedrock context resolution in `agent/model_metadata.py` uses this precedence:

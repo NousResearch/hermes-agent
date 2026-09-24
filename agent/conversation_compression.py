@@ -1479,9 +1479,14 @@ def _emit_compression_attempt_telemetry(
         payload.setdefault("event", "compression_attempt")
         payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
         payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
+        # Forks reuse the parent's session id but only compact their own snapshot.
+        # Keep commit_status's existing success semantics; durable observers must
+        # use the storage outcome, not success or the presence of a session id.
         payload.update(
             total_duration_ms=int((time.monotonic() - started_at) * 1000), commit_status=commit_status,
             split_status=split_status,
+            execution_scope="in_memory" if getattr(agent, "_session_db", None) is None else "session",
+            persisted=split_status in {"in_place_committed", "rotated_committed"},
         )
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))

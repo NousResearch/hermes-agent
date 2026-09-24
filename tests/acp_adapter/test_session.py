@@ -434,6 +434,75 @@ class TestPersistence:
         # Should not be found via ACP SessionManager.
         assert manager.get_session("cli-session-123") is None
 
+    def test_end_all_sessions_stamps_ended_and_unlocks_prune(self, tmp_path):
+        """#118216: the adapter's stdio shutdown is the ACP session end. Without the
+        ended_at writer, source='acp' rows are invisible to prune/archive forever (the
+        maintenance filter only ever selects ended sessions) and the desktop sidebar
+        accumulates one auto-titled row per editor wake."""
+        agent = SimpleNamespace(model="test-model", provider=None, base_url=None, api_mode=None)
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+        ended_earlier = manager.create_session(cwd="/work")
+        live_one = manager.create_session(cwd="/work")
+        live_two = manager.create_session(cwd="/work")
+        for state in (ended_earlier, live_one, live_two):
+            state.history.append({"role": "user", "content": "hello"})
+            manager.save_session(state.session_id)
+        # A row already ended by an earlier boundary keeps its first end_reason
+        # (end_session is first-writer-wins).
+        db.end_session(ended_earlier.session_id, "compression")
+
+        # Before the shutdown writer, only the already-ended row is a prune
+        # candidate — the two live acp rows are invisible to maintenance.
+        assert {row["id"] for row in db.list_prune_candidates(source="acp", older_than_days=0)} == {
+            ended_earlier.session_id}
+
+        ended = manager.end_all_sessions()
+
+        assert ended == 3
+        rows = {sid: db.get_session(sid) for sid in
+                (ended_earlier.session_id, live_one.session_id, live_two.session_id)}
+        assert all(row is not None for row in rows.values())
+        assert rows[ended_earlier.session_id]["end_reason"] == "compression"
+        for sid in (live_one.session_id, live_two.session_id):
+            assert rows[sid]["ended_at"] is not None
+            assert rows[sid]["end_reason"] == "acp_disconnect"
+        candidates = db.list_prune_candidates(source="acp", older_than_days=0)
+        assert {row["id"] for row in candidates} == {
+            ended_earlier.session_id, live_one.session_id, live_two.session_id}
+
+    def test_restore_reopens_a_session_ended_by_previous_process(self, tmp_path):
+        """#118216: an ACP row stamped ended at a previous adapter's shutdown is
+        reopened when a later process resumes it — the same contract as the TUI
+        gateway's cold resume."""
+        agent = SimpleNamespace(model="test-model", provider=None, base_url=None, api_mode=None)
+        db = SessionDB(tmp_path / "state.db")
+        first = SessionManager(agent_factory=lambda: agent, db=db)
+        state = first.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        first.save_session(state.session_id)
+        first.end_all_sessions()
+        assert db.get_session(state.session_id)["ended_at"] is not None
+
+        second = SessionManager(agent_factory=lambda: agent, db=db)
+        restored = second.get_session(state.session_id)
+
+        assert restored is not None
+        row = db.get_session(state.session_id)
+        assert row is not None
+        assert row["ended_at"] is None
+        assert row["end_reason"] is None
+
+    def test_end_all_sessions_without_db_is_a_noop(self):
+        """Teardown must never raise; a DB-unavailable process just ends nothing."""
+        manager = SessionManager(
+            agent_factory=_mock_agent,
+            db=None,
+        )
+        manager._db_instance = None
+        with patch.object(manager, "_get_db", return_value=None):
+            assert manager.end_all_sessions() == 0
+
     def test_sessions_searchable_via_fts(self, manager):
         """ACP sessions stored in SessionDB are searchable via FTS5."""
         state = manager.create_session()

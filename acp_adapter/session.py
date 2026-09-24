@@ -273,6 +273,34 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
+    def end_all_sessions(self, end_reason: str = "acp_disconnect") -> int:
+        """Stamp ``ended_at`` on every live session (#118216).
+
+        ACP v0.9 has no per-session destroy, so the stdio shutdown that ends
+        this process is the session end: the client that drove the
+        conversation is gone. Without this writer, source='acp' rows keep
+        ``ended_at`` NULL forever and the ended-session guard shared by
+        prune/archive (``hermes_state_maintenance``) can never reach them.
+        A later load/resume reopens the row (see ``_restore``), the same
+        contract the TUI gateway's resume path uses. Best-effort: teardown
+        must never raise. Returns the number of sessions ended.
+        """
+        db = self._get_db()
+        if db is None:
+            return 0
+        with self._lock:
+            session_ids = list(self._sessions.keys())
+        ended = 0
+        for session_id in session_ids:
+            try:
+                db.end_session(session_id, end_reason)
+                ended += 1
+            except Exception:
+                logger.debug("Failed to end ACP session %s", session_id, exc_info=True)
+        if ended:
+            logger.info("Ended %d ACP session(s) on shutdown (%s)", ended, end_reason)
+        return ended
+
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
@@ -427,6 +455,15 @@ class SessionManager:
             return None
         if row is None or row.get("source") != "acp":
             return None
+
+        # A previous adapter process stamped the row ended at its stdio
+        # shutdown (#118216); resuming the conversation reopens it, the same
+        # contract the TUI gateway's cold-resume path uses.
+        if row.get("ended_at") is not None:
+            try:
+                db.reopen_session(session_id)
+            except Exception:
+                logger.debug("Failed to reopen ACP session %s", session_id, exc_info=True)
 
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None

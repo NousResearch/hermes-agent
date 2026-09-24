@@ -434,19 +434,19 @@ def test_unreadable_expiry_stays_engaged(hermes_home):
 
 
 def test_ttl_and_allowlist_round_trip_through_the_sentinel(hermes_home):
-    estop.engage(reason="window", allow={"user_ids": [OPERATOR], "profiles": ["platform-stl"]}, ttl="45m")
+    estop.engage(reason="window", allow={"user_ids": [OPERATOR], "profiles": ["primary-lane"]}, ttl="45m")
 
     state = estop.get_state()
-    assert state["allow"] == {"user_ids": [OPERATOR], "profiles": ["platform-stl"]}
+    assert state["allow"] == {"user_ids": [OPERATOR], "profiles": ["primary-lane"]}
     remaining = (datetime.fromisoformat(state["expires_at"]) - datetime.now(timezone.utc)).total_seconds()
     assert 40 * 60 < remaining <= 45 * 60, "--ttl must be honored as a wall-clock deadline"
 
 
 def test_is_allowed_reads_the_allowlist_by_identity_then_profile(hermes_home):
-    estop.engage(allow={"user_ids": [OPERATOR], "profiles": ["platform-stl"]})
+    estop.engage(allow={"user_ids": [OPERATOR], "profiles": ["primary-lane"]})
 
     assert estop.is_allowed(OPERATOR) is True
-    assert estop.is_allowed("someone-else", "platform-stl") is True
+    assert estop.is_allowed("someone-else", "primary-lane") is True
     assert estop.is_allowed("someone-else", "other-lane") is False
     estop.disengage()
     assert estop.is_allowed(OPERATOR) is False, "no sentinel admits nobody"
@@ -456,13 +456,13 @@ def test_cli_pause_arms_ttl_and_allowlist(hermes_home, capsys):
     from hermes_cli.subcommands.pause import cmd_pause
 
     rc = cmd_pause(argparse.Namespace(
-        reason="update window", allow_user=[OPERATOR], allow_profile=["platform-stl"], ttl="45m"))
+        reason="update window", allow_user=[OPERATOR], allow_profile=["primary-lane"], ttl="45m"))
     assert rc == 0
     state = estop.get_state()
-    assert state["allow"] == {"user_ids": [OPERATOR], "profiles": ["platform-stl"]}
+    assert state["allow"] == {"user_ids": [OPERATOR], "profiles": ["primary-lane"]}
     assert state["expires_at"]
     out = capsys.readouterr().out
-    assert OPERATOR in out and "platform-stl" in out and "deadman" in out
+    assert OPERATOR in out and "primary-lane" in out and "deadman" in out
 
 
 def test_cli_pause_refuses_an_unusable_ttl_without_arming(hermes_home, capsys):

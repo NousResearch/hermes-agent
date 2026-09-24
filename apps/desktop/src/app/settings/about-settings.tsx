@@ -218,7 +218,7 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
 
             {updateAvailable && supported && !applying && (
               <>
-                <Button onClick={() => startActiveUpdate()} size="sm">
+                <Button onClick={() => startActiveUpdate('client')} size="sm">
                   {a.updateNow}
                 </Button>
                 <Button onClick={() => openUpdatesWindow('client')} size="sm" variant="textStrong">

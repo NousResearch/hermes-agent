@@ -1408,9 +1408,9 @@ class GatewayTurnMixin:
         return bounded
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
-        """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
-        the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
-        system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
+        """First-ever-message onboarding note + operator-only home-channel setup prompt (both only
+        when the session has no history). The intro rides the user-message sidecar, not the
+        ephemeral system prompt: present-on-turn-1/absent-on-turn-2 would force a rebuild."""
         from gateway.run import _hermes_home, _home_target_env_var, _load_gateway_config
         if history:
             return
@@ -1461,6 +1461,19 @@ class GatewayTurnMixin:
                 if prof and prof != "default" and _lgc().get_home_channel(source.platform):
                     home_env = "set"
         if not home_env:
+            # Home-channel setup is infrastructure administration, not user onboarding. Only an
+            # identity explicitly listed as an admin for this conversation scope may see it; a
+            # disabled slash-access policy is backward-compatible unrestricted command access,
+            # but is not evidence that an arbitrary first-time contact is the operator.
+            from gateway.slash_access import policy_for_source
+            admin_policy = policy_for_source(self.config, source)
+            if not (admin_policy.enabled and admin_policy.is_admin(source.user_id)):
+                logger.info(
+                    "No home channel is configured for %s; suppressing the setup notice for a "
+                    "first-time contact that is not an explicitly configured admin",
+                    platform_name,
+                )
+                return
             # Slack routes every command through the parent `/hermes`; bare `/sethome` would fail.
             sethome_cmd = "/hermes sethome" if source.platform == Platform.SLACK else "/sethome"
             await self._deliver_platform_notice(

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 120
 _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
+_MAX_BEARER_FILE_BYTES = 4096
 
 
 def _load_config() -> dict:
@@ -59,33 +60,44 @@ def _auth_header(auth: dict) -> dict:
         return {"Authorization": f"Bearer {inline}"} if inline else {}
 
     path = Path(token_file).expanduser()
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ValueError("bearer token_file secure no-follow open is unavailable")
+
     descriptor: int | None = None
     try:
-        no_follow = getattr(os, "O_NOFOLLOW", None)
-        if no_follow is None:
-            raise ValueError("bearer token_file secure no-follow open is unavailable")
-        descriptor = os.open(path, os.O_RDONLY | no_follow)
+        flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+        descriptor = os.open(path, flags)
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_mode & 0o077:
             raise ValueError("bearer token_file must be a regular file with mode 0600")
-        if file_stat.st_size > 4098:
-            raise ValueError("bearer token_file must contain at most 4096 bytes")
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            descriptor = None
-            token = handle.read().strip()
+
+        chunks: list[bytes] = []
+        remaining = _MAX_BEARER_FILE_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        token_data = b"".join(chunks)
     except ValueError:
         raise
-    except (OSError, UnicodeError) as exc:
+    except OSError as exc:
         raise ValueError("bearer token_file is unreadable") from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
 
-    token_bytes = token.encode("utf-8")
-    if len(token_bytes) < 32:
-        raise ValueError("bearer token_file must contain one bearer value of at least 32 bytes")
-    if len(token_bytes) > 4096:
+    if len(token_data) > _MAX_BEARER_FILE_BYTES:
         raise ValueError("bearer token_file must contain at most 4096 bytes")
+    try:
+        token = token_data.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("bearer token_file is unreadable") from exc
+
+    if not token:
+        raise ValueError("bearer token_file must contain one bearer value")
     if any(char.isspace() for char in token):
         raise ValueError("bearer token_file must contain one bearer value")
     return {"Authorization": f"Bearer {token}"}

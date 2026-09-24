@@ -29,8 +29,11 @@ a2a_agents:
     capabilities: [web_search, research]
 ```
 
-Bearer files must be regular files with no group/world permissions (`0600` or stricter).
-Inline `token` remains supported, but it cannot be combined with `token_file`.
+Bearer files must be non-symlink regular files with no group/world permissions (`0600` or
+stricter), and contain one non-empty, whitespace-free UTF-8 bearer value in at most 4096 bytes.
+Hermes does not impose a minimum bearer length: token format and strength remain the receiver's
+policy, matching existing inline bearer behavior. Platforms without a secure no-follow open fail
+closed. Inline `token` remains supported, but it cannot be combined with `token_file`.
 
 ## Outbound — call other agents
 

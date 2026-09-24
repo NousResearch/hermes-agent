@@ -757,7 +757,9 @@ export function preserveLocalPendingTurnMessages(
     }
   }
 
-  const latestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
+  const authoritativeUsers = remainingNext.filter(
+    message => message.role === 'user' && !isGatewaySystemMarker(message)
+  )
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -841,10 +843,11 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isOptimisticUser &&
-      latestAuthoritativeUser &&
-      !conflictingTranscriptIdentity(message, latestAuthoritativeUser) &&
-      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
-        textWithoutReferenceLines(chatMessageText(message))
+      authoritativeUsers.some(
+        candidate =>
+          !conflictingTranscriptIdentity(message, candidate) &&
+          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
+      )
     ) {
       continue
     }

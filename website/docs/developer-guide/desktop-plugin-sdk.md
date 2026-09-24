@@ -840,8 +840,7 @@ host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Ca
 host.toolsets.list(profile?)               // toolsets + enabled state
 host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
 host.profiles.list(scope?)                 // the profile list the profile rail reads
-host.pluginDecisions.all() / .get(id)      // this window's plugin enable/disable decisions
-host.pluginDecisions.set(id, enabled)      // flip one through the live toggle (persists + applies)
+host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -1036,6 +1035,60 @@ page's intro-splash switch becomes `host.settings.subscribe('intro-splash.v1', f
 `localStorage.getItem('hermes.desktop.keybinds')` to back up its shortcut — that
 is the keybind-map row above: contribute the default through `KEYBINDS_AREA` and
 keep the user's override in `ctx.storage`, not in the app's map.
+
+### Typed capabilities bridge — `host.skills`, `host.toolsets`, `host.profiles`, `host.pluginDecisions`
+
+```ts
+type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
+
+host.skills.list(profile?: ProfileScope): Promise<SkillInfo[]>
+host.skills.setEnabled(name: string, enabled: boolean, profile?: ProfileScope): Promise<{ ok: boolean; name: string; enabled: boolean }>
+host.toolsets.list(profile?: ProfileScope): Promise<ToolsetInfo[]>
+host.toolsets.setEnabled(name: string, enabled: boolean, profile?: ProfileScope): Promise<{ ok: boolean; name: string; enabled: boolean }>
+host.profiles.list(scope?: ProfileScope): Promise<{ profiles: ProfileInfo[] }>
+host.pluginDecisions: ReadableAtom<Record<string, boolean>>   // get() / subscribe() / listen() — no set()
+```
+
+These wrap the **same `api/*` module functions the Capabilities page calls**
+(`GET /api/skills`, `PUT /api/skills/toggle`, `GET /api/tools/toolsets`,
+`PUT /api/tools/toolsets/<name>`, `GET /api/profiles`) with the page's profile
+scoping. Omit `profile` to act on the app-wide active profile; pass a name or a
+`{ connectionId, profile }` route to configure another profile without swapping
+the foreground one. Nothing new is arbitrated: every call is already reachable
+through `host.request` — the value is typing plus profile scoping, so stop
+calling `window.hermesDesktop.api` raw.
+
+`host.pluginDecisions` mirrors the app's plugin enable/disable map (plugin id →
+`true`/`false`; an absent id means the user never chose and the plugin's own
+`defaultEnabled` applies). It is **read-only by design**: a `set()` would let one
+plugin flip another plugin's enable state — exactly "plugins messing with each
+other's functionality" — and `host` is a module singleton that cannot tell which
+plugin is calling to restrict a writer to the caller's own id. The object has no
+`set` at runtime, not just in the types. Enabling/disabling plugins stays in the
+app's Plugins tab; link to it with `host.navigate('/capabilities?tab=plugins')`.
+
+Teardown: the verbs are discrete user-triggered actions that write the same
+backend state the page writes, so nothing is owned afterwards and there is
+nothing to tear down. A `subscribe()` on `host.pluginDecisions` returns its
+disposer — register it with `ctx.onDispose` so a disabled or reloaded plugin
+stops listening.
+
+Migration (better-capabilities):
+
+```ts
+// before                                                  // after
+desktopApi({ path: '/api/skills' })                        host.skills.list()
+desktopApi({ path: '/api/skills/toggle', method: 'PUT',    host.skills.setEnabled(name, enabled)
+  body: { name, enabled } })
+desktopApi({ path: '/api/tools/toolsets' })                host.toolsets.list()
+desktopApi({ path: `/api/tools/toolsets/${name}`,          host.toolsets.setEnabled(name, enabled)
+  method: 'PUT', body: { enabled } })
+desktopApi({ path: '/api/profiles' })                      host.profiles.list()
+JSON.parse(localStorage.getItem(                           host.pluginDecisions.get()
+  'hermes.desktop.pluginDecisions.v2'))                    ctx.onDispose(host.pluginDecisions.subscribe(fn))
+localStorage.setItem('hermes.desktop.pluginDecisions.v2')  // declined — host.navigate('/capabilities?tab=plugins')
+row.querySelector('[data-slot="switch"]').click()          // same: the app's Plugins tab owns the toggle
+```
 
 ## Data layer — React Query + nanostores
 
@@ -1341,7 +1394,7 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |

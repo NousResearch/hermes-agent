@@ -19,6 +19,7 @@ from pathlib import Path
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_cli._early_recovery import interrupted_pull_marker
 from hermes_constants import get_default_hermes_root, project_venv_dir, venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
@@ -73,7 +74,7 @@ from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
     _print_items, _run_config_check_fresh, _run_migrate_config_fresh)
 from hermes_cli.update_cmd_deps import (  # noqa: F401
-    _INSTALL_DEFINING_FILES, _SELF_LOCKING_NATIVE_MODULES, _UPDATE_CRITICAL_MODULES,
+    _INSTALL_DEFINING_FILES, _UPDATE_CRITICAL_MODULES,
     _abort_dependency_sync_if_self_locked, _capture_active_lazy_features,
     _capture_active_tool_dependencies, _critical_module_import_failures,
     _defer_update_for_self_lock, _dependency_sync_would_rewrite, _desktop_app_present,
@@ -652,7 +653,7 @@ def _repair_venv_on_current_checkout(
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
     # Same order as the pull and ZIP paths: the ``[all]`` reinstall above may have stripped the
-    # active memory provider's bridge packages (hindsight-embed, torch, ...).
+    # active memory provider's bridge packages (torch, embedding stacks, ...).
     _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
@@ -775,7 +776,7 @@ def _repair_current_checkout(
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
     """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
-    same branch (rescue ref first when histories share no ancestor). ``sys.exit(1)`` on failure."""
+    same branch after parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
     # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
     # would discard that work: merge instead, stop on conflict.
     _cur_branch = (_git_run(git_cmd, ["branch", "--show-current"]).stdout or "").strip()
@@ -792,22 +793,35 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
-    # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
-    # local graph, so park pre_pull_sha behind a rescue ref first.
+    # Same branch: the reset below is right either way, but the two causes of divergence here
+    # are indistinguishable from the checkout alone. An upstream force-push/rebase loses
+    # nothing; local commits on this branch lose everything, and the reflog is the only way
+    # back — an expiring log the user has to know to reach for, in a directory Hermes updates
+    # unattended. So park pre_pull_sha behind a rescue ref for BOTH, orphan divergence (no
+    # common ancestor: corrupted HEAD, re-init) included.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
-    has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
-    if not has_common_ancestor and pre_pull_sha:
+    has_common_ancestor = bool(
+        merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
+    if pre_pull_sha:
         from datetime import datetime as _dt, timezone
         # SHA suffix so two updates in the same second get distinct refs.
+        kind = "diverged" if has_common_ancestor else "orphan"
         rescue_ref = (
-            f"refs/hermes-update-backups/orphan-{branch}-"
+            f"refs/hermes-update-backups/{kind}-{branch}-"
             f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
-        head = f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — "
+        head = (
+            f"  ⚠ Local history has diverged from origin/{branch} — "
+            if has_common_ancestor else
+            f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — ")
         if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode == 0:
             print(
                 f"{head}backed up current HEAD to {rescue_ref} before resetting. "
                 f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
+            if has_common_ancestor:
+                dropped = (_git_run(
+                    git_cmd, ["rev-list", "--count", f"origin/{branch}..{pre_pull_sha}"]).stdout or "").strip()
+                print(f"    {dropped or 'Some'} commit(s) not on origin/{branch} leave the branch; "
+                      f"list them with: git log origin/{branch}..{rescue_ref}")
         else:
             # update-ref failure is intentionally non-fatal, but never claim a backup exists.
             print(
@@ -858,7 +872,7 @@ def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
-    custom branch -> merge, same branch -> reset, orphan history -> rescue ref first; a
+    custom branch -> merge, same branch -> rescue ref then reset; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
     update_succeeded = False
     # Pre-pull SHA for auto-rollback (stray conflict markers once bricked every updater).
@@ -866,11 +880,27 @@ def _pull_updates(
     # critical-path file (PR #28452 incident: orphan merge-conflict markers in hermes_cli/config.py bricked
     # every user who ran ``hermes update`` for the 7 minutes between the bad commit and the fix landing).
     pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+    # Git moves the tree file by file and HEAD last: if this process dies in between, the next launch
+    # of any entry point finds this marker and puts the old tree back (_early_recovery). The target is
+    # the resolved commit, so a later `git fetch` cannot widen what that restore considers.
+    pull_marker = interrupted_pull_marker(_m().PROJECT_ROOT)
+    target_sha = (_git_run(git_cmd, ["rev-parse", f"origin/{branch}^{{commit}}"]).stdout or "").strip()
+    with _best_effort('Could not write the interrupted-pull marker: %s'):
+        pull_marker.write_text(
+            f"pid={os.getpid()}\npre={pre_pull_sha}\ntarget={target_sha}\nstash={auto_stash_ref or ''}\n",
+            encoding="utf-8")
     try:
-        # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
-        # SECOND network fetch; identical in effect given the fresh tracking ref.
-        if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
-            _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
+        try:
+            # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
+            # SECOND network fetch; identical in effect given the fresh tracking ref.
+            if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
+                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
+        except KeyboardInterrupt:
+            raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
+        except BaseException:
+            pull_marker.unlink(missing_ok=True)  # git exited on its own (sys.exit on conflict/reset failure)
+            raise
+        pull_marker.unlink(missing_ok=True)  # git is done: the tree is whole again
         _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
         update_succeeded = True
     finally:

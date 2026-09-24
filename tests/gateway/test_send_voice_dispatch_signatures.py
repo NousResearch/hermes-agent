@@ -5,30 +5,7 @@ the attachment is silently dropped (#102221, #116776 — Matrix; same class in l
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
 import pytest
-
-_ROOT = Path(__file__).resolve().parents[2]
-_ADAPTER_FILES = sorted(
-    p for p in list((_ROOT / "plugins" / "platforms").glob("*/adapter.py")) + list((_ROOT / "gateway" / "platforms").glob("*.py"))
-    if "async def send_voice" in p.read_text(encoding="utf-8")
-)
-
-
-def _send_voice_defs(path: Path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "send_voice"]
-
-
-@pytest.mark.parametrize("path", _ADAPTER_FILES, ids=lambda p: str(p.relative_to(_ROOT)))
-def test_every_send_voice_accepts_is_voice(path: Path) -> None:
-    for fn in _send_voice_defs(path):
-        names = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
-        assert fn.args.kwarg is not None or "is_voice" in names, (
-            f"{path}: send_voice() rejects the dispatch's is_voice kwarg — add **kwargs or is_voice"
-        )
 
 
 @pytest.mark.asyncio

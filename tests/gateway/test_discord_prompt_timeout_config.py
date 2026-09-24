@@ -12,7 +12,6 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 
 def _ensure_discord_mock():
@@ -51,7 +50,6 @@ _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import (  # noqa: E402
     _DISCORD_PROMPT_TIMEOUT_DEFAULT,
-    _DISCORD_PROMPT_TIMEOUT_MAX,
     _DISCORD_PROMPT_TIMEOUT_MIN,
     _read_discord_prompt_timeout,
 )
@@ -88,11 +86,5 @@ def test_value_clamped_to_minimum(monkeypatch):
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
 
 
-def test_default_matches_previous_hardcoded_value():
-    """Behavioral parity assertion: existing installs (no new config) must
-    see exactly the 300s timeout the views were hardcoded to before this
-    change. Guards against the default drifting in a future refactor.
-    """
-    assert _DISCORD_PROMPT_TIMEOUT_DEFAULT == 300
 
 

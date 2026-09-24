@@ -560,6 +560,24 @@ describe('liveSessionProjectId', () => {
       '/work/notes'
     )
   })
+
+  it('matches NFD and NFC spellings of the same accented folder (#65014)', () => {
+    // The same on-disk folder can reach us as NFC (typed paths, backend cwd)
+    // or NFD (macOS file pickers) — byte-different, visually identical.
+    const nfc = '/projects/sv/bist\u00e5nd'
+    const nfd = nfc.normalize('NFD')
+
+    expect(nfd).not.toBe(nfc) // premise: distinct byte strings
+    expect(liveSessionProjectId(makeCwdSession(nfd), [makeProject('p_bistand', [nfc])])).toBe('p_bistand')
+  })
+
+  it('matches a Windows cwd differing in both case and normalization form (#65014)', () => {
+    const id = liveSessionProjectId(makeCwdSession('d:/projects/sv/bist\u00e5nd'.normalize('NFD')), [
+      makeProject('p_sv', ['D:\\Projects\\SV\\Bist\u00e5nd'.normalize('NFC')])
+    ])
+
+    expect(id).toBe('p_sv')
+  })
 })
 
 describe('sessionProjectColor', () => {
@@ -1078,6 +1096,31 @@ describe('overlayLiveLanes', () => {
 
     expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['fresh', 'old'])
     expect(overlaid.sessionCount).toBe(2)
+  })
+
+  it('never lists a chat owned by a named project in Home, even while its live copy is detached', () => {
+    // #77591: the snapshot assigns the chat to p_app, but session.info can land
+    // with an empty cwd + root. Home must defer to the one owner, including by
+    // lineage root after compression rotates the live id.
+    const home = homeNode([makeCwdSession(null, { id: 'stale' })])
+
+    const owners = new Map([
+      ['owned', 'p_app'],
+      ['root', 'p_app'],
+      ['stale', 'p_app'],
+      ['homeless', NO_PROJECT_ID]
+    ])
+
+    const live = [
+      makeCwdSession(null, { id: 'owned' }),
+      makeCwdSession(null, { id: 'tip', _lineage_root_id: 'root' }),
+      makeCwdSession(null, { id: 'homeless' })
+    ]
+
+    const overlaid = overlayLiveLanes(home, live, new Set(), owners)
+
+    expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['homeless'])
+    expect(overlaid.sessionCount).toBe(1)
   })
 
   it('leaves Home alone for a session that has a cwd', () => {

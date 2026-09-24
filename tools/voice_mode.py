@@ -23,8 +23,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 from hermes_constants import is_termux as _is_termux_environment
+from hermes_platform.host.runtime import is_wsl
+from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 
 # ── Recording parameters ──
 SAMPLE_RATE = 16000  # Whisper native rate
@@ -310,7 +311,7 @@ def detect_audio_environment() -> dict:
     # WSL: the PowerShell/Media.SoundPlayer fallback only covers OUTPUT, so when
     # it is all that's available downgrade to a notice (recording guidance stays
     # visible, TTS-only usage isn't blocked).
-    if _is_wsl2_env():
+    if is_wsl():
         if has_forwarded_audio:
             notices.append("Running in WSL with a reachable PulseAudio/PipeWire sound server")
         elif _wsl_powershell_tts_available():
@@ -961,20 +962,10 @@ def stop_playback() -> None:
         sd.stop()
 
 
-def _is_wsl2_env() -> bool:
-    """True inside WSL (Microsoft kernel signature in /proc/version); False on any error.
-    Module-level so tests can patch it instead of ``builtins.open``."""
-    try:
-        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
-            return "microsoft" in _fv.read().lower()
-    except OSError:
-        return False
-
-
 def _wsl_powershell_tts_available() -> bool:
     """WSL2 PowerShell TTS fallback usable. OUTPUT only (Media.SoundPlayer on the host) —
     recording still needs a PulseAudio bridge, so callers keep surfacing that guidance."""
-    return bool(_is_wsl2_env() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
+    return bool(is_wsl() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
 
 
 def play_audio_file(file_path: str) -> bool:
@@ -1000,7 +991,7 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
         # ~100 ms to stabilise and the small default blocksize worsens
         # clock-adjustment jitter (microsoft/wslg#1257).
         blocksize = 0  # default (auto)
-        if _is_wsl2_env():
+        if is_wsl():
             fade_samples = int(0.1 * sample_rate)
             audio_float = audio_data.astype(np.float64)
             audio_float[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=np.float64)
@@ -1023,7 +1014,7 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
     ffplay/aplay have no device, but Media.SoundPlayer on the host does: convert to a
     uniquely-named WAV in Windows %TEMP% (concurrent TTS must not collide), play, always
     delete, and re-raise the ORIGINAL exit status past the cleanup (rm -f exits 0)."""
-    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and _is_wsl2_env()):
+    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and is_wsl()):
         return None
     try:
         import uuid

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from agent.context_compressor import ContextCompressor, is_compaction_summary_message
+from agent.context_compressor import ContextCompressor
+from agent.prompt_builder import STEER_DISPLAY_KIND
 
 
 _COMPACTION_INTERNAL_FIELDS = (
@@ -40,7 +41,9 @@ def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[
     """
     if not isinstance(message, dict):
         return None
-    if not is_compaction_summary_message(message):
+    # Display must not infer provenance from text a user or tool can quote.
+    # The compressor stamps this flag and SessionDB persists it across reloads.
+    if not ContextCompressor._has_compressed_summary_metadata(message):
         return message.copy()
 
     projected = ContextCompressor._strip_context_summary_handoff_message(message)
@@ -50,5 +53,6 @@ def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[
     projected = projected.copy()
     for key in _COMPACTION_INTERNAL_FIELDS:
         projected.pop(key, None)
-    projected.pop("display_kind", None)
+    if projected.get("display_kind") != STEER_DISPLAY_KIND:
+        projected.pop("display_kind", None)
     return projected

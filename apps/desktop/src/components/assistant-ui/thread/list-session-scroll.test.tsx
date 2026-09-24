@@ -188,6 +188,18 @@ describe('list session-scroll restore', () => {
           expect(vp.scrollTop).toBe(scrollHeightValue - CLIENT_H)
         }
 
+        // An open inline edit holds the viewport: its growth is not followed.
+        const editingTop = vp.scrollTop
+        vp.setAttribute('data-editing', 'true')
+
+        act(() => {
+          scrollHeightValue += 200
+          deliverContentResize()
+        })
+
+        expect(vp.scrollTop).toBe(editingTop)
+        vp.removeAttribute('data-editing')
+
         // A reader who scrolled up is not yanked back by the same growth.
         const readingTop = scrollHeightValue - CLIENT_H - 900
 

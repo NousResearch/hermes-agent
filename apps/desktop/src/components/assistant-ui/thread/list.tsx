@@ -23,18 +23,18 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
+  COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
   planThreadScrollRestore,
   publishThreadAtBottom,
+  readThreadScrollResizeMetrics,
   resetPublishedThreadScroll,
   saveThreadScrollPosition,
   shouldReapplyFrozenThreadScrollOffset,
   THREAD_SCROLL_BOTTOM,
-  THREAD_SCROLL_STICKY_THRESHOLD_PX,
-  type ThreadScrollRestoreResizeMetrics,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
   threadScrollStorageKey,
@@ -590,6 +590,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const windowCommitRef = useRef<string | null>(null)
   const jumpRestoreRef = useRef<(() => void) | null>(null)
   const isRunning = useAuiState(s => s.thread.isRunning)
+  // Read by the resize-pin callback so a turn boundary doesn't rebuild its
+  // scroll listener and ResizeObserver.
+  const isRunningRef = useRef(isRunning)
+  isRunningRef.current = isRunning
+  const clearanceRef = useRef<HTMLDivElement>(null)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
@@ -842,15 +847,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // the viewport paints at the stale scrollTop, visibly drifting up before
     // the re-pin (#118482). The RO leg closes that frame, synchronously before
     // paint.
-    const resizeMetrics = (): ThreadScrollRestoreResizeMetrics => {
-      const clearance = content.querySelector('[data-slot="aui_composer-clearance"]')
-
-      return {
-        clearanceHeight: clearance instanceof HTMLElement ? clearance.clientHeight : 0,
-        clientHeight: el.clientHeight,
-        scrollHeight: el.scrollHeight
-      }
-    }
+    const resizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
 
     // ponytail: previous-metrics precision is load-bearing — the predicate must
     // see the frame BEFORE the growth, so a scroll event (which also writes it)
@@ -870,10 +867,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // distinguishable from streamed content. The pre-growth metrics hold the
       // reader's position, so a reader who scrolled up is never yanked back
       // (#108941); use-stick-to-bottom stays the single scroll owner otherwise.
+      // An open inline edit holds the viewport (beginEditHold), so its growing
+      // bubble is never followed.
       if (
-        isRunning &&
+        isRunningRef.current &&
+        !el.hasAttribute('data-editing') &&
         shouldReapplyFrozenThreadScrollOffset(THREAD_SCROLL_BOTTOM, true, previousResizeMetrics, nextResizeMetrics) &&
-        previousResizeMetrics.scrollHeight - el.scrollTop - el.clientHeight <= THREAD_SCROLL_STICKY_THRESHOLD_PX &&
+        threadScrollStateFromMetrics({ ...previousResizeMetrics, scrollTop: el.scrollTop }).kind === 'bottom' &&
         !hasTranscriptTextSelection(el)
       ) {
         el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
@@ -891,7 +891,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.removeEventListener('scroll', update)
       observer.disconnect()
     }
-  }, [contentRef, isRunning, paneVisible, scrollRef, sessionKey])
+  }, [contentRef, paneVisible, scrollRef])
 
   // Persist the live position on app close, so a reading position survives a
   // quit without a session switch (the switch cleanup below only runs on
@@ -1099,15 +1099,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // restored target through those resizes until input or a live run takes over.
     // Bottom needs the same protection: the library follows on the next frame,
     // but a switch in this frame would otherwise persist the temporary gap.
-    const restoreResizeMetrics = (): ThreadScrollRestoreResizeMetrics => {
-      const clearance = contentRef.current?.querySelector('[data-slot="aui_composer-clearance"]')
-
-      return {
-        clearanceHeight: clearance instanceof HTMLElement ? clearance.clientHeight : 0,
-        clientHeight: el.clientHeight,
-        scrollHeight: el.scrollHeight
-      }
-    }
+    const restoreResizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
 
     let lastRestoreMetrics = restoreResizeMetrics()
 
@@ -1532,7 +1524,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             <div
               aria-hidden="true"
               className="shrink-0"
-              data-slot="aui_composer-clearance"
+              data-slot={COMPOSER_CLEARANCE_SLOT}
+              ref={clearanceRef}
               style={{ height: 'var(--thread-last-message-clearance)' }}
             />
           )}

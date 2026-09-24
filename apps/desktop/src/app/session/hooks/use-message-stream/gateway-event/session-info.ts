@@ -4,7 +4,8 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
-import { clearAllPrompts, clearClarifyRequest } from '@/store/prompts'
+import { clearClarifyRequest } from '@/store/clarify'
+import { clearAllPrompts } from '@/store/prompts'
 import {
   $activeSessionId,
   $currentCwd,

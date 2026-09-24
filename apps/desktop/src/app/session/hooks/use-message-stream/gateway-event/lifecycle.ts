@@ -12,7 +12,8 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
-import { clearAllPrompts, clearClarifyRequest } from '@/store/prompts'
+import { clearClarifyRequest } from '@/store/clarify'
+import { clearAllPrompts } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider

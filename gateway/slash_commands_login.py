@@ -89,7 +89,11 @@ class GatewayLoginCommandsMixin:
                 live.cancelled = True
 
         state = await self._run_login_blocking(anon_auth.current_nous_state)
-        if state and not anon_auth.is_guest_state(state):
+        if (
+            state
+            and not anon_auth.is_guest_state(state)
+            and not anon_auth.account_reauthentication_required(state)
+        ):
             return anon_auth.UPGRADE_ALREADY_SIGNED_IN
 
         with lock:
@@ -112,10 +116,19 @@ class GatewayLoginCommandsMixin:
             with lock:
                 return attempt.cancelled
 
+        @contextlib.contextmanager
+        def _persist_guard():
+            # Linearize supersession with the credential write: either cancellation owns the
+            # lock first and the old grant is discarded, or persistence owns it first and the
+            # replacement observes an already-completed attempt.
+            with lock:
+                yield not attempt.cancelled
+
         gen = anon_auth.run_sign_in(
             timeout_seconds=15.0,
             cancelled=_cancelled,
             cancel_wins_after_promotion=False,
+            persist_guard=_persist_guard,
         )
         pushed_terminal = False
         try:

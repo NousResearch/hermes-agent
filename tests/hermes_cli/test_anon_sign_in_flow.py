@@ -7,6 +7,7 @@ mocked away. Each test asserts a single ruled property of the flow.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 
@@ -235,6 +236,65 @@ def test_already_signed_in_short_circuits_before_any_network(portal):
     assert portal.calls == []
 
 
+def test_terminal_account_state_gets_a_direct_reauthentication_grant(portal):
+    from hermes_cli.auth import _load_auth_store, _save_auth_store, _save_provider_state
+    store = _load_auth_store()
+    _save_provider_state(store, "nous", {
+        "auth_method": "oauth_device_code",
+        "portal_base_url": PORTAL,
+        "last_auth_error": {
+            "code": "invalid_grant", "reason": "runtime_access_refresh_failure",
+            "relogin_required": True,
+        },
+    })
+    _save_auth_store(store)
+
+    states = _drain()
+
+    assert [state.kind for state in states] == ["code", "waiting", "completed"]
+    assert states[0].code == portal.user_code
+    paths = [path for _, path in portal.calls]
+    assert paths == ["/api/oauth/device/code", "/api/oauth/token"]
+    refreshed = _load_auth_store()["providers"]["nous"]
+    assert refreshed["refresh_token"]
+    assert "last_auth_error" not in refreshed
+
+
+def test_cancelling_direct_reauthentication_during_token_poll_persists_nothing(portal):
+    from hermes_cli.auth import _load_auth_store, _save_auth_store, _save_provider_state
+    store = _load_auth_store()
+    _save_provider_state(store, "nous", {
+        "auth_method": "oauth_device_code",
+        "portal_base_url": PORTAL,
+        "last_auth_error": {"code": "invalid_grant", "relogin_required": True},
+    })
+    _save_auth_store(store)
+    before = _auth_file_path().read_bytes()
+    polling = threading.Event()
+    stop = threading.Event()
+    real_handler = portal.handler
+
+    def _pending_token(request):
+        if request.url.path == "/api/oauth/token":
+            polling.set()
+            return httpx.Response(400, json={"error": "authorization_pending"})
+        return real_handler(request)
+
+    portal.handler = _pending_token
+    states = []
+    worker = threading.Thread(
+        target=lambda: states.extend(_drain(
+            cancelled=stop.is_set, cancel_wins_after_promotion=False)))
+    worker.start()
+    assert polling.wait(2)
+    stop.set()
+    worker.join(3)
+
+    assert not worker.is_alive()
+    assert [state.kind for state in states] == ["code", "waiting", "superseded"]
+    assert _auth_file_path().read_bytes() == before
+
+
 def test_free_tier_off_yields_unavailable(portal, monkeypatch):
     monkeypatch.setattr(anon_auth, "guest_enabled", lambda: False)
     portal.calls.clear()
@@ -334,7 +394,8 @@ def test_cancelling_during_a_completed_status_request_obeys_the_surface_policy(
     assert anon_auth.is_guest_state(state) is cancel_wins
 
 
-def _cancel_after_a_completed_promotion(portal, monkeypatch, *, cancel_wins: bool):
+def _cancel_after_a_completed_promotion(
+        portal, monkeypatch, *, cancel_wins: bool, persist_guard=None):
     _seed_free_tier()
     stop = threading.Event()
 
@@ -343,7 +404,8 @@ def _cancel_after_a_completed_promotion(portal, monkeypatch, *, cancel_wins: boo
         return {"status": "completed", "user_id": "nas_user:9", "account_email": EMAIL}
     monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait)
     return list(anon_auth.run_sign_in(
-        cancelled=stop.is_set, cancel_wins_after_promotion=cancel_wins))
+        cancelled=stop.is_set, cancel_wins_after_promotion=cancel_wins,
+        persist_guard=persist_guard))
 
 
 def test_a_desktop_style_cancel_after_a_completed_promotion_persists_nothing(
@@ -360,7 +422,12 @@ def test_a_desktop_style_cancel_after_a_completed_promotion_persists_nothing(
 
 def test_a_gateway_style_supersede_after_a_completed_promotion_still_signs_in(
         portal, free_account, monkeypatch):
-    states = _cancel_after_a_completed_promotion(portal, monkeypatch, cancel_wins=False)
+    @contextlib.contextmanager
+    def _cancelled_surface_guard():
+        yield False
+
+    states = _cancel_after_a_completed_promotion(
+        portal, monkeypatch, cancel_wins=False, persist_guard=_cancelled_surface_guard)
 
     assert states[-1].kind == "completed"
     assert portal.token_grants == 1
@@ -439,6 +506,7 @@ def test_the_scope_is_entered_for_the_preconditions_and_the_persist_but_never_ar
     for first, second in (pairs[0:2], pairs[2:4]):
         assert not (first[1] <= wait_start and wait_end <= second[1])
         # and never held across a yield, which would hand the scope to the consumer's thread
-        assert not any(first[1] <= at <= second[1] for at in yields)
+        # Equal timestamps are possible on coarse monotonic clocks after the scope has exited.
+        assert not any(first[1] < at < second[1] for at in yields)
 
 

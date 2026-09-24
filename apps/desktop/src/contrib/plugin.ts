@@ -17,6 +17,7 @@ import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 
+import type { PluginOverlayBounds } from '../../electron/plugin-overlay-geometry'
 import { type GatewayEventListener, onGatewayEvent } from './events'
 import { registry } from './registry'
 import type { Contribution } from './types'
@@ -65,6 +66,19 @@ export interface PluginOs {
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
+  /** Pop this plugin's `area: 'pluginOverlay'` contribution out into a
+   *  transparent window with TWO postures. `mode: 'mascot'` (default null →
+   *  'card') spawns the small non-activating sprite bound to the app
+   *  window; `mode: 'card'` is the interactive Q&A card that floats above
+   *  other apps. The PRODUCT POLICY is one overlay at a time: opening
+   *  while another plugin is popped out closes that window first. `bounds`
+   *  (optional) are the pane's in-window rect — main converts them to
+   *  screen space so the overlay lands where it sat. Resolves false when
+   *  the shell can't (no Electron, older desktop build, spawn failure). */
+  openOverlay: (options?: { mode?: 'mascot' | 'card'; bounds?: PluginOverlayBounds | null }) => Promise<boolean>
+  /** Close this plugin's overlay window (a pop-in affordance). Resolves
+   *  false when unavailable or when no overlay is open. */
+  closeOverlay: () => Promise<boolean>
 }
 
 export interface PluginFileDialogOptions {
@@ -211,7 +225,23 @@ function createPluginOs(pluginId: string): PluginOs {
       }),
     pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
     revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
-    writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))
+    writeClipboard: text => attempt(bridge => bridge.writeClipboard(text)),
+    openOverlay: (options?: { mode?: 'mascot' | 'card'; bounds?: PluginOverlayBounds | null }) =>
+      attempt(async bridge => {
+        const res = await bridge.pluginOverlay?.open({
+          pluginId,
+          mode: options?.mode,
+          bounds: options?.bounds ?? undefined
+        })
+
+        return res?.ok === true
+      }),
+    closeOverlay: () =>
+      attempt(async bridge => {
+        const res = await bridge.pluginOverlay?.close()
+
+        return res?.ok === true
+      })
   }
 }
 

@@ -814,6 +814,76 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
  *  known entries too, unlike the fs-watch/poll reconcile. */
 export const discoverRuntimePlugins = (): Promise<void> => scanDiskPlugins(true)
 
+/**
+ * Load ONE disk plugin by id — the plugin-overlay window bootstraps its own
+ * renderer with a full plugin evaluation, but only for the plugin the overlay
+ * hosts. Returns true when that exact id loaded (false when missing/broken or
+ * a different id came back). Skips the self-maintaining watcher (the overlay
+ * is not the app window).
+ */
+export async function loadOverlayPluginById(pluginId: string): Promise<boolean> {
+  const desktop = window.hermesDesktop
+
+  if (!desktop || !pluginId) {
+    return false
+  }
+
+  try {
+    const roots = await diskRoots()
+
+    for (const root of roots) {
+      let entries
+
+      try {
+        ;({ entries } = await desktop.readDir(root.dir))
+      } catch {
+        continue // Root missing — nothing to load.
+      }
+
+      for (const dir of entries.filter(e => e.isDirectory)) {
+        let file: string | null
+
+        try {
+          file = await resolveDiskPluginEntry(desktop, dir.path, root.entrySegments)
+        } catch {
+          continue
+        }
+
+        if (!file) {
+          continue
+        }
+
+        const marker = await readPackageMarker(desktop, dir.path)
+        const text = await readPluginSourceText(file)
+        const id = await loadRuntimePlugin(text, dir.name, {
+          defaultEnabled: marker ? false : undefined,
+          file,
+          packageName: marker?.package,
+          packageOrigin: marker?.origin
+        })
+
+        if (id === pluginId) {
+          return true
+        }
+
+        // The entry's id is not the hosted plugin — don't keep its
+        // registrations in the overlay renderer. dropPlugin alongside
+        // unloadRuntimePlugin: scanDiskPlugins's own reconciliation calls
+        // both for parity, and a stale inventory record would otherwise
+        // accumulate for every non-hosted plugin on every overlay boot.
+        if (id) {
+          unloadRuntimePlugin(id)
+          dropPlugin(id)
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`[plugins] overlay load failed for "${pluginId}"`, error)
+  }
+
+  return false
+}
+
 /** True while the disk door's FIRST scan is in flight. Boot code that must
  *  not mistake a not-yet-registered plugin route for a stale one
  *  (remembered-route restore) waits on this instead of on timing. */

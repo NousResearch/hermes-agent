@@ -182,6 +182,44 @@ def test_pending_needed_when_marker_exists():
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_marker_inventories_the_fleet_when_the_plan_phase_failed(monkeypatch, tmp_path):
+    """A failed plan must not produce a marker nothing can ever discharge.
+
+    The plan phase is best-effort; when it fails, the marker used to be written with no
+    ``inventory`` line at all, and ``_marker_only_restart_obsolete()`` keeps a marker without
+    an inventory fail-closed forever — every later CLI call warns even after the operator
+    restarts the fleet onto the pulled SHA (the remedy the warning itself names).
+    """
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+
+    calls = {"n": 0}
+    discovered = {"kind": "gateway", "profile": "default"}
+    to_dict = lambda: {"runtimes": [discovered]}  # noqa: E731 - mirrors UpdatePlan.to_dict()
+
+    def _flaky_probe():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("pre-update plan probe failed")
+        return SimpleNamespace(runtimes=[SimpleNamespace(profile="default")], to_dict=to_dict)
+
+    monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", _flaky_probe)
+
+    captured = []
+    orig = update_cmd._write_fleet_restart_pending_marker
+
+    def _spy(*, expected_sha="", runtimes=None):
+        captured.append(runtimes)
+        orig(expected_sha=expected_sha, runtimes=runtimes)
+
+    monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", _spy)
+
+    hermes_main.cmd_update(args)
+
+    assert calls["n"] > 1, "the marker must re-inventory instead of recording None"
+    assert captured == [[discovered]]
+
+
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     disk_sha = "e" * 40
     old_sha = "7" * 40

@@ -2,7 +2,7 @@
 // a card for the text before the first space and left the rest as prose.
 import { describe, expect, it } from 'vitest'
 
-import { appendAssistantTextPart, chatMessageText, mediaTagValues, renderMediaTags } from './parts'
+import { assistantTextPart, appendAssistantTextPart, chatMessageText, mediaTagValues, renderMediaTags } from './parts'
 
 const SPACED = '/home/hermes/Morten - Nobly Kickoff - Opening and cue cards EN.docx'
 const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#media:${encodeURIComponent(SPACED)})`
@@ -29,5 +29,27 @@ describe('renderMediaTags with interior spaces', () => {
     expect(chatMessageText({ id: 'a', parts, role: 'assistant' })).toBe(
       'ready\n[File: report.pdf](#media:%2Ftmp%2FAI%20Brain%2Freport.pdf)\nall done'
     )
+  })
+})
+
+describe('DSML tool-call leakage', () => {
+  it('hides a tool-call block when its tags arrive in separate stream deltas', () => {
+    let parts = appendAssistantTextPart([], 'Before <｜DSML｜tool_')
+    parts = appendAssistantTextPart(parts, 'calls><｜DSML｜invoke name="terminal">pwd</｜DSML｜invoke>')
+    parts = appendAssistantTextPart(parts, '</｜DSML｜tool_calls> After')
+
+    expect(chatMessageText({ id: 'assistant', parts, role: 'assistant' })).toBe('Before  After')
+  })
+
+  it('hides a complete DSML tool-call block from final assistant content', () => {
+    const part = assistantTextPart('Before <｜DSML｜tool_calls><｜DSML｜invoke name="terminal">pwd</｜DSML｜invoke></｜DSML｜tool_calls> After')
+
+    expect(part).toMatchObject({ type: 'text', text: 'Before  After' })
+  })
+
+  it('preserves ordinary text with similar ASCII characters', () => {
+    const text = 'Use <|DSML|tool_calls> as a literal example, not a tool call.'
+
+    expect(assistantTextPart(text)).toMatchObject({ type: 'text', text })
   })
 })

@@ -75,6 +75,7 @@ import {
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
+  $allProfiles,
   $newChatProfile,
   $profiles,
   $profileScope,
@@ -476,6 +477,7 @@ export function ChatSidebar({
   const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
+  const showAllProfiles = useStore($allProfiles)
   const activeConnectionId = useStore($activeConnectionId)
 
   // Toggle the persisted read-state watermark from a row menu. The row's own
@@ -494,10 +496,6 @@ export function ChatSidebar({
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
   const multiProfile = profiles.length > 1
-  // Gate ALL-profiles grouping on multiProfile too: if a user drops back to one
-  // profile while scope is still ALL (persisted), the rail is hidden and they'd
-  // otherwise be stuck in the grouped view with no way out.
-  const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
   const messagingProfile = sidebarProfileForScope(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)

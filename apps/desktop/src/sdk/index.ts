@@ -63,6 +63,7 @@ import {
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $allProfiles,
   $gatewaySwapTarget,
   $hydrationSyncProfile,
   $profiles,
@@ -647,6 +648,8 @@ export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
+    /** True only while the sidebar effectively renders every profile. */
+    allProfiles: readonlyAtom<boolean>($allProfiles),
     /** True from send until the first assistant payload on the focused chat. */
     awaitingResponse: readonlyAtom<boolean>($focusedAwaitingResponse),
     /**
@@ -691,6 +694,9 @@ export const host = {
     /** Window geometry ({ width, height, narrow }). */
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
+
+  /** Enter or leave the sidebar's all-profiles mode. Intended for explicit user actions. */
+  setAllProfiles: (value: boolean): void => setShowAllProfiles(value),
 
   /** Toast into the app's notification stack. */
   notify,

@@ -57,8 +57,9 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 `react/jsx-runtime`, which resolve to the app's own React — write UI with
 `jsx()` calls, not JSX syntax; the file is not compiled).
 
-- `host.state.*` — readonly reactive atoms: `activeSessionId`, `busy`,
-  `awaitingResponse`, `busyBySession`, `cwd`, `gateway` (socket state, not
+- `host.state.*` — readonly reactive atoms: `activeSessionId`, `allProfiles`
+  (effective rendered mode), `busy`, `awaitingResponse`, `busyBySession`, `cwd`,
+  `gateway` (socket state, not
   turn-busy), `model`, `profile`, `viewport`, plus the tile-aware focused
   session atoms: `focusedSessionId` (runtime id — key for `session.*` RPC),
   `focusedStoredSessionId` (durable id — navigation / list matching),
@@ -78,7 +79,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 - `host.onEvent(type, fn)` — live gateway events (`'*'` for all). Returns a
   disposer.
 - `host.notify({ kind, message })`, `host.navigate(path)`, `host.logs(...)`,
-  `host.status()`, `haptic('tap')`.
+  `host.status()`, `host.setAllProfiles(value)`, `haptic('tap')`.
+  `allProfiles` is true only when the show-all preference is on and the current
+  gateway has multiple profiles. Call the setter only from an explicit user
+  action, and feature-detect both additions when supporting older Desktop builds.
 - `ctx.register({ id, area, order?, render?, data? })` — contribute UI.
   Key areas: `'statusBar.right'`/`'statusBar.left'` (chips),
   `'panes'` (layout zones — set `title` and

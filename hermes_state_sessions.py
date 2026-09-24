@@ -840,6 +840,15 @@ class SessionSessionsMixin:
         stamp = (profile_name or "").strip()
         if not stamp:
             return 0
+        # Honesty gate (#120057): the stamp fans out to every NULL-profile row, so a
+        # garbage value (field report: a six-char prose fragment) would poison the
+        # whole column at once. PROFILE_ID_RE is the canonical id shape.
+        from hermes_constants import PROFILE_ID_RE
+        if not PROFILE_ID_RE.match(stamp):
+            logger.warning(
+                "Refusing to backfill session profile_name from %r: not a valid profile id",
+                profile_name)
+            return 0
         return int(self._write_rowcount(
             """UPDATE sessions
                SET profile_name = ?

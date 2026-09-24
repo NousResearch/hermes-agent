@@ -6,6 +6,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import logging
+import math
 import threading
 import time
 import weakref
@@ -15,6 +16,61 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger("hermes_state")
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+# Cost-field honesty gate (#120057): one field-reported sessions row carried
+# estimated_cost_usd = 1.33e179 plus prose fragments in cost_status/cost_source,
+# silently poisoning every downstream SUM over the column. The producing write could
+# not be reconstructed, so the store boundary contains the damage instead: cost columns
+# only ever hold domain-valid values, the clean fields of a partly-garbage write still
+# land, and every discard is logged. Keep both frozensets in sync with
+# CostStatus/CostSource in agent/usage_pricing.py (not imported from there:
+# hermes_state stays below agent).
+_COST_STATUSES = frozenset(("actual", "estimated", "included", "unknown"))
+_COST_SOURCES = frozenset((
+    "provider_cost_api", "provider_generation_api", "provider_models_api",
+    "official_docs_snapshot", "user_override", "custom_contract", "none"))
+# No single API call or cumulative session spend approaches this; beyond it the value
+# is corruption, not spend, and the row is marked cost_status='unknown' instead.
+_MAX_COST_USD = 10_000.0
+
+
+def _clean_cost_amount(value, field, session_id):
+    """Domain-check one cost amount (finite, ``[0, _MAX_COST_USD]``). Returns
+    ``(amount, rejected)``; an absent value passes through as ``(None, False)``."""
+    if value is None:
+        return None, False
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = None
+    if amount is None or not math.isfinite(amount) or not 0 <= amount <= _MAX_COST_USD:
+        logger.warning(
+            "Discarding implausible %s=%r for session %s (outside [0, %g]); the row "
+            "keeps its previous amount and is marked cost_status='unknown'",
+            field, value, session_id, _MAX_COST_USD)
+        return None, True
+    return amount, False
+
+
+def _clean_cost_enum(value, allowed, field, session_id):
+    if value is None or value in allowed:
+        return value
+    logger.warning("Discarding out-of-enum %s=%r for session %s", field, value, session_id)
+    return None
+
+
+def _clean_route_str(value, field, session_id, max_len, *, url_shape=False):
+    """Type/length check for billing-route strings; ``url_shape`` additionally rejects
+    any whitespace (a URL never contains any — prose fragments always do). Returns
+    ``(value, rejected)``; None passes through as absent."""
+    if value is None:
+        return None, False
+    trusted = isinstance(value, str) and len(value) <= max_len and not (
+        url_shape and value and any(ch.isspace() for ch in value))
+    if trusted:
+        return value, False
+    logger.warning("Discarding malformed %s=%r for session %s", field, value, session_id)
+    return None, True
 
 
 def _token_update_sql(delta: bool) -> str:
@@ -93,6 +149,13 @@ class SessionUsageMixin:
         """
         # Barrier against queued token deltas — see update_session_model.
         self.flush_token_counts()
+        provider, bad_provider = _clean_route_str(provider, "billing_provider", session_id, 64)
+        base_url, bad_url = _clean_route_str(
+            base_url, "billing_base_url", session_id, 512, url_shape=True)
+        if bad_provider or bad_url:
+            # A route is atomic (provider + url describe one endpoint): a half-garbage
+            # write would set one column and blank the other, so keep the last good route.
+            return
 
         def _do(conn):
             conn.execute("""UPDATE sessions SET
@@ -284,6 +347,20 @@ class SessionUsageMixin:
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
         where the cached agent holds cumulative totals). ``source`` is the session's real surface
         for the row-existence guard; callers that don't know it leave the placeholder."""
+        # Honesty gate before anything derives from these values (#120057): the
+        # ``usage`` dict below and the SQL params both inherit the cleaned values.
+        estimated_cost_usd, bad_est = _clean_cost_amount(
+            estimated_cost_usd, "estimated_cost_usd", session_id)
+        actual_cost_usd, _ = _clean_cost_amount(actual_cost_usd, "actual_cost_usd", session_id)
+        cost_status = _clean_cost_enum(cost_status, _COST_STATUSES, "cost_status", session_id)
+        cost_source = _clean_cost_enum(cost_source, _COST_SOURCES, "cost_source", session_id)
+        if bad_est:
+            # The amount was discarded as corruption: the row must not keep claiming a
+            # status ('estimated'/'actual') that implies a trustworthy figure.
+            cost_status, cost_source = "unknown", "none"
+        billing_provider, _ = _clean_route_str(billing_provider, "billing_provider", session_id, 64)
+        billing_base_url, _ = _clean_route_str(
+            billing_base_url, "billing_base_url", session_id, 512, url_shape=True)
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
@@ -381,6 +458,11 @@ class SessionUsageMixin:
         Background-review forks record an aggregate of N fork API calls in one write with
         ``task='background_review'`` (issue #87250).
         """
+        estimated_cost_usd, _ = _clean_cost_amount(
+            estimated_cost_usd, "estimated_cost_usd", session_id)
+        billing_provider, _ = _clean_route_str(billing_provider, "billing_provider", session_id, 64)
+        billing_base_url, _ = _clean_route_str(
+            billing_base_url, "billing_base_url", session_id, 512, url_shape=True)
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         if not session_id or not task:
             return

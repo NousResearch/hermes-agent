@@ -18,6 +18,11 @@ _INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
 # Cap inline-shell output so a runaway command can't blow out the context.
 _INLINE_SHELL_MAX_OUTPUT = 4000
 
+# System-applied truncation marker, same value as agent.context_compressor.TRUNC_MARK
+# (duplicated, not imported, to avoid pulling the compressor's heavy transitive
+# imports into this light module). See #121572 / #121548.
+_TRUNC_MARK = "\x11...[truncated]"
+
 
 def load_skills_config() -> dict:
     """Load the ``skills`` section of config.yaml (best-effort)."""
@@ -72,7 +77,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         return f"[inline-shell error: {exc}]"
     output = (completed.stdout or "").rstrip("\n") or (completed.stderr or "").rstrip("\n")
     if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
+        output = output[:_INLINE_SHELL_MAX_OUTPUT] + _TRUNC_MARK
     return output
 
 

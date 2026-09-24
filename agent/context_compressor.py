@@ -37,6 +37,17 @@ from tools.todo_tool import TODO_INJECTION_HEADER
 logger = logging.getLogger(__name__)
 
 
+# System-applied truncation marker (#121572, #121548). The bare text
+# ``...[truncated]`` is trivially imitated by models (and by pasted file
+# content), so pipeline stages that key on it misclassify imitations as
+# already-truncated system output. The ``\x11`` (DC1) prefix is a
+# non-printable control character models essentially never emit: detectors
+# must require the prefix to treat a marker as system-applied, while bare
+# ``...[truncated]`` is treated as content. Suffix-kept so existing
+# ``endswith("...[truncated]")`` contracts still hold.
+TRUNC_MARK = "\x11...[truncated]"
+
+
 def _safe_int(value: Any) -> int | None:
     """Best-effort integer coercion for telemetry fields."""
     try:
@@ -1059,7 +1070,7 @@ def _compact_fallback_turn(value: Any) -> str:
     text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > _FALLBACK_TURN_MAX_CHARS:
-        text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+        text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " " + TRUNC_MARK
     return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
 
 
@@ -1272,7 +1283,7 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            return obj[:head_chars] + TRUNC_MARK if len(obj) > head_chars else obj
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -1456,7 +1467,7 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    truncation_marker = "...[truncated]"
+    truncation_marker = TRUNC_MARK
     parsed = _json_dict(content)
     response = parsed.get("user_response")
     # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
@@ -2969,7 +2980,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if role == "assistant" and content:
                 content = strip_think_blocks(None, content)
             if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = content[:self._CONTENT_HEAD] + "\n" + TRUNC_MARK + "...\n" + content[-self._CONTENT_TAIL:]
             if role == "tool":
                 parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
                 continue
@@ -3739,7 +3750,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 continue
             text = re.sub(r"\s+", " ", text)
             if len(text) > _ACTIVE_TASK_MAX_CHARS:
-                text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+                text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " " + TRUNC_MARK
             return (
                 f"User asked (deterministic, from compacted turns): {text!r}\n"
                 "Historical only; newer protected-tail messages after this summary win."

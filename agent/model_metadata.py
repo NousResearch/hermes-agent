@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
+from hermes_constants import OPENROUTER_MODELS_URL, display_hermes_home, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -1611,6 +1611,33 @@ def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
     return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
 
 
+# One-shot deduplication for the LM Studio "model not loaded" warning so a
+# stale config slug logs once per (model, server) pair instead of every time
+# an aux client probes context length.
+_LMSTUDIO_MISSING_MODEL_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_lmstudio_model_not_loaded(model: str, server_url: str, models_in_list: list) -> None:
+    """Log a one-time warning when the requested model isn't loaded in LM Studio."""
+    key = (model, server_url)
+    if key in _LMSTUDIO_MISSING_MODEL_WARNED:
+        return
+    _LMSTUDIO_MISSING_MODEL_WARNED.add(key)
+    loaded_ids = sorted({
+        str(m.get("id") or m.get("key") or "").strip()
+        for m in models_in_list
+        if (m.get("id") or m.get("key"))
+    })
+    loaded_summary = ", ".join(loaded_ids) if loaded_ids else "(none loaded)"
+    logger.warning(
+        "Model %r is not loaded in LM Studio at %s. Loaded models: %s. "
+        "Skipping /v1/models/{model} and /v1/models probes (they would 404). "
+        "Either load %r in LM Studio, edit %s/config.yaml model.default, "
+        "or run `hermes model` to pick from the loaded list.",
+        model, server_url, loaded_summary, model, display_hermes_home(),
+    )
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Local-server context probe, short-TTL cached (see _LOCAL_CTX_PROBE_CACHE)."""
     return _memo_local_probe((_strip_provider_prefix(model), base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key))
@@ -1620,16 +1647,27 @@ def _positive_int(value: Any) -> Optional[int]:
     return int(value) if isinstance(value, (int, float)) and value else None
 
 
-def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
+# Sentinel: the server authoritatively answered "that model isn't loaded here",
+# so the generic OpenAI-compat probes would only 404 (#24102). Halts the waterfall.
+_STOP_PROBING = object()
+
+
+def _lmstudio_context(client, lmstudio_url: str, server_url: str, model: str) -> Any:
     """LM Studio native /api/v1/models (the OpenAI-compat list omits context);
-    loaded-instance config is the runtime value."""
+    loaded-instance config is the runtime value. Returns _STOP_PROBING when LM Studio
+    answered but doesn't have the model at all (#24102)."""
     resp = client.get(f"{lmstudio_url}/api/v1/models")
     if resp.status_code != 200:
         return None
-    for m in resp.json().get("models", []):
+    models_in_list = resp.json().get("models", []) or []
+    for m in models_in_list:
         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
             return next((ctx for ctx in (_positive_int(inst.get("config", {}).get("context_length")) for inst in m.get("loaded_instances", [])) if ctx is not None), None)
-    return None
+    # Model isn't loaded: /v1/models/{model} and /v1/models would both 404 in a loop
+    # and spam LM Studio's log — usually a config.yaml slug left over from an earlier
+    # aggregator setup (e.g. google/gemini-3-flash-preview). Bail with one warning.
+    _warn_lmstudio_model_not_loaded(model, server_url, models_in_list)
+    return _STOP_PROBING
 
 
 def _llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
@@ -1693,13 +1731,18 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         return _context_length_from_model_payload(resp.json()) if resp.status_code == 200 else None
     typed = {
         "ollama": _ollama_ctx,
-        "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, model),
+        "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, server_url, model),
         "llamacpp": lambda client: _llamacpp_context(client, server_url, model),
     }.get(server_type)
     probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
     try:
         with httpx.Client(timeout=3.0, headers=_auth_headers(api_key)) as client:
-            return next((ctx for ctx in (probe(client) for probe in probes) if ctx is not None), None)
+            for probe in probes:
+                ctx = probe(client)
+                if ctx is _STOP_PROBING:
+                    return None
+                if ctx is not None:
+                    return ctx
     except Exception as exc:
         _note_if_connect_timeout(exc, server_url)
     return None

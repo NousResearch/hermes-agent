@@ -357,7 +357,6 @@ describe('useDesktopIntegrations', () => {
 
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
       expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
->>>>>>> a771a14a49 (fix(desktop): stop re-persisting an exhausted session after cleanup (#98467))
     })
   })
 

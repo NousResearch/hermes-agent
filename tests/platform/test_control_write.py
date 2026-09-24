@@ -491,3 +491,67 @@ def test_a_disabled_agent_is_not_reported_as_drifted(tmp_path, runtime, audit):
     rows = {row["id"]: row for row in api.handle("/platform/v1/agents").body["agents"]}
     assert rows["customer-support"]["enabled"] is False
     assert rows["customer-support"]["in_sync"] is None
+
+
+# -- the Work screen: why a task is blocked, and why an action did nothing ---------
+
+
+@pytest.fixture
+def board_api(tmp_path, runtime, audit, monkeypatch):
+    kb = pytest.importorskip("hermes_cli.kanban_db", reason="reads the runtime's own board")
+    from hermes_cli import kanban_db_connect as kbc
+
+    api, root = _agent_api(tmp_path, runtime, audit)
+    home = runtime.paths.home
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    kbc.init_db()
+    return api, kb, kbc
+
+
+def _blocked(kb, kbc, reason, **kind):
+    with kbc.connect_closing() as c:
+        task_id = kb.create_task(c, title="t", assignee="operations", created_by="nova-supervisor", tenant="acme")
+        kb.claim_task(c, task_id)
+        kb.block_task(c, task_id, reason=reason, **kind)
+    return task_id
+
+
+def test_a_block_reason_reaches_the_work_screen(board_api):
+    """The runtime keeps a block's reason in its 'blocked' event, not in last_failure_error,
+    so every reason recorded on a block was on the board and absent from the Work screen."""
+    api, kb, kbc = board_api
+    task_id = _blocked(kb, kbc, "The AI model refused the request — Provider said: AccessDeniedException "
+                                "Model access is denied (NOT_AUTHORIZED) (HTTP 403)", kind="needs_input")
+    row = {r["task_id"]: r for r in api.handle("/platform/v1/tasks").body["tasks"]}[task_id]
+    assert "NOT_AUTHORIZED" in row["last_error"]
+    assert row["error_summary"]["headline"] == "The cloud account is not authorized to use this model yet"
+    assert row["attention_kind"] == "failed", "a model refusal is a failure to retry, not a decision"
+
+
+def test_a_delegation_refusal_reads_as_one(board_api):
+    api, kb, kbc = board_api
+    task_id = _blocked(kb, kbc, "NOVA delegation policy: customer-support handed this task to operations, "
+                                "but customer-support's delegation does not include operations.")
+    row = {r["task_id"]: r for r in api.handle("/platform/v1/tasks").body["tasks"]}[task_id]
+    assert row["error_summary"]["headline"] == "Handed to an agent that may not take it"
+    assert row["attention_kind"] == "failed"
+
+
+def test_an_agents_own_question_stays_a_decision(board_api):
+    api, kb, kbc = board_api
+    task_id = _blocked(kb, kbc, "Which supplier should I email first?")
+    row = {r["task_id"]: r for r in api.handle("/platform/v1/tasks").body["tasks"]}[task_id]
+    assert row["attention_kind"] == "decision"
+
+
+def test_an_action_that_does_nothing_says_why_where_the_dashboard_reads(board_api):
+    api, kb, kbc = board_api
+    with kbc.connect_closing() as c:
+        done = kb.create_task(c, title="t", assignee="operations", created_by="nova-supervisor", tenant="acme")
+        kb.claim_task(c, done)
+        kb.complete_task(c, done, summary="ok")
+    response = api.write(f"/platform/v1/work/{done}/decide", ADMIN, {"action": "resume"})
+    assert response.status == 409 and response.body["error"]["message"].startswith("Nothing changed:")
+    missing = api.write("/platform/v1/work/t_nope/decide", ADMIN, {"action": "resume"})
+    assert missing.status == 404

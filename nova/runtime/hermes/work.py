@@ -11,6 +11,7 @@ value. An operator debugging a stuck task needs the runtime's word, not a transl
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -182,7 +183,44 @@ def list_tasks(
             rows = connection.execute(query, params).fetchall()
         except sqlite3.Error:
             return []
-    return [_row_to_task(row) for row in rows]
+        views = [_row_to_task(row) for row in rows]
+        _attach_block_reasons(connection, views)
+    return views
+
+
+def _attach_block_reasons(connection: sqlite3.Connection, views: list[TaskView]) -> None:
+    """Put each blocked task's reason in ``detail["block_reason"]``.
+
+    The runtime records why a task was blocked in its ``blocked`` event, not in
+    ``last_failure_error`` — that column is for crashes. So every reason recorded on a block
+    (the model refused the account, a hand-off no delegation allows, a used-up quota) was
+    on the board and invisible on the Work screen, and the task read as "needs a decision"
+    with a Resume that would fail the same way. One query for the page, newest event wins.
+    """
+    blocked = [view for view in views if view.runtime_status == "blocked"]
+    if not blocked:
+        return
+    marks = ",".join("?" for _ in blocked)
+    try:
+        rows = connection.execute(
+            "SELECT task_id, payload FROM task_events "  # noqa: S608 — placeholders only
+            f"WHERE kind IN ('blocked', 'block_loop_detected') AND task_id IN ({marks}) "
+            "ORDER BY id",
+            [view.task_id for view in blocked],
+        ).fetchall()
+    except sqlite3.Error:
+        return
+    reasons: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and payload.get("reason"):
+            reasons[row["task_id"]] = (str(payload["reason"]), str(payload.get("kind") or ""))
+    for view in blocked:
+        if view.task_id in reasons:
+            view.detail["block_reason"], view.detail["block_kind"] = reasons[view.task_id]
 
 
 def get_task(home: Path, task_id: str, *, tenant_id: str = "") -> Optional[TaskView]:
@@ -205,6 +243,10 @@ def get_task(home: Path, task_id: str, *, tenant_id: str = "") -> Optional[TaskV
     if row is None:
         return None
     view = _row_to_task(row)
+    if view.runtime_status == "blocked":
+        with _readonly(work_store_path(home)) as connection:
+            if connection is not None:
+                _attach_block_reasons(connection, [view])
     if tenant_id:
         # ``view.tenant_id and ...`` short-circuited on an unstamped row, handing it to
         # every tenant that asked. Kept as the default for the single-tenant case it was

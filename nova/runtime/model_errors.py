@@ -148,7 +148,23 @@ def summarize_task_error(text: str) -> dict:
             "headline": "The work ran past its time limit",
             "detail": "The dispatcher stopped it at the agent's maximum task runtime.",
         }
+    if "nova delegation policy" in lowered:
+        return {
+            "headline": "Handed to an agent that may not take it",
+            "detail": "No declared hand-off covers this assignment. Allow it in the delegating "
+                      "agent's Hand-offs, or give the task to another agent, then retry.",
+        }
     model = classify_model_error(raw)
     if model.category != "error":
         return {"headline": model.headline, "detail": model.remedy}
     return {"headline": "The work failed", "detail": ""}
+
+
+#: Block reasons NOVA itself records (nova-outcome, nova-policy). They mean the run failed
+#: for a reason a person must fix — not that the agent is waiting on a question — so the
+#: dashboard treats them as failures to retry, not decisions to make.
+NOVA_BLOCK_PREFIXES = ("the ai model refused the request", "nova delegation policy:")
+
+
+def is_nova_failure_block(reason: str) -> bool:
+    return str(reason or "").strip().lower().startswith(NOVA_BLOCK_PREFIXES)

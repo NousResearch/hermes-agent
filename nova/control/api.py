@@ -230,6 +230,16 @@ class ControlAPI:
             note=note,
         )
         body = {**decision.to_dict(), "actor": principal.name}
+        if not decision.applied:
+            # Where every client reads a failed write's explanation. The reason was only
+            # under "reason", so the dashboard showed a second click as a bare "HTTP 409".
+            unknown = not decision.resulting_status and "no such work item" in decision.reason.lower()
+            body["error"] = {
+                "status": 404 if unknown else 409,
+                "message": f"Nothing changed: {decision.reason or 'the task is not in a state that allows it'}.",
+            }
+            if unknown:
+                return Response(404, body)
         # 409, not 400: the request was well-formed and the world disagreed. An operator
         # whose second click is told "bad request" goes looking for a bug in the button.
         return Response(200 if decision.applied else 409, body)
@@ -963,25 +973,13 @@ class ControlAPI:
         # One reading of the model record for the whole page. A failed task whose run
         # overlaps the newest model failure is explained by it: the runtime's own error for
         # such a task only says the worker ended without reporting, which is the symptom.
+        from nova.runtime.model_errors import is_nova_failure_block
+
         model_failure = self.runtime.model_status().get("last_failure") if any(
-            view.last_error for view in views
+            view.last_error or view.detail.get("block_reason") for view in views
         ) else None
-        rows = []
-        for view in views:
-            row = view.to_dict()
-            failed = bool(view.last_error) or bool(view.consecutive_failures)
-            # A failure asks for a fix and a retry; a held or review item asks for a
-            # decision. Mixing them made every crash look like an approval request.
-            row["attention_kind"] = (
-                "failed" if view.needs_attention and failed
-                else "decision" if view.needs_attention else ""
-            )
-            if view.last_error:
-                summary = summarize_task_error(view.last_error)
-                if model_failure and view.started_at and model_failure["at"] >= view.started_at:
-                    summary["cause"] = model_failure["error"]
-                row["error_summary"] = summary
-            rows.append(row)
+        rows = [self._task_row(view, model_failure, summarize_task_error, is_nova_failure_block)
+                for view in views]
 
         return Response(
             200,
@@ -995,6 +993,34 @@ class ControlAPI:
                 "execution": self.runtime.work_execution_health().to_dict(),
             },
         )
+
+    @staticmethod
+    def _task_row(view, model_failure, summarize_task_error, is_nova_failure_block) -> dict:
+        """One task as the Work screen shows it, with what is wrong and what kind of wrong."""
+        row = view.to_dict()
+        block_reason = str(view.detail.get("block_reason") or "")
+        # The problem shown: a crash's error, else the reason the task was blocked. A block
+        # reason is also why a task is stuck, and it was the half that never reached here.
+        problem = view.last_error or block_reason
+        failed = (
+            bool(view.last_error) or bool(view.consecutive_failures)
+            or is_nova_failure_block(block_reason)
+        )
+        # A failure asks for a fix and a retry; a held or review item asks for a
+        # decision. Mixing them made every crash look like an approval request.
+        row["attention_kind"] = (
+            "failed" if view.needs_attention and failed
+            else "decision" if view.needs_attention else ""
+        )
+        if problem:
+            row["last_error"] = problem
+            summary = summarize_task_error(problem)
+            if model_failure and view.started_at and model_failure["at"] >= view.started_at:
+                summary["cause"] = model_failure["error"]
+            row["error_summary"] = summary
+        if block_reason:
+            row["block_reason"] = block_reason
+        return row
 
     def automations(self) -> Response:
         """Recurring work the runtime holds, per agent, with whether it will actually fire.

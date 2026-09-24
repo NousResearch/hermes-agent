@@ -3,7 +3,7 @@
 A GitHub-side HTTP 429 (rate limit / outage) used to be reported as the
 generic "Failed to fetch updates from origin." — or worse, matched the
 "unable to access" branch and got called a local network error. The
-classifier must call out rate limiting / outages explicitly, and the raw
+classifier must call out rate limiting / outages explicitly, and a useful raw
 stderr line must always be printed alongside the diagnosis.
 """
 
@@ -17,6 +17,13 @@ RATE_LIMIT_STDERR = (
 CURL_429_STDERR = (
     "fatal: unable to access 'https://github.com/NousResearch/hermes-agent.git/':"
     " The requested URL returned error: 429"
+)
+LOCAL_PERMISSION_STDERR = (
+    "From https://github.com/NousResearch/hermes-agent\n"
+    " * branch                    main       -> FETCH_HEAD\n"
+    "error: cannot update the ref 'refs/remotes/origin/main': "
+    "unable to append to '.git/logs/refs/remotes/origin/main': Permission denied\n"
+    " ! [rejected]                main       -> origin/main  (unable to update local ref)"
 )
 
 
@@ -67,6 +74,23 @@ class TestClassifyFetchFailure:
         )
         assert "Authentication failed" in msg
 
+    def test_local_git_permission_failure_reports_checkout_permissions(self):
+        msg = update_cmd._classify_fetch_failure(LOCAL_PERMISSION_STDERR)
+        assert "Local Hermes checkout" in msg
+        assert "ownership/permissions" in msg
+
+    def test_object_database_permission_failure_reports_checkout_permissions(self):
+        msg = update_cmd._classify_fetch_failure(
+            "error: insufficient permission for adding an object to repository database .git/objects"
+        )
+        assert "Local Hermes checkout" in msg
+
+    def test_publickey_permission_denied_is_not_local_checkout_permission(self):
+        msg = update_cmd._classify_fetch_failure(
+            "git@github.com: Permission denied (publickey)."
+        )
+        assert "Local Hermes checkout" not in msg
+
     def test_unknown_falls_back_to_generic(self):
         msg = update_cmd._classify_fetch_failure("fatal: something novel")
         assert msg == "✗ Failed to fetch updates from origin."
@@ -85,6 +109,14 @@ class TestPrintFetchFailure:
         update_cmd._print_fetch_failure("")
         out = capsys.readouterr().out.strip().splitlines()
         assert out == ["✗ Failed to fetch updates from origin."]
+
+    def test_prints_actionable_permission_line_not_fetch_banner(self, capsys):
+        update_cmd._print_fetch_failure(LOCAL_PERMISSION_STDERR)
+        out = capsys.readouterr().out
+        assert "Local Hermes checkout" in out
+        assert "cannot update the ref" in out
+        assert "Permission denied" in out
+        assert "  From https://github.com/NousResearch/hermes-agent" not in out
 
 
 def test_update_network_git_calls_never_prompt_for_credentials():

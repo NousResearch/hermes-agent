@@ -1153,3 +1153,60 @@ def test_touch_card_tap_opens_instead_of_dragging():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Attention surfaces exclude terminal-status cards (t_1debdb38)
+# ---------------------------------------------------------------------------
+
+
+def _inject_suspected_event(conn, task_id: str, phantom: str) -> None:
+    """Directly append the advisory event the completion prose scan emits."""
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, NULL, ?, ?, ?)",
+            (task_id, "suspected_hallucinated_references",
+             json.dumps({"phantom_refs": [phantom], "source": "completion_summary"}),
+             int(time.time())),
+        )
+
+
+def test_attention_surfaces_exclude_terminal_cards(client, kanban_home):
+    """t_1debdb38: fleet attention surfaces (board rollup + /diagnostics) show
+    open/active cards only. A done card can never clear its event-backed
+    diagnostics (suspected_hallucinated_references is emitted after completed,
+    and a done card is never edited again), so it must drop out of the fleet
+    candidate set — while an active control card keeps signalling and the
+    per-task drawer keeps the done card's history.
+    """
+    a_id = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "done card", "assignee": "web"}).json()["task"]["id"]
+    b_id = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "active card", "assignee": "web"}).json()["task"]["id"]
+
+    with kbc.connect_closing() as conn:
+        assert kb.complete_task(
+            conn, a_id, summary="done for t_deadc0de00", result="ok", fire_lifecycle_hook=False)
+        _inject_suspected_event(conn, b_id, "t_deadc0de01")
+
+    # Board rollup: the done card carries no attention signal, the active
+    # control card still does (Kennzahl A/B aus dem Plan, im selben Test).
+    board = client.get("/api/plugins/kanban/board").json()
+    by_col = {c["name"]: {t["id"]: t for t in c["tasks"]} for c in board["columns"]}
+    done_card = by_col["done"][a_id]
+    active_card = by_col["ready"][b_id]
+    assert not done_card.get("diagnostics")
+    assert not done_card.get("warnings")
+    assert active_card["warnings"]["count"] == 1
+    assert "prose_phantom_refs" in active_card["warnings"]["kinds"]
+
+    # Fleet endpoint: active card only.
+    diags = client.get("/api/plugins/kanban/diagnostics").json()
+    ids = {row["task_id"] for row in diags["diagnostics"]}
+    assert b_id in ids
+    assert a_id not in ids
+
+    # History contract: the explicit per-task path (drawer) still surfaces the
+    # done card's diagnostic.
+    single = client.get(f"/api/plugins/kanban/tasks/{a_id}").json()
+    kinds = [d["kind"] for d in single["task"].get("diagnostics", [])]
+    assert "prose_phantom_refs" in kinds

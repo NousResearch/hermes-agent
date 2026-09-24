@@ -205,7 +205,15 @@ def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[
     if task_ids is not None:
         rows = conn.execute(f"SELECT * FROM tasks WHERE id IN ({_placeholders(task_ids)})", tuple(task_ids)).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM tasks WHERE status != 'archived'").fetchall()
+        # Fleet surfaces (board rollup + /diagnostics) show open/active cards only.
+        # Terminal-status cards can no longer clear event-backed diagnostics (a
+        # suspected_hallucinated_references event is emitted after completed and a
+        # done card is never edited again), so they would pin stale attention rows
+        # forever (t_1debdb38). Per-task lookups (task_ids path) keep the full
+        # diagnostic history.
+        terminal = list(kanban_db.TASK_TERMINAL_STATUSES)
+        rows = conn.execute(
+            f"SELECT * FROM tasks WHERE status NOT IN ({_placeholders(terminal)})", tuple(terminal)).fetchall()
     if not rows:
         return {}
     row_ids = [r["id"] for r in rows]

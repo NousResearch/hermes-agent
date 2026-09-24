@@ -647,8 +647,15 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 task, kb.list_events(conn, args.task), kb.list_runs(conn, args.task),
                 graph=kb.task_graph_context(conn, args.task), config=diag_config)}
         else:
-            # Fleet mode: pull all non-archived tasks + their events/runs.
-            rows = list(conn.execute("SELECT * FROM tasks WHERE status != 'archived'").fetchall())
+            # Fleet mode: pull all non-terminal tasks + their events/runs, matching
+            # what the dashboard attention surfaces show — done/archived cards can
+            # no longer clear event-backed diagnostics, so fleet diagnostics would
+            # pin stale attention rows forever (t_1debdb38). One-task mode (--task)
+            # stays unfiltered so per-card history stays inspectable.
+            terminal = tuple(kb.TASK_TERMINAL_STATUSES)
+            rows = list(conn.execute(
+                f"SELECT * FROM tasks WHERE status NOT IN ({', '.join(['?'] * len(terminal))})",
+                terminal).fetchall())
             ids = [r["id"] for r in rows]
             diags_by_task = {}
             if ids:

@@ -103,6 +103,13 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
+# Statuses a task can never leave once reached. Attention/fleet surfaces must
+# not keep signalling on them: event-backed diagnostics on a terminal card can
+# never clear (the advisory events are emitted after completion and a terminal
+# card is never edited again), so every card that merely aged into a terminal
+# status would otherwise haunt the owner attention strip forever.
+TASK_TERMINAL_STATUSES = ("done", "archived", "completed", "cancelled")
+
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 

@@ -251,11 +251,16 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
 
 
 # --- Referenced support-file extraction from SKILL.md -----------------------
-_ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})
+_ALLOWED_SUPPORT_DIRS = frozenset(
+    {"reference", "references", "templates", "scripts", "assets", "examples"}
+)
+# Keep the regexes in lockstep with the frozenset above: skills in the wild use
+# both "reference/" (singular, e.g. pbakaus/impeccable) and "references/".
+_SUPPORT_DIRS_ALT = "|".join(sorted(_ALLOWED_SUPPORT_DIRS))
 _LOCAL_LINK_RE = re.compile(
-    r"(?:\]\(|`|(?:^|[\s\"']))((?:references|templates|scripts|assets|examples)/[^\s)`\"'<>]+)", re.MULTILINE)
+    rf"(?:\]\(|`|(?:^|[\s\"']))((?:{_SUPPORT_DIRS_ALT})/[^\s)`\"'<>]+)", re.MULTILINE)
 _SUSPICIOUS_LOCAL_REF_RE = re.compile(
-    r"(?:references|templates|scripts|assets|examples)/(?:[^\s)`\"'<>]*/)?\.\.(?:/|$)")
+    rf"(?:{_SUPPORT_DIRS_ALT})/(?:[^\s)`\"'<>]*/)?\.\.(?:/|$)")
 _VALUELESS_QUERY_FLAG_RE = re.compile(r"(?:[A-Za-z0-9_~-]|%[0-9A-Fa-f]{2})+\Z")
 # Same-directory links (``](./FILE.ext)`` / ``](FILE.ext)``): siblings of SKILL.md the document links
 # explicitly (e.g. ./CONTEXT-FORMAT.md). Dropping them made the install "succeed" with unresolved links.

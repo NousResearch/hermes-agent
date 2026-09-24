@@ -33,7 +33,7 @@ def test_drop_scaffolding_keeps_executed_tool_pair():
          "_empty_terminal_sentinel": True},
     ]
 
-    assert AIAgent._drop_trailing_empty_response_scaffolding(agent, messages) is True
+    AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
     assert messages == executed
 
 

@@ -17,7 +17,6 @@ from typing import Any, Dict, Optional
 from agent.error_classifier import FailoverReason
 from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
 from agent.message_metadata import append_message
-from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.turn_failure_copy import site_copy, stamp_failure
 
@@ -189,8 +188,8 @@ def handle_api_interrupt(
     agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
     interrupted = True
     # A Stop during the empty-response nudge request leaves the synthetic assistant+nudge
-    # pair after an executed tool result; strip it so the row appended below (or the close)
-    # follows the tool row, and this exit owner records its own reason.
+    # pair after an executed tool result; strip it so the row appended below follows the tool
+    # row (the finalizer then closes the tail with this exit's own reason).
     agent._drop_trailing_empty_response_scaffolding(messages)
     _partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
@@ -209,7 +208,6 @@ def handle_api_interrupt(
         final_response = _partial
     else:
         final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
-        close_interrupted_tool_sequence(messages, final_response)
     agent._persist_session(messages, conversation_history)
     return ApiInterruptVerdict("break", thinking_spinner, interrupted, final_response)
 

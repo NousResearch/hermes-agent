@@ -364,19 +364,16 @@ class SessionPersistenceMixin:
                 self._session_db.flush_token_counts()
             note_turn_persisted(self)
 
-    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> bool:
-        """Pop empty-response retry scaffolding from the tail; True when any was present. The
+    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
+        """Pop empty-response retry scaffolding from the tail. The
         assistant(tool_calls) / tool rows before it stay: they were saved before the tools ran, so
         dropping them from the live history only makes the model repeat a side effect the durable
         transcript already records."""
         def tail(*keys: str) -> bool:
             return bool(messages) and isinstance(messages[-1], dict) and any(messages[-1].get(k) for k in keys)
 
-        dropped_scaffolding = False
         while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
             messages.pop()
-            dropped_scaffolding = True
-        return dropped_scaffolding
 
     _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")
 

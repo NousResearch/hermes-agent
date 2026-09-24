@@ -197,9 +197,6 @@ def real_loop(tmp_path, monkeypatch):
     monkeypatch.setenv("no_proxy", "")
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     monkeypatch.setattr("agent.title_generator.start_title_upgrade", lambda *a, **k: None)
-    # The first empty response backs off 5-7.5 s for real; the give-up path is reached via the
-    # deterministic-empty guard, not the wait (``turn_empty_response`` imports this lazily).
-    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
     monkeypatch.chdir(tmp_path)
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "sess-empty-exit"

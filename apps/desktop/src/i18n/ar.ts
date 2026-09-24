@@ -164,7 +164,10 @@ export const ar = defineLocale({
       signInFailed: 'فشل تسجيل الدخول',
       signInToRemoteGateway: 'تسجيل الدخول للبوابة البعيدة',
       signInWithProvider: provider => `تسجيل الدخول عبر ${provider}`,
-      identityProvider: 'مزود الهوية'
+      identityProvider: 'مزود الهوية',
+      embeddedSignInTitle: 'تم استخدام تسجيل الدخول المضمّن',
+      embeddedSignInMessage: reason =>
+        `تم تسجيل الدخول عبر المتصفح المضمّن بدلاً من تسجيل الدخول الأصلي (${reason}).`
     }
   },
   notifications: {

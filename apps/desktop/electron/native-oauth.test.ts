@@ -14,6 +14,7 @@ import { test } from 'vitest'
 
 import {
   buildNativeAuthorizeUrl,
+  describeLoginStrategy,
   generatePkcePair,
   generateState,
   NATIVE_FLOW_ID,
@@ -135,6 +136,63 @@ test('resolveLoginStrategy ignores providers with no name', () => {
 
   // The unnamed provider is filtered out — still falls through to auth_flows.
   assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
+})
+
+// --- visible-downgrade contract (#95609) ---
+
+test('describeLoginStrategy picks native with no reason when native is chosen', () => {
+  const gated = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+
+  assert.deepEqual(describeLoginStrategy(gated), { flow: 'native', reason: null })
+  assert.deepEqual(
+    describeLoginStrategy(gated, { providers: [{ name: 'nous', supportsPassword: false }] }),
+    { flow: 'native', reason: null }
+  )
+})
+
+test('every embedded downgrade carries a visible reason (#95609)', () => {
+  const gated = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+
+  // Escape hatch (HERMES_DESKTOP_FORCE_EMBEDDED=1) — pinned, never silent.
+  assert.deepEqual(describeLoginStrategy(gated, { forceEmbedded: true }), {
+    flow: 'embedded',
+    reason: 'forced-by-config'
+  })
+  // All-password providers can never complete native PKCE.
+  assert.deepEqual(
+    describeLoginStrategy(gated, { providers: [{ name: 'basic', supportsPassword: true }] }),
+    { flow: 'embedded', reason: 'password-only-providers' }
+  )
+  // Older gateway that never advertised native_pkce.
+  assert.deepEqual(describeLoginStrategy({ auth_required: true, auth_flows: ['cookie'] }), {
+    flow: 'embedded',
+    reason: 'gateway-lacks-native-flow'
+  })
+  // Unreadable /api/status (timeout, unreachable) — downgrade but flag it.
+  assert.deepEqual(describeLoginStrategy(null), { flow: 'embedded', reason: 'status-unreadable' })
+  assert.deepEqual(describeLoginStrategy(undefined), { flow: 'embedded', reason: 'status-unreadable' })
+})
+
+test('resolveLoginStrategy is the flow-only projection of describeLoginStrategy', () => {
+  const gated = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+
+  // The two must never disagree — the handler logs/surfaces the reason from
+  // describeLoginStrategy while every flow decision comes from the same ladder.
+  const cases: [any, { forceEmbedded?: boolean; providers?: { name?: string; supportsPassword?: boolean }[] }][] = [
+    [gated, {}],
+    [gated, { forceEmbedded: true }],
+    [gated, { providers: [{ name: 'basic', supportsPassword: true }] }],
+    [{ auth_required: true, auth_flows: ['cookie'] }, {}],
+    [null, {}]
+  ]
+
+  for (const [statusBody, opts] of cases) {
+    const decision = describeLoginStrategy(statusBody, opts)
+    assert.equal(resolveLoginStrategy(statusBody, opts), decision.flow)
+    if (decision.flow === 'embedded') {
+      assert.notEqual(decision.reason, null)
+    }
+  }
 })
 
 // --- URL building ---

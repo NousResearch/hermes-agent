@@ -186,7 +186,9 @@ export const zh = defineLocale({
       signInFailed: '登录失败',
       signInToRemoteGateway: '登录远程网关',
       signInWithProvider: provider => `使用 ${provider} 登录`,
-      identityProvider: '你的身份提供方'
+      identityProvider: '你的身份提供方',
+      embeddedSignInTitle: '已使用内嵌登录',
+      embeddedSignInMessage: reason => `已通过内嵌浏览器登录，而非原生登录（${reason}）。`
     }
   },
 

@@ -154,7 +154,9 @@ export const zhHant = defineLocale({
       signInFailed: '登入失敗',
       signInToRemoteGateway: '登入遠端閘道',
       signInWithProvider: provider => `使用 ${provider} 登入`,
-      identityProvider: '您的身分提供方'
+      identityProvider: '您的身分提供方',
+      embeddedSignInTitle: '已使用內嵌登入',
+      embeddedSignInMessage: reason => `已透過內嵌瀏覽器登入，而非原生登入（${reason}）。`
     }
   },
 

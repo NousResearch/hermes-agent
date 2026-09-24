@@ -453,7 +453,18 @@ export const en: Translations = {
       signInFailed: 'Sign-in failed',
       signInToRemoteGateway: 'Sign in to remote gateway',
       signInWithProvider: provider => `Sign in with ${provider}`,
-      identityProvider: 'your identity provider'
+      identityProvider: 'your identity provider',
+      embeddedSignInTitle: 'Embedded sign-in used',
+      embeddedSignInMessage: reason => {
+        const labels: Record<string, string> = {
+          'forced-by-config': 'pinned by configuration',
+          'password-only-providers': 'the gateway only supports password sign-in',
+          'gateway-lacks-native-flow': 'the gateway does not advertise native sign-in',
+          'status-unreadable': 'the gateway status could not be read'
+        }
+
+        return `Signed in through the embedded browser instead of native sign-in (${labels[reason] || reason}).`
+      }
     }
   },
 

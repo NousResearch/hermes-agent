@@ -81,9 +81,28 @@ an `auth_flows` array:
 | `["cookie"]` | Gateway supports only the legacy flow → the app uses the embedded webview |
 | *(field absent)* | Older gateway → the app uses the embedded webview |
 
-If native sign-in is advertised but fails for a local reason — e.g. a security
-tool blocks the loopback listener, or you close the browser tab — the app
-**falls back to the embedded flow automatically** so you can still sign in.
+If native sign-in is advertised but fails — e.g. a security tool blocks the
+loopback listener, or you close the browser tab — the app **does not silently
+swap to the embedded flow**. The failure stays visible: the sign-in screen
+shows what went wrong, the desktop log records it, and you retry native
+sign-in from Settings → Gateway. A cookie-only session cannot authenticate the
+desktop's REST/session and WebSocket-ticket requests, so silently substituting
+one would leave the app looking signed in while every request 401s.
+
+The embedded flow is only ever used as a **visible** downgrade: when the
+gateway is an older build that doesn't advertise native sign-in, when every
+advertised provider is username/password (native PKCE can't complete for that
+shape), when the gateway's status couldn't be read, or when the flow is pinned
+by configuration (below). Each case is logged with its reason, and the sign-in
+UI warns that the embedded browser was used.
+
+## Forcing the embedded flow
+
+If your environment cannot run the native flow at all (e.g. a corporate proxy
+blocks the loopback listener), you can pin the legacy embedded flow by
+starting the desktop with `HERMES_DESKTOP_FORCE_EMBEDDED=1`. The downgrade
+stays visible — it is logged and the sign-in UI still warns — so the choice is
+explicit, never silent.
 
 ## Token lifecycle
 

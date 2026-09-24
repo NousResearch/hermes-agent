@@ -80,12 +80,34 @@ export function statusSupportsNativeFlow(statusBody: any): boolean {
 }
 
 /**
+ * Why the embedded (cookie-webview) flow was chosen over native PKCE. Every
+ * downgrade reason is a *visible* downgrade: the desktop logs it and the
+ * login UI surfaces it, so a cookie-only session is never silently
+ * substituted for the native one the gateway advertised (#95609 — the old
+ * behavior left the app looking signed in while REST requests 401'd).
+ */
+export type EmbeddedFlowReason =
+  | 'forced-by-config' // HERMES_DESKTOP_FORCE_EMBEDDED=1 escape hatch
+  | 'password-only-providers' // every advertised provider is username/password
+  | 'gateway-lacks-native-flow' // older gateway: auth_flows has no native_pkce
+  | 'status-unreadable' // /api/status could not be read at all
+
+export interface LoginStrategyDecision {
+  flow: 'native' | 'embedded'
+  /** Non-null exactly when `flow === 'embedded'` — the visible reason. */
+  reason: EmbeddedFlowReason | null
+}
+
+/**
  * Decide the login strategy for a gated gateway from its status body and
- * advertised provider capabilities.
+ * advertised provider capabilities — WITH the reason, so the caller can log
+ * and surface a downgrade instead of performing it silently.
  *
  * Returns 'native' when the gateway advertises native_pkce AND at least one
  * non-password provider is available; 'embedded' when all providers are
- * password-only, the gateway lacks native_pkce, or forceEmbedded is set.
+ * password-only, the gateway lacks native_pkce, forceEmbedded is set, or the
+ * status body could not be read at all (transient failure — the embedded flow
+ * has its own error handling, but the downgrade is reported, never silent).
  *
  * Provider metadata is discovered from /api/auth/providers (separate from
  * /api/status). When absent (older gateway), the decision falls through to
@@ -95,19 +117,38 @@ export function statusSupportsNativeFlow(statusBody: any): boolean {
  * (e.g. a corporate proxy that blocks loopback). Precedence written down here,
  * in one place, as a pure function — per the desktop "observable ladder" rule.
  */
+export function describeLoginStrategy(
+  statusBody: any,
+  opts: { forceEmbedded?: boolean; providers?: AdvertisedAuthProvider[] } = {}
+): LoginStrategyDecision {
+  if (opts.forceEmbedded) {
+    return { flow: 'embedded', reason: 'forced-by-config' }
+  }
+
+  if (!oauthGuardMayHardFail(opts.providers)) {
+    return { flow: 'embedded', reason: 'password-only-providers' }
+  }
+
+  if (statusBody === null || statusBody === undefined) {
+    // /api/status was unreadable (timeout / unreachable). Downgrade — the
+    // embedded flow is the only one that can still work — but flag it.
+    return { flow: 'embedded', reason: 'status-unreadable' }
+  }
+
+  return statusSupportsNativeFlow(statusBody)
+    ? { flow: 'native', reason: null }
+    : { flow: 'embedded', reason: 'gateway-lacks-native-flow' }
+}
+
+/**
+ * Flow-only projection of `describeLoginStrategy`, kept for callers that do
+ * not need the downgrade reason.
+ */
 export function resolveLoginStrategy(
   statusBody: any,
   opts: { forceEmbedded?: boolean; providers?: AdvertisedAuthProvider[] } = {}
 ): 'native' | 'embedded' {
-  if (opts.forceEmbedded) {
-    return 'embedded'
-  }
-
-  if (!oauthGuardMayHardFail(opts.providers)) {
-    return 'embedded'
-  }
-
-  return statusSupportsNativeFlow(statusBody) ? 'native' : 'embedded'
+  return describeLoginStrategy(statusBody, opts).flow
 }
 
 /**

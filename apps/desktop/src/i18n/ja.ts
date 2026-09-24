@@ -158,7 +158,10 @@ export const ja = defineLocale({
       signInFailed: 'サインインに失敗しました',
       signInToRemoteGateway: 'リモートゲートウェイにサインイン',
       signInWithProvider: provider => `${provider} でサインイン`,
-      identityProvider: 'ID プロバイダー'
+      identityProvider: 'ID プロバイダー',
+      embeddedSignInTitle: '埋め込みサインインを使用しました',
+      embeddedSignInMessage: reason =>
+        `ネイティブサインインの代わりに埋め込みブラウザでサインインしました (${reason})。`
     }
   },
 

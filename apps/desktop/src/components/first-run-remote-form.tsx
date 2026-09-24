@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { AlertCircle, Check, Loader2, LogIn } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
+import { notify } from '@/store/notifications'
 
 type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
@@ -138,7 +139,17 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
       setOauthConnected(Boolean(result.connected))
 
       if (!result.connected) {
-        setError(copy.signInIncomplete)
+        // Surface the real failure (e.g. a timed-out native PKCE flow) instead
+        // of a generic "incomplete" message (#95609).
+        setError(result.error || copy.signInIncomplete)
+      } else if (result.strategy === 'embedded') {
+        // Visible downgrade (#95609): native PKCE was not used — warn with the
+        // reason instead of letting a cookie-only session look like native.
+        notify({
+          kind: 'warning',
+          title: t.boot.failure.embeddedSignInTitle,
+          message: t.boot.failure.embeddedSignInMessage(result.strategyReason || '')
+        })
       }
     } catch (err) {
       setError(errorMessage(err))

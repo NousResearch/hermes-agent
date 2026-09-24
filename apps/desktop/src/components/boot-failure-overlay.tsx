@@ -208,6 +208,7 @@ export function BootFailureOverlay() {
       const desktop = window.hermesDesktop
 
       let connected: boolean
+      let authResult: Awaited<ReturnType<NonNullable<typeof desktop>['oauthLoginConnectionConfig']>> | undefined
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
         // The ladder drops this gateway's lapsed cookies itself — logging out
@@ -228,7 +229,9 @@ export function BootFailureOverlay() {
       } else {
         await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
-        connected = (await desktop?.oauthLoginConnectionConfig(remoteReauth.url))?.connected === true
+        authResult = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+
+        connected = authResult?.connected === true
       }
 
       if (connected) {
@@ -236,7 +239,19 @@ export function BootFailureOverlay() {
           await desktop?.resetBootstrap().catch(() => undefined)
         }
 
-        notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
+        // Visible downgrade (#95609): a cookie-only session must never
+        // masquerade as native sign-in — name the flow that actually ran and
+        // why, instead of always claiming a plain success.
+        if (authResult?.strategy === 'embedded') {
+          notify({
+            kind: 'warning',
+            title: t.boot.failure.embeddedSignInTitle,
+            message: t.boot.failure.embeddedSignInMessage(authResult.strategyReason || '')
+          })
+        } else {
+          notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
+        }
+
         window.location.reload()
 
         return
@@ -245,7 +260,7 @@ export function BootFailureOverlay() {
       notify({
         kind: 'warning',
         title: t.boot.failure.signInIncompleteTitle,
-        message: t.boot.failure.signInIncompleteMessage
+        message: authResult?.error || t.boot.failure.signInIncompleteMessage
       })
     } catch (err) {
       notifyError(err, t.boot.failure.signInFailed)

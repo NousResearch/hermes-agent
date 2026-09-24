@@ -357,15 +357,25 @@ export function ConnectionsRegistrySection() {
       setOauthConnected(Boolean(result.connected))
 
       if (result.connected) {
-        notify({
-          title: t.settings.gateway.signedIn,
-          message: t.settings.gateway.connectedTo(authProviderShape.providerLabel)
-        })
+        if (result.strategy === 'embedded') {
+          // Visible downgrade (#95609): the embedded cookie flow ran instead
+          // of native PKCE — warn with the reason.
+          notify({
+            kind: 'warning',
+            title: t.boot.failure.embeddedSignInTitle,
+            message: t.boot.failure.embeddedSignInMessage(result.strategyReason || '')
+          })
+        } else {
+          notify({
+            title: t.settings.gateway.signedIn,
+            message: t.settings.gateway.connectedTo(authProviderShape.providerLabel)
+          })
+        }
       } else {
         notify({
           kind: 'warning',
           title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
+          message: result.error || t.boot.failure.signInIncompleteMessage
         })
       }
     } catch (err) {

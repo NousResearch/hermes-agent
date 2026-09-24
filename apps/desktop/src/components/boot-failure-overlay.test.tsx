@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
@@ -63,7 +64,10 @@ beforeEach(() => {
   failBoot()
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  clearNotifications()
+  cleanup()
+})
 
 describe('BootFailureOverlay', () => {
   it('keeps keyboard focus inside the recovery surface', () => {
@@ -208,6 +212,101 @@ describe('BootFailureOverlay', () => {
       expect(cloudStatus).toHaveBeenCalledTimes(1)
       expect(cloudLogin).toHaveBeenCalledTimes(1)
       expect(nativeLogin).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('surfaces the native PKCE failure instead of a generic incomplete message (#95609)', async () => {
+    const gatewayUrl = 'http://100.116.104.53:9191'
+    const nativeError =
+      'Native sign-in timed out. The browser window may not have completed sign-in; open Settings → Gateway and try again.'
+    const login = vi.fn().mockResolvedValue({
+      ok: false,
+      connected: false,
+      strategy: 'native',
+      strategyReason: null,
+      error: nativeError
+    })
+
+    const restore = stubDesktop(
+      {
+        ...remoteToken,
+        remoteAuthMode: 'oauth',
+        remoteOauthConnected: false,
+        remoteUrl: gatewayUrl
+      },
+      {
+        oauthLoginConnectionConfig: login,
+        oauthLogoutConnectionConfig: vi.fn().mockResolvedValue({ ok: true, connected: false }),
+        probeConnectionConfig: vi.fn().mockResolvedValue({ providers: [{ id: 'nous', type: 'oauth' }] })
+      }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign out & sign in/i }))
+
+      await waitFor(() => expect(login).toHaveBeenCalledWith(gatewayUrl))
+      // The failure reason is visible in the warning toast — the desktop must
+      // never swallow a native-flow failure into a generic "sign-in
+      // incomplete" (the silent-downgrade bug #95609).
+      const toast = $notifications.get()[0]
+      expect(toast).toBeTruthy()
+      expect(toast.kind).toBe('warning')
+      expect(toast.message).toContain('timed out')
+      expect(toast.message).not.toContain('login window closed')
+    } finally {
+      restore()
+    }
+  })
+
+  it('warns visibly when sign-in used the embedded flow instead of native PKCE (#95609)', async () => {
+    const gatewayUrl = 'http://100.116.104.53:9191'
+    const login = vi.fn().mockResolvedValue({
+      ok: true,
+      connected: true,
+      strategy: 'embedded',
+      strategyReason: 'gateway-lacks-native-flow'
+    })
+
+    const restore = stubDesktop(
+      {
+        ...remoteToken,
+        remoteAuthMode: 'oauth',
+        remoteOauthConnected: false,
+        remoteUrl: gatewayUrl
+      },
+      {
+        oauthLoginConnectionConfig: login,
+        oauthLogoutConnectionConfig: vi.fn().mockResolvedValue({ ok: true, connected: false }),
+        probeConnectionConfig: vi.fn().mockResolvedValue({ providers: [{ id: 'nous', type: 'oauth' }] })
+      }
+    )
+
+    try {
+      // jsdom's location.reload is non-configurable and throws when called;
+      // swap in a stub so the success path can complete (the component only
+      // uses reload here).
+      const originalLocation = window.location
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { ...originalLocation, reload: vi.fn(() => undefined) }
+      })
+
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign out & sign in/i }))
+
+      await waitFor(() => expect(login).toHaveBeenCalledWith(gatewayUrl))
+      // A cookie-only session must never masquerade as native sign-in: the
+      // toast says the embedded flow was used and why.
+      const toast = $notifications.get()[0]
+      expect(toast).toBeTruthy()
+      expect(toast.kind).toBe('warning')
+      expect(toast.message).toMatch(/embedded browser/i)
+      expect(toast.message).toMatch(/gateway does not advertise native sign-in/i)
+
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
     } finally {
       restore()
     }

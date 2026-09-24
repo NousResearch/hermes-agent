@@ -779,12 +779,24 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       if (result.connected) {
         const refreshed = await window.hermesDesktop.getConnectionConfig(null)
         acceptSavedConfig(refreshed)
-        notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
+
+        if (result.strategy === 'embedded') {
+          // Visible downgrade (#95609): the embedded cookie flow ran instead
+          // of the native PKCE one — warn with the reason instead of letting
+          // a cookie-only session look like native sign-in.
+          notify({
+            kind: 'warning',
+            title: t.boot.failure.embeddedSignInTitle,
+            message: t.boot.failure.embeddedSignInMessage(result.strategyReason || '')
+          })
+        } else {
+          notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
+        }
       } else {
         notify({
           kind: 'warning',
           title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
+          message: result.error || t.boot.failure.signInIncompleteMessage
         })
       }
     } catch (err) {

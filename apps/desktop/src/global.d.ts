@@ -1175,6 +1175,22 @@ export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
   connected: boolean
+  /**
+   * Which sign-in flow ran: 'native' (RFC 8252 PKCE) or 'embedded' (cookie
+   * webview). Present so the UI can make a downgrade to embedded visible
+   * instead of letting a cookie-only session masquerade as native sign-in
+   * (#95609).
+   */
+  strategy?: 'native' | 'embedded' | null
+  /** Machine-readable reason for an embedded downgrade (mirrors electron's EmbeddedFlowReason). */
+  strategyReason?:
+    | 'forced-by-config'
+    | 'password-only-providers'
+    | 'gateway-lacks-native-flow'
+    | 'status-unreadable'
+    | null
+  /** Native-flow failure detail (present when a native attempt failed). */
+  error?: string | null
 }
 
 export interface DesktopOauthLogoutResult {

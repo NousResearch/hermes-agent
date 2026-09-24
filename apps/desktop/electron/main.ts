@@ -314,10 +314,10 @@ import { createMinimizeToTray } from './minimize-to-tray'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
+  describeLoginStrategy,
   nativeRefreshUrl,
   type NativeTokenSet,
   parseTokenResponse,
-  resolveLoginStrategy,
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
@@ -1021,6 +1021,11 @@ enableLinuxCrashDiagnostics(CRASH_DIAGNOSTICS, CRASH_DIAGNOSTICS_LOGS_DIR, {
 
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
+// Auth escape hatch (#95609): pin the legacy embedded-webview cookie flow even
+// when the gateway advertises native PKCE (e.g. a corporate proxy blocks the
+// loopback listener). Pinning the strategy is allowed; hiding it is not — the
+// downgrade is still logged and surfaced in the login UI.
+const FORCE_EMBEDDED_AUTH = process.env.HERMES_DESKTOP_FORCE_EMBEDDED === '1'
 // Automated teardown (Playwright's app.close(), harness scripts) quits with
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
@@ -16770,6 +16775,9 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   //     check (existing compatibility)
   //   - a failed native login reports the error rather than auto-falling back
   //     to the embedded flow — one sign-in action opens at most one window.
+  // Every downgrade to embedded is VISIBLE (#95609): it is logged with its
+  // reason and echoed in the IPC result so the UI can warn — a cookie-only
+  // session must never silently replace the advertised native PKCE one.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
   // Order login attempts without interrupting rotation of the existing session.
   const authIsCurrent = nativeAccessTokenCoordinator.beginLogin(baseUrl)
@@ -16778,21 +16786,31 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
   try {
     statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch {
-    // Can't read status — fall through to the embedded flow, which has its
-    // own error handling and works against any gated gateway.
+  } catch (error) {
+    // Unreadable status is a transient failure, not a capability declaration.
+    // The embedded flow is the only one that can still work — but the
+    // downgrade is logged, never silent.
+    const detail = error instanceof Error ? error.message : String(error)
+    rememberLog(`[native-oauth] could not read /api/status (${detail}); using embedded login flow`)
   }
 
   const authRequired = statusBody && authModeFromStatus(statusBody) === 'oauth'
   const providers = authRequired ? await gatewayAuthProviders(baseUrl) : []
 
-  const strategy = resolveLoginStrategy(statusBody, { providers })
+  const decision = describeLoginStrategy(statusBody, {
+    providers,
+    forceEmbedded: FORCE_EMBEDDED_AUTH
+  })
 
   if (!authIsCurrent()) {
     throw new NativeAuthChangedError()
   }
 
-  if (strategy === 'native') {
+  if (decision.flow === 'embedded') {
+    rememberLog(`[native-oauth] using embedded login flow (reason: ${decision.reason})`)
+  }
+
+  if (decision.flow === 'native') {
     try {
       const tokens = await runNativeLogin(baseUrl, {
         openExternal: url => shell.openExternal(url),
@@ -16809,15 +16827,25 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
       // startHermes() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
 
-      return { ok: true, baseUrl, connected: true }
+      return { ok: true, baseUrl, connected: true, strategy: 'native', strategyReason: null }
     } catch (error) {
-      rememberLog(`[native-oauth] native login failed (${error instanceof Error ? error.message : String(error)})`)
+      const message = error instanceof Error ? error.message : String(error)
+      rememberLog(
+        `[native-oauth] native login failed (${message}); NOT falling back to embedded — retry native sign-in`
+      )
 
-      return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
+      return {
+        ok: false,
+        error: message,
+        connected: false,
+        strategy: 'native',
+        strategyReason: null
+      }
     }
   }
 
-  // Legacy embedded-webview cookie flow.
+  // Legacy embedded-webview cookie flow. The downgrade stays visible: the
+  // reason rides back in the result and the login UI warns with it.
   await openOauthLoginWindow(baseUrl)
 
   const connected = await hasOauthSessionCookie(baseUrl)
@@ -16835,7 +16863,13 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
     remoteReauthFailure = null
   }
 
-  return { ok: true, baseUrl, connected }
+  return {
+    ok: true,
+    baseUrl,
+    connected,
+    strategy: 'embedded',
+    strategyReason: decision.reason
+  }
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)

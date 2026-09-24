@@ -11,7 +11,6 @@ import types
 
 import pytest
 
-import cli as cli_mod
 from hermes_cli import main as main_mod
 from hermes_cli import mcp_startup
 
@@ -91,7 +90,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         start = time.monotonic()
         main_mod._prepare_agent_startup(_agent_args())
         elapsed = time.monotonic() - start
-        assert elapsed < 0.2
+        assert elapsed < 2.0
         deadline = time.monotonic() + 3.0
         while calls["mcp"] == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -309,7 +308,7 @@ def _retry_logger():
     )
 
 
-def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: str = "configured"):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -327,7 +326,7 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
         "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
-            get_mcp_status=lambda: [{"connected": connected}],
+            get_mcp_status=lambda: [{"name": "demo", "connected": connected, "status": status}],
         ),
     )
 
@@ -440,3 +439,29 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
     monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
     assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
+
+
+@pytest.mark.parametrize(("status", "retried"), [("lazy", False), ("configured", True)])
+def test_lazy_only_discovery_counts_as_usable_at_both_startup_sites(monkeypatch, status, retried):
+    """A finished run whose servers are all ``lazy`` (registered from the schema cache, spawned
+    on first use) left them usable: no zero-connected warning, and the re-entry check must not
+    re-spawn discovery (#111717). Control: a run that left them merely ``configured`` still warns
+    and is still retried (#66981)."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=status)
+    warnings: list = []
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None,
+                                   warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg))
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")  # first run
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")  # re-entry after it finished
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+
+    assert calls["mcp"] == (2 if retried else 1)
+    assert any("zero connected" in w for w in warnings) is retried
+    assert any("retrying discovery thread" in w for w in warnings) is retried

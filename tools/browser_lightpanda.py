@@ -117,7 +117,7 @@ def _binary_supports_http_cache(binary: str) -> bool:
     try:
         proc = subprocess.run(
             [binary, "help"],
-            capture_output=True, text=True, timeout=3.0,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
         )
         return _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or ""))
@@ -316,6 +316,8 @@ def reap_orphaned_lightpanda() -> int:
         session_name = record_path.stem
         try:
             record = json.loads(record_path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError(f"expected a JSON object, got {type(record).__name__}")
         except (OSError, ValueError):
             record_path.unlink(missing_ok=True)
             continue

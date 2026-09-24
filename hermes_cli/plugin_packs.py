@@ -76,25 +76,65 @@ def _entry_label(item: Any, index: int) -> str:
     return f"#{index + 1}"
 
 
+def _forbidden_key_reason(key: str) -> Optional[str]:
+    """``"reserved"`` / ``"secret"`` when a config key may never travel in a pack, else None."""
+    if key in _RESERVED_ENTRY_KEYS or key.startswith("allow_"):
+        return "reserved"
+    if _SECRET_KEY_RE.search(key):
+        return "secret"
+    return None
+
+
+def _first_forbidden_key(value: Any, path: str = "") -> Optional[tuple[str, str]]:
+    """``(dotted key, reason)`` of the first forbidden key at ANY depth of *value*, else None.
+    A nested mapping (or a mapping inside a list) is the same contract as the top level (#85050)."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str) and (reason := _forbidden_key_reason(key)):
+                return f"{path}{key}", reason
+            if found := _first_forbidden_key(child, f"{path}{key}."):
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            if found := _first_forbidden_key(child, path):
+                return found
+    return None
+
+
+def _strip_forbidden_keys(value: Any) -> Any:
+    """Copy of *value* with forbidden keys and non-YAML-scalar leaves removed at every depth."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_forbidden_keys(child) for key, child in value.items()
+            if isinstance(key, str) and _forbidden_key_reason(key) is None
+            and (child is None or isinstance(child, (str, int, float, bool, list, dict)))
+        }
+    if isinstance(value, list):
+        return [_strip_forbidden_keys(child) for child in value]
+    return value
+
+
 def validate_config_seed(plugin_id: str, seed: Any) -> dict[str, Any]:
     """Validate one plugin's config seed mapping and return a copy. Rejects non-dict seeds,
-    reserved consent keys, ``allow_*`` trust gates, and secret-shaped keys."""
+    reserved consent keys, ``allow_*`` trust gates, and secret-shaped keys — at any depth."""
     if not isinstance(seed, dict):
         raise PackError(
             f"Pack config for plugin '{plugin_id}' must be a mapping of plugins.entries.{plugin_id} keys.")
     for key in seed:
         if not isinstance(key, str) or not key.strip():
             raise PackError(f"Pack config for plugin '{plugin_id}' has an invalid key: {key!r}.")
-        if key in _RESERVED_ENTRY_KEYS or key.startswith("allow_"):
+    found = _first_forbidden_key(seed)
+    if found is not None:
+        key, reason = found
+        if reason == "reserved":
             raise PackError(
                 f"Pack config for plugin '{plugin_id}' sets reserved key "
                 f"'{key}': packs cannot pre-grant capabilities or trust gates. "
                 "Capability consent happens interactively at install time.")
-        if _SECRET_KEY_RE.search(key):
-            raise PackError(
-                f"Pack config for plugin '{plugin_id}' sets secret-shaped key "
-                f"'{key}': secrets never travel in packs. Declare the secret in "
-                "the plugin's requires_env instead — it is prompted at install.")
+        raise PackError(
+            f"Pack config for plugin '{plugin_id}' sets secret-shaped key "
+            f"'{key}': secrets never travel in packs. Declare the secret in "
+            "the plugin's requires_env instead — it is prompted at install.")
     return dict(seed)
 
 
@@ -317,6 +357,7 @@ def install_pack_plugins(
         _get_disabled_set,
         _get_enabled_set,
         _install_plugin_core,
+        _install_python_dependencies,
         _prompt_plugin_env_vars,
         _run_capability_consent,
         _save_disabled_set,
@@ -350,6 +391,7 @@ def install_pack_plugins(
             _prompt_plugin_env_vars(manifest, console)
         except Exception:
             logger.debug("requires_env prompt failed for %s", installed_name, exc_info=True)
+        _install_python_dependencies(target, console)
 
         enabled = _get_enabled_set()
         disabled = _get_disabled_set()
@@ -396,7 +438,8 @@ def _source_to_repo_subdir(source: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
-    """Exportable plugins.entries.<id> keys: scalars only, secrets stripped."""
+    """Exportable plugins.entries.<id> keys: YAML scalars/containers only, reserved and
+    secret-shaped keys stripped at every depth."""
     try:
         from hermes_cli.config import load_config
 
@@ -406,14 +449,7 @@ def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
     entry = ((config.get("plugins") or {}).get("entries") or {}).get(plugin_id)
     if not isinstance(entry, dict):
         return {}
-    return {
-        key: value for key, value in entry.items()
-        if isinstance(key, str)
-        and key not in _RESERVED_ENTRY_KEYS
-        and not key.startswith("allow_")
-        and not _SECRET_KEY_RE.search(key)
-        and (value is None or isinstance(value, (str, int, float, bool, list, dict)))
-    }
+    return _strip_forbidden_keys(entry)
 
 
 def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack") -> tuple[str, List[str]]:

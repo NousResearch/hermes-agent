@@ -17,6 +17,7 @@ _REASON_COPY: dict[str, str] = {
     "model_not_found": "'{model}' isn't available on {provider}. Run /model to pick a valid model.",
     "rate_limit": "Rate limited by {provider}; wait a minute or /model to switch.",
     "upstream_rate_limit": "Rate limited by {provider}; wait a minute or /model to switch.",
+    "upstream_blocked": "A firewall/CDN in front of {provider} blocked the request (not your key). Set a User-Agent via extra_headers, or /model to switch.",
     "overloaded": "{provider} is overloaded right now. Send /retry in a moment, or /model to switch.",
     "server_error": "{provider} had an internal error. Send /retry in a moment, or /model to switch.",
     "timeout": "{provider} did not answer in time. Send /retry, or /model to switch.",

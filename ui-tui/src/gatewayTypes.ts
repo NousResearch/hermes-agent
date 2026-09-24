@@ -1,5 +1,6 @@
 import type { UsageModelData } from '@hermes/shared/billing'
 import type {
+  ConnectionRequestPayload,
   GatewayEvent,
   GatewayEventName,
   InflightTurn,
@@ -179,6 +180,9 @@ export interface SystemBatteryResponse {
 export interface SessionCreateResponse {
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
+  // Durable id (state.db row) — what session.resume takes; `session_id` is the
+  // process-local runtime handle.
+  stored_session_id?: string
 }
 
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
@@ -205,6 +209,7 @@ export interface SessionActivateResponse {
   info?: SessionInfo
   message_count?: number
   messages: TranscriptMessage[]
+  pending_connection?: ConnectionRequestPayload | null
   running?: boolean
   session_id: string
   session_key?: string

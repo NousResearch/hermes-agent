@@ -1,8 +1,6 @@
 /**
- * Titlebar board switcher — the board page projects this into `titleBar.center`
- * (where chat shows the session-title dropdown) via `<Contribute>`, so it
- * exists exactly while the page is mounted — no route sniffing. Same chrome as
- * the session title: quiet label + chevron, menu on click.
+ * Board switcher projected through `WORKSPACE_PAGE_HEADER_AREA` into the
+ * workspace panel's tab-header space while the board page is mounted.
  */
 
 import {
@@ -27,6 +25,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Tip,
   useI18n,
   useMutation,
   useQuery,
@@ -37,14 +36,15 @@ import { type ReactNode, useEffect, useState } from 'react'
 
 import {
   $boardSlug,
-  BOARDS_KEY,
+  boardsKey,
   createBoard,
   deleteBoard,
   fetchBoards,
   fetchProjects,
   pluginOs,
-  PROJECTS_KEY,
-  updateBoard
+  projectsKey,
+  updateBoard,
+  useKanbanScope
 } from './api'
 import { runExportBoardFlow, runImportBoardFlow } from './transfer'
 import type { BoardMeta } from './types'
@@ -59,7 +59,8 @@ const DEFAULT_BOARD = 'default'
  *  deterministic branch. "No project" falls back to scratch sandboxes. */
 function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
   const k = useKanban()
-  const { data } = useQuery({ queryKey: PROJECTS_KEY, queryFn: fetchProjects, staleTime: 30_000 })
+  const scope = useKanbanScope()
+  const { data } = useQuery({ queryKey: projectsKey(scope), queryFn: fetchProjects, staleTime: 30_000 })
   const projects = data?.projects ?? []
 
   return (
@@ -90,12 +91,13 @@ function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; va
  *  the caller finish, or surface the error and leave the dialog open. */
 function useBoardWrite<T>(mutationFn: () => Promise<T>, onDone: (result: T) => void) {
   const qc = useQueryClient()
+  const scope = useKanbanScope()
 
   return useMutation({
     mutationFn,
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: result => {
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      void qc.invalidateQueries({ queryKey: boardsKey(scope) })
       onDone(result)
     }
   })
@@ -284,8 +286,9 @@ export function BoardSwitcher() {
   // Delete reuses the app-wide label, the way sessions and profiles do.
   const { t } = useI18n()
   const qc = useQueryClient()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
-  const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
+  const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: boardsKey(scope), staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
   const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
   const [renameFor, setRenameFor] = useState<BoardMeta | null>(null)
@@ -297,7 +300,7 @@ export function BoardSwitcher() {
     const { result } = await deleteBoard(target.slug)
 
     $boardSlug.set('')
-    void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    void qc.invalidateQueries({ queryKey: boardsKey(scope) })
     host.notify({ kind: 'success', message: k.boardArchived(result.new_path) })
   }
 
@@ -322,7 +325,7 @@ export function BoardSwitcher() {
 
     if (imported) {
       $boardSlug.set(imported)
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      void qc.invalidateQueries({ queryKey: boardsKey(scope) })
     }
   }
 
@@ -337,15 +340,24 @@ export function BoardSwitcher() {
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button className="h-7 max-w-56 gap-1.5 px-2" size="sm" variant="ghost">
-            <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
-            {typeof current?.total === 'number' && (
-              <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
-            )}
-            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
-          </Button>
-        </DropdownMenuTrigger>
+        <Tip label={k.switchBoard}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label={`${k.board}: ${label}`}
+              className="h-full min-w-0 max-w-full gap-1.5 px-2"
+              size="sm"
+              variant="ghost"
+            >
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="project" size="0.8125rem" />
+              <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
+              <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
+              {typeof current?.total === 'number' && (
+                <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
+              )}
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Tip>
         <DropdownMenuContent align="center">
           {boards.boards.map(meta => (
             <DropdownMenuItem

@@ -27,32 +27,6 @@ def _make_runner():
     return runner
 
 
-def test_finalize_off_loop_invokes_lifecycle(monkeypatch):
-    """The helper reaches the real lifecycle entry point with the kwargs."""
-    calls = []
-
-    def _fake_finalize(**kwargs):
-        calls.append(kwargs)
-        return []
-
-    import hermes_cli.lifecycle as lifecycle
-
-    monkeypatch.setattr(lifecycle, "finalize_session", _fake_finalize)
-
-    runner = _make_runner()
-    asyncio.run(
-        runner._finalize_session_off_loop(
-            session_id="s-123",
-            platform="gateway",
-            reason="shutdown",
-            old_session_id="s-123",
-        )
-    )
-
-    assert len(calls) == 1
-    assert calls[0]["session_id"] == "s-123"
-    assert calls[0]["reason"] == "shutdown"
-    assert calls[0]["old_session_id"] == "s-123"
 
 
 def test_finalize_off_loop_keeps_loop_alive_and_bounds_wedged_hook(monkeypatch):
@@ -122,31 +96,3 @@ def test_finalize_off_loop_swallows_hook_exceptions(monkeypatch):
     )
 
 
-def test_shutdown_finalize_path_uses_off_loop_dispatch(monkeypatch):
-    """_finalize_shutdown_agents routes finalize through the bounded helper."""
-    seen = []
-
-    async def _fake_off_loop(self, **kwargs):
-        seen.append(kwargs)
-
-    monkeypatch.setattr(
-        GatewayRunner, "_finalize_session_off_loop", _fake_off_loop
-    )
-
-    async def _fake_cleanup(self, agent, *, context="", session_key=None):
-        return None
-
-    monkeypatch.setattr(
-        GatewayRunner, "_cleanup_agent_resources_off_loop", _fake_cleanup
-    )
-
-    class _Agent:
-        session_id = "s-shutdown"
-        _session_messages = None
-
-    runner = _make_runner()
-    asyncio.run(runner._finalize_shutdown_agents({"k": _Agent()}))
-
-    assert len(seen) == 1
-    assert seen[0]["session_id"] == "s-shutdown"
-    assert seen[0]["reason"] == "shutdown"

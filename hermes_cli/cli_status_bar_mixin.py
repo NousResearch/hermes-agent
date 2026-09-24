@@ -331,6 +331,9 @@ class CLIStatusBarMixin:
             context_length = max(0, getattr(compressor, "context_length", 0) or 0)
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
+            from agent.context_pin import is_context_pinned
+            snapshot["context_pinned"] = is_context_pinned(
+                context_length, getattr(compressor, "_config_context_length", None))
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 pct = round((context_tokens / context_length) * 100)
@@ -1047,7 +1050,8 @@ class CLIStatusBarMixin:
                 if snapshot["context_length"]:
                     ctx_total = _format_context_length(snapshot["context_length"])
                     ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                    context_label = f"{mark}{ctx_used}/{ctx_total}"
+                    pin = " pinned" if snapshot.get("context_pinned") else ""
+                    context_label = f"{mark}{ctx_used}/{ctx_total}{pin}"
                 else:
                     context_label = "ctx --"
                 segs.append([(_DIM, context_label)])

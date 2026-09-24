@@ -91,6 +91,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     sms: { icon: MessageCircle, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
     tool: { icon: Play, color: "text-warning" },
+    oneshot: { icon: Terminal, color: "text-warning" },
     api_server: { icon: Globe, color: "text-muted-foreground" },
     acp: { icon: Database, color: "text-muted-foreground" },
     hermes_flow: { icon: Play, color: "text-warning" },
@@ -101,6 +102,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
 const AUTOMATION_SESSION_SOURCES = [
   "cron",
   "tool",
+  "oneshot",
   "api_server",
   "acp",
   "hermes_flow",
@@ -1280,10 +1282,11 @@ export default function SessionsPage() {
   // the global management profile, which lags the row (it stays "" while the
   // sticky active profile equals the dashboard process's own, so the request
   // hits the process store — a delete then "succeeds" as already_absent).
-  // Search rows carry no stamp: undefined falls back to the management profile.
+  // Current search rows carry the same stamp; an unstamped row from an older
+  // backend still falls back to the management profile.
   const rowProfile = useCallback(
-    (id: string) => sessions.find((s) => s.id === id)?.profile,
-    [sessions],
+    (id: string) => (searchResults ?? sessions).find((s) => s.id === id)?.profile,
+    [searchResults, sessions],
   );
 
   const sessionDelete = useConfirmDelete({

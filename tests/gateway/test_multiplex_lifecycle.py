@@ -29,6 +29,7 @@ def test_cron_profile_homes_serve_every_live_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     for name in ("worker", "guest", "gone"):
         (default_home / "profiles" / name).mkdir(parents=True)
+        (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     from hermes_constants import mark_named_profile_deleted
     mark_named_profile_deleted(default_home / "profiles" / "gone")
 
@@ -46,6 +47,7 @@ def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
     default_home = tmp_path / ".hermes"
     for name in ("host", "worker"):
         (default_home / "profiles" / name).mkdir(parents=True)
+        (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "host"))
 
     import gateway.run as gateway_run
@@ -65,11 +67,6 @@ class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""
 
 
-    def test_force_bypasses(self, monkeypatch):
-        from hermes_cli import gateway as gw
-        # Even if it looks like a named profile, force returns immediately.
-        monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
-        gw._guard_named_profile_under_multiplexer(force=True)
 
     def test_inert_when_no_default_gateway_running(self, monkeypatch, tmp_path):
         from hermes_cli import gateway as gw

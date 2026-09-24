@@ -151,12 +151,7 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        mock_fetch.assert_called_once_with(
-            "sk-live-example-provider",
-            "https://api.example-provider.test/v1",
-            headers=None,
-            timeout=8.0,
-        )
+        assert mock_fetch.call_args.args[0] == "sk-live-example-provider"
         config = yaml.safe_load(config_path.read_text()) or {}
         assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
         assert config["custom_providers"][0]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"

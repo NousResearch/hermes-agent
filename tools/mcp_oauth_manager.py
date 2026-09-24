@@ -110,11 +110,12 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             build_oauth_authorization_server_metadata_discovery_urls,
             build_protected_resource_metadata_discovery_urls, create_oauth_metadata_request,
             handle_auth_metadata_response, handle_protected_resource_response)
+        from tools.mcp_oauth_provider import stamp_default_user_agent
         server_url = self.context.server_url
 
         async def _send(client, url: str, label: str):
             try:
-                return await client.send(create_oauth_metadata_request(url))
+                return await client.send(stamp_default_user_agent(create_oauth_metadata_request(url)))
             except httpx.HTTPError as exc:
                 logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
                 return None

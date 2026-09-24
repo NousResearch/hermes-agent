@@ -12,6 +12,8 @@ import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
   setCronSessions,
+  setCurrentBranch,
+  setCurrentCwdTransient,
   setFreshDraftReady,
   setMessages,
   setMessagingPlatformTotals,
@@ -221,6 +223,15 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setSelectedStoredSessionId(null)
   setMessages([])
   setFreshDraftReady(true)
+
+  // The draft workspace belongs to the outgoing backend. Nothing downstream
+  // clears it: ensureDefaultWorkspaceCwd only seeds a NON-empty remembered
+  // path and seedDefaultCwd only applies the new gateway's default when the
+  // cwd is EMPTY, so a gateway with nothing remembered kept painting (and
+  // sending on session.create) the previous gateway's folder (#114306).
+  // Transient on purpose: the per-backend memory of the old gateway stays.
+  setCurrentCwdTransient('')
+  setCurrentBranch('')
 
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.

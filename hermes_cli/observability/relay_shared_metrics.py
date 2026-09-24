@@ -738,11 +738,13 @@ class _Runtime:
             retry_count=task.retry_count,
         )
         try:
-            self._guarded(
+            popped = self._guarded(
                 "Hermes shared-metrics task close failed",
-                self._run_in_task, task, relay_runtime.pop_relay_scope, self.relay, task.handle,
+                self._run_in_task, task, relay_runtime.pop_relay_scope_if_top, self.relay, task.handle,
                 output=fields, metadata=self._event_metadata(),
             )
+            if popped is False:
+                logger.debug("Left shared-metrics task scope %s under a concurrent turn's scope; session close drains it", task_id)
         finally:
             session.tasks.pop(task_id, None)
             session.retired_turn_ids.extend(task.turn_ids)

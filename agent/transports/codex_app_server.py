@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from agent.deadline import kill_process_tree
+from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
@@ -33,6 +34,20 @@ class CodexAppServerError(RuntimeError):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"codex app-server error {self.code}: {self.message}"
+
+
+class CodexAppServerTransportError(CodexAppServerError):
+    """The JSON-RPC transport is gone: a write failed or close() drained the request.
+
+    Distinct from server-reported errors so session boundaries can retire the
+    session without swallowing unrelated ``RuntimeError`` programming defects.
+    """
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.message
+
+
+_TRANSPORT_LOST_CODE = -32000
 
 
 def _snapshot_descendants(pid: int) -> list[Any]:
@@ -100,13 +115,14 @@ class CodexAppServerClient:
         )
         # Native shell children remain unowned. Only Hermes' managed MCP tool
         # endpoint acts for this worker; grant it scope via its existing per-server
-        # environment, never by granting the whole executor process ownership.
+        # environment (the entry the runtime migration registers), never by granting
+        # the whole executor process ownership.
         owned_task = os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
         if owned_task:
             for key in (*KANBAN_ENV_KEYS, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
                 if key in os.environ:
-                    cmd += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(os.environ[key])}"]
-            cmd += ["-c", f'mcp_servers.hermes-mcp.env.{DELEGATED_CHILD_ENV_MARKER}=""']
+                    cmd += ["-c", f"mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{key}={json.dumps(os.environ[key])}"]
+            cmd += ["-c", f'mcp_servers.{HERMES_TOOLS_MCP_SERVER_NAME}.env.{DELEGATED_CHILD_ENV_MARKER}=""']
         spawn_env = delegated_child_subprocess_env(spawn_env)
         # Kanban workers must write handoff/status to the board DB outside the
         # workspace: keep the sandbox on, add the Kanban root as writable.
@@ -172,6 +188,7 @@ class CodexAppServerClient:
         if self._closed:
             return
         self._closed = True
+        self._fail_pending_requests("codex app-server client is closing")
         descendants = _snapshot_descendants(self._proc.pid)
         with contextlib.suppress(Exception):
             if self._proc.stdin and not self._proc.stdin.closed:
@@ -186,6 +203,22 @@ class CodexAppServerClient:
         finally:
             _reap_snapshotted(descendants)
 
+    def _fail_pending_requests(self, reason: str) -> None:
+        """Unblock every thread currently sitting in request() instead of
+        leaving them to ride out their own per-call timeout (up to 30s by
+        default) after the transport they're waiting on has already died.
+        Mirrors _read_stdout's own pop-then-deliver dispatch under the same
+        lock, so a reply that lands at the exact same moment still wins the
+        race cleanly instead of being dropped or double-delivered."""
+        with self._pending_lock:
+            pending_items = list(self._pending.items())
+            self._pending.clear()
+        if not pending_items:
+            return
+        synthetic = {"error": {"code": _TRANSPORT_LOST_CODE, "message": reason}, "transportLost": True}
+        for _rid, pending in pending_items:
+            pending.put_nowait(synthetic)
+
     def __enter__(self) -> "CodexAppServerClient":
         return self
 
@@ -198,7 +231,12 @@ class CodexAppServerClient:
         q: queue.Queue = queue.Queue(maxsize=1)
         with self._pending_lock:
             self._pending[rid] = q
-        self._send({"id": rid, "method": method, "params": params or {}})
+        try:
+            self._send({"id": rid, "method": method, "params": params or {}})
+        except CodexAppServerTransportError:
+            with self._pending_lock:
+                self._pending.pop(rid, None)
+            raise
         try:
             msg = q.get(timeout=timeout)
         except queue.Empty:
@@ -207,7 +245,8 @@ class CodexAppServerClient:
             raise TimeoutError(f"codex app-server method {method!r} timed out after {timeout}s")
         if "error" in msg:
             err = msg["error"]
-            raise CodexAppServerError(code=err.get("code", -1), message=err.get("message", ""), data=err.get("data"))
+            cls = CodexAppServerTransportError if msg.get("transportLost") else CodexAppServerError
+            raise cls(code=err.get("code", -1), message=err.get("message", ""), data=err.get("data"))
         return msg.get("result", {})
 
     def notify(self, method: str, params: Optional[dict] = None) -> None:
@@ -250,14 +289,16 @@ class CodexAppServerClient:
 
     def _send(self, obj: dict) -> None:
         if self._closed:
-            raise RuntimeError("codex app-server client is closed")
+            raise CodexAppServerTransportError(code=_TRANSPORT_LOST_CODE, message="codex app-server client is closed")
         if self._proc.stdin is None:
-            raise RuntimeError("codex app-server stdin not available")
+            raise CodexAppServerTransportError(code=_TRANSPORT_LOST_CODE, message="codex app-server stdin not available")
         try:
             self._proc.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
             self._proc.stdin.flush()
-        except (BrokenPipeError, ValueError) as exc:
-            raise RuntimeError(f"codex app-server stdin closed unexpectedly: {exc}") from exc
+        except (OSError, ValueError) as exc:  # BrokenPipe, EINVAL on a torn-down pipe, write on closed file
+            raise CodexAppServerTransportError(
+                code=_TRANSPORT_LOST_CODE, message=f"codex app-server stdin closed unexpectedly: {exc}",
+            ) from exc
 
     def _append_stderr(self, line: str) -> None:
         with self._stderr_lock:
@@ -282,6 +323,11 @@ class CodexAppServerClient:
                 self._dispatch(msg)
         except Exception as exc:
             self._append_stderr(f"<stdout reader error> {exc}")
+        finally:
+            # EOF (codex died) or a reader failure: nobody will ever answer the
+            # requests still waiting, so fail them now instead of letting each
+            # ride out its per-call timeout.
+            self._fail_pending_requests("codex app-server stdout closed")
 
     def _dispatch(self, msg: dict) -> None:
         if "id" in msg and ("result" in msg or "error" in msg):  # reply

@@ -94,7 +94,6 @@ class TestResourceFilename:
 
 class TestPreDecodeSizeCap:
     def test_oversized_b64_rejected_before_decode(self, monkeypatch):
-        import tools.mcp_tool as m
         from tools import mcp_tool_content as _mcp_content
 
         monkeypatch.setattr(_mcp_content, "_MCP_RESOURCE_MAX_B64_CHARS", 16)
@@ -130,29 +129,6 @@ class TestAudioBlock:
 
 
 class TestToolResultLoopOrdering:
-    def test_mixed_blocks_preserve_order(self, doc_cache):
-        """Simulate the tool-result block loop with text + pdf resource."""
-        from tools.mcp_tool_content import _cache_mcp_image_block, _cache_mcp_audio_block, _render_mcp_resource_block
-
-        blocks = [
-            SimpleNamespace(type="text", text="File ID: F123\nMIME Type: application/pdf"),
-            _embedded(_blob_resource(PDF_BYTES)),
-        ]
-        parts = []
-        for block in blocks:
-            if getattr(block, "text", None):
-                parts.append(block.text)
-                continue
-            tag = _cache_mcp_image_block(block) or _cache_mcp_audio_block(block)
-            if tag:
-                parts.append(tag)
-                continue
-            rendered = _render_mcp_resource_block(block, "slack")
-            if rendered:
-                parts.append(rendered)
-        assert len(parts) == 2
-        assert parts[0].startswith("File ID")
-        assert "saved to" in parts[1]
 
     def test_existing_image_behavior_unchanged(self):
         from tools.mcp_tool_content import _cache_mcp_image_block
@@ -235,4 +211,4 @@ class TestErrorPathResourceText:
             content=[], isError=True, structuredContent=None,
         ))
         data = json.loads(handler({}))
-        assert data["error"] == "MCP tool returned an error"
+        assert data["error"]

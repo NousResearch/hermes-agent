@@ -97,6 +97,28 @@ def test_unknown_category_fails(tmp_path):
     assert run_validator(str(path)).returncode == 0
 
 
+def test_version_and_image_are_validated_when_present(tmp_path):
+    """Admission rejects a malformed label or an off-GitHub image so the site and CLI never have to
+    coerce one; a well-formed pair passes."""
+    _expect_error(tmp_path, {"image": "https://cdn.example.com/banner.png"}, "image")
+    _expect_error(tmp_path, {"version": "1.4.0 beta"}, "version")
+    path = write_entry(tmp_path, {**VALID_ENTRY, "version": "1.4.0", "image": "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/banner.png"}, "ok.yaml")
+    assert run_validator(str(path)).returncode == 0
+
+
+def test_screenshots_and_readme_are_validated_when_present(tmp_path):
+    """Page fields: screenshots follow the image host rule and are capped; readme is a bool and needs a
+    forge the site can fetch raw files from at the pinned commit."""
+    shot = "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/docs/1.png"
+    _expect_error(tmp_path, {"screenshots": [shot, "https://cdn.example.com/2.png"]}, "screenshots")
+    _expect_error(tmp_path, {"screenshots": shot}, "screenshots")
+    _expect_error(tmp_path, {"screenshots": [shot] * 7}, "at most 6")
+    _expect_error(tmp_path, {"readme": "yes"}, "readme")
+    _expect_error(tmp_path, {"readme": True, "repo": "https://codeberg.org/owner/repo"}, "readme: true needs")
+    path = write_entry(tmp_path, {**VALID_ENTRY, "screenshots": [shot, shot], "readme": True}, "ok.yaml")
+    assert run_validator(str(path)).returncode == 0
+
+
 def test_bad_name_fails(tmp_path):
     _expect_error(tmp_path, {"name": "Bad Name!"}, "name")
 

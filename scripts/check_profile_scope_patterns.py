@@ -49,7 +49,9 @@ def load_patterns(path: Path = PATTERNS) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     out = []
     for p in data["patterns"]:
-        out.append({**p, "_rx": re.compile(p["pattern_regex"], re.M)})
+        # ``path_regex`` (optional) restricts a pattern to files whose repo-relative path matches.
+        path_rx = re.compile(p["path_regex"]) if p.get("path_regex") else None
+        out.append({**p, "_rx": re.compile(p["pattern_regex"], re.M), "_path_rx": path_rx})
     return out
 
 
@@ -63,6 +65,9 @@ def scan_text(rel: str, text: str, patterns: list[dict], lines: set[int] | None 
     findings: list[Finding] = []
     src_lines = text.split("\n")
     for p in patterns:
+        path_rx = p.get("_path_rx")
+        if path_rx is not None and not path_rx.search(rel):
+            continue
         for m in p["_rx"].finditer(text):
             line_no = text.count("\n", 0, m.start()) + 1
             if lines is not None and line_no not in lines:

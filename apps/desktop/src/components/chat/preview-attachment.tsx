@@ -8,9 +8,9 @@ import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
-import { $previewTabSources, closePreviewForSource, openPreview, type PreviewRecordSource } from '@/store/preview'
+import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
 
-export function PreviewAttachment({ source = 'manual', target }: { source?: PreviewRecordSource; target: string }) {
+export function PreviewAttachment({ target }: { target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
@@ -78,7 +78,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         throw new Error(`Could not open preview target: ${requestTarget}`)
       }
 
-      openPreview(preview, source)
+      openPreview(preview)
     } catch (error) {
       if (
         !mountedRef.current ||
@@ -138,7 +138,6 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         className="flex shrink-0 items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
         disabled={downloading}
         onClick={() => void downloadFile()}
-        title={t.fileMenu.download}
         type="button"
       >
         <Download className="size-3" />

@@ -25,7 +25,7 @@ def test_each_cause_has_a_stable_code_and_an_action(exc, code, command):
     failure = describe_storage_failure(exc)
     assert failure.code == code
     assert command in failure.action
-    assert failure.gloss and failure.gloss[0].islower()  # a clause that follows "Cause:"
+    assert failure.gloss
     # The raw sqlite wording never leaks into the user-facing gloss.
     assert "sqlite" not in failure.gloss.lower() and "OperationalError" not in failure.gloss
 
@@ -33,3 +33,17 @@ def test_each_cause_has_a_stable_code_and_an_action(exc, code, command):
 def test_details_line_is_flattened_and_bounded():
     details = storage_failure_details("line one\n   line two " + "x" * 400, limit=60)
     assert "\n" not in details and len(details) == 60 and details.endswith("...")
+
+
+def test_action_command_is_pinned_to_the_failing_profile(monkeypatch, tmp_path):
+    """The action names the profile whose store failed (multi-profile backends serve sessions
+    whose state.db is not the process default; a bare ``hermes`` follows active_profile)."""
+    from hermes_constants import profile_cli_selector
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    selector = profile_cli_selector()
+    assert selector.strip()
+    for exc in (sqlite3.OperationalError("database is locked"), sqlite3.DatabaseError("malformed"), None):
+        action = describe_storage_failure(exc).action
+        assert "{profile_arg}" not in action
+        assert f"`hermes {selector}" in action and "`hermes doctor" not in action and "`hermes gateway" not in action

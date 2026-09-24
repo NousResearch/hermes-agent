@@ -242,12 +242,22 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   let res: { sessions?: CanonicalChatRow[] }
 
   try {
-    res = await requestForBot<{ sessions?: CanonicalChatRow[] }>(bot, 'session.list', {
-      profile: backendTargetProfile(route, name),
-      title: CANONICAL_CHAT_TITLE,
-      limit: PROFILE_SESSION_LIST_LIMIT,
-      include_hidden: true
-    })
+    // Every caller is a user gesture (roster click, Create Bot), and this is
+    // the FIRST RPC of the gesture — the one that cold-spawns the bot's
+    // backend on a local pool. Dial foreground so the click is not queued
+    // behind background roster hydration on a saturated pool (#105104: roster
+    // click, zero backend activity, "try again" toast).
+    res = await requestForBot<{ sessions?: CanonicalChatRow[] }>(
+      bot,
+      'session.list',
+      {
+        profile: backendTargetProfile(route, name),
+        title: CANONICAL_CHAT_TITLE,
+        limit: PROFILE_SESSION_LIST_LIMIT,
+        include_hidden: true
+      },
+      { spawnPriority: 'foreground' }
+    )
   } catch (error) {
     // Plugin tests and host bridges can return Error-like values from another
     // JS realm, where `instanceof Error` is false. Preserve the provider/RPC
@@ -390,22 +400,29 @@ export function createCanonicalChat(
       return existing.id
     }
 
-    const res = await requestForBot<{ session_id?: string; stored_session_id?: string }>(bot, 'session.create', {
-      profile: backendTargetProfile(route, name),
-      title: CANONICAL_CHAT_TITLE,
-      // Always born hidden from the global sidebar — Bot Mode sessions are
-      // plugin-owned. Core applies this via the generic `hidden` flag
-      // (deferred as pending_hidden until the row exists); older gateways
-      // ignore the unknown param and it stays visible.
-      hidden: true,
-      // Explicit contract (PR #97008): this session's runtime always follows
-      // the member profile's CURRENT config. Resume must NOT restore the
-      // stored model/provider pin from an old row — that left bot DMs stuck
-      // on a stale/dead provider after a profile switch. Older gateways
-      // ignore the unknown param; the server's exact-title backfill then
-      // covers the legacy path.
-      follow_profile_config: true
-    })
+    // Same click gesture as the foreground lookup above: a first-ever open
+    // has no row to find and mints one, still on the user's dial.
+    const res = await requestForBot<{ session_id?: string; stored_session_id?: string }>(
+      bot,
+      'session.create',
+      {
+        profile: backendTargetProfile(route, name),
+        title: CANONICAL_CHAT_TITLE,
+        // Always born hidden from the global sidebar — Bot Mode sessions are
+        // plugin-owned. Core applies this via the generic `hidden` flag
+        // (deferred as pending_hidden until the row exists); older gateways
+        // ignore the unknown param and it stays visible.
+        hidden: true,
+        // Explicit contract (PR #97008): this session's runtime always follows
+        // the member profile's CURRENT config. Resume must NOT restore the
+        // stored model/provider pin from an old row — that left bot DMs stuck
+        // on a stale/dead provider after a profile switch. Older gateways
+        // ignore the unknown param; the server's exact-title backfill then
+        // covers the legacy path.
+        follow_profile_config: true
+      },
+      { spawnPriority: 'foreground' }
+    )
 
     const sid = res?.stored_session_id
     const runtime = res?.session_id

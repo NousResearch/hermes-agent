@@ -56,6 +56,58 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _inline_post_swap_handoff(request, monkeypatch):
+    """Run the post-swap tail in-process instead of re-executing ``hermes update --post-swap``.
+
+    ``_apply_pulled_update`` / ``_update_via_zip`` hand the rest of the run to a child
+    interpreter on the pulled tree. A mocked updater flow must not spawn that child (it would
+    run a real dependency sync against the worktree), so the tail runs here through the same
+    payload round-trip — every step stays patchable and the payload shape is still exercised.
+    Tests of the hand-off itself opt out with ``@pytest.mark.real_post_swap_handoff``.
+    """
+    if request.node.get_closest_marker("real_post_swap_handoff"):
+        return
+    try:
+        from hermes_cli import update_cmd, update_receipt
+    except Exception:
+        return
+
+    def _inline(args, **payload_kwargs):
+        payload = update_cmd._post_swap_payload(**payload_kwargs)
+        if payload["receipt"]:
+            update_receipt.resume_update_receipt(payload["receipt"])
+        update_cmd._execute_post_swap(payload, args, payload_kwargs["gateway_mode"])
+
+    monkeypatch.setattr(update_cmd, "_hand_off_post_swap", _inline, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _discharge_host_update_obligation():
+    """Start and end every ``hermes_cli`` test with NO host update-restart obligation.
+
+    The record is host-scoped on purpose (one multiplexer per host), so it lives in the
+    per-OS-USER host state dir — not in the per-test ``HERMES_HOME``. The root conftest pins
+    that dir per test only when the caller supplied no ``HERMES_GATEWAY_LOCK_DIR`` (#118097
+    keeps the documented override working), so with one set every test in a file shares it and
+    a test that arms the obligation makes the next one read a restart it never owed. Clearing
+    the record — rather than re-pinning the dir — leaves that override rule untouched.
+    """
+
+    def _clear() -> None:
+        try:
+            from hermes_cli.update_host_obligation import clear_host_obligation
+
+            clear_host_obligation()
+        except Exception:
+            # Import/env failure here must never error an unrelated test.
+            pass
+
+    _clear()
+    yield
+    _clear()
+
+
 @pytest.fixture
 def isolated_update_runtime(monkeypatch, tmp_path, request):
     """Keep mocked updater flows off the host checkout and runtime fleet."""
@@ -69,8 +121,6 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
     if hasattr(request.module, "PROJECT_ROOT"):
         monkeypatch.setattr(request.module, "PROJECT_ROOT", checkout)
 
-    # A real purge would discard the module objects patched below.
-    monkeypatch.setattr(main, "_purge_stale_hermes_modules", lambda: None)
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda *a, **k: [])
     monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda *a, **k: [])
     monkeypatch.setattr(gateway, "_get_service_pids", lambda *a, **k: set())

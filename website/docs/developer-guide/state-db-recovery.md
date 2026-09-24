@@ -5,6 +5,10 @@ description: "How Hermes recovers state.db when the FTS index or the file itself
 
 # State database and FTS recovery
 
+For the user-facing walkthrough (what to stop, what the files beside `state.db` are, why
+maintenance commands refuse while a writer is live) see
+[Session storage recovery](../user-guide/session-storage-recovery.md).
+
 `state.db` stores two different data classes:
 
 - `sessions` and `messages` are the canonical transcript.

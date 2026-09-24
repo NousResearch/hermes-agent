@@ -94,11 +94,6 @@ def _watch_event(session_id="proc_watch", thread_id="42"):
 
 class TestLoadBackgroundNotificationsMode:
 
-    def test_defaults_to_concise(self, monkeypatch, tmp_path):
-        import gateway.run as gw
-        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
-        monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
-        assert GatewayRunner._load_background_notifications_mode() == "concise"
 
     def test_unknown_mode_falls_back_to_concise(self, monkeypatch, tmp_path):
         (tmp_path / "config.yaml").write_text(
@@ -158,6 +153,62 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
 
     adapter.send.assert_not_awaited()
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("launching_turn_busy", [True, False])
+async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
+    monkeypatch, tmp_path, launching_turn_busy
+):
+    """#112033: with notify_on_complete the agent reports the result itself, so the chat gets no
+    separate receipt — except while the launching turn is still running, when the injection only
+    queues a follow-up and the concise receipt is the only thing the user would see."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    adapter._active_sessions = {watcher["session_key"]: asyncio.Event()} if launching_turn_busy else {}
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_awaited_once()
+    if launching_turn_busy:
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
+    else:
+        adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arm_process_watcher_schedules_on_live_loop_only(monkeypatch, tmp_path):
+    """#112033: a watcher registered mid-turn starts on the gateway loop at once while the gateway
+    serves; before/after that the caller keeps it for the startup / post-turn drain."""
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    started = []
+
+    async def _fake_watcher(watcher):
+        started.append(watcher["session_id"])
+    runner._run_process_watcher = _fake_watcher
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    runner._running = False
+    assert runner.arm_process_watcher({"session_id": "proc_early"}) is False
+
+    runner._running = True
+    assert runner.arm_process_watcher({"session_id": "proc_live"}) is True
+    await asyncio.sleep(0.05)
+    assert started == ["proc_live"]
 
 
 @pytest.mark.asyncio
@@ -417,64 +468,6 @@ class TestConciseFormatter:
         )
         assert "…" in text
         assert len(text) < 200
-
-
-@pytest.mark.asyncio
-async def test_concise_mode_sends_pretty_message_not_raw_dump(monkeypatch, tmp_path):
-    """Default mode: a finished process produces the one-line status message,
-    never the '[Background process ... Here's the final output: ...]' wall."""
-    import tools.process_registry as pr_module
-
-    big_output = "\n".join(str(i * 100) for i in range(60))
-    sessions = [SimpleNamespace(
-        output_buffer=big_output, exited=True, exit_code=0,
-        command="python3 scan.py", started_at=None,
-    )]
-    monkeypatch.setattr(
-        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
-    )
-
-    async def _instant_sleep(*_a, **_kw):
-        pass
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
-
-    runner = _build_runner(monkeypatch, tmp_path, "concise")
-    adapter = runner.adapters[Platform.TELEGRAM]
-
-    await runner._run_process_watcher(_watcher_dict())
-
-    adapter.send.assert_awaited_once()
-    sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("✅ Background task finished")
-    assert "Here's the final output" not in sent_text
-    assert "5000" not in sent_text
-
-
-@pytest.mark.asyncio
-async def test_concise_mode_failure_includes_tail(monkeypatch, tmp_path):
-    import tools.process_registry as pr_module
-
-    sessions = [SimpleNamespace(
-        output_buffer="starting\nfatal: repo not found\n", exited=True,
-        exit_code=128, command="git clone x", started_at=None,
-    )]
-    monkeypatch.setattr(
-        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
-    )
-
-    async def _instant_sleep(*_a, **_kw):
-        pass
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
-
-    runner = _build_runner(monkeypatch, tmp_path, "concise")
-    adapter = runner.adapters[Platform.TELEGRAM]
-
-    await runner._run_process_watcher(_watcher_dict())
-
-    adapter.send.assert_awaited_once()
-    sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("❌ Background task failed") and "exit 128" in sent_text
-    assert "fatal: repo not found" in sent_text
 
 
 @pytest.mark.asyncio

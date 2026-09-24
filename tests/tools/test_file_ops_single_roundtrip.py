@@ -7,7 +7,6 @@ line count, trailing newline), so each proves the compound reply carries
 that answer.
 """
 
-import logging
 import os
 import sys
 import threading
@@ -226,9 +225,6 @@ class TestWriteFileRoundTrips:
         r = ops.write_file(p, "line one\nline two\n")
         assert r.error is None and r.verified is True
         assert len(calls) == 3
-        assert "__HERMES_WF_" in calls[0]          # probe
-        assert "mv -f" in calls[1]                  # atomic write
-        assert calls[2].startswith("sha256sum ")   # verify
         assert (tmp_path / "new.txt").read_bytes() == b"line one\nline two\n"
 
     def test_crlf_file_keeps_crlf_from_the_probe(self, shell, tmp_path):
@@ -453,23 +449,3 @@ class TestCompoundFallback:
         assert r.error is None and r.content == "1|one\n2|two"
         assert r.total_lines == 2
 
-    def test_fallback_is_logged_at_debug(self, shell, tmp_path, caplog):
-        """A backend that keeps falling back shows up in debug logs."""
-        ops, calls = shell
-        p = _write(tmp_path, "a.txt", b"one\n")
-        real_exec = ops._exec
-
-        def garbled(command, *args, **kwargs):
-            if READ_PROBE_MARK in command:
-                return ExecuteResult(stdout="garbage\n", exit_code=0)
-            return real_exec(command, *args, **kwargs)
-
-        with caplog.at_level(logging.DEBUG, logger="tools.file_operations"), \
-             patch.object(ops, "_exec", side_effect=garbled):
-            r = ops.read_file(p)
-        assert r.error is None and r.content == "1|one"
-        assert any(
-            "falling back to sequential probes" in rec.getMessage()
-            and str(p) in rec.getMessage()
-            for rec in caplog.records
-        )

@@ -109,6 +109,7 @@ class CredentialPoolAdminMixin:
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         from agent.credential_pool import _next_priority, write_credential_pool
+        from hermes_cli import auth as auth_mod
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
@@ -121,7 +122,11 @@ class CredentialPoolAdminMixin:
                 # its single-use refresh token (#100339). Once the profile owns
                 # rows, the root fallback for this provider is shadowed.
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
-                write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
+                written = write_credential_pool(
+                    self.provider, [e.to_dict() for e in self._entries],
+                    token_bases=self._persisted_token_pairs,
+                )
+                self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
                 self._borrowed_root_ids = set()
             else:
                 self._persist()

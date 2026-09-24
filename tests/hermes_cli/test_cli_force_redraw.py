@@ -59,14 +59,19 @@ class TestForceFullRedraw:
 
 
 
-    @pytest.mark.parametrize("reflows,new_width", [(True, 90), (False, 90), (None, 90), (None, 250)])
-    def test_resize_never_loses_or_reprints_a_row(self, bare_cli, monkeypatch, reflows, new_width):
+    @pytest.mark.parametrize("reflows,new_width,history_lines", [
+        (True, 90, 40), (False, 90, 40), (None, 90, 40), (None, 250, 40), (False, 90, 2)])
+    def test_resize_never_loses_or_reprints_a_row(self, bare_cli, monkeypatch, reflows, new_width, history_lines):
         """#95375: on a shrink a reflowing terminal has pushed the rows that grew into
         scrollback, so nothing is erased and replayed there — prompt_toolkit's erase is only
         aimed at the chrome's re-wrapped top. A terminal that does not reflow (or may not)
         keeps every visible row in place, truncated: the viewport is erased row by row (no
-        CSI 2J, no 3J) and refilled with what it held, counted at the width it was painted
-        at, before prompt_toolkit repaints. A widen truncates nothing and is left alone."""
+        CSI 2J, no 3J) and refilled from its top row with what it held, counted at the width it
+        was painted at, before prompt_toolkit repaints. When the viewport holds the whole
+        history, only its rows and the chrome are erased: rows above it (the startup banner)
+        were never recorded. A widen truncates nothing and is left alone."""
+        from collections import deque
+
         from prompt_toolkit.layout.screen import Char
         app = _fake_app(rows=30, columns=new_width, chrome=5, painted=[0, 200, 50, 200, 30], cursor_y=4)
         for x in range(200):  # blanks without a colour are never written: one row, not three
@@ -75,15 +80,19 @@ class TestForceFullRedraw:
         events = []
         out.erase_end_of_line.side_effect = lambda: events.append("erase_row")
         out.erase_screen.side_effect = lambda: events.append("clear")
-        out.write_raw.side_effect = lambda *_: events.append("scrollback_wipe")
+        out.erase_down.side_effect = lambda: events.append("erase_down")
+        out.cursor_up.side_effect = lambda n: events.append(("up", n))
+        out.write_raw.side_effect = lambda raw: events.append(("raw", raw))
 
         bare_cli._status_bar_suppressed_after_resize = False
         bare_cli._last_resize_width = 200
         monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: new_width)
         monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
+        monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY", deque("x" * 180 for _ in range(history_lines)))
         monkeypatch.setattr(cli_mod, "_replay_output_history", lambda *a: events.append(("replay", *a)))
         monkeypatch.setattr(cli_mod, "_terminal_reflows", lambda: reflows)
         monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"display": {"cli_rebuild_scrollback_on_redraw": False}})
+        cli_mod._set_chrome_floor(None)
 
         bare_cli._recover_after_resize(
             app, lambda: events.append(("original_resize", app.renderer._cursor_pos.y)))
@@ -92,8 +101,11 @@ class TestForceFullRedraw:
             assert events == [("original_resize", 4)]
         elif reflows:
             assert events == [("original_resize", 1 + 3 + 1 + 3)]
+        elif history_lines == 2:  # 2 lines x 2 rows, right above the chrome
+            assert events[:4] == [("raw", "\r"), ("up", 4 + 4), "erase_down", ("replay", (25, 90, True, None), out)]
+            assert events[4][0] == "original_resize" and len(events) == 5
         else:
-            assert events[:31] == ["erase_row"] * 30 + [("replay", (25, 90, True), out)]
+            assert events[:31] == ["erase_row"] * 30 + [("replay", (25, 90, True, 0), out)]
             assert events[31][0] == "original_resize" and len(events) == 32
         assert bare_cli._last_resize_width == new_width
         assert bare_cli._status_bar_suppressed_after_resize is True
@@ -346,6 +358,7 @@ class TestFirstSigwinchBaseline:
         app = _fake_app(rows=30, columns=90, chrome=3, painted=[120, 120, 30], cursor_y=2)
         events = []
         app.renderer.output.erase_end_of_line.side_effect = lambda: events.append("erase")
+        app.renderer.output.erase_down.side_effect = lambda: events.append("erase")
         original_on_resize = lambda: events.append("original_resize")
 
         bare_cli._status_bar_suppressed_after_resize = False

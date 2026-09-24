@@ -11,14 +11,22 @@ import sys
 import threading
 import time
 
-from hermes_cli.cli_render import _hold_paints, _release_paints
+from hermes_cli.cli_render import (
+    _chrome_floor,
+    _hold_paints,
+    _release_paints,
+    _set_chrome_floor,
+    _set_paint_gate,
+    _take_suspect_rows,
+)
 from hermes_constants import get_hermes_home
 
 
 # A replay ``fit`` with no room: nothing is replayed.
-_NO_REPLAY = (0, 0, False)
-# Longest a resize drag may hold output paints before a recovery runs anyway (seconds).
-_RESIZE_HOLD_MAX = 1.0
+_NO_REPLAY = (0, 0, False, None)
+# How long a resize drag holds output before its next width change runs a recovery anyway
+# (seconds): output freezes this long plus one signal interval at most.
+_RESIZE_HOLD_MAX = 0.85
 
 
 def _is_eio(exc: BaseException) -> bool:
@@ -110,9 +118,9 @@ class CLITerminalMixin:
 
         Bypasses the ``_invalidate`` throttle — a modal the user is waiting on must never be
         dropped (#41098) — mirroring the direct ``event.app.invalidate()`` the modal key-binding
-        handlers use. While a width change awaits its recovery the app's invalidate is gated
+        handlers use. While a width change awaits its recovery the app's redraw is gated
         (``_install_resize_recovery``), so the paint waits for that recovery, which repaints the
-        whole app within ``_RESIZE_HOLD_MAX`` even while a drag keeps signalling.
+        whole app about every ``_RESIZE_HOLD_MAX`` seconds even while a drag keeps signalling.
         """
         if getattr(self, "_terminal_io_broken", False):
             return
@@ -197,31 +205,53 @@ class CLITerminalMixin:
             pass
         self._force_full_redraw()
 
-    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False):
+    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False, keep_above: bool = False):
         """Clear the terminal and reset prompt_toolkit renderer state.
 
-        Returns the ``fit`` for the replay that follows (``_transcript_room``). ``None``
-        means replay the whole history (scrollback wiped by CSI 3J). Without 3J the older
-        transcript stays in scrollback, so the replay may only repaint what the viewport held
-        (#95375); the viewport is erased row by row because CSI 2J makes scroll-on-clear
-        terminals (tmux, VTE) copy the whole screen into scrollback first, stacking a duplicate.
-        A clear that fails replays nothing: the history is already on screen or in scrollback.
+        Returns the ``fit`` for the replay that follows (``_transcript_room`` plus where to
+        paint it). ``None`` means replay the whole history (scrollback wiped by CSI 3J). Without
+        3J the older transcript stays in scrollback, so the replay may only repaint what the
+        viewport held (#95375); the viewport is erased row by row because CSI 2J makes
+        scroll-on-clear terminals (tmux, VTE) copy the whole screen into scrollback first,
+        stacking a duplicate. With ``keep_above`` (a resize) and the whole history on screen,
+        only its rows and the chrome are erased — what sits above them (the startup banner) was
+        never recorded and a replay could not restore it. Counted as painted, the replay leaves the chrome's top at a known
+        row: the chrome is drawn from there to the bottom (``_set_chrome_floor``), where the next
+        count assumes it. A clear that fails replays nothing: the history is already on screen or
+        in scrollback.
         """
+        from cli import _output_history_rows
         if getattr(self, "_terminal_io_broken", False):
             return _NO_REPLAY
         try:
             renderer = app.renderer
             out = renderer.output
-            fit = None if rebuild_scrollback else self._transcript_room(app)
+            size = out.get_size()
+            fit = None
             out.reset_attributes()
             if rebuild_scrollback:
                 out.erase_screen()
                 out.write_raw("\x1b[3J")
+                out.cursor_goto(0, 0)
+                _set_chrome_floor(None)
             else:
-                for row in range(1, out.get_size().rows + 1):  # CUP rows count from 1
-                    out.cursor_goto(row, 0)
-                    out.erase_end_of_line()
-            out.cursor_goto(0, 0)
+                room, columns, painted = self._transcript_room(app)
+                room += _take_suspect_rows()
+                history_rows = _output_history_rows(room, columns, painted) if keep_above else None
+                if keep_above and history_rows is not None:
+                    # Rows stay where prompt_toolkit's cursor has them: its oldest row is
+                    # ``history_rows`` above the chrome's top — row ``room`` once that is known.
+                    out.write_raw("\r")
+                    out.cursor_up(renderer._cursor_pos.y + history_rows)
+                    out.erase_down()
+                    known = painted and _chrome_floor() is not None
+                    fit = (room, columns, painted, room - history_rows if known else None)
+                else:
+                    for row in range(1, size.rows + 1):  # CUP rows count from 1
+                        out.cursor_goto(row, 0)
+                        out.erase_end_of_line()
+                    out.cursor_goto(0, 0)
+                    fit = (room, columns, painted, 0 if painted else None)
             out.flush()
             # Drop cached screen + cursor state so the next _redraw() starts from a
             # known (0, 0) origin and re-renders every cell instead of diffing stale.
@@ -243,7 +273,8 @@ class CLITerminalMixin:
         the viewport held, never less.
 
         The chrome is the renderer's last paint: prompt_toolkit may draw the app taller than
-        its preferred height (it fills the rows below the cursor it measured).
+        its preferred height (it fills the rows below the cursor it measured, or down to the
+        bottom row once a refill left its top at a known row).
         """
         from cli import _terminal_reflows
         renderer = app.renderer
@@ -253,7 +284,7 @@ class CLITerminalMixin:
             drawn = app.layout.container.preferred_height(size.columns, size.rows).preferred
         else:
             drawn = screen.height
-        rows = max(0, size.rows - max(renderer._min_available_height, drawn))
+        rows = max(0, size.rows - max(renderer._min_available_height, drawn, _chrome_floor() or 0))
         return rows, size.columns, _terminal_reflows() is not True
 
     @staticmethod
@@ -293,10 +324,11 @@ class CLITerminalMixin:
         re-wrapped it, never erased and replayed (a replay cannot know which rows the
         terminal kept on screen and which it pushed into scrollback, #95375). A terminal that
         does not reflow truncates every visible row at the new width instead and keeps it in
-        place, out of scrollback: the viewport is refilled as Ctrl+L does, which cannot
-        duplicate there. When nothing says whether the terminal reflows it is refilled too —
-        never losing a row outweighs the rows a reflowing terminal had already pushed into
-        scrollback and now shows twice.
+        place, out of scrollback: the viewport is refilled as Ctrl+L does — also after a drag
+        that narrowed and widened back, which truncated rows all the same. When nothing says
+        whether the terminal reflows it is refilled too: a reflowing terminal had already
+        pushed some of those rows into scrollback and now shows them twice, which beats
+        truncating them for good.
         With ``display.cli_rebuild_scrollback_on_redraw`` (3J + whole-history replay) every
         width change rebuilds.
         Same-width SIGWINCH (tmux attach, GNOME tab bar, focus) and the first signal
@@ -317,24 +349,32 @@ class CLITerminalMixin:
             except Exception:
                 new_width = None
             prev_width = getattr(self, "_last_resize_width", None)
+            narrowest = min(filter(None, (new_width, getattr(self, "_resize_narrowest", None))), default=None)
+            self._resize_narrowest = None
             width_changed = new_width is not None and prev_width is not None and new_width != prev_width
+            narrowed = narrowest is not None and prev_width is not None and narrowest < prev_width
+            reflows = _terminal_reflows()
             if width_changed and self._redraw_rebuilds_scrollback():
                 _replay_output_history(self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True))
-            elif width_changed and new_width < prev_width:
-                if _terminal_reflows():
-                    self._aim_erase_at_reflowed_chrome(app, new_width)
-                else:
-                    fit = self._clear_prompt_toolkit_screen(app)
-                    _replay_output_history(fit, app.renderer.output)
+            elif reflows and width_changed and new_width < prev_width:
+                self._aim_erase_at_reflowed_chrome(app, new_width)
+            elif not reflows and narrowed:
+                fit = self._clear_prompt_toolkit_screen(app, keep_above=True)
+                _replay_output_history(fit, app.renderer.output)
             if new_width is not None:
                 self._last_resize_width = new_width
             if width_changed:
                 self._pet_queue_kitty_frame()
+            # Its redraw is skipped, and the next recovery scheduled, if the width moved again
+            # since it was read above (``_output_waits_for_resize``).
             original_on_resize()
             self._schedule_status_bar_unsuppress(app)
         finally:
-            # Output held since the signal paints now, against the settled screen.
-            _release_paints()
+            # Output held since the signal paints now, against the settled screen — unless
+            # another width change is already waiting for its own recovery.
+            if not getattr(self, "_resize_recovery_pending", False):
+                self._resize_hold_since = None
+                _release_paints()
 
     def _restart_debounce_timer(self, attr: str, delay: float, fn) -> None:
         """Cancel the daemon Timer stored on ``self.<attr>`` (if any) and start a new one.
@@ -376,9 +416,9 @@ class CLITerminalMixin:
         The delay outwaits tmux, which re-wraps a pane on every resize but signals it at most
         every 250 ms, so mid-drag the width a recovery reads is stale — also over ssh from a
         tmux pane, where nothing says tmux is there (#95375). A width change also holds output
-        paints and invalidates until its recovery; while a drag keeps signalling, a recovery
-        still runs at least every ``_RESIZE_HOLD_MAX`` seconds, so output never freezes for
-        the whole drag. A signal that leaves the width alone holds nothing.
+        paints and redraws until its recovery; while a drag keeps signalling, a recovery still
+        runs on the first width change after ``_RESIZE_HOLD_MAX`` seconds of holding, so output
+        never freezes for the whole drag. A signal that leaves the width alone holds nothing.
         """
         try:
             lock = getattr(self, "_resize_recovery_lock", None)
@@ -405,9 +445,19 @@ class CLITerminalMixin:
                 if pending or width is None or width != getattr(self, "_last_resize_width", None):
                     if not pending:
                         self._resize_recovery_pending = True
-                        self._resize_hold_since = now
+                        # A hold its last recovery could not release keeps its start: the
+                        # next recovery is due at once.
+                        if getattr(self, "_resize_hold_since", None) is None:
+                            self._resize_hold_since = now
+                        self._resize_narrowest = None
                         _hold_paints()
-                    delay = max(0.0, min(delay, self._resize_hold_since + _RESIZE_HOLD_MAX - now))
+                    if isinstance(width, int) and width > 0:  # truncated rows at the narrowest
+                        self._resize_narrowest = min(width, getattr(self, "_resize_narrowest", None) or width)
+                    if now - self._resize_hold_since >= _RESIZE_HOLD_MAX:
+                        # Right after a width change, not on a timer: the next one of a drag is
+                        # then furthest away, and landing mid-recovery would truncate rows its
+                        # replay scrolls into scrollback.
+                        delay = 0.0
                 self._restart_debounce_timer("_resize_recovery_timer", delay, _timer_fired)
         except Exception:
             self._resize_recovery_pending = False
@@ -432,16 +482,40 @@ class CLITerminalMixin:
                 break
         self._last_resize_width = width
         original_on_resize = app._on_resize
+        self._resize_original_on_resize = original_on_resize
         app._on_resize = lambda: self._schedule_resize_recovery(app, original_on_resize)
-        # A paint before the recovery lands at the new width from the old geometry and strands
-        # chrome rows; the recovery repaints everything anyway (#95375).
-        original_invalidate = app.invalidate
+        # A render before the recovery lands at the new width from the old geometry and strands
+        # chrome rows; the recovery repaints everything anyway (#95375). The final render at
+        # exit is never held.
+        original_redraw = app._redraw
 
-        def _invalidate_unless_resizing() -> None:
-            if not getattr(self, "_resize_recovery_pending", False):
-                original_invalidate()
+        def _redraw_unless_resizing(render_as_done: bool = False) -> None:
+            if render_as_done or not self._output_waits_for_resize(app):
+                floor = _chrome_floor()
+                if floor:  # what CPR would tell prompt_toolkit: the rows down to the bottom
+                    renderer = app.renderer
+                    renderer._min_available_height = max(renderer._min_available_height, floor)
+                original_redraw(render_as_done=render_as_done)
 
-        app.invalidate = _invalidate_unless_resizing
+        app._redraw = _redraw_unless_resizing
+        _set_paint_gate(app, lambda: self._output_waits_for_resize(app))
+
+    def _output_waits_for_resize(self, app) -> bool:
+        """Whether output must wait for a resize recovery: one is pending, or the terminal's
+        width no longer matches the one the app last settled at — its SIGWINCH is not handled
+        yet, and a paint or chrome render now would land in geometry that no recovery accounts
+        for: on a terminal that does not reflow it scrolls rows the resize truncated into
+        scrollback before any refill (#95375). Noticing that schedules the recovery."""
+        if getattr(self, "_resize_recovery_pending", False):
+            return True
+        try:
+            width = app.output.get_size().columns
+        except Exception:
+            return False
+        if width == getattr(self, "_last_resize_width", None):
+            return False
+        self._schedule_resize_recovery(app, self._resize_original_on_resize)
+        return bool(getattr(self, "_resize_recovery_pending", False))
 
     def _try_attach_clipboard_image(self) -> bool:
         """Save a clipboard image to ~/.hermes/images/ and attach it; True if attached."""

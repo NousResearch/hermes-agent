@@ -61,12 +61,13 @@ import type { SessionTitleResponse } from '../../types'
 // runtime session AND persists the row on demand, so it succeeds where REST
 // cannot. This mirrors the /title slash command's fix (use-prompt-actions.ts).
 //
-// We only take the RPC path for the ACTIVE/selected session: its runtime id is
-// known ($activeSessionId) and it lives on the active gateway, so there is no
-// profile-routing ambiguity. Every other row (already persisted, possibly on a
-// background profile) keeps the REST path, which handles profile scoping and a
-// non-empty title is required by the RPC (it rejects clears), so clears stay on
-// REST too.
+// We only take the RPC path for an ACTIVE/selected row that is not yet in the
+// persisted session list. A live session that survived an app/runtime update
+// can retain an old runtime-to-key binding while its durable row already
+// exists; routing that row through RPC can acknowledge the rename without
+// updating the row the sidebar represents. Persisted rows therefore keep the
+// durable, profile-scoped REST path. Clears stay on REST because RPC rejects
+// empty titles.
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
   title: string,
@@ -75,8 +76,9 @@ export async function renameSessionPreferringRpc(
   const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
   const runtimeId = isActiveRow ? $activeSessionId.get() : null
   const gateway = activeGateway()
+  const hasPersistedRow = $sessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))
 
-  if (title && runtimeId && gateway) {
+  if (title && runtimeId && gateway && !hasPersistedRow) {
     try {
       const result = await gateway.request<SessionTitleResponse>('session.title', {
         session_id: runtimeId,

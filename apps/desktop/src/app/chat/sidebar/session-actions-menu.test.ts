@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 
 import { renameSessionPreferringRpc } from './session-actions-menu'
 
@@ -53,6 +53,7 @@ afterEach(() => {
   activeGateway.mockReturnValue({ request })
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
+  setSessions([])
 })
 
 describe('renameSessionPreferringRpc', () => {
@@ -65,6 +66,17 @@ describe('renameSessionPreferringRpc', () => {
     expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
     expect(renameSession).not.toHaveBeenCalled()
     expect(result.title).toBe('rpc-title')
+  })
+
+  it('renames an active persisted session through its durable REST id after a runtime update', async () => {
+    $selectedStoredSessionId.set(STORED_ID)
+    $activeSessionId.set(RUNTIME_ID)
+    setSessions([{ id: STORED_ID, title: null } as never])
+
+    await renameSessionPreferringRpc(STORED_ID, 'Survives update', 'work')
+
+    expect(request).not.toHaveBeenCalled()
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Survives update', 'work')
   })
 
   it('falls back to REST when the RPC fails (e.g. socket mid-reconnect)', async () => {

@@ -739,6 +739,11 @@ def _launch_tui(
     # the single factory; keep secrets (the TUI/agent needs provider creds).
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    # The directory this launch was invoked from is the source of truth. An inherited
+    # HERMES_CWD (exported by an outer `hermes --tui`, or by the user's own shell) merely
+    # names *a* real directory, so the is_dir() repair in _apply_tui_python_env keeps it
+    # and the gateway starts in last session's project. `--worktree` still wins below.
+    env["HERMES_CWD"] = _safe_tui_cwd(env)
     from hermes_cli.shared_session_attach import configure_tui_attachment
     try:
         configure_tui_attachment(env, resume_session_id)

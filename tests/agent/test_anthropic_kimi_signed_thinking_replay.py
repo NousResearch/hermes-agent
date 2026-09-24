@@ -12,7 +12,7 @@ MOONSHOT = "https://api.moonshot.cn/anthropic"
 DEEPSEEK = "https://api.deepseek.com/anthropic"
 
 
-def _thinking_on_replay(base_url, signature=SIG, model="k3"):
+def _thinking_on_replay(base_url, signature=SIG, model="k3", **kwargs):
     """Normalize a thinking+text turn, store it, convert to the next-turn request,
     and return its thinking blocks."""
     response = SimpleNamespace(
@@ -34,7 +34,7 @@ def _thinking_on_replay(base_url, signature=SIG, model="k3"):
         stored,
         {"role": "user", "content": "q2"},
     ]
-    _sys, out = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
+    _sys, out = convert_messages_to_anthropic(messages, base_url=base_url, model=model, **kwargs)
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     return [b for b in assistant["content"] if isinstance(b, dict) and b.get("type") == "thinking"]
 
@@ -57,6 +57,24 @@ def test_kimi_model_name_on_foreign_gateway_keeps_thinking():
     Covers both the named and bare Coding Plan slugs."""
     for model in ("kimi-k2.5", "k3"):
         assert _thinking_on_replay(DEEPSEEK, model=model), model
+
+
+def test_trusted_anthropic_proxy_opt_in_keeps_latest_signed_thinking():
+    """An explicitly trusted proxy may replay Anthropic's signed latest turn."""
+    thinking = _thinking_on_replay(
+        "http://127.0.0.1:20128/v1",
+        model="claude-opus-4-6",
+        preserve_thinking=True,
+    )
+    assert thinking and thinking[0].get("signature") == SIG
+
+
+def test_untrusted_anthropic_proxy_still_strips_signed_thinking():
+    """The opt-in must not weaken the safe default for arbitrary proxies."""
+    assert not _thinking_on_replay(
+        "http://127.0.0.1:20128/v1",
+        model="claude-opus-4-6",
+    )
 
 
 

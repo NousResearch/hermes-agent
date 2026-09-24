@@ -10,6 +10,7 @@ from hermes_cli.config import (
     _normalize_custom_provider_entry,
     apply_custom_provider_extra_headers_to_client_kwargs,
     get_custom_provider_extra_headers,
+    get_custom_provider_preserve_thinking,
     normalize_extra_headers,
 )
 from hermes_cli import models as models_mod
@@ -53,6 +54,31 @@ def test_normalize_entry_drops_invalid_extra_headers():
         )
         assert normalized is not None
         assert "extra_headers" not in normalized
+
+
+def test_preserve_thinking_is_an_explicit_boolean_provider_setting():
+    entry = {
+        "name": "trusted-router",
+        "base_url": "http://127.0.0.1:20128/v1",
+        "api_mode": "anthropic_messages",
+        "preserve_thinking": True,
+    }
+    normalized = _normalize_custom_provider_entry(entry)
+    assert normalized is not None
+    assert normalized["preserve_thinking"] is True
+    assert get_custom_provider_preserve_thinking(
+        "http://127.0.0.1:20128/v1/", custom_providers=[normalized],
+    ) is True
+
+
+def test_preserve_thinking_fails_closed_for_non_boolean_or_unmatched_provider():
+    providers = [{"base_url": "http://127.0.0.1:20128/v1", "preserve_thinking": "true"}]
+    assert not get_custom_provider_preserve_thinking(
+        "http://127.0.0.1:20128/v1", custom_providers=providers,
+    )
+    assert not get_custom_provider_preserve_thinking(
+        "http://127.0.0.1:9999/v1", custom_providers=[{"base_url": "http://127.0.0.1:20128/v1", "preserve_thinking": True}],
+    )
 
 
 

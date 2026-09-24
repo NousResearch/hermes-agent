@@ -35,7 +35,7 @@ _VERDICTS = {"APPROVE": "approve", "DENY": "deny"}
 
 
 def _next_comment(text: str, start: int = 0) -> int | None:
-    """Offset of the next comment at an unquoted shell word boundary, or None.
+    """Offset of the next comment and its unquoted padding, or None.
 
     An in-word hash (``echo a#; next``) is data, so stripping there would hide
     executable operations from the reviewer. Quoted/escaped blanks and operators
@@ -44,10 +44,18 @@ def _next_comment(text: str, start: int = 0) -> int | None:
     data. *start* must sit outside any quote (the end of a previous comment does).
     """
     word_start = True
+    padding = None
     for kind, i, _, quote in _scan_shell(text, start, subst="uq", brace=True):
         unquoted = kind == "char" and quote is None
         if unquoted and text[i] == "#" and word_start:
-            return i
+            return i if padding is None else padding
+        # Only ordinary blanks can be trimmed. An escaped blank is shell data;
+        # deleting it can expose a backslash and join two executable lines.
+        if unquoted and text[i] in " \t":
+            if padding is None:
+                padding = i
+        else:
+            padding = None
         word_start = unquoted and text[i] in " \t\n;&|()<>"
     return None
 
@@ -81,29 +89,29 @@ def _has_heredoc(text: str, comments: list[tuple[int, int]]) -> bool:
 def _strip_line_comment(line: str) -> str:
     """Strip a comment only at an unquoted shell word boundary (single-line form)."""
     start = _next_comment(line)
-    return line if start is None else line[:start].rstrip()
+    return line if start is None else line[:start]
 
 
 def _strip_shell_comments(command: str) -> str:
     """Strip shell comments before LLM assessment.
 
     This is a word/quote-aware heuristic, not a full shell or heredoc parser.
-    Quote state carries across lines. Commands containing process-substitution
-    or arithmetic-expansion markers, or a heredoc, are preserved verbatim: the
-    shared scanner cannot establish word boundaries for those substitutions,
+    Quote state carries across lines. Commands containing expansion/special-quote
+    markers, or a heredoc, are preserved verbatim: the shared scanner cannot
+    establish word boundaries reliably for nested expansions or dollar quotes,
     and a heredoc body is data (``execute_code`` wraps its Python script as one).
     """
     # Even quoted/escaped markers take this conservative path. Trying to classify
     # them here could miss nested or multiline substitutions and hide executable
     # suffixes. The guardian's untrusted-input instructions still apply to comments.
-    # The scanner treats $((...)) as $(...) ending at the first closing paren;
-    # the remaining ')' can make a literal suffix hash look like a comment.
-    if "<(" in command or ">(" in command or "$((" in command:
+    # Detect markers split by line continuations without changing the input.
+    marker_text = command.replace("\\\n", "")
+    if any(marker in marker_text for marker in ("<(", ">(", "$(", "${", "$'", '$"', "`")):
         return command
 
     spans = _comment_spans(command)
     if not spans:
-        return command.rstrip()
+        return command
     if _has_heredoc(command, spans):
         return command
 
@@ -111,7 +119,7 @@ def _strip_shell_comments(command: str) -> str:
     pos = 0
     has_content = False
     for start, end in spans:
-        piece = command[pos:start].rstrip(" \t")
+        piece = command[pos:start]
         kept.append(piece)
         has_content = has_content or bool(piece)
         pos = end
@@ -120,7 +128,7 @@ def _strip_shell_comments(command: str) -> str:
         if pos < len(command) and not has_content:
             pos += 1
     kept.append(command[pos:])
-    return "".join(kept).rstrip()
+    return "".join(kept)
 
 
 def _get_smart_policy() -> str:

@@ -428,8 +428,6 @@ class CLIStreamMixin:
             if not text:
                 return
             self._stream_box_opened = True
-            # Turn-level: survives _reset_stream_state at tool-call boundaries (#65666).
-            self._response_streamed_this_turn = True
             self._stream_box_live = True  # header drawn; cleared at the footer
             try:
                 from hermes_cli.skin_engine import get_active_skin
@@ -450,6 +448,9 @@ class CLIStreamMixin:
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
+        # Turn-level record of what actually reached the screen; survives _reset_stream_state at
+        # tool-call boundaries so an interrupted reply isn't re-rendered as a Panel (#65666).
+        self._streamed_text_this_turn = getattr(self, "_streamed_text_this_turn", "") + text
         self._stream_buf += text
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)

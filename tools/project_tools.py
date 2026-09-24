@@ -32,6 +32,11 @@ def _primary_path(proj) -> Optional[str]:
     return proj.folders[0].path if proj.folders else None
 
 
+def _moves_session(task_id: Optional[str], path: Optional[str]) -> bool:
+    """True when a live GUI session's workspace will follow the project — ``_apply_workspace``'s gate."""
+    return bool(_workspace_callback and task_id and path)
+
+
 def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> None:
     cb = _workspace_callback
     if cb and task_id and path:
@@ -115,9 +120,10 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
             else:
                 pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
                 proj = pdb.get_project(conn, pid)
-            # A live session owns its workspace; only an unscoped caller moves the profile-global
-            # pointer, or a background chat would redirect the sidebar and every new session.
-            if not task_id and proj is not None:
+            # A live session that moves owns its workspace, so it leaves the profile-global pointer
+            # alone (a background chat would otherwise redirect the sidebar). Anything that can't
+            # move — CLI/messaging, a pathless project — switches through the pointer instead.
+            if proj is not None and not _moves_session(task_id, _primary_path(proj)):
                 pdb.set_active(conn, proj.id)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
@@ -132,8 +138,8 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
         proj = _resolve(conn, project)
         if proj is None:
             return json.dumps({"success": False, "error": f"no project matching '{project}'"})
-        # Same rule as create: a live session never moves the profile-global pointer.
-        if not task_id:
+        # Same rule as create.
+        if not _moves_session(task_id, _primary_path(proj)):
             pdb.set_active(conn, proj.id)
     return _activated(proj, task_id)
 

@@ -2711,6 +2711,7 @@ export const ar = defineLocale({
     collapseAll: 'طي الكل',
     showIgnored: 'إظهار الملفات المتجاهلة في git',
     hideIgnored: 'إخفاء الملفات المتجاهلة في git',
+    remoteSensitiveFilesHidden: 'تخفي الخوادم البعيدة الملفات الحساسة مثل .env لأسباب أمنية، حتى عند إظهار ملفات gitignore.',
     previewUnavailable: 'المعاينة غير متاحة',
     couldNotPreview: path => `تعذرت معاينة ${path}`,
     noProjectTitle: 'لا يوجد مشروع',

@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
-import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
+import { $connection, $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -30,6 +30,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
   const currentCwd = useStore($currentCwd).trim()
+  const remoteFiles = useStore($connection)?.mode === 'remote'
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const workspaceCwdOwner = useStore($workspaceCwdOwner)
 
@@ -103,6 +104,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onRefresh={() => void refreshRoot()}
         onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
         openState={openState}
+        remoteFiles={remoteFiles}
         showIgnored={showIgnored}
       />
     </aside>
@@ -116,6 +118,7 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   onCollapseAll: () => void
   onRefresh: () => void
   onToggleShowIgnored: () => void
+  remoteFiles: boolean
   showIgnored: boolean
 }
 
@@ -144,6 +147,7 @@ function FilesystemTab({
   onRefresh,
   onToggleShowIgnored,
   openState,
+  remoteFiles,
   showIgnored
 }: FilesystemTabProps) {
   const { t } = useI18n()
@@ -200,6 +204,11 @@ function FilesystemTab({
           </Button>
         </Tip>
       </RightSidebarSectionHeader>
+      {remoteFiles && showIgnored && (
+        <p className="shrink-0 px-2.5 pb-1 text-[0.68rem] leading-relaxed text-(--ui-text-quaternary)" role="status">
+          {r.remoteSensitiveFilesHidden}
+        </p>
+      )}
       <FileTreeBody
         collapseNonce={collapseNonce}
         cwd={cwd}

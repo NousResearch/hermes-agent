@@ -3482,6 +3482,7 @@ export const ru = defineLocale({
     collapseAll: 'Свернуть все папки',
     showIgnored: 'Показать файлы из gitignore',
     hideIgnored: 'Скрыть файлы из gitignore',
+    remoteSensitiveFilesHidden: 'Удалённый сервер скрывает конфиденциальные файлы (например, .env) даже при показе файлов из gitignore.',
     previewUnavailable: 'Предпросмотр недоступен',
     couldNotPreview: path => `Не удалось предпросмотреть ${path}`,
     noProjectTitle: 'Проект не открыт',

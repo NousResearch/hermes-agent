@@ -3929,6 +3929,7 @@ export const zh = defineLocale({
     collapseAll: '折叠所有文件夹',
     showIgnored: '显示 gitignore 的文件',
     hideIgnored: '隐藏 gitignore 的文件',
+    remoteSensitiveFilesHidden: '出于安全考虑，远程后端会隐藏 .env 等敏感文件，即使已显示 gitignore 忽略的文件。',
     previewUnavailable: '预览不可用',
     couldNotPreview: path => `无法预览 ${path}`,
     noProjectTitle: '没有项目',

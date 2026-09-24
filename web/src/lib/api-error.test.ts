@@ -51,6 +51,26 @@ describe("fetchJSON error contract", () => {
     expect(`${errorMessage(apiErr)}`).not.toMatch(/^Error:/);
   });
 
+  it("shows a structured detail's message, not the generic status sentence", async () => {
+    // The corrupt state.db 503 from the analytics routes (web_routers/_common.py CORRUPT_STORE_DETAIL).
+    const body = {
+      detail: {
+        error: "state_db_corrupt",
+        message: "state.db corrupt — run `hermes doctor` (then `hermes doctor --fix` or `hermes sessions repair`).",
+        path: "/home/u/.hermes/state.db",
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status: 503 })),
+    );
+
+    const err = (await fetchJSON("/api/analytics/models?days=7").catch((e: unknown) => e)) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.message).toBe(body.detail.message);
+    expect(err.status).toBe(503);
+  });
+
   it("maps a detail-less status to a plain sentence with no HTTP code lead", async () => {
     vi.stubGlobal(
       "fetch",

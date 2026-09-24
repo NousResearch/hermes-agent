@@ -6,7 +6,10 @@ marker, compare-and-swap cleanup, and promotion into the existing
 ``resume_pending`` recovery path after an unclean exit.
 """
 
+import os
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -458,35 +461,116 @@ async def test_runner_active_turn_clear_stops_after_bounded_retries():
     assert not hasattr(event, "_gateway_active_turn_token")
 
 
-@pytest.mark.asyncio
-async def test_unclean_recovery_promotes_exact_markers_before_legacy_fallback(
-    monkeypatch,
-):
+def _db_runner(tmp_path) -> tuple[GatewayRunner, SessionStore]:
     runner = object.__new__(GatewayRunner)
-    calls: list[str] = []
+    runner.session_store = _make_db_store(tmp_path)
+    return runner, runner.session_store
 
-    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
 
-    async def _recover(*, max_age_seconds):
-        assert max_age_seconds == ACTIVE_TURN_MAX_AGE_SECONDS
-        calls.append("exact")
-        return 1
+def _turn(store: SessionStore, chat_id: str, *, marked: bool, reply: str | None, **prompt: Any) -> SessionSource:
+    source = _make_source(chat_id)
+    entry = store.get_or_create_session(source)
+    if marked:
+        store.mark_turn_active(entry.session_key)
+    store.append_to_transcript(entry.session_id, {"role": "user", "content": f"question {chat_id}", **prompt})
+    if reply is not None:
+        store.append_to_transcript(entry.session_id, {"role": "assistant", "content": reply})
+    return source
 
-    async def _fallback(*, max_age_seconds):
-        assert max_age_seconds == 120
-        calls.append("fallback")
-        return 2
 
-    runner.session_store = MagicMock()
-    setattr(
-        runner,
-        "_async_session_store",
-        SimpleNamespace(
-            _store=runner.session_store,
-            recover_interrupted_turns=_recover,
-            suspend_recently_active=_fallback,
-        ),
-    )
+@pytest.mark.asyncio
+async def test_unclean_restart_resumes_only_the_turn_left_in_flight(tmp_path):
+    """A kill re-arms the marked turn that had no reply yet, never a chat whose turn finished just
+    before it (the removed 120 s recency sweep re-answered every recently active chat)."""
+    runner, store = _db_runner(tmp_path)
+    finished = _turn(store, "finished", marked=False, reply="answered and delivered")
+    in_flight = _turn(store, "in-flight", marked=True, reply=None)
 
-    assert await runner._recover_unclean_sessions() == (1, 2)
-    assert calls == ["exact", "fallback"]
+    assert await runner._recover_unclean_sessions() == (1, 0)
+
+    assert not _entry_for(store, finished).resume_pending
+    resumed = _entry_for(store, in_flight)
+    assert (resumed.resume_pending, resumed.resume_reason) == (True, "restart_interrupted")
+    _close_store_db(store)
+
+
+@pytest.mark.asyncio
+async def test_unclean_restart_delivers_a_persisted_unledgered_reply_instead_of_regenerating(tmp_path):
+    """Killed after the reply was persisted but before it reached the delivery ledger: the stored
+    reply is ledgered for this boot's sweep (marked, it may already be on screen), not resumed."""
+    from gateway.delivery_ledger import sweep_recoverable
+
+    runner, store = _db_runner(tmp_path)
+    source = _turn(store, "replied", marked=True, reply="the stored answer")
+
+    assert await runner._recover_unclean_sessions() == (0, 1)
+
+    entry = _entry_for(store, source)
+    assert (entry.resume_pending, entry.active_turn_token) == (False, None)
+    rows = sweep_recoverable(deliverable_platforms={"discord"})
+    assert [(r["content"], r["needs_marker"], r["chat_id"], r["thread_id"]) for r in rows] == [
+        ("the stored answer", True, "replied", "thread-1")]
+    _close_store_db(store)
+
+
+_WAKE = {"display_kind": "internal_notification"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reply", "prompt", "owed"), [
+    ("[SILENT]", _WAKE, []),
+    ("NO_REPLY", _WAKE, []),
+    ("disk is 91% full", {**_WAKE, "display_metadata": {"notification_category": "diagnostic"}}, []),
+    ("NO_REPLY", {}, ["⚠️ The model returned only a silence marker for a message that needed a reply. "
+                      "Try again or rephrase."]),
+])
+async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed(tmp_path, reply, prompt, owed):
+    """A crash-left reply is owed exactly what live delivery would have sent: nothing for a silence
+    marker on a machinery turn or a muted diagnostic wake (and the finished turn is not resumed), the
+    unexpected-silence notice for a human turn, never the raw marker."""
+    from gateway.delivery_ledger import sweep_recoverable
+
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")
+    runner, store = _db_runner(tmp_path)
+    source = _turn(store, "quiet", marked=True, reply=reply, **prompt)
+
+    assert await runner._recover_unclean_sessions() == (0, len(owed))
+
+    entry = _entry_for(store, source)
+    assert (entry.resume_pending, entry.active_turn_token) == (False, None)
+    assert [r["content"] for r in sweep_recoverable(deliverable_platforms={"discord"})] == owed
+    _close_store_db(store)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+async def test_turn_marker_start_survives_a_timezone_change_across_the_crash(tmp_path):
+    """The dead process's local zone is not the new one's (DST, container vs unit TZ): the marked
+    turn still resumes, and the previous turn's answer persisted a minute before it is not re-sent
+    (a naive wall-clock marker read in the new zone was 7 h off and dropped the turn as stale)."""
+    from gateway.delivery_ledger import sweep_recoverable
+
+    runner, store = _db_runner(tmp_path)
+    source = _make_source("tz")
+    entry = store.get_or_create_session(source)
+    store.append_to_transcript(entry.session_id, {"role": "user", "content": "earlier question"})
+    store.append_to_transcript(entry.session_id, {"role": "assistant", "content": "earlier answer",
+                                                  "timestamp": time.time() - 60})
+    original_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "Etc/GMT+7"  # UTC-7 when the turn starts ...
+        time.tzset()
+        store.mark_turn_active(entry.session_key)
+        os.environ["TZ"] = "UTC"  # ... UTC when the gateway comes back
+        time.tzset()
+        assert await runner._recover_unclean_sessions() == (1, 0)
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time.tzset()
+
+    assert _entry_for(store, source).resume_pending is True
+    assert sweep_recoverable(deliverable_platforms={"discord"}) == []
+    _close_store_db(store)

@@ -244,6 +244,51 @@ class TestMemoryEndpoints:
             "/api/memory/reset", json={"target": "bogus"}
         ).status_code == 400
 
+    _SCOPEDPROV_INIT = """
+from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
+
+
+class ScopedProvMemoryProvider(MemoryProvider):
+    @property
+    def name(self):
+        return "scopedprov"
+
+    def is_available(self):
+        # A credentialed provider: availability IS a scoped secret read.
+        return bool(get_secret("SCOPEDPROV_API_KEY"))
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+"""
+
+    def test_plugins_hub_resolves_launch_profile_secrets_under_multiplex(self):
+        """The hub is built for the dashboard's own (launch) profile. Once the process hosts a
+        second profile home, ``get_secret`` fails closed for unscoped reads; a provider whose
+        ``is_available`` reads the launch profile's credential must still resolve it from the
+        launch home's ``.env`` instead of rendering "unavailable" with no visible error
+        (``probe_availability`` swallows the ``UnscopedSecretError``)."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+
+        home = get_hermes_home()
+        (home / ".env").write_text("SCOPEDPROV_API_KEY=launch-key\n", encoding="utf-8")
+        plugin_dir = home / "plugins" / "scopedprov"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(self._SCOPEDPROV_INIT, encoding="utf-8")
+        _invalidate_plugins_hub_cache()
+        activate_multi_profile_hosting()  # the conftest resets the latch after the test
+
+        hub = self.client.get("/api/dashboard/plugins/hub")
+        assert hub.status_code == 200, hub.text
+        providers = hub.json()["providers"]["memory_options"]
+        row = next(p for p in providers if p["name"] == "scopedprov")
+        assert row["available"] is True and row["status"] == "ready", row
+
 
 class TestPairingEndpoints:
     @pytest.fixture(autouse=True)
@@ -1083,6 +1128,7 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
             calls.append("terminate")
 
     monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
     monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
     monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
     monkeypatch.setitem(_web_server_gateway._ACTION_PROCS, "gateway-restart", _FakeRunningProc())

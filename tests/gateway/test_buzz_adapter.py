@@ -3555,3 +3555,27 @@ class TestChannelCursorPersistence:
         assert f"e{cap * 2 - 1}" in seen
         assert "e0" not in seen
 
+    @pytest.mark.asyncio
+    async def test_cursor_write_runs_off_the_event_loop(self, adapter, tmp_path, monkeypatch):
+        """The write fsyncs + renames once per inbound event on the WebSocket transport."""
+        import threading
+
+        import utils
+
+        cli = await self._seed(adapter, _event("e1", created_at=100))
+        real_write = utils.atomic_json_write
+        threads = []
+
+        def _record(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return real_write(*args, **kwargs)
+
+        monkeypatch.setattr(utils, "atomic_json_write", _record)
+        cli.responses.clear()
+        cli.script("messages", "get", [_event("e1", created_at=100), _event("e2", created_at=200)])
+        await adapter._poll_channel(CHANNEL)
+
+        assert threads and threading.get_ident() not in threads
+        saved = json.loads(self._cursor_file(tmp_path).read_text(encoding="utf-8"))
+        assert saved["channels"][CHANNEL]["last_ts"] == 200
+        assert saved["channels"][CHANNEL]["seen"] == ["e1", "e2"]

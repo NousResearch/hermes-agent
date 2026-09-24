@@ -43,3 +43,34 @@ def test_db_unavailable_commands_are_pinned_to_the_failing_profile(monkeypatch, 
     for text in (no_cause, network):
         assert f"`hermes {selector}doctor`" in text and "`hermes doctor`" not in text
         assert "{profile_arg}" not in text
+
+
+def test_db_unavailable_details_line_carries_raw_cause_only_below_the_lead():
+    """CLI banner (details=True): the raw SQLite text is kept for bug reports on
+    its own ``Details:`` line and never leaks into the plain-language lead; with
+    no recorded cause there is nothing to detail."""
+    hermes_state._set_last_init_error("OperationalError: database is locked")
+    try:
+        text = format_session_db_unavailable(details=True)
+    finally:
+        hermes_state._set_last_init_error(None)
+    lead, *rest = text.splitlines()
+    assert "OperationalError" not in lead
+    assert len(rest) == 1 and rest[0].startswith("Details: ") and "database is locked" in rest[0]
+
+    no_cause = format_session_db_unavailable(details=True)
+    assert "\n" not in no_cause and "Details:" not in no_cause
+
+
+def test_db_unavailable_network_drive_cause_does_not_offer_doctor_fix():
+    """A locking-protocol failure means the DB sits on a network filesystem that
+    cannot host SQLite's WAL; `hermes doctor --fix` cannot repair a mount, so it
+    must not be the offered action (only moving the file helps)."""
+    hermes_state._set_last_init_error("OperationalError: locking protocol")
+    try:
+        text = format_session_db_unavailable(details=True)
+    finally:
+        hermes_state._set_last_init_error(None)
+    lead, details = text.splitlines()
+    assert "doctor --fix" not in lead
+    assert "locking protocol" not in lead and "locking protocol" in details

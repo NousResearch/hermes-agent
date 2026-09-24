@@ -1,5 +1,6 @@
 """Tests for gateway linger auto-enable behavior on headless Linux installs."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,12 +8,40 @@ import pytest
 import hermes_cli.gateway as gateway
 
 
+def _stub_linger_file(monkeypatch, tmp_path, *, exists: bool) -> None:
+    """Point the ``/var/lib/systemd/linger/<user>`` probe at a real file under tmp_path.
+
+    ``gateway.Path`` stays ``pathlib.Path`` — every other ``Path(...)`` the code under test makes
+    (``.expanduser()``, ``.resolve()`` in service-name resolution) keeps working. A ``SimpleNamespace``
+    stand-in broke as soon as the code grew a call the stub did not implement (#119786).
+    """
+    linger_dir = Path("/var/lib/systemd/linger")
+    fake_dir = tmp_path / "linger"
+    fake_dir.mkdir()
+    if exists:
+        (fake_dir / "testuser").write_text("")
+
+    def redirected_path(path, *more):
+        candidate = Path(path, *more)
+        return fake_dir / candidate.name if candidate.parent == linger_dir else candidate
+
+    monkeypatch.setattr(gateway, "Path", redirected_path)
+
+
+def _root_with_system_unit_pinned_home(monkeypatch, tmp_path) -> None:
+    """Take the root/system-unit branch of service-name resolution (``_bare_unit_pinned_home``), the
+    path that calls ``Path(...).expanduser()`` while rendering the restart hint."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway, "_hermes_home_pinned_by_unit", lambda _unit_path: str(tmp_path / "system-home"))
+
+
 class TestEnsureLingerEnabled:
-    def test_linger_already_enabled_via_file(self, monkeypatch, capsys):
+    def test_linger_already_enabled_via_file(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: True))
+        _stub_linger_file(monkeypatch, tmp_path, exists=True)
 
         calls = []
         monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
@@ -22,11 +51,11 @@ class TestEnsureLingerEnabled:
         assert calls == []
 
 
-    def test_loginctl_success_enables_linger(self, monkeypatch, capsys):
+    def test_loginctl_success_enables_linger(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, tmp_path, exists=False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
 
@@ -43,11 +72,12 @@ class TestEnsureLingerEnabled:
         assert run_calls == [(["loginctl", "enable-linger", "testuser"], True, True, False)]
 
 
-    def test_loginctl_failure_shows_manual_guidance(self, monkeypatch, capsys):
+    def test_loginctl_failure_shows_manual_guidance(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, tmp_path, exists=False)
+        _root_with_system_unit_pinned_home(monkeypatch, tmp_path)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
         monkeypatch.setattr(
@@ -62,10 +92,10 @@ class TestEnsureLingerEnabled:
         assert "sudo loginctl enable-linger testuser" in out
         assert "Permission denied" in out
 
-    def test_system_scope_enables_target_user_without_logout_messaging(self, monkeypatch, capsys):
+    def test_system_scope_enables_target_user_without_logout_messaging(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, tmp_path, exists=False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
         run_calls = []
@@ -82,10 +112,11 @@ class TestEnsureLingerEnabled:
         out = capsys.readouterr().out
         assert "alice" in out and "logout" not in out
 
-    def test_system_scope_warning_uses_system_restart(self, monkeypatch, capsys):
+    def test_system_scope_warning_uses_system_restart(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        _stub_linger_file(monkeypatch, tmp_path, exists=False)
+        _root_with_system_unit_pinned_home(monkeypatch, tmp_path)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
         monkeypatch.setattr(

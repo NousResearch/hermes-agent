@@ -109,6 +109,24 @@ class TestResolution:
         monkeypatch.setenv("META_BASE_URL", "https://proxy.internal/v1")
         assert meta_plugin._resolve_base_url() == "https://proxy.internal/v1"
 
+    def test_base_url_follows_the_profile_secret_scope(self, monkeypatch):
+        """Under multiplexing os.environ is the launch profile's: a routed profile's key must go to
+        ITS base URL, and a profile without an override gets the default — never the launch URL."""
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+        monkeypatch.setenv("META_BASE_URL", "https://launch.example/v1")
+        set_multiplex_active(True)
+        try:
+            for scope, expected in (({"META_BASE_URL": "https://profile-b.example/v1"}, "https://profile-b.example/v1"),
+                                    ({}, "https://api.meta.ai/v1")):
+                token = set_secret_scope(scope)
+                try:
+                    assert meta_plugin._resolve_base_url() == expected
+                finally:
+                    reset_secret_scope(token)
+        finally:
+            set_multiplex_active(False)
+
 
 # ── Model resolution ──────────────────────────────────────────────────────────
 

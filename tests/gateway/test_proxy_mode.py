@@ -109,6 +109,38 @@ class TestGetProxyUrl:
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
 
 
+class _SelectiveScope(dict):
+    """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
+    def get(self, name, default=None):
+        if name == "GATEWAY_PROXY_URL":
+            return "http://proxy.local:8642"
+        if name == "GATEWAY_PROXY_KEY":
+            raise RuntimeError("resolver boom")
+        return dict.get(self, name, default)
+
+
+class TestProxyKeyScopeFailure:
+    """The proxy key read must propagate a bound-scope failure -- the ambient env
+    may hold another profile's credential (pre-fix: ``except Exception -> os.getenv``)."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_key_scope_failure_never_borrows_env(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("GATEWAY_PROXY_KEY", "foreign-key")
+        runner = _make_runner()
+        runner._run_still_current_fn = lambda *a, **k: True
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(_SelectiveScope())
+        try:
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                await runner._run_agent_via_proxy("hi", "ctx", [], _make_source(), "sess-1")
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+
 class TestResolveProxyUrl:
 
     def test_no_proxy_bypasses_matching_host(self, monkeypatch):
@@ -128,6 +160,46 @@ class TestResolveProxyUrl:
         monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
 
         assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
+
+
+@pytest.mark.macos_only
+class TestMacosProxyProbeCache:
+    """``scutil --proxy`` is a ~11 ms fork and resolve_proxy_url runs it on the SEND path —
+    per chunk of an outbound message and per media attachment."""
+
+    SCUTIL_OUT = "<dictionary> {\n  HTTPEnable : 1\n  HTTPProxy : 10.0.0.1\n  HTTPPort : 3128\n}"
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
+        import gateway.platforms.base as base
+        base.reset_macos_proxy_cache()
+        yield
+        base.reset_macos_proxy_cache()
+
+    def _count_forks(self, monkeypatch):
+        import gateway.platforms.base as base
+        calls = []
+
+        def fake(*a, **kw):
+            calls.append(a)
+            return self.SCUTIL_OUT
+        monkeypatch.setattr(base.subprocess, "check_output", fake)
+        return base, calls
+
+    def test_repeated_probes_fork_scutil_once(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        results = [base._detect_macos_system_proxy() for _ in range(10)]
+        assert len(calls) == 1, f"expected 1 scutil fork for 10 probes, got {len(calls)}"
+        assert results == ["http://10.0.0.1:3128"] * 10
+
+    def test_expired_ttl_re_reads(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(base.time, "monotonic", lambda: clock["t"])
+        base._detect_macos_system_proxy()
+        clock["t"] += base._MACOS_PROXY_TTL_SECONDS + 1
+        base._detect_macos_system_proxy()
+        assert len(calls) == 2
 
 
 class TestRunAgentProxyDispatch:

@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, Optional
 
 from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable
+from hermes_state_errors import is_sqlite_lock_error
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -451,7 +452,7 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
     except sqlite3.OperationalError as exc:
         if require_delete:
             raise
-        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+        if is_sqlite_lock_error(exc):
             # A concurrent opener appeared between probe and flip: leave the mode as is.
             _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
             return current or "delete"

@@ -40,10 +40,14 @@ describe('precise timeline timestamps', () => {
     const local = new Date(2026, 4, 1, 13, 2, 3, 456)
     const formatted = formatTimelineTimestamp(local.getTime() / 1000)
 
-    expect(formatted).toMatch(/13|1/)
-    expect(formatted).toContain('02')
-    expect(formatted).toContain('03')
-    expect(formatted).toContain('456')
+    const expected = new Intl.DateTimeFormat(undefined, {
+      fractionalSecondDigits: 3,
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    }).format(local)
+
+    expect(formatted).toBe(expected)
   })
 
   it('returns an empty string for invalid timeline values', () => {

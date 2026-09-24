@@ -419,3 +419,23 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+
+
+def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
+    """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
+    subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised
+    UnicodeDecodeError in communicate()'s reader threads on every poll. The branch must round-trip."""
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git not installed")
+    branch = "功能/✅-修复"  # UTF-8 bytes that are illegal multibyte sequences in GBK
+    subprocess.run([git, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([git, "-C", str(tmp_path), "symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=True)
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding()
+    # (cp936 on zh-CN Windows); patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits locale.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert _rt_files._fs_git_branch(str(tmp_path)) == branch

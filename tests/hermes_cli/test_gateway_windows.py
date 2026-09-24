@@ -50,7 +50,22 @@ def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     `scheduled_task_drift` needs the exact characters back (#116193)."""
     monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
     task = f"Hermes_Test_{os.getpid()}"
-    marker = "Zo\u00eb"  # ë: one byte in every Western OEM/ANSI code page, invalid as a lone UTF-8 byte
+    # schtasks stores /TR in the system ANSI code page, so the marker must be representable THERE:
+    # ë is one byte in every Western ACP but is destroyed ("?") on cp936/932/949 hosts, and a CJK
+    # literal fails the other way on cp1252 (#119845). Derive it from the live ACP; skip only when
+    # no non-ASCII candidate survives, so the #116193 guard keeps its coverage on every locale.
+    import ctypes
+    acp = f"cp{ctypes.windll.kernel32.GetACP()}"
+
+    def _encodable(text: str) -> bool:
+        try:
+            return text.encode(acp).decode(acp) == text
+        except (UnicodeError, LookupError):
+            return False
+
+    marker = next((c for c in ("Zo\u00eb", "\u65b9\u821f", "\u30c6\u30b9\u30c8", "\ud55c\uae00") if _encodable(c)), None)
+    if marker is None:
+        pytest.skip(f"no non-ASCII marker is representable in the host ANSI code page {acp}")
     created = subprocess.run(
         ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR", f'wscript.exe //B "C:\\{marker}\\x.vbs"'],
         capture_output=True, timeout=30,

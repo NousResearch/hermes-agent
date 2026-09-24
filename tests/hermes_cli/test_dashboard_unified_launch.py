@@ -68,6 +68,7 @@ class TestUnifiedDashboardRouting:
         profile and exits, so the desktop never sees a ready backend → boot
         loop. The guard keeps desktop pool backends per-profile."""
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
@@ -108,7 +109,5 @@ class TestInteractiveDashboardAuthSetup:
         assert exc.value.code == 1
         output = capsys.readouterr().out
         assert "configured external dashboard.public_url" in output
-
-
 
 

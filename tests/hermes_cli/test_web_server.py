@@ -3171,6 +3171,79 @@ class TestDesktopLoopbackAuthExemption:
         ) is True
 
 
+class TestDesktopHostRendezvousIsolation:
+    """Desktop pool children have a private lifecycle, not a host ownership role."""
+
+    def test_desktop_backend_does_not_claim_the_host_serve_record(self, monkeypatch, tmp_path):
+        """A Desktop child must not block a separately supervised public dashboard, yet a
+        terminal `hermes plugins install` on a Desktop-only box must still find it (#119644):
+        it publishes under its OWN role, which the attach ladder never reads."""
+        import io
+        import urllib.request
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+        from hermes_cli.main_dashboard import _host_backend_attachment
+        from hermes_cli.plugins_activation import notify_serve_backend
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+        monkeypatch.setattr(web_server, "_SESSION_TOKEN", "desktop-spawn-token")
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+        dialed = []
+
+        class _Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def _fake_urlopen(request, timeout=None):
+            dialed.append((request.full_url, request.get_header("X-hermes-session-token")))
+            return _Reply(b'{"ok": true}')
+
+        monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+        try:
+            web_server._publish_host_rendezvous("127.0.0.1", 9231)
+
+            # Not a host owner: the supervised public dashboard's attach ladder sees nobody.
+            assert hr.read_record(hr.ROLE_SERVE) is None
+            assert _host_backend_attachment() is None
+            # ...but a terminal `hermes plugins install` still lights up its open chats.
+            assert notify_serve_backend("demo", tmp_path) == {"ok": True}
+            assert dialed == [("http://127.0.0.1:9231/api/dashboard/agent-plugins/activate",
+                               "desktop-spawn-token")]
+        finally:
+            hr.clear_record(hr.ROLE_DESKTOP_SERVE)
+            hr.release_host_lock(hr.ROLE_DESKTOP_SERVE)
+
+    def test_standalone_backend_still_claims_the_host_serve_record(self, monkeypatch):
+        """The Desktop exclusion must not alter standalone dashboard discovery — including a
+        supervised service whose shell merely inherited HERMES_DESKTOP=1 without the token."""
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        claimed = []
+        published = []
+        monkeypatch.setattr(
+            hr,
+            "claim_host_lock",
+            lambda role: (claimed.append(role) or (hr.HostLockOutcome.ACQUIRED, None)),
+        )
+        monkeypatch.setattr(hr, "publish_record", lambda *args, **kwargs: published.append((args, kwargs)))
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+
+        web_server._publish_host_rendezvous("0.0.0.0", 9119)
+
+        assert claimed == [hr.ROLE_SERVE]
+        assert published[0][0] == (hr.ROLE_SERVE,)
+        assert published[0][1]["host"] == "0.0.0.0"
+        assert published[0][1]["port"] == 9119
+
+
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
 # ---------------------------------------------------------------------------
@@ -4834,9 +4907,10 @@ class TestDesktopCronTicker:
         called = threading.Event()
         monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
 
         with self._client():
-            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+            assert called.wait(3.0), "expected cron tick under a Desktop-owned backend"
 
 
 class TestServeIndexMissingIndex:

@@ -153,7 +153,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
           advancedFailed = true
           host.notify({
             kind: 'error',
-            message: `Some sections failed: ${failed.map(([k]) => k).join(', ')}`
+            message: b.editor.sectionsFailed(failed.map(([k]) => k).join(', '))
           })
         }
       } catch (err) {
@@ -165,9 +165,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
     if (!advancedFailed && !lookFailed) {
       host.notify({
         kind: 'success',
-        message: `${displayName(bot, {
-          title
-        })} updated`
+        message: b.editor.updated(displayName(bot, { title }))
       })
     }
 
@@ -194,7 +192,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       >
         <DialogHeader>
           <DialogTitle>{b.bot.editTitle}</DialogTitle>
-          <DialogDescription>{`Appearance and role for ${displayName(bot, null)} (${bot.name}).`}</DialogDescription>
+          <DialogDescription>{b.editor.editDescription(displayName(bot, null), bot.name)}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
           <div className="flex justify-center py-1">
@@ -214,7 +212,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
             shape={shape}
           />
           {labeled(
-            'Title',
+            b.editor.title,
             <Input
               onChange={event => setTitle(event.target.value)}
               placeholder={displayName(bot, null)}
@@ -222,7 +220,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
             />
           )}
           {labeled(
-            'Description',
+            b.editor.description,
             <Textarea
               className="min-h-16"
               onChange={event => setDescription(event.target.value)}

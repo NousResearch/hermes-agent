@@ -465,7 +465,8 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
         # The child is a DELIVERY turn: mark it so its lease layer reports a live-owner hold as a
         # receipt instead of a refusal (§5.2/P12). Ordinary turns never carry this marker.
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, env=_delivery_turn_env(turn_env))
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env=_delivery_turn_env(turn_env))
 
     proc = _turn()
     if proc.returncode != 0:

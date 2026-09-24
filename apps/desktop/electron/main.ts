@@ -203,6 +203,7 @@ import {
   terminalScriptExtension,
   tuiResumeArgs
 } from './external-terminal'
+import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
 import { type FaviconIo, resolveFavicon } from './favicon'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import {
@@ -225,7 +226,7 @@ import {
   writeBufferToFile
 } from './gateway-file-download'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
-import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import {
   describeGitHubCredentialSource,
@@ -1816,6 +1817,7 @@ const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const previewWatchers = new Map()
 let previewShortcutActive = false
+const f12ShortcutActiveWindows = new Set<number>()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {
@@ -7415,11 +7417,26 @@ function installDevToolsShortcut(window) {
   // Only Ctrl+Shift+I (or Cmd+Opt+I on Mac) opens DevTools.
   // F12 is explicitly blocked so Chromium's built-in handler doesn't open it.
   window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') {
+      return
+    }
+
     const key = input.key.toLowerCase()
 
-    // F12 opens DevTools by default; block only when the user disabled it.
+    // A renderer binding gets first refusal. Chromium otherwise claims F12
+    // before the renderer can capture or dispatch it.
     if (input.key === 'F12') {
-      if (f12Blocked) {
+      const decision = f12ShortcutDecision(input, f12ShortcutActiveWindows.has(window.webContents.id), f12Blocked)
+
+      if (decision === 'forward') {
+        event.preventDefault()
+
+        window.webContents.send('hermes:f12-shortcut', toF12KeyboardEventPayload(input))
+
+        return
+      }
+
+      if (decision === 'block') {
         event.preventDefault()
 
         return
@@ -12802,8 +12819,10 @@ async function runPoolBackendStart(
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
   ready = true
 
+  const childAlive = () => child.exitCode === null && !child.killed
+
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
-    childAlive: () => child.exitCode === null && !child.killed,
+    childAlive,
     label: `Hermes backend for profile "${profile}"`,
     rememberLog
   })
@@ -12815,7 +12834,13 @@ async function runPoolBackendStart(
   // Verify the WebSocket session token before declaring backend ready.
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
   const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-  const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+  // Our own child: a cold start can stall its loop past the base budget (#96177).
+  const wsProbe = await probeGatewayWebSocket(wsUrl, {
+    WebSocketImpl: globalThis.WebSocket,
+    ...spawnedBackendProbeOptions(childAlive)
+  })
+
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   if (!wsProbe.ok) {
@@ -13645,8 +13670,10 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     primaryExitRecovery.reset()
     backendStartFailure = null
 
+    const childAlive = () => hermesProcess.exitCode === null && !hermesProcess.killed
+
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
-      childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
+      childAlive,
       rememberLog
     })
 
@@ -13654,7 +13681,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     // Verify the WebSocket session token before declaring backend ready.
     const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-    const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+    // Same policy as the pool path: our own child may still be cold-starting (#96177).
+    const wsProbe = await probeGatewayWebSocket(wsUrl, {
+      WebSocketImpl: globalThis.WebSocket,
+      ...spawnedBackendProbeOptions(childAlive)
+    })
+
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     if (!wsProbe.ok) {
@@ -16807,6 +16840,18 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
+})
+
+ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
+  if (active) {
+    f12ShortcutActiveWindows.add(event.sender.id)
+  } else {
+    f12ShortcutActiveWindows.delete(event.sender.id)
+  }
+})
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.once('destroyed', () => f12ShortcutActiveWindows.delete(contents.id))
 })
 
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {

@@ -724,6 +724,9 @@ _SKILL_COUNT_TTL_SECONDS = 600.0
 _SKILL_COUNT_RECHECK_SECONDS = 60.0
 _SKILL_COUNT_NEXT_CHECK: dict[str, float] = {}
 _SKILL_COUNT_LOCK = threading.Lock()
+# One scan lock per skills dir so concurrent cold scans of the SAME profile share one walk
+# while different profiles' scans still run in parallel.
+_SKILL_COUNT_SCAN_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -764,13 +767,21 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     key = str(skills_dir)
     signature = _skills_dir_signature(skills_dir)
-    now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+    if cached is not None and cached[0] == signature and (time.time() - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
         return cached[2]
-    count = _walk_skill_count(skills_dir)
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
-    return count
+    with _SKILL_COUNT_LOCK:
+        scan_lock = _SKILL_COUNT_SCAN_LOCKS.setdefault(key, threading.Lock())
+    with scan_lock:
+        # Re-check under the lock: a concurrent caller may have just finished this walk.
+        signature = _skills_dir_signature(skills_dir)
+        cached = _SKILL_COUNT_CACHE.get(key)
+        if cached is not None and cached[0] == signature and (time.time() - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+            return cached[2]
+        count = _walk_skill_count(skills_dir)
+        # Stamp AFTER the walk: a scan longer than the TTL must not publish an already-expired entry.
+        _SKILL_COUNT_CACHE[key] = (signature, time.time(), count)
+        return count
 
 
 def _cached_skill_count(profile_dir: Path) -> int:
@@ -1024,23 +1035,43 @@ def _standalone_truthy(value: object) -> bool:
     return bool(value)
 
 
-def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False) -> List[Tuple[str, Path]]:
+def parked_marker_path(home: Path) -> Path:
+    return Path(home) / "gateway.parked"
+
+
+def profile_is_parked(home: Path) -> bool:
+    """Marker contents are deliberately irrelevant, including for provisioning."""
+    return parked_marker_path(home).exists()
+
+
+_parked_default_warned: set[Path] = set()
+
+
+def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
+                      include_parked: bool = False) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
     ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
-    profiles skipped). Pure directory read: never creates a profile dir (#94590).
+    and parked profiles skipped). Pure directory read: never creates a profile dir (#94590).
 
     Named profiles that authored ``gateway.standalone: true`` are skipped because they opted
-    out of the host multiplexer; callers enumerating INSTALLED profiles pass ``include_standalone=True``."""
+    out of the host multiplexer; a ``gateway.parked`` marker (``hermes -p X gateway stop``) skips
+    a profile the host would otherwise serve. Callers enumerating INSTALLED profiles pass
+    ``include_standalone=True, include_parked=True``; serving/ticking callers pass neither."""
     active = get_active_profile_name() or "default"
+    default = _get_default_hermes_home()
+    if profile_is_parked(default) and default not in _parked_default_warned:
+        logger.warning("Ignoring gateway.parked for the default profile; stop the host gateway instead")
+        _parked_default_warned.add(default)
     if not multiplex:
         return [(active, get_profile_dir(active))]
-    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+    serve: List[Tuple[str, Path]] = [("default", default)]
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
-                 if include_standalone or not profile_is_standalone(entry))
+                 if (include_standalone or not profile_is_standalone(entry))
+                 and (include_parked or not profile_is_parked(entry)))
     return serve
 
 
@@ -1799,8 +1830,12 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     """Disable and remove systemd/launchd service for a profile."""
     import platform as _platform
 
-    # HERMES_HOME is set temporarily so _profile_suffix resolves the service name.
+    # The service name follows get_hermes_home(): bind the override (the seam a multiplexed
+    # dashboard/tui-gateway process reads) and mirror the env for identity-file readers, so a
+    # DELETE from a multi-profile dashboard names THIS profile's unit, never the host's bare one.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     old_home = os.environ.get("HERMES_HOME")
+    home_token = set_hermes_home_override(str(profile_dir))
     try:
         os.environ["HERMES_HOME"] = str(profile_dir)
         from hermes_cli.gateway import get_service_name, get_launchd_plist_path, user_systemd_unit_dir
@@ -1827,6 +1862,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
+        reset_hermes_home_override(home_token)
         os.environ.pop("HERMES_HOME", None)
         if old_home is not None:
             os.environ["HERMES_HOME"] = old_home
@@ -1917,6 +1953,27 @@ def get_active_profile_name() -> str:
     except ValueError:
         pass
     return "custom"
+
+
+def current_profile_name(default: str | None = None) -> str | None:
+    """Identity of the profile the current task runs FOR: the ``HERMES_HOME`` override when one is
+    bound (a multiplexed cron tick, a routed gateway turn), else a launcher-pinned
+    ``HERMES_PROFILE_NAME``/``HERMES_PROFILE`` (the kanban dispatcher pins it on its workers), else
+    the name derived from the process's ``HERMES_HOME``; *default* when nothing names a profile.
+
+    The env pin is read only outside an override: ``os.environ`` is the LAUNCH profile's, so under
+    an override it would re-label a served profile's board writes with the host's identity.
+    """
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is None:
+        for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+            value = (os.environ.get(env_name) or "").strip()
+            if value:
+                return value
+    try:
+        return get_active_profile_name() or default
+    except Exception:
+        return default
 
 
 # Export / Import

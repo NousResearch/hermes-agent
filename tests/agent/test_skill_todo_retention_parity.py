@@ -292,16 +292,20 @@ class TestNoticeStripLifecycle:
         parent = "PARENT_SKILL_TODO_RESTRIP"
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
+        original = _msgs()
         agent.context_compressor.compress.return_value = [
             {"role": "user", "content": summary},
-            {"role": "assistant", "content": "acknowledged"},
+            # Conforming-engine shape (#118900): the kept assistant row is the
+            # transcript's own last reply, so the commit guard sees it present
+            # and the snapshot still merges into the trailing human row.
+            {"role": "assistant", "content": original[-1]["content"]},
             {"role": "user", "content": stale_tail},
         ]
         agent._todo_store._items = [
             {"id": "t1", "content": "fresh task", "status": "pending"}
         ]
         compressed, _ = agent._compress_context(
-            _msgs(), "sys", approx_tokens=120_000
+            original, "sys", approx_tokens=120_000
         )
         db.close()
         tail_text = str(compressed[-1]["content"])

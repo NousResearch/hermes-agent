@@ -58,8 +58,16 @@ export async function resolveSiblingWsUrl(
 
   const conn =
     connectionId && desktop.getConnectionFor
-      ? await withTimeout(desktop.getConnectionFor({ connectionId, profile }), RESOLVE_TIMEOUT_MS, `Timed out connecting to profile "${profile}"`)
-      : await withTimeout(desktop.getConnection(profile), RESOLVE_TIMEOUT_MS, `Timed out connecting to profile "${profile}"`)
+      ? await withTimeout(
+          desktop.getConnectionFor({ connectionId, profile }),
+          RESOLVE_TIMEOUT_MS,
+          `Timed out connecting to profile "${profile}"`
+        )
+      : await withTimeout(
+          desktop.getConnection(profile),
+          RESOLVE_TIMEOUT_MS,
+          `Timed out connecting to profile "${profile}"`
+        )
 
   const wsDeps =
     connectionId && desktop.getGatewayWsUrlFor
@@ -68,7 +76,12 @@ export async function resolveSiblingWsUrl(
         ? {}
         : desktop
 
-  const wsUrl = await withTimeout(resolveGatewayWsUrl(wsDeps, conn), RESOLVE_TIMEOUT_MS, 'Timed out minting the gateway WebSocket URL')
+  const wsUrl = await withTimeout(
+    resolveGatewayWsUrl(wsDeps, conn),
+    RESOLVE_TIMEOUT_MS,
+    'Timed out minting the gateway WebSocket URL'
+  )
+
   const url = new URL(wsUrl)
 
   if (!url.pathname.endsWith('/api/ws')) {

@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/icons'
 
 import { BillingRefusalInline } from './inline-feedback'
@@ -8,6 +9,8 @@ import type { BillingPlanCardView } from './use-billing-state'
 import { useResumeFlow } from './use-subscription-change'
 
 export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan: BillingPlanCardView }) {
+  const { t } = useI18n()
+  const b = t.settings.billing
   const resumeFlow = useResumeFlow()
 
   return (
@@ -22,7 +25,7 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
               </span>
               {plan.price && (
                 <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {plan.price}/mo
+                  {b.perMonth(plan.price)}
                 </span>
               )}
             </div>
@@ -40,7 +43,7 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
           {/* Scheduled downgrade → chargeless undo (subscription.resume), no confirm. */}
           {plan.pending && (
             <Button disabled={resumeFlow.busy} onClick={() => void resumeFlow.resume()} size="sm" type="button">
-              {resumeFlow.busy ? 'Undoing…' : 'Undo'}
+              {resumeFlow.busy ? b.plan.undoing : b.plan.undo}
             </Button>
           )}
           {plan.link && (

@@ -455,6 +455,9 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {showAttachments ? <AttachmentSizeSetting /> : null}
+      {activeSectionId === 'voice' ? (
+        <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+      ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (

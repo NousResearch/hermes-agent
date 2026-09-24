@@ -3464,6 +3464,24 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
     return "auxiliary " in msg and "llm returned invalid response" in msg and "choices[0].message" in msg
 
 
+def _is_statusless_structured_provider_error(exc: Exception) -> bool:
+    """Detect a structured provider failure that has no HTTP status.
+
+    OpenAI-compatible relays may commit SSE with status 200, then send an
+    OpenAI-style ``error`` event. The SDK raises a status-less ``APIError`` and
+    preserves the event only on ``exc.body``. Any non-empty structured error in
+    that status-less shape is a route failure; ordinary HTTP errors keep their
+    existing status-based classifiers, and message text alone is insufficient.
+    """
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status is not None:
+        return False
+    body = getattr(exc, "body", None)
+    return isinstance(body, dict) and bool(body.get("error"))
+
+
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
 # stalls the serialised turn queue). A same-provider retry after a full-budget timeout costs another
 # whole ``timeout`` window, so they skip straight to fallback; fast blips still retry.
@@ -7330,6 +7348,8 @@ _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
     (_is_invalid_aux_response_error, "invalid provider response"),
+    # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
+    (_is_statusless_structured_provider_error, "structured provider error"),
     # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
     # a slow local model reads as an unreachable endpoint (#89445).
     (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),
@@ -7354,7 +7374,7 @@ def _param_rung_accepts(exc: Exception) -> bool:
     A 429 on the retry is the credential/provider-fallback rungs' job, so it falls
     through too (the pre-ladder max_tokens rung accepted rate limits)."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or _is_rate_limit_error(exc)
+            or _is_rate_limit_error(exc) or _is_statusless_structured_provider_error(exc)
             or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
             # Parameter rungs chain in any order (a reasoning-strip retry can 400 on temperature,
             # a temperature-strip retry on max_tokens), and a route-gating 400 after a strip still

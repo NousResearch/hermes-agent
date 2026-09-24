@@ -1,5 +1,5 @@
 """A2A client tools (``a2a`` toolset): a2a_discover/call/list/history/orchestrate talk to *other*
-agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token}, timeout,
+agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token|token_env}, timeout,
 capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
 
 from __future__ import annotations
@@ -47,7 +47,13 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    token = auth.get("token")
+    if not token:
+        token_env = auth.get("token_env")
+        token = os.getenv(token_env, "") if isinstance(token_env, str) and token_env else ""
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:

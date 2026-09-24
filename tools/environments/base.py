@@ -310,6 +310,29 @@ class BaseEnvironment(ABC):
             return None
         return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
 
+    def fetch_device_realpath(self, remote_path: str) -> str | None:
+        """Resolve *remote_path* in this backend only when it names a raw device.
+
+        The approval floor needs filesystem identity, not just lexical spelling. This probe is
+        read-only and runs inside the same backend that will execute the eventual command. Both
+        block devices (Linux/macOS ``/dev/disk*``) and character devices (macOS
+        ``/dev/rdisk*``) count; ordinary files and unresolved paths return None.
+        """
+        quoted = shlex.quote(remote_path)
+        script = (
+            f'p={quoted}; '
+            'rp="$(readlink -f "$p" 2>/dev/null || realpath "$p" 2>/dev/null || true)"; '
+            '[ -n "$rp" ] && { [ -b "$rp" ] || [ -c "$rp" ]; } && printf "%s\\n" "$rp"'
+        )
+        result = self.execute(script, rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            return None
+        return next(
+            (ln.strip() for ln in reversed((result.get("output") or "").splitlines())
+             if ln.strip().startswith("/")),
+            None,
+        )
+
     # --- Session snapshot (init_session) ---
     def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:
         """Return backend-specific names that must not persist in snapshots."""

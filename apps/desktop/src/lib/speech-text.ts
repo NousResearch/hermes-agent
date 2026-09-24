@@ -18,7 +18,6 @@ const THINKING_PREFIX_RE =
 
 const URL_RE = /\bhttps?:\/\/\S+/gi
 const CLOSED_THINK_BLOCK_RE = /<think[\s>][\s\S]*?<\/think>/g
-const SENTENCE_BOUNDARY_RE = /(?<=[.!?])(?:\s|\n)|(?:\n\n)/
 
 const MARKDOWN_TABLE_DELIMITER_CELL_RE = /^:?-{3,}:?$/
 
@@ -183,10 +182,66 @@ function normalizeLineBreaks(text: string): string {
     .replace(SOFT_BREAK_RE, ' ')
 }
 
+// ---------------------------------------------------------------------------
+// Sentence cutter for the streaming TTS session — mirrors the server-side
+// SentenceChunker's contract: emit complete sentences as they form, hold
+// the incomplete tail, flush everything on finish.
+// ---------------------------------------------------------------------------
+
+const SENTENCE_CUT_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
+const MIN_SENTENCE_CHARS = 24
+
+export function cutSentences(
+  buffer: string,
+  flush: boolean,
+  minSentenceChars?: null | number
+): { sentences: string[]; rest: string } {
+  // tts.streaming.min_len when the backend sends it (a 5–7 char CJK opener is a
+  // whole clause); the historical 24 for older backends without the key.
+  const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
+  const sentences: string[] = []
+  let rest = buffer
+  let start = 0
+
+  SENTENCE_CUT_RE.lastIndex = 0
+
+  let match = SENTENCE_CUT_RE.exec(buffer)
+
+  while (match) {
+    const end = match.index + match[0].length
+    const candidate = buffer.slice(start, end).trim()
+
+    // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
+    // provider call per abbreviation — unless a later boundary extends them.
+    if (candidate.length >= minChars) {
+      sentences.push(candidate)
+      start = end
+    }
+
+    match = SENTENCE_CUT_RE.exec(buffer)
+  }
+
+  rest = buffer.slice(start)
+
+  if (flush) {
+    const tail = rest.trim()
+
+    if (tail) {
+      sentences.push(tail)
+    }
+
+    rest = ''
+  }
+
+  return { sentences, rest }
+}
+
+/** Incremental wrapper over cutSentences() that also hides <think> blocks
+ *  split across deltas. Used by the sync (non-streaming provider) fallback. */
 export class IncrementalSpeechSentenceBuffer {
   private buffer = ''
 
-  constructor(private readonly minLength = 20) {}
+  constructor(private readonly minSentenceChars?: null | number) {}
 
   append(delta: string): string[] {
     this.buffer = (this.buffer + delta).replace(CLOSED_THINK_BLOCK_RE, '')
@@ -195,38 +250,17 @@ export class IncrementalSpeechSentenceBuffer {
       return []
     }
 
-    const sentences: string[] = []
-    let searchStart = 0
-
-    while (true) {
-      const match = SENTENCE_BOUNDARY_RE.exec(this.buffer.slice(searchStart))
-
-      if (!match || match.index === undefined) {
-        break
-      }
-
-      const end = searchStart + match.index + match[0].length
-      const head = this.buffer.slice(0, end).trim()
-
-      if (head.length < this.minLength) {
-        searchStart = end
-
-        continue
-      }
-
-      sentences.push(head)
-      this.buffer = this.buffer.slice(end)
-      searchStart = 0
-    }
+    const { sentences, rest } = cutSentences(this.buffer, false, this.minSentenceChars)
+    this.buffer = rest
 
     return sentences
   }
 
   flush(): string[] {
-    const tail = this.buffer.replace(CLOSED_THINK_BLOCK_RE, '').trim()
+    const { sentences } = cutSentences(this.buffer.replace(CLOSED_THINK_BLOCK_RE, ''), true, this.minSentenceChars)
     this.buffer = ''
 
-    return tail ? [tail] : []
+    return sentences
   }
 }
 

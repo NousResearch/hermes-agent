@@ -3,7 +3,6 @@ import { resolveGatewayWsUrl } from '@hermes/shared'
 import type { OwnerScope } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
 import {
-  cutSentences,
   directTtsConfig,
   type DirectTtsConfig,
   synthesizeSpeechClientDirect
@@ -16,7 +15,7 @@ import {
   type VoicePlaybackState
 } from '@/store/voice-playback'
 
-import { sanitizeTextForSpeech } from './speech-text'
+import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 
 // Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
 // nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback

@@ -3,6 +3,7 @@
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_diagnostics as kd
 
 
 def test_rejected_completion_keeps_auth_hold_and_coalesces_ticks(tmp_path, monkeypatch):
@@ -65,15 +66,26 @@ def test_rejected_completion_keeps_auth_hold_and_coalesces_ticks(tmp_path, monke
         ).fetchone()[0] == 2
 
         assert kb.block_task(conn, tid, reason="operator review")
+        assert kb.get_task(conn, tid).guard_reason is None
+        assert not any(d.kind == "respawn_guard" for d in kd.compute_task_diagnostics(
+            kb.get_task(conn, tid), kb.list_events(conn, tid), kb.list_runs(conn, tid)))
+        # Older blocked rows can carry a persisted guard; unblock must retire it
+        # immediately rather than waiting for a dispatcher tick.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET guard_reason='acceptance_rejected', guard_count=1, "
+                         "guard_last_seen_at=123 WHERE id=?", (tid,))
         assert kb.unblock_task(conn, tid)
         assert not kb.get_task(conn, tid).acceptance_rejected
+        assert kb.get_task(conn, tid).guard_reason is None
+        assert not any(d.kind == "respawn_guard" for d in kd.compute_task_diagnostics(
+            kb.get_task(conn, tid), kb.list_events(conn, tid), kb.list_runs(conn, tid)))
         assert kbd.check_respawn_guard(conn, tid) is None
         kbd.dispatch_once(conn, spawn_fn=spawn, max_spawn=1, reconcile_orphans=False)
         assert kb.get_task(conn, tid).guard_reason is None
         assert kb.get_task(conn, tid).guard_count == 0
         assert conn.execute(
             "SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guard_cleared'", (tid,),
-        ).fetchone()[0] == 1
+        ).fetchone()[0] == 2
         assert spawned == [tid]
 
 

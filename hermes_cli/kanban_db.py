@@ -3301,6 +3301,7 @@ def block_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        _clear_respawn_guard(conn, task_id)
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
@@ -3577,6 +3578,15 @@ def request_changes(
     return True, implementer
 
 
+def _clear_respawn_guard(conn: sqlite3.Connection, task_id: str) -> None:
+    """Retire an active dispatch hold exactly once within the caller's transaction."""
+    if conn.execute(
+        "UPDATE tasks SET guard_reason=NULL, guard_last_seen_at=NULL, guard_count=0 "
+        "WHERE id=? AND guard_reason IS NOT NULL", (task_id,),
+    ).rowcount:
+        _append_event(conn, task_id, "respawn_guard_cleared")
+
+
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
     dry_run: bool = False,
@@ -3621,6 +3631,7 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        _clear_respawn_guard(conn, task_id)
         _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
 
     return True, None
@@ -3689,6 +3700,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        _clear_respawn_guard(conn, task_id)
         _append_event(
             conn, task_id, "unblocked",
             (

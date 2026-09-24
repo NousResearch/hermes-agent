@@ -743,12 +743,22 @@ def _rule_respawn_guard(task, events, runs, now, cfg) -> list[Diagnostic]:
     count = int(_task_field(task, "guard_count", 0) or 0)
     last_seen = int(_task_field(task, "guard_last_seen_at", 0) or 0)
     task_id = _task_field(task, "id")
+    first_seen = last_seen
+    for ev in reversed(events):
+        kind = _event_kind(ev)
+        if kind == "respawn_guard_cleared":
+            break
+        if kind == "respawn_guarded":
+            if _parse_payload(ev).get("reason") == reason:
+                first_seen = _event_ts(ev)
+            else:
+                break
     return [Diagnostic(
         kind="respawn_guard", severity="warning",
         title=f"Dispatch held: {reason} ({count} guarded ticks)",
         detail=f"The dispatcher last held this task for {reason}; inspect the task and resolve the hold before retrying.",
         actions=[_cli_hint("Inspect task and hold", f"hermes kanban show {task_id}")],
-        first_seen_at=last_seen, last_seen_at=last_seen, count=count,
+        first_seen_at=first_seen, last_seen_at=last_seen, count=count,
         data={"reason": reason, "guard_last_seen_at": last_seen},
     )]
 

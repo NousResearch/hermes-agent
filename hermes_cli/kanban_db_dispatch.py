@@ -2044,15 +2044,7 @@ def _dispatch_lane_task(
 
     if not dry_run:
         with _kb.write_txn(conn):
-            previous = conn.execute(
-                "SELECT guard_reason FROM tasks WHERE id=?", (task_id,),
-            ).fetchone()
-            if previous and previous["guard_reason"] is not None:
-                conn.execute(
-                    "UPDATE tasks SET guard_reason=NULL, guard_last_seen_at=NULL, guard_count=0 "
-                    "WHERE id=?", (task_id,),
-                )
-                _kb._append_event(conn, task_id, "respawn_guard_cleared")
+            _kb._clear_respawn_guard(conn, task_id)
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent

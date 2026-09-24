@@ -43,6 +43,16 @@ def test_coalesced_guard_is_visible_on_operator_surfaces(tmp_path, monkeypatch, 
         assert cli._cmd_diagnostics(argparse.Namespace(task=tid, severity=None, json=True)) == 0
         diagnostics = json.loads(capsys.readouterr().out)[0]["diagnostics"]
         assert any(d["kind"] == "respawn_guard" and d["count"] == 2 for d in diagnostics)
+        first = next(d for d in diagnostics if d["kind"] == "respawn_guard")
+        first_seen = first["first_seen_at"]
+        monkeypatch.setattr(kbd.time, "time", lambda: first_seen + 60)
+        guarded_tick()
+        assert cli._cmd_diagnostics(argparse.Namespace(task=tid, severity=None, json=True)) == 0
+        after = next(d for d in json.loads(capsys.readouterr().out)[0]["diagnostics"]
+                     if d["kind"] == "respawn_guard")
+        assert after["first_seen_at"] == first_seen
+        assert after["last_seen_at"] == first_seen + 60
+        assert after["count"] == 3
 
         def poll(interval, tick):
             tick()
@@ -57,6 +67,6 @@ def test_coalesced_guard_is_visible_on_operator_surfaces(tmp_path, monkeypatch, 
         monkeypatch.setattr(kanban_ops, "_poll_loop", poll)
         assert kanban_ops._cmd_tail(argparse.Namespace(task_id=tid, interval=0.1)) == 0
         tail = capsys.readouterr().out
-        assert "current guard: blocker_auth (count=2)" in tail
         assert "current guard: blocker_auth (count=3)" in tail
+        assert "current guard: blocker_auth (count=4)" in tail
         assert "Current guard cleared" in tail

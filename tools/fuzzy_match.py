@@ -509,20 +509,14 @@ def _preserve_unicode_in_replacement(content: str, matches: list[Span],
     if norm_old != _unicode_normalize(file_region):
         return new_string  # strategy shouldn't have fired; fall back
 
+    # Strictly increasing (every UNICODE_MAP replacement is non-empty), so bisect finds the original
+    # char owning a norm index, including one that falls inside a multi-char expansion (em-dash -> '--').
     file_orig_to_norm = _build_orig_to_norm_map(file_region)
-    file_norm_to_orig = _invert_norm_map(file_orig_to_norm)
 
     result_parts: list[str] = []
     for tag, i1, i2, j1, j2 in SequenceMatcher(None, norm_old, new_string).get_opcodes():
         if tag == "equal":
-            orig_start = file_norm_to_orig.get(i1)
-            if orig_start is None:
-                # Equal-block boundary landed inside a multi-char expansion
-                # (em-dash -> '--'): a norm index with no original position of
-                # its own. Snap back to the expansion's first original char —
-                # the old fallback of 0 spliced region-start text into the
-                # replacement, duplicating it after the edit.
-                orig_start = bisect.bisect_right(file_orig_to_norm, i1) - 1
+            orig_start = bisect.bisect_right(file_orig_to_norm, i1) - 1
             orig_end = _norm_end_to_orig(file_orig_to_norm, orig_start, i2)
             result_parts.append(file_region[orig_start:orig_end])
         elif tag != "delete":

@@ -215,3 +215,65 @@ it('moves a local error onto the durable row it already represents (#119326)', (
   expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant'])
   expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
 })
+
+it('matches a rowId-less pasted attachment turn after backend rewrite without crossing a newer turn (#120978)', () => {
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('stored-first-user', 'user', 'first'),
+      row('stored-first-assistant', 'assistant', 'first answer'),
+      row(
+        'stored-paste-user',
+        'user',
+        'unable to publish\n\n[Image attached at: C:\\img\\shot.png]\n[screenshot]\n<memory-context>image context</memory-context>',
+        {
+          rowId: 18711
+        }
+      ),
+      row('stored-paste-assistant', 'assistant', 'partial', { rowId: 18715 }),
+      row('stored-newer-user', 'user', 'newer', { rowId: 18817 }),
+      row('stored-newer-assistant', 'assistant', 'newer reply', { rowId: 18822 })
+    ],
+    [
+      row('local-first-user', 'user', 'first'),
+      row('local-first-assistant', 'assistant', 'first answer'),
+      row('local-paste-user', 'user', 'unable to publish', { attachmentRefs: ['data:image/png;base64,AAAA'] }),
+      row('local-paste-failure', 'assistant', 'partial', { error: 'upstream timeout' }),
+      row('local-newer-user', 'user', 'newer', { rowId: 18817 }),
+      row('local-newer-assistant', 'assistant', 'newer reply', { rowId: 18822 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual([
+    'stored-first-user',
+    'stored-first-assistant',
+    'stored-paste-user',
+    'stored-paste-assistant',
+    'stored-newer-user',
+    'stored-newer-assistant'
+  ])
+  expect(merged.find(message => message.id === 'stored-paste-assistant')).toMatchObject({
+    error: 'upstream timeout',
+    pending: false
+  })
+})
+
+it('keeps a repeated pasted caption inside the following hydrated turn boundary (#120978)', () => {
+  const rewrittenCaption = 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]\n[screenshot]'
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('stored-first-user', 'user', rewrittenCaption, { rowId: 11 }),
+      row('stored-first-assistant', 'assistant', 'first partial', { rowId: 12 }),
+      row('stored-newer-user', 'user', rewrittenCaption, { rowId: 20 }),
+      row('stored-newer-assistant', 'assistant', 'newer reply', { rowId: 21 })
+    ],
+    [
+      row('local-first-user', 'user', 'unable to publish', { attachmentRefs: ['data:image/png;base64,AAAA'] }),
+      row('local-first-failure', 'assistant', 'first partial', { error: 'upstream timeout' }),
+      row('local-newer-user', 'user', 'unable to publish', { rowId: 20 }),
+      row('local-newer-assistant', 'assistant', 'newer reply', { rowId: 21 })
+    ]
+  )
+
+  expect(merged.find(message => message.id === 'stored-first-assistant')).toMatchObject({ error: 'upstream timeout' })
+  expect(merged.find(message => message.id === 'stored-newer-assistant')?.error).toBeUndefined()
+})

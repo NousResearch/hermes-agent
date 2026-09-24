@@ -682,6 +682,7 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      sessions: string
       about: string
       billing: string
       notifications: string
@@ -1709,6 +1710,7 @@ export interface Translations {
       state: {
         notice: {
           loggedOut: { title: string; message: string; action: string }
+          openPortal: string
           noCard: { title: string; message: string; action: string }
         }
         paymentMethod: {
@@ -3846,6 +3848,11 @@ export interface Translations {
     remotePickerTitle: string
     remotePickerDescription: string
     remotePickerSelect: string
+    remotePickerNewFolder: string
+    remotePickerFolderName: string
+    remotePickerCreateFolder: string
+    remotePickerInvalidFolderName: string
+    remotePickerCreateFolderFailed: (error: string) => string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string

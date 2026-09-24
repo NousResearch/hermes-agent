@@ -140,6 +140,15 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     from gateway.run import _claim_host_gateway_role
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(host_lock_dir))
+    owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
+    assert owner is not None
+    # Another process holds the record (our own pid would short-circuit _owner_is_standalone before
+    # the wire is asked), and it never answers the rescan: an owner we cannot interrogate is a
+    # multiplexer.
+    from gateway.host_attach import HostGateway
+    silent_owner = HostGateway(pid=owner.pid + 1, home=host_lock_dir, profiles=(),
+                               served_known=False)
+    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: silent_owner)
     monkeypatch.setattr("gateway.host_attach.request_serve_profile",
                         lambda profile, owner=None: None)  # owner never answers
     handle = _hold_host_lock_from_another_description(hr)
@@ -189,8 +198,10 @@ async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_los
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustNotStart)
-    monkeypatch.setattr("gateway.host_attach.request_serve_profile",
-                        lambda profile, owner=None: None)  # a multiplexer, not a standalone owner
+    # The lock holder is a multiplexer: the standalone start-beside carve-out must not rescue a
+    # --replace unit. Patched where _claim_host_gateway_role reads it; the request_serve_profile
+    # patch this used to carry was unreachable (_owner_is_standalone short-circuits on our own pid).
+    monkeypatch.setattr("gateway.run._owner_is_standalone", lambda: False)
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_lock_dir))
     handle = _hold_host_lock_from_another_description(hr)

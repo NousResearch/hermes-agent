@@ -11978,7 +11978,7 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
         def interrupt(self, *args, **kwargs):
             calls["interrupt_called"] = True
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    server._sessions["sid"] = _session(agent=_Agent(), running=True)
     try:
         resp = server.handle_request(
             {
@@ -11995,6 +11995,64 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert resp["result"]["text"] == "also check auth.log"
     assert calls["steer_text"] == "also check auth.log"
     assert "interrupt_called" not in calls  # must NOT interrupt
+
+
+class _RecordingSteerAgent:
+    def __init__(self):
+        self.steered = []
+
+    def steer(self, text):
+        self.steered.append(text)
+        return True
+
+
+def test_session_steer_on_idle_session_is_rejected_not_parked():
+    """#64578: with no live turn a steer has no tool call to ride. Accepting it parked the text in
+    the agent's pending-steer slot, where the next turn's pre-API drain spliced it after an OLD tool
+    row. It must come back 'rejected' (clients then send it as a normal prompt) and never reach
+    agent.steer()."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.steer", "params": {"session_id": "sid", "text": "check the logs"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "rejected", resp
+    assert agent.steered == []
+
+
+def test_steer_slash_on_idle_session_sends_as_next_turn():
+    """#64578: idle `/steer <text>` via command.dispatch must go out as a normal next-turn message
+    with a notice saying so, not claim "Steer queued" while stashing the text on the agent."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    result = res["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "check the logs"
+    assert result.get("notice")
+    assert agent.steered == []
+
+
+def test_steer_slash_during_live_turn_still_steers():
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=True)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert res["result"]["type"] == "exec"
+    assert agent.steered == ["check the logs"]
 
 
 def test_session_steer_rejects_empty_text():
@@ -15641,7 +15699,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         resp = server.handle_request(
             {
                 "id": "1",
-                "method": "session.branch",
+                "method": "session.branch_whole",
                 "params": {"session_id": "parent", "name": "forked"},
             }
         )
@@ -15651,6 +15709,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # The branch row is self-describing: stamped with the parent's owning
         # profile, not left NULL for aggregators to mis-tag as "default".
         assert seen.get("profile_name") == "mlperf"
+        assert resp["result"].get("messages_omitted") is True
+        assert "messages" not in resp["result"]
         assert seen.get("title") == (seen["created"], "forked")
         assert len(seen["msgs"]) == 1
         assert seen.get("launch") is None
@@ -15756,6 +15816,61 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert server._sessions[runtime_sid]["pending_title"] is None
 
     server._sessions.pop(runtime_sid, None)
+
+
+def test_session_branch_stored_copies_parent_history_without_returning_transcript(monkeypatch):
+    """Whole-session desktop branches read the parent in the gateway, not in the renderer."""
+
+    class _Scope:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeDB:
+        def get_resume_conversations(self, key):
+            assert key == "parent"
+            return [], [
+                {"role": "user", "content": "first question", "timestamp": 1},
+                {"role": "assistant", "content": "first answer", "timestamp": 2},
+            ]
+
+    class _FakeAgent:
+        model = "test-model"
+
+    seen: dict = {}
+    db = _FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(db))
+    monkeypatch.setattr(
+        server,
+        "_seed_branch_row",
+        lambda _record, _key, _parent, history, *_args: seen.update(history=list(history)),
+    )
+    monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: _FakeAgent())
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {"model": "test-model"})
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.branch_stored",
+            "params": {
+                "cols": 96,
+                "parent_session_id": "parent",
+                "source": "desktop",
+            },
+        }
+    )
+
+    assert "result" in resp, resp
+    assert [message["content"] for message in seen["history"]] == ["first question", "first answer"]
+    assert resp["result"]["message_count"] == 2
+    assert resp["result"].get("messages_omitted") is True
+    assert "messages" not in resp["result"]
 
 
 def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):

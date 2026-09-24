@@ -26,6 +26,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -102,10 +103,77 @@ class TestDependencySyncWouldRewrite:
         ):
             assert cli_main._dependency_sync_would_rewrite("cryptography") is None
 
+    def test_unpinned_transitive_moves_with_its_pinned_parent(self, tmp_path):
+        """#81594: ``_cffi_backend`` belongs to cffi, which no pyproject line pins; it moves
+        only because cryptography's base pin moved and uv.lock resolves cffi elsewhere. Once the
+        parent is at its pin the transitive stays put (fail-open, #86735) — even while an
+        optional-extra parent (brotlicffi) is missing, which a skipped extra can leave forever."""
+        (tmp_path / "uv.lock").write_text(
+            textwrap.dedent(
+                """
+                version = 1
+                [[package]]
+                name = "brotlicffi"
+                version = "1.2.0.2"
+                dependencies = [{ name = "cffi" }]
+                [[package]]
+                name = "cffi"
+                version = "2.0.0"
+                [[package]]
+                name = "cryptography"
+                version = "50.0.0"
+                dependencies = [{ name = "cffi" }]
+                """
+            ),
+            encoding="utf-8",
+        )
+        pyproject = textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            dependencies = ["cryptography==50.0.0"]
+            [project.optional-dependencies]
+            messaging = ["brotlicffi==1.2.0.2"]
+            """
+        )
+        for crypto, expected in (("49.0.0", True), ("50.0.0", None)):
+            installed = {"cffi": "1.17.1", "cryptography": crypto}
+            with self._with_pyproject(tmp_path, pyproject), patch(
+                "importlib.metadata.version", side_effect=installed.__getitem__
+            ):
+                assert cli_main._dependency_sync_would_rewrite("cffi") is expected
+
 
 # ---------------------------------------------------------------------------
 # _detect_self_loaded_native_modules — version-gated detection
 # ---------------------------------------------------------------------------
+
+
+def _native_module(site: Path, name: str, suffix: str) -> types.ModuleType:
+    module = types.ModuleType(name)
+    module.__file__ = str(site.joinpath(*name.split(".")).with_name(name.rsplit(".", 1)[-1] + suffix))
+    return module
+
+
+def test_native_extension_scan_derives_every_loaded_venv_extension(tmp_path):
+    """#81594: the report's locked file was ``_cffi_backend.pyd``, which no hand list named.
+    Every loaded extension under site-packages maps to its distribution; stdlib extensions
+    and pure-Python modules never do."""
+    from hermes_cli.update_cmd_deps import _loaded_native_extension_dists
+
+    site, stdlib = tmp_path / "site-packages", tmp_path / "DLLs"
+    modules = {
+        "_cffi_backend": _native_module(site, "_cffi_backend", ".pyd"),
+        "yaml._yaml": _native_module(site, "yaml._yaml", ".pyd"),
+        "yaml": _native_module(site, "yaml", ".py"),
+        "_ssl": _native_module(stdlib, "_ssl", ".pyd"),
+        "builtin_like": types.ModuleType("builtin_like"),
+    }
+    loaded = _loaded_native_extension_dists(
+        modules, [site], (".pyd",),
+        {"_cffi_backend": ["cffi"], "yaml": ["PyYAML"], "_ssl": ["nope"]})
+
+    assert loaded == {"cffi": ["_cffi_backend.pyd"], "PyYAML": ["_yaml.pyd"]}
 
 
 @pytest.mark.linux_only
@@ -116,10 +184,15 @@ def test_self_lock_detection_is_noop_off_windows():
 
 @pytest.mark.windows_only
 def test_loaded_module_with_pending_version_change_is_flagged():
+    import sysconfig
+
+    site = Path(sysconfig.get_path("purelib"))
     with patch.dict(
-        sys.modules, {"cryptography.hazmat.bindings._rust": MagicMock()}
+        sys.modules, {"_cffi_backend": _native_module(site, "_cffi_backend", ".pyd")}
+    ), patch(
+        "importlib.metadata.packages_distributions", return_value={"_cffi_backend": ["cffi"]}
     ), patch.object(cli_main, "_dependency_sync_would_rewrite", return_value=True):
-        assert "cryptography (_rust.pyd)" in cli_main._detect_self_loaded_native_modules()
+        assert "cffi (_cffi_backend.pyd)" in cli_main._detect_self_loaded_native_modules()
 
 
 @pytest.mark.windows_only
@@ -248,16 +321,14 @@ class TestUpdateEntrypointImportHygiene:
                 """
                 import sys
                 import hermes_cli.main
-                from hermes_cli.update_cmd import _SELF_LOCKING_NATIVE_MODULES
-                loaded = [
-                    p for p in _SELF_LOCKING_NATIVE_MODULES
-                    if p in sys.modules and not p.startswith("yaml")
-                ]
                 # PyYAML is a base dep every CLI process needs (config parsing);
-                # it is version-gated instead of import-gated. Everything else
-                # in the registry must stay lazy.
+                # it is version-gated instead of import-gated. The crypto stack
+                # (cryptography's _rust.pyd and cffi's _cffi_backend.pyd) must stay lazy.
+                loaded = [
+                    m for m in ("cryptography.hazmat.bindings._rust", "_cffi_backend")
+                    if m in sys.modules
+                ]
                 assert not loaded, f"eagerly loaded self-locking modules: {loaded}"
-                assert "cryptography.hazmat.bindings._rust" not in sys.modules
                 print("OK")
                 """
             )

@@ -457,10 +457,15 @@ identically on every tick — and to alert every time. A 429 the model API
 returns mid-run is not held this way; it is retried on the normal cadence.
 
 Instead, the scheduler **parks the job**: the one failure alert says the
-window is closed and that the job is held, `next_run_at` moves to the first
-scheduled occurrence after the window (`quota_hold_until` on the job record),
-and nothing fires or alerts until then. Any run that reaches the model clears
-the hold. One-shot jobs are not held.
+window is closed and that the job is held. If the provider reopens well before
+a **sparse** cron job's next natural occurrence (at least half a schedule
+period early), a blocked scheduled occurrence retries once at that recovery
+boundary; a second quota failure waits for the natural schedule. Dense
+schedules, manual runs and interval jobs retain their natural next run.
+Otherwise, missed occurrences are coalesced and
+`next_run_at` moves to the first scheduled occurrence after the window. The
+parked instant is stored as `quota_hold_until`; nothing fires or alerts before
+it. Any run that reaches the model clears the hold. One-shot jobs are not held.
 
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 

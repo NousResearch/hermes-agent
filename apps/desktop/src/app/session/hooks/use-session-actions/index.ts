@@ -23,6 +23,7 @@ import {
   stripPendingClarifyProjectionForCache,
   toChatMessages
 } from '@/lib/chat-messages'
+import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -2054,8 +2055,8 @@ export function useSessionActions({
         updateSessionState(
           resumed.session_id,
           state => ({
-            ...state,
-            ...(runtimeInfo ?? {}),
+            // The deferred build reports the session's own effort later (#79807).
+            ...markReasoningEffortPending({ ...state, ...(runtimeInfo ?? {}) }),
             messages: visibleMessagesForView,
             transcriptProvenance,
             busy: resumedRunning,
@@ -2359,20 +2360,54 @@ export function useSessionActions({
 
         // No title: the backend auto-names the branch from its parent's lineage.
         if (!createFlight) {
+          const branchParams = {
+            session_id: sourceSessionId,
+            ...(branchCount !== undefined ? { count: branchCount } : {})
+          }
+
+          const createParams = {
+            cols: 96,
+            source: 'desktop',
+            ...(cwd && { cwd }),
+            ...(profile ? { profile } : {}),
+            ...(parentStoredId && { parent_session_id: parentStoredId })
+          }
+
           createFlight = (
             sourceSessionId
-              ? requestBranchGateway<SessionCreateResponse>('session.branch', {
-                  session_id: sourceSessionId,
-                  ...(branchCount !== undefined ? { count: branchCount } : {})
+              ? requestBranchGateway<SessionCreateResponse>(
+                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
+                  branchParams
+                ).catch(err => {
+                  if (!isMissingRpcMethod(err)) {
+                    throw err
+                  }
+
+                  return requestBranchGateway<SessionCreateResponse>('session.branch', branchParams)
                 })
-              : requestBranchGateway<SessionCreateResponse>('session.create', {
-                  cols: 96,
-                  source: 'desktop',
-                  ...(cwd && { cwd }),
-                  ...(profile ? { profile } : {}),
-                  messages: branchMessages.map(({ content, role }) => ({ content, role })),
-                  ...(parentStoredId && { parent_session_id: parentStoredId })
-                })
+              : branchMessages.length
+                ? requestBranchGateway<SessionCreateResponse>('session.create', {
+                    ...createParams,
+                    messages: branchMessages.map(({ content, role }) => ({ content, role }))
+                  })
+                : requestBranchGateway<SessionCreateResponse>('session.branch_stored', createParams).catch(
+                    async err => {
+                      if (!isMissingRpcMethod(err)) {
+                        throw err
+                      }
+
+                      const { messages } = await getAllSessionMessages(parentStoredId ?? '', ownerRoute ?? profile)
+
+                      if (!messages.length) {
+                        throw new Error('nothing to branch — send a message first')
+                      }
+
+                      return requestBranchGateway<SessionCreateResponse>('session.create', {
+                        ...createParams,
+                        messages: messages.map(({ content, role }) => ({ content, role }))
+                      })
+                    }
+                  )
           ).catch(err => {
             // Drop the flight so a genuine retry re-issues the create; a
             // resolved flight is cleared once the child is fully published.
@@ -2522,11 +2557,10 @@ export function useSessionActions({
       const startingRouteToken = getRouteToken()
       const startingCwd = $currentCwd.get().trim()
 
-      // The live atom may be a compacted model projection. Read the durable
-      // display projection before choosing the branch prefix so a whole-chat
-      // branch does not inherit only the summary/tail. If the backend is
-      // temporarily unavailable, retain the local snapshot and let the branch
-      // RPC make its own authoritative read.
+      // Message-level branches still need the local message id to choose their
+      // prefix. Whole-chat branches send only the parent identity below; the
+      // backend reads the durable display projection without materializing it in
+      // the renderer.
       let authoritativeMessages: ChatMessage[] | null = null
       const profile = await resolveSessionProfile(storedSessionId)
 
@@ -2536,7 +2570,7 @@ export function useSessionActions({
       // whichever socket is active.
       const ownerRoute = storedSessionId ? sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId)) : undefined
 
-      if (storedSessionId) {
+      if (messageId && storedSessionId) {
         try {
           const persisted = await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)
           const hydrated = toChatMessages(persisted.messages)
@@ -2567,9 +2601,9 @@ export function useSessionActions({
         return false
       }
 
-      const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
+      const branchMessages = messageId ? selectBranchMessages(messages, authoritativeMessages, messageId) : []
 
-      if (!branchMessages.length) {
+      if (messageId && !branchMessages.length) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
 
         return false
@@ -2622,21 +2656,10 @@ export function useSessionActions({
           await ensureGatewayProfile(profile)
         }
 
-        // Read the parent transcript from the backend that OWNS it. A bare
-        // profile scope resolves against the active connection, which for a
-        // foreign-owned parent holds no such session: the read comes back empty
-        // and the branch aborts as "nothing to branch" before any create.
-        const { messages } = await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)
-        const branchMessages = toBranchMessages(toChatMessages(messages))
-
-        if (!branchMessages.length) {
-          notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
-
-          return false
-        }
-
+        // Ask the owning backend to read and copy the parent transcript. The
+        // renderer deliberately does not materialize the complete history.
         return await forkBranch(
-          branchMessages,
+          [],
           null,
           stored?.id ?? storedSessionId,
           stored?.cwd?.trim(),

@@ -3,9 +3,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Test harness drives the host's request scope, as a connection switch does.
+// eslint-disable-next-line no-restricted-imports
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 // Test harness supplies the host's locale registration, as plugin loading does.
 // eslint-disable-next-line no-restricted-imports
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
+// Test harness reads the host's toast stack.
+// eslint-disable-next-line no-restricted-imports
+import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { bindApi, taskKey } from './api'
 import { TaskDrawer } from './drawer'
@@ -68,6 +74,10 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setApiRequestConnection(null)
+  setApiRequestProfile(null)
+  clearNotifications()
+  vi.unstubAllGlobals()
   cleanup()
   client.clear()
   disposeApi()
@@ -90,6 +100,102 @@ function openDrawer() {
 }
 
 describe('task attachment compatibility', () => {
+  it('downloads the persisted attachment through its original remote owner', async () => {
+    const save = vi.fn().mockResolvedValue({ saved: true })
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    setApiRequestConnection('remote-owner')
+    setApiRequestProfile('research')
+    detail = {
+      ...legacyDetail,
+      attachments: [{ id: 42, filename: 'report.md', stored_path: '/persisted/attachments/report.md' }]
+    }
+    openDrawer()
+    const download = await screen.findByRole('button', { name: 'Download report.md' })
+    setApiRequestConnection('other-host')
+    setApiRequestProfile('other-profile')
+    fireEvent.click(download)
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        connectionId: 'remote-owner',
+        profile: 'research',
+        path: '/persisted/attachments/report.md',
+        suggestedName: 'report.md'
+      })
+    )
+    await waitFor(() => expect($notifications.get()[0]).toMatchObject({ kind: 'info', message: 'Saved' }))
+  })
+
+  it('keeps a local-backend attachment on this computer after switching to a remote', async () => {
+    const save = vi.fn().mockResolvedValue({ saved: true })
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    setApiRequestConnection('local')
+    detail = {
+      ...legacyDetail,
+      attachments: [{ id: 7, filename: 'notes.txt', stored_path: '/home/me/.hermes/kanban/notes.txt' }]
+    }
+    openDrawer()
+    const download = await screen.findByRole('button', { name: 'Download notes.txt' })
+    setApiRequestConnection('remote-host')
+    fireEvent.click(download)
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        connectionId: 'local',
+        path: '/home/me/.hermes/kanban/notes.txt',
+        suggestedName: 'notes.txt'
+      })
+    )
+  })
+
+  it('disables downloads with no persisted path instead of guessing a workspace path', async () => {
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download gone.md' })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('reports a failed download and allows retry', async () => {
+    const save = vi.fn().mockRejectedValue(new Error('File not found'))
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md', stored_path: '/persisted/gone.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download gone.md' })
+    fireEvent.click(button)
+    await waitFor(() =>
+      expect($notifications.get()[0]).toMatchObject({
+        kind: 'error',
+        message: 'File not found',
+        title: 'Download failed'
+      })
+    )
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    save.mockResolvedValueOnce({ saved: true })
+    fireEvent.click(button)
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+  })
+
+  it('disables a pending download and treats save-dialog cancellation quietly', async () => {
+    let finish!: (value: { saved: boolean; canceled: boolean }) => void
+
+    const save = vi.fn(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'report.md', stored_path: '/persisted/report.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download report.md' })
+    fireEvent.click(button)
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true))
+    fireEvent.click(button)
+    expect(save).toHaveBeenCalledOnce()
+    await act(async () => finish({ saved: false, canceled: true }))
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    expect($notifications.get()).toEqual([])
+  })
+
   it.each([{}, { attachments: null }])(
     'keeps older task details usable without attachment controls (%j)',
     async extra => {

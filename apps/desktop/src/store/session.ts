@@ -701,6 +701,10 @@ export function mergeSessionPage(
   return interleaved
 }
 
+// Error scope for a failed unified read (Electron's primary fan-out): every
+// profile in the aggregate went unread, not a profile literally named `all`.
+const ALL_PROFILES_SCAN = 'all'
+
 function sidebarProfileKey(session: Pick<SessionInfo, 'profile'>): string {
   return (session.profile ?? '').trim() || 'default'
 }
@@ -735,7 +739,11 @@ export function carryForwardFailedProfileSessions(
   for (const session of previous) {
     // A hidden row (canonical Bot Chat) is LISTED-NEVER by design: the
     // failed-slice carry must not ride it back into the sidebar (#113273).
-    if (session.hidden || !failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+    if (
+      session.hidden ||
+      !(failed.has(ALL_PROFILES_SCAN) || failed.has(sidebarProfileKey(session))) ||
+      incomingIds.has(sessionListIdentity(session))
+    ) {
       continue
     }
 
@@ -765,6 +773,10 @@ export function keepFailedProfileMeta<T>(
 ): Record<string, T> {
   if (!errors?.length) {
     return incoming
+  }
+
+  if (errors.some(error => error.profile?.trim() === ALL_PROFILES_SCAN)) {
+    return previous
   }
 
   const next = { ...incoming }
@@ -935,6 +947,8 @@ export const $sessionProfilesUsage = atom<Record<string, ProfileUsage>>({})
  *  is a damaged store, not deleted history, and the sidebar says so. */
 export const $corruptSessionStores = atom<string[]>([])
 export const $sessionsLoading = atom(true)
+/** True when the first sidebar read failed before it could populate any rows. */
+export const $sessionsLoadError = atom(false)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export interface ActiveSessionStoredIdRotation {
@@ -1301,6 +1315,7 @@ export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean
 export const setSessionProfilesUsage = (next: Updater<Record<string, ProfileUsage>>) =>
   updateAtom($sessionProfilesUsage, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
+export const setSessionsLoadError = (next: Updater<boolean>) => updateAtom($sessionsLoadError, next)
 
 /** Publish the corrupt-store profiles from one sidebar refresh; identity-stable when unchanged. */
 export function setCorruptSessionStores(storage: Record<string, string> | undefined) {

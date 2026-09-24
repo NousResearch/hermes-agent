@@ -353,6 +353,9 @@ class SessionPersistenceMixin:
         """
         from agent.agent_runtime_helpers import note_turn_persisted
         with _persist_lock(self):
+            # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
+            # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``): only it knows
+            # the reason to record.
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
@@ -362,25 +365,14 @@ class SessionPersistenceMixin:
             note_turn_persisted(self)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Pop empty-response retry scaffolding from the tail, then (only if any was present) rewind the
-        tool-result / assistant(tool_calls) pair the failed iteration left hanging — otherwise the next user
-        turn lands as ``...tool, user`` and providers return empty content forever."""
+        """Pop empty-response retry scaffolding from the tail. The
+        assistant(tool_calls) / tool rows before it stay: they were saved before the tools ran, so
+        dropping them from the live history only makes the model repeat a side effect the durable
+        transcript already records."""
         def tail(*keys: str) -> bool:
             return bool(messages) and isinstance(messages[-1], dict) and any(messages[-1].get(k) for k in keys)
 
-        def tail_role(role: str) -> bool:
-            return bool(messages) and isinstance(messages[-1], dict) and messages[-1].get("role") == role
-
-        dropped_scaffolding = False
         while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
-            messages.pop()
-            dropped_scaffolding = True
-        if not dropped_scaffolding:
-            return
-        while tail_role("tool"):
-            messages.pop()
-        # Providers reject a dangling assistant(tool_calls) whose results were just popped.
-        if tail_role("assistant") and tail("tool_calls"):
             messages.pop()
 
     _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")

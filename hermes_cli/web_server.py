@@ -1391,6 +1391,21 @@ def _on_server_started(
     _hb_loop.call_later(_hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval)
 
 
+def _windows_serve_loop_factory(config):
+    """Loop factory for serve on Windows: always a selector loop.
+
+    uvicorn 0.41's ``asyncio_loop_factory`` returns ProactorEventLoop on
+    win32, on which uvicorn's socket stack binds-but-never-accepts (READY
+    prints, then WinError 10014 accept failures, exit 1, desktop
+    ECONNREFUSED — #120164, regression of #50641). A factory that already
+    yields selector loops (older uvicorn, explicit ``--loop``) passes through.
+    """
+    factory = config.get_loop_factory()
+    if factory is None or factory is asyncio.ProactorEventLoop:  # type: ignore[attr-defined]
+        return asyncio.SelectorEventLoop
+    return factory
+
+
 def _run_serve(serve, config, host: str, port: int) -> None:
     """Drive ``serve()`` on the loop uvicorn expects.
 
@@ -1408,7 +1423,7 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         try:
             from uvicorn._compat import asyncio_run as runner
 
-            runner_kwargs = {"loop_factory": config.get_loop_factory()}
+            runner_kwargs = {"loop_factory": _windows_serve_loop_factory(config)}
         except Exception:
             runner = asyncio.run
             runner_kwargs = {}

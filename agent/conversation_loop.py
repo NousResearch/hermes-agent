@@ -606,14 +606,18 @@ def _print_billing_or_entitlement_guidance(
     ))
 
 
-def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
+def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
     """Bot Chat capability epoch check for a stored prompt.
 
     The stored prompt embeds a capability fingerprint; a mismatch is a deliberate
     once-per-change rebuild. Unstamped prompts never match; probe failures fail closed
     to "reuse" so the cache is kept. Legacy upgrade: a Bot Chat prompt predating the
     epoch mechanism gets ONE title-gated migration rebuild; the stamped result cannot
-    re-fire."""
+    re-fire. A NULL or empty stored prompt already rebuilds every turn, so this probe
+    is not a gate there and must not run.
+    """
+    if not stored_prompt:
+        return False
     try:
         from tools.bot_mode_probe import (
             BOT_CHAT_TITLE,
@@ -702,6 +706,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+        # NULL/empty rows never reach this probe: they already rebuild below.
         if _bot_chat_prompt_stale(agent, stored_prompt):
             logger.info(
                 "Bot Chat capability epoch changed for session %s; rebuilding system prompt to "

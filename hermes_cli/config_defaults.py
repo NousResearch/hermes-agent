@@ -1052,6 +1052,10 @@ DEFAULT_CONFIG = {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        # Seconds a local engine (Piper, KittenTTS) stays loaded after the last speech toggle
+        # turns off, so a quick re-activation (wake word, voice-chat restart) skips the reload.
+        # 0 unloads immediately.
+        "keep_warm_seconds": 60,
         "streaming": {
             # Shortest first sentence (chars) spoken on its own by streaming TTS; shorter openers
             # ride with the next sentence. 20 suits English; CJK voice setups use ~6.

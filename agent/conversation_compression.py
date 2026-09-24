@@ -297,13 +297,15 @@ def _working_attempt_is_current(compressor: Any, generation: Any) -> bool:
     """True when *generation* is still the last attempt that began summary work.
 
     Without a published marker (attribute-less compressor, or the attempt never reached
-    dispatch) supersession falls back to the entry-generation ownership check."""
+    dispatch) supersession falls back to the entry-generation ownership check; a compressor
+    that no attempt has ever claimed cannot have been superseded."""
     if not generation:
         return True
     with _COMPRESSOR_ATTEMPT_LOCK:
         marker = getattr(compressor, "_compression_working_attempt_generation", None)
         if marker is None:
-            return int(getattr(compressor, "_compression_attempt_generation", 0) or 0) == generation
+            entry_generation = int(getattr(compressor, "_compression_attempt_generation", 0) or 0)
+            return not entry_generation or entry_generation == generation
         return int(marker) == int(generation)
 
 
@@ -1248,12 +1250,55 @@ def run_compress_context_with_progress_timeout(
     # EVERY host unwind must revoke commit admission or a detached worker could
     # later mutate durable state; handled_exit marks paths that settle it themselves
     handled_exit = False
+
+    def _is_unchanged_snapshot(result: Any) -> bool:
+        # A worker that observed the deadline/cancel returns the SAME messages object it was handed.
+        return result[0] is messages
+
+    def _recover_from_stall() -> tuple[list[dict[str, Any]], str]:
+        """One stall-fallback ladder for every host-side stall exit (idle timeout, settled-at-deadline
+        no-op, post-cancel unchanged commit): retry chain, then on_timeout, then the degraded prompt."""
+        # Sample before the retry chain so the reported wait is the stall itself, not stall + retry.
+        # #76354 S3 analogue: silence is charged from the LAST PROGRESS event, not from the start of
+        # this wait slice, or progress early in a previous slice would let silence approach 2x idle.
+        waited = time.monotonic() - wait_started
+        since_progress = fence.seconds_since_progress()
+        # Lease is free, so run the fallback BEFORE on_timeout: that callback records
+        # the summary-failure cooldown, which would no-op the retry's summary call.
+        if stall_fallback:
+            recovered = _retry_compression_on_fallback_chain(
+                worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
+                idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
+                on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
+                escalate_deterministic=escalate_deterministic,
+            )
+            if recovered is not None:
+                return recovered
+        if on_timeout is not None:
+            with _swallow('compress_context timeout callback failed', exc_info=True):
+                on_timeout(idle, waited, since_progress)
+        else:
+            logger.warning(
+                "Context compression made no progress for %.1fs (total wait %.1fs, ceiling %.1fs); continuing without "
+                "compression", since_progress, waited, ceiling,
+            )
+        return messages, _resolve_fallback_prompt()
+
     try:
         settled, result = _await_worker_within_budget(
             future, fence, idle=idle, ceiling=ceiling, wait_started=wait_started
         )
         if settled:
             handled_exit = True
+            # The deadline is visible to the worker as well as the host. A cooperative summary call can
+            # observe it, unwind, and return the unchanged snapshot just BEFORE future.result() times out.
+            # Treat that settled no-op exactly like the host-side stall path; otherwise whether the
+            # deterministic fallback runs depends on a thread-scheduling race at the deadline.
+            if stall_fallback and fence.deadline_exceeded and _is_unchanged_snapshot(result):
+                if on_timeout_cause is not None:
+                    with _swallow('compress_context timeout-cause callback failed', exc_info=True):
+                        on_timeout_cause(True, fence.progress_observed)
+                return _recover_from_stall()
             return result
 
         # F6: a not-yet-started future must not linger as a stale queued job.
@@ -1280,39 +1325,22 @@ def run_compress_context_with_progress_timeout(
                 future, ceiling=ceiling, wait_started=wait_started, on_commit_overrun=on_commit_overrun
             )
             handled_exit = True
+            # The cancelled worker can race the host into its commit section while unwinding a stalled
+            # summary.  When that commit is only the unchanged snapshot, returning it here skips the
+            # stall-fallback ladder entirely (the over-window first-stall test then flakes).  The worker is
+            # settled and its lease is free at this point, so retry exactly as the pre-commit cancel path
+            # does.  A real compression result remains authoritative and returns immediately.
+            if stall_fallback and _is_unchanged_snapshot(result):
+                return _recover_from_stall()
             return result
 
         # Idle-timeout: cancel won pre-commit. Also free the worker's durable lease via
         # the holder-qualified hook so a NEW compressor can acquire at once (no ABA).
         handled_exit = True
         _release_cancelled_worker(future, fence, total_exhausted=total_exhausted, ceiling=ceiling)
-        waited = time.monotonic() - wait_started
-        # #76354 S3 analogue for this wait: charge the idle budget from the LAST PROGRESS event, not from
-        # the start of this wait slice. Waiting a full ``idle`` after progress that landed early in the
-        # previous slice would allow silence to approach 2x the budget.
-        since_progress = fence.seconds_since_progress()
-        # Lease is free, so run the fallback BEFORE on_timeout: that callback records
-        # the summary-failure cooldown, which would no-op the retry's summary call.
-        if stall_fallback:
-            recovered = _retry_compression_on_fallback_chain(
-                worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
-                idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
-                on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
-                escalate_deterministic=escalate_deterministic,
-            )
-            if recovered is not None:
-                return recovered
-        if on_timeout is not None:
-            with _swallow('compress_context timeout callback failed', exc_info=True):
-                on_timeout(idle, waited, since_progress)
-        else:
-            logger.warning(
-                "Context compression made no progress for %.1fs (total wait %.1fs, ceiling %.1fs); continuing without "
-                "compression", since_progress, waited, ceiling,
-            )
         # Leave the future on the shared pool: fence cancel won, so a late
         # commit cannot land (same detachment model as gateway hygiene).
-        return messages, _resolve_fallback_prompt()
+        return _recover_from_stall()
     finally:
         if not handled_exit:
             # Any unwind while waiting: revoke commit admission and release the worker's
@@ -3579,6 +3607,48 @@ class _CommitOutcome:
     made_progress: bool = False
 
 
+def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
+    """The in-place archive watermark, capped at the newest durable row the compressor was handed.
+
+    The lease watermark is the newest row in state.db, but a surface compacts the history it holds, and that
+    can be older: a Desktop/TUI or CLI ``/compress`` does not hold turns another surface appended to the same
+    session since it loaded. Archived under the watermark, those rows would leave every surface's
+    history and search, and the summary never saw them. Above the cap they take the concurrent-append path
+    instead (cloned after the compacted set).
+
+    Only while the held history is a live prefix of the session: its LAST row names an exact ``_row_id``, and
+    that row is still active (after another surface compacted, the held rows are archived and every live row
+    would be cloned beside the new summary). An id is exact while its dict is unchanged since it was loaded: a
+    dict loaded from the DB is born carrying both the id and the persist marker, and a pass that rewrote its
+    content drops the marker and keeps the id (the user/assistant merges in ``repair_message_sequence``, or a
+    context engine that rewrites in place). Such a row absorbed later durable rows whose ids are gone from the
+    held set, so its id no longer names what the summary covered: capped there, those rows would be cloned
+    live beside a summary that already contains them. A trailing row of unknown provenance may be durable
+    under the lease watermark without any stamp (the TUI model-switch marker, written with a bare
+    ``append_message``); capped below it, the clone would land beside its own carried copy. A ``here N`` tail
+    is marker-swept copies, so ``compress_now`` keeps a copy's id only when its source still carried the
+    marker; their ids are trusted as given.
+    """
+    if watermark is None:
+        return None
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    def _exact_id(m: dict, copied: bool) -> Optional[int]:
+        rid = m.get("_row_id")
+        if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
+            return None
+        return rid if copied or m.get(_DB_PERSISTED_MARKER) else None
+
+    ids = [_exact_id(m, False) for m in messages if isinstance(m, dict)]
+    ids += [_exact_id(m, True) for m in (verbatim_tail or ()) if isinstance(m, dict)]
+    held = [rid for rid in ids if rid is not None]
+    if not ids or ids[-1] is None or (newest_held := max(held)) >= watermark:
+        return watermark
+    if agent._session_db.get_message_role(agent.session_id, newest_held) is None:
+        return watermark
+    return newest_held
+
+
 def _commit_compaction(
     agent: Any, messages: list, compressed: list, *, in_place: bool, lease: _CompressionLease,
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
@@ -3645,8 +3715,8 @@ def _commit_compaction(
                     tail_count += len(verbatim_tail)
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
-                    watermark=lease.watermark, lock_holder=lease.holder, tail_count=tail_count,
-                    carried_messages=carried_messages,
+                    watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
+                    lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"

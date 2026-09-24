@@ -830,6 +830,7 @@ export const es = defineLocale({
       keysSettings: 'Configuración',
       mcp: 'MCP',
       archivedChats: 'Chats archivados',
+      sessions: 'Sesiones',
       about: 'Acerca de',
       billing: 'Facturación',
       notifications: 'Notificaciones',
@@ -2375,9 +2376,10 @@ export const es = defineLocale({
         notice: {
           loggedOut: {
             title: 'Conecta tu cuenta de Nous',
-            message: 'Ejecuta /portal en la TUI o abre el portal de Nous para conectar tu cuenta.',
-            action: 'Abrir el portal ↗'
+            message: 'Inicia sesión con tu cuenta de Nous para ver aquí tu saldo, plan y uso.',
+            action: 'Iniciar sesión'
           },
+          openPortal: 'Abrir el portal ↗',
           noCard: {
             title: 'No hay ningún método de pago registrado',
             message:
@@ -5049,6 +5051,11 @@ export const es = defineLocale({
     remotePickerTitle: 'Elige una carpeta remota',
     remotePickerDescription: 'Explora carpetas en el backend conectado.',
     remotePickerSelect: 'Seleccionar carpeta',
+    remotePickerNewFolder: 'Nueva carpeta',
+    remotePickerFolderName: 'Nombre de la carpeta',
+    remotePickerCreateFolder: 'Crear carpeta',
+    remotePickerInvalidFolderName: 'Escribe un solo nombre de carpeta, sin barras.',
+    remotePickerCreateFolderFailed: error => `No se pudo crear la carpeta (${error}).`,
     folderTip: cwd => cwd,
     openFolder: 'Abrir carpeta',
     refreshTree: 'Actualizar árbol',

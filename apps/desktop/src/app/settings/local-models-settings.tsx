@@ -215,7 +215,7 @@ export function LocalModelsSettings() {
     }
   }
 
-  async function handleServer(action: 'start' | 'stop') {
+  async function handleServer(action: 'start' | 'stop' | 'reset') {
     setServerBusy(true)
 
     try {
@@ -223,12 +223,15 @@ export function LocalModelsSettings() {
       notify({
         durationMs: 3_500,
         kind: 'success',
-        message: action === 'stop' ? copy.serverStopped : copy.serverStarted,
+        message: { start: copy.serverStarted, stop: copy.serverStopped, reset: copy.serverReset }[action],
         title: copy.title
       })
       refresh()
     } catch (err) {
-      notifyError(err, action === 'stop' ? copy.serverStopFailed : copy.serverStartFailed)
+      notifyError(
+        err,
+        { start: copy.serverStartFailed, stop: copy.serverStopFailed, reset: copy.serverResetFailed }[action]
+      )
     } finally {
       setServerBusy(false)
     }
@@ -306,7 +309,16 @@ export function LocalModelsSettings() {
 
   const failedInstall = jobs.some(job => job.kind === 'runtime-install' && job.status === 'error')
 
-  if (qJob || (needsSetup && !configure && heroModel && !installStarting && !rJob && !failedInstall)) {
+  if (
+    qJob ||
+    (needsSetup &&
+      !configure &&
+      heroModel &&
+      !installStarting &&
+      !rJob &&
+      !failedInstall &&
+      !status.server_reset_available)
+  ) {
     // Stage rail derived from the job phase: engine -> model -> finish.
     const phase = qJob?.phase ?? ''
 
@@ -492,6 +504,18 @@ export function LocalModelsSettings() {
           />
         )}
 
+        {status.server_reset_available && (
+          <ListRow
+            action={
+              <Button disabled={serverBusy} onClick={() => void handleServer('reset')} size="sm" variant="outline">
+                {serverBusy && <Loader2 className="animate-spin" />}
+                {copy.resetServer}
+              </Button>
+            }
+            description={copy.resetServerDetail}
+            title={copy.resetServer}
+          />
+        )}
         {rJob && status.runtime_installed && (
           <ListRow
             below={<ProgressBar percent={rJob.percent} />}

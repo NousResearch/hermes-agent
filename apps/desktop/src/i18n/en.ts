@@ -1846,6 +1846,11 @@ export const en: Translations = {
       serverStopped: 'Local server stopped — GPU memory freed.',
       serverStarted: 'Local server running.',
       serverStopFailed: 'Could not stop the local server',
+      resetServer: 'Reset server state',
+      resetServerDetail:
+        'Clear stale server state while keeping models and settings. This does not start the server or change whether local models are enabled.',
+      serverReset: 'Stale server state cleared',
+      serverResetFailed: 'Could not reset the local server state',
       serverStartFailed: 'Could not start the local server',
       activating: 'Starting…',
       activateFailed: model => `Could not switch to ${model}`,

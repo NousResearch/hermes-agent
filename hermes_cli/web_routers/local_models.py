@@ -67,7 +67,7 @@ class QuickstartBody(BaseModel):
 
 
 class ServerActionBody(BaseModel):
-    action: str                 # "stop" | "start"
+    action: str                 # "stop" | "start" | "reset"
 
 
 class ModelEjectBody(BaseModel):
@@ -477,6 +477,8 @@ def _active_llamacpp_model_id() -> str | None:
 def local_models_status():
     """Cheap, immediate: config state + installed runtime + staged models + supervisor state (GPU facts live
     in /hardware). Sync def on purpose: blocking urlopen/scans run in the threadpool."""
+    from hermes_cli.local_runtime.recovery import stale_record_available
+
     section = _runtime_section()
     configured_tag = section.get("tag") or binaries.default_tag()
     have = binaries.installed_tags()
@@ -496,6 +498,7 @@ def local_models_status():
         "update_available": bool(section.get("enabled") and have and configured_tag not in have),
         "runtime_installed": runtime_backend is not None, "runtime_backend": runtime_backend,
         "server_running": running is not None, "server_base_url": (running or {}).get("base_url"),
+        "server_reset_available": stale_record_available(),
         "active_model_id": _active_llamacpp_model_id(), "loaded_models": loaded,
         # Live load progress per model (SSE-fed): {model_id: {stage, value, percent}}.
         # The chat's loading bar and the picker rows poll this; garnish, never a 500.
@@ -819,16 +822,28 @@ def _start_server() -> None:
     _start_local_server(_set_runtime_enabled(True), _SERVER_START_FAILED)
 
 
-_SERVER_ACTIONS = {"stop": _stop_server, "start": _start_server}
+def _reset_server_record() -> None:
+    from hermes_cli.local_runtime.recovery import reset_stale_record
+
+    try:
+        cleared = reset_stale_record()
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail="Local server state could not be reset; try again") from exc
+    if not cleared:
+        raise HTTPException(status_code=409, detail="Local server state is active or cannot be verified as stale")
+
+
+_SERVER_ACTIONS = {"stop": _stop_server, "start": _start_server, "reset": _reset_server_record}
 
 
 @router.post("/api/local-models/server")
 async def local_models_server(body: ServerActionBody):
     """Turn the local engine off (stop the server, free ALL GPU memory, disable auto-start) or back on. Unlike
-    per-model eject the off switch IS durable: the user said off, so boots stay off until they say on."""
+    per-model eject the off switch IS durable: the user said off, so boots stay off until they say on.
+    Reset only clears proven stale state; it leaves processes and the auto-start setting unchanged."""
     action = (body.action or "").strip().lower()
     if action not in _SERVER_ACTIONS:
-        raise HTTPException(status_code=400, detail="action must be 'stop' or 'start'")
+        raise HTTPException(status_code=400, detail="action must be 'stop', 'start', or 'reset'")
     try:
         await asyncio.to_thread(_SERVER_ACTIONS[action])
     except HTTPException:

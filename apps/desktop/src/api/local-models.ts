@@ -102,7 +102,7 @@ export function ejectLocalModel(modelId: string): Promise<{ ok: boolean }> {
   })
 }
 
-export function setLocalServer(action: 'start' | 'stop'): Promise<{ ok: boolean }> {
+export function setLocalServer(action: 'start' | 'stop' | 'reset'): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(),
     body: { action },

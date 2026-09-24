@@ -204,7 +204,17 @@ class LlamaServerSupervisor:
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
         # readiness probe racing the boot doesn't throw the app back to onboarding.
-        self._write_state()
+        try:
+            self._write_state()
+        except Exception:
+            # A watchdog restart must not strand an unrecorded child if publication fails.
+            try:
+                self._terminate_tree(self.proc)
+            finally:
+                if self._job is not None:
+                    self._job.close()
+                    self._job = None
+            raise
 
     def start(self, timeout_s: int = 120) -> None:
         with self._lifecycle_lock:
@@ -219,6 +229,7 @@ class LlamaServerSupervisor:
         import os
         import psutil
         from utils import atomic_json_write
+        from hermes_cli.local_runtime.recovery import state_lock
 
         proc = psutil.Process(self.proc.pid)
         self._state = {"base_url": self.base_url, "api_key": self.api_key,
@@ -228,7 +239,8 @@ class LlamaServerSupervisor:
         path = state_path()
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)
-        atomic_json_write(path, self._state, mode=0o600)
+        with state_lock():
+            atomic_json_write(path, self._state, mode=0o600)
 
     def _wait_health(self, timeout_s: int) -> None:
         deadline = time.monotonic() + timeout_s

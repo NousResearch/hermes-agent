@@ -1370,6 +1370,7 @@ export interface LocalModelsStatus {
   runtime_installed: boolean
   runtime_backend: string | null
   server_running: boolean
+  server_reset_available?: boolean
   server_base_url: string | null
   active_model_id: string | null
   loaded_models: Record<string, string>

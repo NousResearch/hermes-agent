@@ -1394,6 +1394,11 @@ export const ja = defineLocale({
       serverStopped: 'ローカルサーバーを停止しました——GPU メモリを解放しました。',
       serverStarted: 'ローカルサーバー実行中。',
       serverStopFailed: 'ローカルサーバーを停止できませんでした',
+      resetServer: 'サーバーの状態をリセット',
+      resetServerDetail:
+        'モデルと設定を保持したまま、古いサーバー状態を消去します。サーバーの起動やローカルモデルの有効・無効の変更は行いません。',
+      serverReset: '古いサーバー状態を消去しました',
+      serverResetFailed: 'ローカルサーバーの状態をリセットできませんでした',
       serverStartFailed: 'ローカルサーバーを起動できませんでした',
       activating: '起動中…',
       activateFailed: model => `${model} への切り替えに失敗しました`,

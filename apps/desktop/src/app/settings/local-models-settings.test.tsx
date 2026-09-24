@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $localRuntimeInstallStarting, $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { notifyError } from '@/store/notifications'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -29,8 +30,11 @@ vi.mock('@/hermes', () => ({
   quickstartLocalModels: vi.fn(),
   searchHFModels: vi.fn(),
   setApiRequestProfile: vi.fn(),
+  setLocalServer: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
+
+vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 
 import * as hermes from '@/hermes'
 
@@ -144,6 +148,45 @@ afterEach(() => {
 })
 
 describe('LocalModelsSettings', () => {
+  it.each(['success', 'conflict'])('resets only stale state and handles %s', async outcome => {
+    const staleStatus = { ...BASE_STATUS, runtime_installed: true, server_reset_available: true }
+    mocked.getLocalModelsStatus.mockResolvedValue(staleStatus)
+    const conflict = new Error('The local server is running; stop it before resetting its state.')
+
+    if (outcome === 'conflict') {
+      mocked.setLocalServer.mockRejectedValueOnce(conflict)
+    } else {
+      mocked.setLocalServer.mockImplementationOnce(async () => {
+        mocked.getLocalModelsStatus.mockResolvedValue({ ...staleStatus, server_reset_available: false })
+
+        return { ok: true }
+      })
+    }
+
+    renderPane()
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset server state' }))
+    await waitFor(() => expect(mocked.setLocalServer).toHaveBeenCalledExactlyOnceWith('reset'))
+
+    if (outcome === 'conflict') {
+      await waitFor(() => expect(notifyError).toHaveBeenCalledWith(conflict, 'Could not reset the local server state'))
+      expect((screen.getByRole('button', { name: 'Reset server state' }) as HTMLButtonElement).disabled).toBe(false)
+    } else {
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Reset server state' })).toBeNull())
+      expect(screen.getByRole('button', { name: /let me choose/i })).toBeTruthy()
+    }
+  })
+
+  it.each([undefined, false])('hides reset when backend availability is %s', async available => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      server_reset_available: available
+    })
+    await renderFullPane()
+    expect(screen.queryByRole('button', { name: 'Reset server state' })).toBeNull()
+    expect(mocked.setLocalServer).not.toHaveBeenCalled()
+  })
+
   it.each(['starting', 'running'])(
     'keeps the runtime update view visible with no staged models while %s',
     async phase => {

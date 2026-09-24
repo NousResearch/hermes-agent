@@ -5,11 +5,126 @@ import json
 import logging
 import math
 import os
+import stat
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import psutil
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def state_lock(timeout_s: float = 2.0):
+    """Serialize reset with publications, including watchdog restarts; never proceed unlocked."""
+    from hermes_constants import mkdir_under_hermes_home
+    from hermes_cli.local_runtime.bootstrap import _try_lock_boot_fd, _unlock_boot_fd
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    path = state_path().with_suffix(".lock")
+    mkdir_under_hermes_home(path.parent)
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise OSError("local runtime lock is not a regular file")
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    acquired = False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("local runtime lock is not a regular file")
+        deadline = time.monotonic() + timeout_s
+        while not (acquired := _try_lock_boot_fd(fd)):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("local runtime state is busy; try again")
+            time.sleep(0.05)
+        yield
+    finally:
+        try:
+            if acquired:
+                _unlock_boot_fd(fd)
+        finally:
+            os.close(fd)
+
+
+def _stale_record(state: dict, modified: float) -> bool:
+    """Positive evidence of a dead/reused identity, not merely failure to verify ownership."""
+    from urllib.parse import urlsplit
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    try:
+        if not isinstance(state, dict) or not _valid_pid(state.get("pid")):
+            return False
+        base_url = state.get("base_url")
+        if not isinstance(base_url, str) or not base_url:
+            return False
+        url = urlsplit(base_url)
+        if (url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port
+                or not isinstance(state.get("api_key"), str) or not state["api_key"]):
+            return False
+        modern = is_modern(state)
+        if modern:
+            if (not _valid_birth(state.get("create_time"))
+                    or not _valid_pid(state.get("owner_pid"))
+                    or not _valid_birth(state.get("owner_create_time"))
+                    or state["owner_create_time"] > state["create_time"]
+                    or not isinstance(state.get("executable"), str) or not state["executable"]
+                    or not _owner_is_dead(state)):
+                return False  # A live/unknown owner may be between watchdog incarnations.
+        try:
+            proc = psutil.Process(state["pid"])
+            born = proc.create_time()
+            if modern:
+                return born > state["create_time"]
+            if born > modified:
+                return True
+            executable = proc.exe()
+            if not executable or executable.endswith(" (deleted)"):
+                return False
+            exe = Path(executable)
+            if not exe.is_absolute():
+                return False
+            return not exe.resolve().is_relative_to(state_path().parent.resolve())
+        except psutil.NoSuchProcess:
+            return True
+    except (KeyError, TypeError, ValueError, OSError, psutil.Error):
+        return False
+
+
+def stale_record_available() -> bool:
+    """Read-only UI hint; reset must repeat this check under the publication lock."""
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    try:
+        path = state_path()
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return False
+        with path.open(encoding="utf-8") as stream:
+            return _stale_record(json.load(stream), os.fstat(stream.fileno()).st_mtime)
+    except (OSError, ValueError):
+        return False
+
+
+def reset_stale_record() -> bool:
+    """Forget only a proven stale record; never signal a process, enable, or start the runtime."""
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    with state_lock():
+        path = state_path()
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                return False
+            with path.open(encoding="utf-8") as stream:
+                state, modified = json.load(stream), os.fstat(stream.fileno()).st_mtime
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError):
+            return False
+        if not _stale_record(state, modified):
+            return False
+        path.unlink()
+        return True
 
 
 def read_state() -> dict:

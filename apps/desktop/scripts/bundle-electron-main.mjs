@@ -39,14 +39,24 @@ const define = isDev
   ? {}
   : { 'process.env.HERMES_DESKTOP_IS_PACKAGED': JSON.stringify(true) }
 
-// Bundle main.ts → dist/electron-main.mjs
+// Keep Electron's stable entry point small and split the implementation into
+// hashed ESM chunks. This avoids publishing one monolithic main-process file
+// containing every privileged API call, which is prone to generic AV heuristic
+// false positives on unsigned Windows build-from-source artifacts.
+//
+// `dist/**` is unpacked as a unit by electron-builder, so the entry's relative
+// chunk imports remain available in both development and packaged builds.
 await build({
-  entryPoints: [mainEntry],
+  entryPoints: { 'electron-main': mainEntry },
   bundle: true,
+  splitting: true,
   platform: 'node',
   format: 'esm',
   target: 'node20',
-  outfile: mainOut,
+  outdir: distDir,
+  outExtension: { '.js': '.mjs' },
+  entryNames: '[name]',
+  chunkNames: 'chunks/[name]-[hash]',
   external,
   banner: {
     js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",

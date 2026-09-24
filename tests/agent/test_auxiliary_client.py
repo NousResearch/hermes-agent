@@ -4178,6 +4178,22 @@ class TestOpenRouterExplicitApiKey:
                 "Should NOT fall back to OPENROUTER_API_KEY when explicit_api_key is provided"
             )
 
+    def test_fallback_openrouter_uses_entry_base_url(self, monkeypatch):
+        """A fallback relay must win over OpenRouter's canonical endpoint."""
+        from agent.auxiliary_client import _resolve_fallback_entry
+        monkeypatch.setenv("OPENROUTER_API_KEY", "fallback-key")
+        mock_openai = MagicMock(return_value=MagicMock(name="openrouter-client"))
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = _resolve_fallback_entry({
+                "provider": "openrouter", "model": "openai/gpt-5-mini",
+                "base_url": "https://relay.example/v1",
+            })
+
+        assert client is not None
+        assert model == "openai/gpt-5-mini"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://relay.example/v1"
+
 
 def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):
     entry = SimpleNamespace(
@@ -4216,6 +4232,21 @@ class TestAnthropicExplicitApiKey:
         assert mock_build.call_args.args[0] == "explicit-fallback-key", (
             "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
         )
+
+    def test_fallback_anthropic_uses_entry_base_url(self):
+        """An Anthropic Messages relay must receive fallback traffic at its configured URL."""
+        from agent.auxiliary_client import _resolve_fallback_entry
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            client, model = _resolve_fallback_entry({
+                "provider": "anthropic", "model": "claude-haiku-4-5-20251001",
+                "api_key": "fallback-key", "base_url": "https://relay.example/anthropic",
+            })
+
+        assert client is not None
+        assert model == "claude-haiku-4-5-20251001"
+        assert mock_build.call_args.args[1] == "https://relay.example/anthropic"
 
 
 # ── Auxiliary unhealthy-provider TTL cache (issue #23570) ────────────────

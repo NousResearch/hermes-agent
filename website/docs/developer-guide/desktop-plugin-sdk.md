@@ -574,6 +574,65 @@ let the next provider (then the core label) win. The pill keeps its chrome, pin
 dot, and menu; only the label changes — the sanctioned replacement for the
 MutationObserver text-rewriting plugins do today.
 
+#### Model pill label providers
+
+```ts
+import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from '@hermes/plugin-sdk'
+
+interface ComposerModelPillContext {
+  model: string            // the model slug the pill would show
+  reasoningEffort: string  // the session's live effort level, '' when the model has none
+  compact: boolean         // floating-composer mode: chevron only, providers are NOT consulted
+}
+interface ComposerModelPillProvider {
+  label: (ctx: ComposerModelPillContext) => string | null
+}
+
+ctx.register({
+  area: COMPOSER_AREAS.modelPill,
+  id: 'my-label',
+  data: { label: ({ model, reasoningEffort }) => reasoningEffort ? `${model} · ${reasoningEffort}` : null } satisfies ComposerModelPillProvider
+})
+```
+
+**Arbitration.** Providers are consulted in registry order and the *first
+non-null, non-empty string wins*. A provider that returns `null` (or `''`)
+declines and the next one is asked; a provider that **throws** is treated as
+declining — the error is swallowed and the pill falls through to the next
+provider, then to the core label, so a broken plugin can never blank the pill.
+In compact (floating) mode the pill renders only the chevron and no provider is
+called. `label()` is re-evaluated only when the registry, the model, the effort
+level or the compact flag changes.
+
+**Teardown.** The provider is an ordinary data contribution: `ctx.register`
+returns its disposer and the loader drops it when the plugin is disabled or
+reloaded, at which point the core label is restored. There is nothing to undo
+in `ctx.onDispose`.
+
+**Migrating compact-reasoning-label.** The plugin used to find the pill via
+`[data-slot="composer-root"] button span.truncate`, regex-strip a trailing
+effort word from `span.textContent`, and re-run that sweep from a body-wide
+`MutationObserver` plus a 1 s `setInterval`. On current builds the core label no
+longer contains the effort word (the level has its own `ReasoningPill`), so the
+strip is a no-op; the sanctioned shape is to compute the label from the context
+instead of editing rendered text:
+
+```js
+register(ctx) {
+  ctx.register({
+    area: COMPOSER_AREAS.modelPill,
+    id: 'compact-reasoning-label',
+    // Decline (null) whenever there is nothing to change so the core label wins.
+    data: { label: ({ model }) => shorten(model) ?? null }
+  })
+  // No MutationObserver, no setInterval, no injected <style>: the contribution is
+  // disposed with the plugin.
+}
+```
+
+The reasoning-pill visibility CSS the plugin also injected has no hook; it is
+only needed if the app ever hides that label at narrow widths.
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.

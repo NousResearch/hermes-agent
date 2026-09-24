@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events'
 import { expect, test } from 'vitest'
 
 import { httpStatusError } from './api-transport'
+import { NativeAuthChangedError } from './native-access-token'
 import type { NativeTokenSet } from './native-oauth'
 import { createPortalSession } from './portal-session'
 
@@ -17,10 +18,11 @@ const PORTAL = 'https://portal.example.test'
 const TOKEN_URL = `${PORTAL}/api/oauth/token`
 
 function makeFakeServerFactory(port = 51999) {
-  const state: any = { handler: null, closed: false, pages: [] as string[] }
+  const state: any = { handler: null, handlers: [] as any[], closed: false, pages: [] as string[] }
 
   const createServer: any = (handler: any) => {
     state.handler = handler
+    state.handlers.push(handler)
     const server: any = new EventEmitter()
     server.listen = (_port: number, _host: string, cb: () => void) => cb()
     server.address = () => ({ address: '127.0.0.1', family: 'IPv4', port })
@@ -32,9 +34,9 @@ function makeFakeServerFactory(port = 51999) {
     return server
   }
 
-  state.hit = (query: string) => {
+  state.hit = (query: string, handler = state.handler) => {
     const res: any = { writeHead: () => undefined, end: (html: string) => state.pages.push(html) }
-    state.handler({ url: `/callback?${query}` }, res)
+    handler({ url: `/callback?${query}` }, res)
   }
 
   return { createServer, state }
@@ -68,7 +70,13 @@ const fresh = (overrides: Partial<NativeTokenSet> = {}): NativeTokenSet => ({
   ...overrides
 })
 
-function makeSession(opts: { store?: ReturnType<typeof makeStore>; postJson?: any; now?: number; createServer?: any }) {
+function makeSession(opts: {
+  store?: ReturnType<typeof makeStore>
+  postJson?: any
+  now?: number
+  createServer?: any
+  onSessionOrgChanged?: () => void
+}) {
   const store = opts.store ?? makeStore()
   const opened: string[] = []
 
@@ -83,7 +91,8 @@ function makeSession(opts: { store?: ReturnType<typeof makeStore>; postJson?: an
     },
     createServer: opts.createServer,
     loginTimeoutMs: 5_000,
-    nowSeconds: () => opts.now ?? 1_000
+    nowSeconds: () => opts.now ?? 1_000,
+    onSessionOrgChanged: opts.onSessionOrgChanged
   })
 
   return { session, store, opened }
@@ -228,15 +237,15 @@ test('a transient refresh failure keeps the refresh token for the next attempt',
   expect(session.hasLivePortalSession()).toBe(true)
 })
 
-test('hasLivePortalSession: a refresh token counts even when the access token has expired', () => {
-  expect(makeSession({ store: makeStore({ [PORTAL]: fresh({ expiresAt: 1 }) }) }).session.hasLivePortalSession()).toBe(
-    true
-  )
-  expect(
-    makeSession({
-      store: makeStore({ [PORTAL]: fresh({ expiresAt: 1, refreshToken: '' }) })
-    }).session.hasLivePortalSession()
-  ).toBe(false)
+test('hasLivePortalSession: a refresh token, or an unexpired access token, is a live session', () => {
+  const live = (tokens: NativeTokenSet) =>
+    makeSession({ store: makeStore({ [PORTAL]: tokens }), now: 1_000 }).session.hasLivePortalSession()
+
+  expect(live(fresh({ expiresAt: 1 }))).toBe(true)
+  // No refresh token, but the access token is still good for a while.
+  expect(live(fresh({ expiresAt: 5_000, refreshToken: '' }))).toBe(true)
+  expect(live(fresh({ expiresAt: 1, refreshToken: '' }))).toBe(false)
+  expect(makeSession({}).session.hasLivePortalSession()).toBe(false)
 })
 
 test('§5 exchange posts exactly the contract literals with the current portal access token', async () => {
@@ -309,22 +318,28 @@ test('§5 exchange: a rejected subject token earns ONE forced portal refresh, th
 })
 
 test('§5 exchange: invalid_grant that survives a fresh subject token means access was lost — no loop', async () => {
-  let exchanges = 0
+  const subjects: string[] = []
+  let refreshes = 0
 
   const { session } = makeSession({
     store: makeStore({ [PORTAL]: fresh() }),
     postJson: async (_url: string, body: any) => {
       if (body.grant_type === 'refresh_token') {
-        return { access_token: 'AT-2', expires_in: 900, refresh_token: 'RT-2' }
+        // Every refresh rotates to a NEW token, so only the attempt bound
+        // (not "the refresh returned the same token") can stop a loop.
+        refreshes++
+
+        return { access_token: `AT-${refreshes + 1}`, expires_in: 900, refresh_token: `RT-${refreshes + 1}` }
       }
 
-      exchanges++
+      subjects.push(body.subject_token)
       throw httpStatusError(400, JSON.stringify({ error: 'invalid_grant' }))
     }
   })
 
   await expect(session.exchangeForAgent('agt_1')).rejects.toMatchObject({ cloudAgentAccessLost: true })
-  expect(exchanges).toBe(2)
+  expect(subjects).toEqual(['AT-1', 'AT-2'])
+  expect(refreshes).toBe(1)
 })
 
 test('§5 exchange: invalid_target is access lost immediately, with no refresh or retry', async () => {
@@ -359,4 +374,110 @@ test('logout clears the stored portal token set', async () => {
   expect(store.map.size).toBe(0)
   expect(session.hasLivePortalSession()).toBe(false)
   await expect(session.getPortalAccessToken()).resolves.toBeNull()
+})
+
+const authorizeState = (url: string) => new URL(url).searchParams.get('state')!
+const tick = () => new Promise(r => setTimeout(r, 5))
+const codeResponse = (n: number) => ({ access_token: `AT-L${n}`, expires_in: 900, refresh_token: `RT-L${n}` })
+
+test('Deny while already signed in keeps the existing session: { signedIn: true, cancelled: true }', async () => {
+  const { createServer, state } = makeFakeServerFactory()
+  const store = makeStore({ [PORTAL]: fresh() })
+  const { session, opened } = makeSession({ createServer, store })
+
+  const pending = session.login()
+  await tick()
+  state.hit(`error=access_denied&state=${authorizeState(opened[0])}`)
+
+  await expect(pending).resolves.toEqual({ signedIn: true, cancelled: true })
+  expect(store.map.get(PORTAL)).toEqual(fresh())
+  expect(store.events).toEqual([])
+})
+
+test('logout while the browser flow is pending: the stale redirect rejects and stores nothing', async () => {
+  const { createServer, state } = makeFakeServerFactory()
+  let posts = 0
+
+  const { session, store, opened } = makeSession({
+    createServer,
+    postJson: async () => codeResponse(++posts)
+  })
+
+  const pending = session.login()
+  await tick()
+  session.logout()
+  state.hit(`code=C&state=${authorizeState(opened[0])}`)
+
+  await expect(pending).rejects.toBeInstanceOf(NativeAuthChangedError)
+  expect(store.map.size).toBe(0)
+  expect(store.events).toEqual(['clear'])
+})
+
+test('a second login while the first is pending: the first redirect rejects; only the newer one stores', async () => {
+  const { createServer, state } = makeFakeServerFactory()
+  let posts = 0
+
+  const { session, store, opened } = makeSession({
+    createServer,
+    postJson: async () => codeResponse(++posts)
+  })
+
+  const first = session.login()
+  await tick()
+  const second = session.login()
+  await tick()
+
+  state.hit(`code=C1&state=${authorizeState(opened[0])}`, state.handlers[0])
+  await expect(first).rejects.toBeInstanceOf(NativeAuthChangedError)
+  expect(store.map.size).toBe(0)
+
+  state.hit(`code=C2&state=${authorizeState(opened[1])}`, state.handlers[1])
+  await expect(second).resolves.toEqual({ signedIn: true })
+  expect(store.map.get(PORTAL)?.accessToken).toBe('AT-L2')
+})
+
+test('cancelLogin aborts the pending browser flow as a clean cancel and exposes no stale authorize URL', async () => {
+  const { createServer, state } = makeFakeServerFactory()
+  const { session, store, opened } = makeSession({ createServer, store: makeStore({ [PORTAL]: fresh() }) })
+
+  expect(session.pendingAuthorizeUrl()).toBeNull()
+  const pending = session.login()
+  await tick()
+  expect(session.pendingAuthorizeUrl()).toBe(opened[0])
+
+  expect(session.cancelLogin()).toBe(true)
+  await expect(pending).resolves.toEqual({ signedIn: true, cancelled: true })
+  expect(state.closed).toBe(true)
+  expect(session.pendingAuthorizeUrl()).toBeNull()
+  expect(store.map.get(PORTAL)).toEqual(fresh())
+  // Nothing pending: cancelling again is a no-op.
+  expect(session.cancelLogin()).toBe(false)
+})
+
+test('m1: signing in to a DIFFERENT org reports the org change; the same org (or a first sign-in) does not', async () => {
+  const jwt = (org: string) =>
+    `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({ org_id: org })).toString('base64url')}.s`
+
+  const run = async (previous: NativeTokenSet | null, nextOrg: string) => {
+    const { createServer, state } = makeFakeServerFactory()
+    let changes = 0
+
+    const { session, opened } = makeSession({
+      createServer,
+      store: makeStore(previous ? { [PORTAL]: previous } : {}),
+      postJson: async () => ({ access_token: jwt(nextOrg), expires_in: 900, refresh_token: 'RT-x' }),
+      onSessionOrgChanged: () => changes++
+    })
+
+    const pending = session.login()
+    await tick()
+    state.hit(`code=C&state=${authorizeState(opened[0])}`)
+    await pending
+
+    return changes
+  }
+
+  expect(await run(fresh({ accessToken: jwt('org_a') }), 'org_b')).toBe(1)
+  expect(await run(fresh({ accessToken: jwt('org_a') }), 'org_a')).toBe(0)
+  expect(await run(null, 'org_b')).toBe(0)
 })

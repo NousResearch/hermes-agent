@@ -17,6 +17,7 @@ import {
   generatePkcePair,
   generateState,
   NATIVE_FLOW_ID,
+  NativeLoginCancelledError,
   nativeRefreshUrl,
   nativeTokenUrl,
   parseLoopbackCallback,
@@ -188,11 +189,26 @@ test('parseLoopbackCallback throws on state mismatch (CSRF)', () => {
   assert.throws(() => parseLoopbackCallback('/callback?code=abc&state=attacker', 'expected'), /state mismatch/i)
 })
 
-test('parseLoopbackCallback surfaces a gateway error param', () => {
+test('parseLoopbackCallback surfaces a gateway error param carrying our state', () => {
   assert.throws(
-    () => parseLoopbackCallback('/callback?error=access_denied&error_description=nope', 'xyz'),
-    /access_denied.*nope/i
+    () => parseLoopbackCallback('/callback?error=server_error&error_description=nope&state=xyz', 'xyz'),
+    /server_error.*nope/i
   )
+})
+
+test('parseLoopbackCallback: an error callback WITHOUT our state is a CSRF failure, never a cancel', () => {
+  for (const url of ['/callback?error=access_denied', '/callback?error=access_denied&state=attacker']) {
+    let caught: unknown = null
+
+    try {
+      parseLoopbackCallback(url, 'xyz')
+    } catch (error) {
+      caught = error
+    }
+
+    assert.ok(caught instanceof Error && !(caught instanceof NativeLoginCancelledError))
+    assert.match((caught as Error).message, /state mismatch/i)
+  }
 })
 
 test('parseLoopbackCallback throws when the code is absent', () => {
@@ -216,6 +232,19 @@ test('parseTokenResponse maps a well-formed body', () => {
   assert.equal(t.expiresAt, 1893456000)
   assert.equal(t.provider, 'nous')
   assert.equal(t.userId, 'u-1')
+})
+
+test('parseTokenResponse never lets a gateway claim a desktop-reserved provider marker', () => {
+  // A remote gateway is untrusted: `hermes-cloud-agent` would route its token
+  // set into the Hermes Cloud re-exchange, `hermes-desktop` is the portal
+  // session's marker. Neither may be minted by a gateway response.
+  for (const provider of ['hermes-cloud-agent', 'hermes-desktop']) {
+    const t = parseTokenResponse({ access_token: 'AT', provider, user_id: 'victim-agent' })
+
+    assert.equal(t.provider, '')
+  }
+
+  assert.equal(parseTokenResponse({ access_token: 'AT', provider: 'nous' }).provider, 'nous')
 })
 
 test('parseTokenResponse throws on a missing access token', () => {

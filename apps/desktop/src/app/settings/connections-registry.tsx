@@ -361,7 +361,7 @@ export function ConnectionsRegistrySection() {
           title: t.settings.gateway.signedIn,
           message: t.settings.gateway.connectedTo(authProviderShape.providerLabel)
         })
-      } else {
+      } else if (!result.cancelled) {
         notify({
           kind: 'warning',
           title: t.boot.failure.signInIncompleteTitle,

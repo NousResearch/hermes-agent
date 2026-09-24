@@ -120,6 +120,22 @@ test('a second 401 (or a failed forced refresh) surfaces the existing needsCloud
   expect(refreshFailed.requests).toHaveLength(1)
 })
 
+test('a forced refresh that hands back the SAME rejected token is not retried: needsCloudLogin', async () => {
+  const { deps, requests, tokenCalls } = makeDeps(
+    [
+      () => {
+        throw httpStatusError(401, 'nope')
+      },
+      () => AGENTS
+    ],
+    ['AT-1', 'AT-1']
+  )
+
+  await expect(discoverCloudAgentsWithBearer(deps)).rejects.toMatchObject({ needsCloudLogin: true })
+  expect(requests).toHaveLength(1)
+  expect(tokenCalls).toHaveLength(2)
+})
+
 test('no portal token at all is the existing "not signed in" needsCloudLogin error, without a request', async () => {
   const { deps, requests } = makeDeps([], [null])
   const error = await discoverCloudAgentsWithBearer(deps).catch(e => e)

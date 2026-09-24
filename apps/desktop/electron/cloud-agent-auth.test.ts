@@ -1,25 +1,23 @@
 /**
  * Cloud-agent bearer lifecycle: per-agent sign-in via the §5 exchange, the
- * agent-id registry that survives restarts, the per-connection refresher
- * strategy (cloud → re-exchange, never /auth/native/refresh), 401-after-valid,
- * and logout clearing every derived agent token.
+ * portal-discovery-only agent registry (the ONLY authority for "this URL is a
+ * Hermes Cloud agent" and for the exchange audience), the real coordinator
+ * wiring main.ts uses (createNativeTokenCoordinatorDeps), lazy re-exchange
+ * for saved connections, and logout / org-switch cleanup.
  */
 
 import { expect, test } from 'vitest'
 
 import { httpStatusError } from './api-transport'
-import {
-  canRefreshNativeTokenSet,
-  createCloudAgentAuth,
-  createCloudAgentRegistry,
-  createNativeTokenRefresher,
-  isCloudAuthLoss
-} from './cloud-agent-auth'
+import { cloudDashboardUrlAllowed, createCloudAgentAuth, createCloudAgentRegistry } from './cloud-agent-auth'
+import { normalizeRemoteBaseUrl } from './connection-config'
 import { createNativeAccessTokenCoordinator } from './native-access-token'
-import { type NativeTokenSet, tokenNeedsRefresh } from './native-oauth'
+import { type NativeTokenSet, parseTokenResponse, tokenNeedsRefresh } from './native-oauth'
+import { createNativeTokenCoordinatorDeps, isNativeRefreshAuthRejection } from './native-token-coordinator-deps'
 import { mintGatewayWsTicket } from './oauth-rest-request'
 
 const AGENT_URL = 'https://agent-1.cloud.example.test'
+const EVIL_URL = 'https://evil.example'
 
 function memoryIo(initial = '') {
   let text = initial
@@ -59,122 +57,217 @@ const gatewayTokens = (overrides: Partial<NativeTokenSet> = {}): NativeTokenSet 
   ...overrides
 })
 
-test('refresher: a cloud-agent token re-exchanges; it never calls the gateway /auth/native/refresh', async () => {
-  const calls: string[] = []
+/**
+ * The production coordinator wiring (the same factory main.ts calls), over
+ * an in-memory token store and a registry fed only by `discovered`.
+ */
+function makeWiring(
+  opts: {
+    now?: number
+    portalLive?: boolean
+    discovered?: Record<string, string>
+    exchange?: (agentId: string) => Promise<NativeTokenSet>
+    refreshGateway?: (baseUrl: string, tokens: NativeTokenSet) => Promise<NativeTokenSet>
+  } = {}
+) {
+  const store = new Map<string, NativeTokenSet>()
+  const registry = createCloudAgentRegistry(memoryIo().io, normalizeRemoteBaseUrl)
+  const exchanged: string[] = []
+  const gatewayRefreshes: string[] = []
 
-  const refresh = createNativeTokenRefresher({
-    refreshGatewayTokens: async baseUrl => {
-      calls.push(`gateway:${baseUrl}`)
+  for (const [url, id] of Object.entries(opts.discovered ?? {})) {
+    registry.remember(url, id)
+  }
 
-      return gatewayTokens({ accessToken: 'GW-AT-2' })
-    },
-    reexchangeCloudAgent: async (baseUrl, tokens) => {
-      calls.push(`exchange:${baseUrl}:${tokens.userId}`)
+  const exchangeForAgent = async (agentId: string) => {
+    exchanged.push(agentId)
 
-      return agentTokens({ accessToken: 'AGENT-AT-2' })
-    }
-  })
+    return opts.exchange
+      ? opts.exchange(agentId)
+      : agentTokens({ accessToken: `REAL-AGENT-TOKEN-${agentId}-${exchanged.length}`, userId: agentId })
+  }
 
-  await expect(refresh(AGENT_URL, agentTokens())).resolves.toMatchObject({ accessToken: 'AGENT-AT-2' })
-  await expect(refresh('https://gw.example.test', gatewayTokens())).resolves.toMatchObject({ accessToken: 'GW-AT-2' })
-  expect(calls).toEqual([`exchange:${AGENT_URL}:agt_1`, 'gateway:https://gw.example.test'])
-})
+  const coordinator = createNativeAccessTokenCoordinator(
+    createNativeTokenCoordinatorDeps({
+      loadTokens: url => store.get(url) ?? null,
+      storeTokens: (url, tokens) => void store.set(url, tokens),
+      clearTokens: url => void store.delete(url),
+      normalizeBaseUrl: normalizeRemoteBaseUrl,
+      nowSeconds: () => opts.now ?? 1_000,
+      tokenNeedsRefresh,
+      refreshGatewayTokens: async (baseUrl, tokens) => {
+        gatewayRefreshes.push(baseUrl)
 
-test('a cloud-agent token without a refresh token is still refreshable; a gateway one is not', () => {
-  expect(canRefreshNativeTokenSet(agentTokens())).toBe(true)
-  expect(canRefreshNativeTokenSet(gatewayTokens({ refreshToken: '' }))).toBe(false)
-  expect(canRefreshNativeTokenSet(gatewayTokens())).toBe(true)
-})
+        if (opts.refreshGateway) {
+          return opts.refreshGateway(baseUrl, tokens)
+        }
 
-function makeCoordinator(opts: {
-  reexchange: (baseUrl: string, tokens: NativeTokenSet) => Promise<NativeTokenSet>
-  now?: number
-}) {
-  const map = new Map<string, NativeTokenSet>()
-  let gatewayRefreshes = 0
-
-  const coordinator = createNativeAccessTokenCoordinator({
-    canRefresh: canRefreshNativeTokenSet,
-    clearTokens: url => void map.delete(url),
-    isRefreshAuthRejection: error => isCloudAuthLoss(error),
-    loadTokens: url => map.get(url) ?? null,
-    normalizeBaseUrl: url => url.replace(/\/+$/, ''),
-    nowSeconds: () => opts.now ?? 1_000,
-    refreshTokens: createNativeTokenRefresher({
-      refreshGatewayTokens: async () => {
-        gatewayRefreshes++
-
-        return gatewayTokens()
+        throw httpStatusError(401, 'gateway refresh rejected')
       },
-      reexchangeCloudAgent: opts.reexchange
-    }),
-    storeTokens: (url, tokens) => void map.set(url, tokens),
-    tokenNeedsRefresh
-  })
+      cloudAgentIdFor: url => registry.agentIdFor(url),
+      exchangeForAgent,
+      hasLivePortalSession: () => opts.portalLive ?? true
+    })
+  )
 
-  return { coordinator, map, gatewayRefreshes: () => gatewayRefreshes }
+  return { coordinator, store, registry, exchanged, gatewayRefreshes }
 }
 
-test('coordinator: an expiring cloud-agent token is re-exchanged (not cleared for lacking a refresh token)', async () => {
-  let exchanges = 0
+// --- B1: a remote gateway can never make the desktop mint a cloud bearer ---
 
-  const { coordinator, map, gatewayRefreshes } = makeCoordinator({
-    reexchange: async () => {
-      exchanges++
+test('B1 regression (reviewer PoC): a gateway claiming provider=hermes-cloud-agent gets no exchange and no bearer', async () => {
+  const { coordinator, store, exchanged } = makeWiring({ discovered: { [AGENT_URL]: 'victim-agent' } })
 
-      return agentTokens({ accessToken: 'AGENT-AT-2', expiresAt: 5_000 })
-    }
-  })
+  // A malicious third-party gateway's /auth/native/token response.
+  store.set(
+    EVIL_URL,
+    parseTokenResponse({ access_token: 'evil', expires_at: 0, provider: 'hermes-cloud-agent', user_id: 'victim-agent' })
+  )
 
-  map.set(AGENT_URL, agentTokens({ expiresAt: 1_010 }))
+  const bearer = await coordinator.ensure(EVIL_URL)
 
-  await expect(coordinator.ensure(AGENT_URL)).resolves.toBe('AGENT-AT-2')
-  expect(exchanges).toBe(1)
-  expect(gatewayRefreshes()).toBe(0)
-  expect(map.get(AGENT_URL)?.accessToken).toBe('AGENT-AT-2')
+  expect(exchanged).toEqual([])
+  expect(bearer).toBeNull()
+  expect(store.has(EVIL_URL)).toBe(false)
 })
 
-test('coordinator: losing the portal session or agent access during re-exchange signs the connection out', async () => {
+test('B1: even a stored set already tagged hermes-cloud-agent is not cloud unless portal discovery says so', async () => {
+  const { coordinator, store, exchanged, gatewayRefreshes } = makeWiring({
+    discovered: { [AGENT_URL]: 'victim-agent' },
+    refreshGateway: async () => gatewayTokens({ accessToken: 'GW-AT-2', expiresAt: 9_000 })
+  })
+
+  // Written by an older build (before reserved providers were stripped).
+  store.set(EVIL_URL, agentTokens({ userId: 'victim-agent', refreshToken: 'evil-rt', expiresAt: 1 }))
+
+  await expect(coordinator.ensure(EVIL_URL)).resolves.toBe('GW-AT-2')
+  expect(exchanged).toEqual([])
+  expect(gatewayRefreshes).toEqual([EVIL_URL])
+  // No bearer for a victim agent is ever handed to the gateway's own URL.
+  await expect(coordinator.ensure(EVIL_URL, { forceRefresh: true })).resolves.not.toMatch(/REAL-AGENT-TOKEN/)
+})
+
+test('B1: the exchange audience comes from the registry; a disagreeing token-set userId is ignored', async () => {
+  const { coordinator, store, exchanged } = makeWiring({ discovered: { [AGENT_URL]: 'agt_1' } })
+
+  store.set(AGENT_URL, agentTokens({ userId: 'victim-agent', expiresAt: 1 }))
+
+  await expect(coordinator.ensure(AGENT_URL)).resolves.toBe('REAL-AGENT-TOKEN-agt_1-1')
+  expect(exchanged).toEqual(['agt_1'])
+})
+
+test('a registry-known cloud URL re-exchanges on expiry (never /auth/native/refresh), even without a refresh token', async () => {
+  const { coordinator, store, exchanged, gatewayRefreshes } = makeWiring({ discovered: { [AGENT_URL]: 'agt_1' } })
+
+  store.set(AGENT_URL, agentTokens({ expiresAt: 1_010 }))
+
+  await expect(coordinator.ensure(AGENT_URL)).resolves.toBe('REAL-AGENT-TOKEN-agt_1-1')
+  expect(exchanged).toEqual(['agt_1'])
+  expect(gatewayRefreshes).toEqual([])
+  expect(store.get(AGENT_URL)?.accessToken).toBe('REAL-AGENT-TOKEN-agt_1-1')
+})
+
+test('a gateway token set rotates through the gateway refresher; with no refresh token it is signed out', async () => {
+  const { coordinator, store, gatewayRefreshes } = makeWiring({
+    refreshGateway: async () => gatewayTokens({ accessToken: 'GW-AT-2', expiresAt: 9_000 })
+  })
+
+  store.set('https://gw.example.test', gatewayTokens())
+  await expect(coordinator.ensure('https://gw.example.test')).resolves.toBe('GW-AT-2')
+  expect(gatewayRefreshes).toEqual(['https://gw.example.test'])
+
+  store.set('https://gw2.example.test', gatewayTokens({ refreshToken: '' }))
+  await expect(coordinator.ensure('https://gw2.example.test')).resolves.toBeNull()
+  expect(store.has('https://gw2.example.test')).toBe(false)
+})
+
+// --- real isRefreshAuthRejection wiring ---
+
+test('isNativeRefreshAuthRejection: 401, signed-out and access-lost clear; transient failures do not', () => {
+  expect(isNativeRefreshAuthRejection(httpStatusError(401, 'x'))).toBe(true)
+  expect(isNativeRefreshAuthRejection(Object.assign(new Error('x'), { needsCloudLogin: true }))).toBe(true)
+  expect(isNativeRefreshAuthRejection(Object.assign(new Error('x'), { cloudAgentAccessLost: true }))).toBe(true)
+  expect(isNativeRefreshAuthRejection(httpStatusError(503, 'x'))).toBe(false)
+  expect(isNativeRefreshAuthRejection(new Error('network'))).toBe(false)
+})
+
+test('losing the portal session or agent access during re-exchange signs the connection out', async () => {
   for (const failure of [
     Object.assign(new Error('signed out'), { needsCloudLogin: true }),
     Object.assign(new Error('lost'), { cloudAgentAccessLost: true })
   ]) {
-    const { coordinator, map } = makeCoordinator({
-      reexchange: async () => {
+    const { coordinator, store } = makeWiring({
+      discovered: { [AGENT_URL]: 'agt_1' },
+      exchange: async () => {
         throw failure
       }
     })
 
-    map.set(AGENT_URL, agentTokens({ expiresAt: 1 }))
+    store.set(AGENT_URL, agentTokens({ expiresAt: 1 }))
     await expect(coordinator.ensure(AGENT_URL)).resolves.toBeNull()
-    expect(map.has(AGENT_URL)).toBe(false)
+    expect(store.has(AGENT_URL)).toBe(false)
   }
 })
 
-test('coordinator: a transient re-exchange failure keeps the agent token for the next attempt', async () => {
-  const { coordinator, map } = makeCoordinator({
-    reexchange: async () => {
+test('a transient re-exchange failure keeps the agent token for the next attempt', async () => {
+  const { coordinator, store } = makeWiring({
+    discovered: { [AGENT_URL]: 'agt_1' },
+    exchange: async () => {
       throw httpStatusError(503, 'down')
     }
   })
 
-  map.set(AGENT_URL, agentTokens({ expiresAt: 1 }))
+  store.set(AGENT_URL, agentTokens({ expiresAt: 1 }))
   await expect(coordinator.ensure(AGENT_URL)).rejects.toMatchObject({ statusCode: 503 })
-  expect(map.has(AGENT_URL)).toBe(true)
+  expect(store.has(AGENT_URL)).toBe(true)
 })
 
-test('ws-ticket: a 401 on a still-valid agent token earns exactly one forced re-exchange', async () => {
-  let exchanges = 0
+// --- M2: saved cloud connections recover after sign-out + sign-in ---
 
-  const { coordinator, map } = makeCoordinator({
-    reexchange: async () => {
-      exchanges++
+test('M2: a registry-known cloud URL with no stored bearer lazily exchanges while the portal session is live', async () => {
+  const { coordinator, store, exchanged } = makeWiring({ discovered: { [AGENT_URL]: 'agt_1' } })
 
-      return agentTokens({ accessToken: `AGENT-AT-${exchanges + 1}` })
+  await expect(coordinator.ensure(AGENT_URL)).resolves.toBe('REAL-AGENT-TOKEN-agt_1-1')
+  expect(exchanged).toEqual(['agt_1'])
+  expect(store.get(AGENT_URL)?.accessToken).toBe('REAL-AGENT-TOKEN-agt_1-1')
+  // Stored: the next call is served without another exchange.
+  await expect(coordinator.ensure(AGENT_URL)).resolves.toBe('REAL-AGENT-TOKEN-agt_1-1')
+  expect(exchanged).toEqual(['agt_1'])
+})
+
+test('M2: no lazy exchange without a live portal session, or for a URL portal discovery never returned', async () => {
+  const signedOut = makeWiring({ discovered: { [AGENT_URL]: 'agt_1' }, portalLive: false })
+  await expect(signedOut.coordinator.ensure(AGENT_URL)).resolves.toBeNull()
+  expect(signedOut.exchanged).toEqual([])
+
+  const unknown = makeWiring({ discovered: { [AGENT_URL]: 'agt_1' } })
+  await expect(unknown.coordinator.ensure(EVIL_URL)).resolves.toBeNull()
+  expect(unknown.exchanged).toEqual([])
+})
+
+test('M2: concurrent callers share one lazy exchange; a lost-access verdict is "not signed in", not a crash', async () => {
+  const ok = makeWiring({ discovered: { [AGENT_URL]: 'agt_1' } })
+  await expect(Promise.all([ok.coordinator.ensure(AGENT_URL), ok.coordinator.ensure(AGENT_URL)])).resolves.toEqual([
+    'REAL-AGENT-TOKEN-agt_1-1',
+    'REAL-AGENT-TOKEN-agt_1-1'
+  ])
+  expect(ok.exchanged).toEqual(['agt_1'])
+
+  const lost = makeWiring({
+    discovered: { [AGENT_URL]: 'agt_1' },
+    exchange: async () => {
+      throw Object.assign(new Error('lost'), { cloudAgentAccessLost: true })
     }
   })
 
-  map.set(AGENT_URL, agentTokens())
+  await expect(lost.coordinator.ensure(AGENT_URL)).resolves.toBeNull()
+  expect(lost.store.has(AGENT_URL)).toBe(false)
+})
+
+test('ws-ticket: a 401 on a still-valid agent token earns exactly one forced re-exchange', async () => {
+  const { coordinator, store, exchanged } = makeWiring({ discovered: { [AGENT_URL]: 'agt_1' } })
+
+  store.set(AGENT_URL, agentTokens())
   const bearers: string[] = []
 
   const deps = {
@@ -194,25 +287,13 @@ test('ws-ticket: a 401 on a still-valid agent token earns exactly one forced re-
   }
 
   await expect(mintGatewayWsTicket(AGENT_URL, deps)).resolves.toBe('T-1')
-  expect(bearers).toEqual(['AGENT-AT-1', 'AGENT-AT-2'])
-  expect(exchanges).toBe(1)
-
-  // A second 401 on the fresh token is a confirmed rejection: no further loop.
-  map.set(AGENT_URL, agentTokens({ accessToken: 'AGENT-AT-1' }))
-  bearers.length = 0
-  exchanges = 0
-
-  deps.fetchJson = async (_url, _token, options) => {
-    bearers.push(options.bearer)
-    throw httpStatusError(401, JSON.stringify({ detail: 'nope' }))
-  }
-
-  await expect(mintGatewayWsTicket(AGENT_URL, deps)).rejects.toMatchObject({ statusCode: 401 })
-  expect(bearers).toEqual(['AGENT-AT-1', 'AGENT-AT-2'])
-  expect(exchanges).toBe(1)
+  expect(bearers).toEqual(['AGENT-AT-1', 'REAL-AGENT-TOKEN-agt_1-1'])
+  expect(exchanged).toEqual(['agt_1'])
 })
 
-test('registry: agent ids persist per normalized dashboard URL across restarts', () => {
+// --- registry ---
+
+test('registry: agent ids persist per normalized dashboard URL across restarts; forget/clear persist too', () => {
   const disk = memoryIo()
   const first = createCloudAgentRegistry(disk.io, url => url.replace(/\/+$/, ''))
 
@@ -223,20 +304,42 @@ test('registry: agent ids persist per normalized dashboard URL across restarts',
   expect(restarted.agentIdFor(AGENT_URL)).toBe('agt_1')
   expect(restarted.urls().sort()).toEqual([AGENT_URL, 'https://agent-2.cloud.example.test'])
   expect(createCloudAgentRegistry(memoryIo('not json').io, u => u).agentIdFor(AGENT_URL)).toBeNull()
+
+  restarted.forget(AGENT_URL)
+  expect(createCloudAgentRegistry(disk.io, u => u).urls()).toEqual(['https://agent-2.cloud.example.test'])
+  restarted.clear()
+  expect(createCloudAgentRegistry(disk.io, u => u).urls()).toEqual([])
 })
 
+test('dashboard URL policy: https only, plus plain http on loopback for the local portal stand-in', () => {
+  expect(cloudDashboardUrlAllowed('https://agent.example.test')).toBe(true)
+  expect(cloudDashboardUrlAllowed('http://127.0.0.1:9119')).toBe(true)
+  expect(cloudDashboardUrlAllowed('http://localhost:9119')).toBe(true)
+  expect(cloudDashboardUrlAllowed('http://agent.example.test')).toBe(false)
+  expect(cloudDashboardUrlAllowed('file:///etc/passwd')).toBe(false)
+  expect(cloudDashboardUrlAllowed('not a url')).toBe(false)
+  expect(cloudDashboardUrlAllowed('')).toBe(false)
+})
+
+// --- agent auth ---
+
 function makeAuth(
-  opts: { discover?: () => Promise<any[]>; exchange?: (agentId: string) => Promise<NativeTokenSet> } = {}
+  opts: {
+    discover?: () => Promise<any[]>
+    exchange?: (agentId: string) => Promise<NativeTokenSet>
+    stored?: Record<string, NativeTokenSet>
+  } = {}
 ) {
   const disk = memoryIo()
-  const registry = createCloudAgentRegistry(disk.io, url => url.replace(/\/+$/, ''))
-  const stored = new Map<string, NativeTokenSet>()
+  const registry = createCloudAgentRegistry(disk.io, normalizeRemoteBaseUrl)
+  const stored = new Map<string, NativeTokenSet>(Object.entries(opts.stored ?? {}))
   const cleared: string[] = []
   const exchanged: string[] = []
+  const logs: string[] = []
   let portalCleared = false
 
   const auth = createCloudAgentAuth({
-    normalizeBaseUrl: url => url.replace(/\/+$/, ''),
+    normalizeBaseUrl: normalizeRemoteBaseUrl,
     registry,
     exchangeForAgent:
       opts.exchange ??
@@ -250,13 +353,16 @@ function makeAuth(
       cleared.push(url)
       stored.delete(url)
     },
+    listStoredTokenUrls: () => [...stored.keys()],
+    loadStoredTokens: url => stored.get(url) ?? null,
     clearPortalSession: () => {
       portalCleared = true
     },
-    discoverAgents: opts.discover
+    discoverAgents: opts.discover,
+    log: line => logs.push(line)
   })
 
-  return { auth, registry, stored, cleared, exchanged, portalCleared: () => portalCleared, disk }
+  return { auth, registry, stored, cleared, exchanged, logs, portalCleared: () => portalCleared, disk }
 }
 
 test('agent sign-in resolves the agent id from the last discovery and stores the exchanged bearer', async () => {
@@ -269,62 +375,125 @@ test('agent sign-in resolves the agent id from the last discovery and stores the
 
   await expect(auth.signIn(AGENT_URL)).resolves.toEqual({ baseUrl: AGENT_URL, connected: true })
   expect(exchanged).toEqual(['agt_1'])
-  expect(stored.get(AGENT_URL)).toMatchObject({
-    accessToken: 'AGENT-AT-1',
-    provider: 'hermes-cloud-agent',
-    userId: 'agt_1'
-  })
+  expect(stored.get(AGENT_URL)).toMatchObject({ accessToken: 'AGENT-AT-1', userId: 'agt_1' })
   expect(registry.agentIdFor(AGENT_URL)).toBe('agt_1')
 })
 
-test('agent sign-in prefers an explicit agent id and persists it for reconnect after restart', async () => {
-  const { auth, exchanged, disk } = makeAuth()
-
-  await auth.signIn(AGENT_URL, 'agt_explicit')
-  expect(exchanged).toEqual(['agt_explicit'])
-  expect(createCloudAgentRegistry(disk.io, u => u).agentIdFor(AGENT_URL)).toBe('agt_explicit')
-})
-
-test('agent sign-in for an unknown URL falls back to one live discovery, then fails clearly', async () => {
+test('M1: a renderer agent-id hint that matches the registry is used without re-discovery', async () => {
   let discoveries = 0
 
   const { auth, exchanged } = makeAuth({
     discover: async () => {
       discoveries++
 
-      return [{ id: 'agt_7', dashboardUrl: AGENT_URL }]
+      return []
     }
   })
 
-  await auth.signIn(AGENT_URL)
-  expect(exchanged).toEqual(['agt_7'])
-  expect(discoveries).toBe(1)
-
-  await expect(auth.signIn('https://unknown.cloud.example.test')).rejects.toThrow(/could not find this agent/i)
+  auth.rememberDiscovered([{ id: 'agt_1', dashboardUrl: AGENT_URL }])
+  await auth.signIn(AGENT_URL, 'agt_1')
+  expect(exchanged).toEqual(['agt_1'])
+  expect(discoveries).toBe(0)
 })
 
-test('re-exchange uses the agent id carried by the stored token set', async () => {
-  const { auth, exchanged } = makeAuth()
+test('M1: a hint that disagrees with the registry is never trusted: re-discover and use the portal answer', async () => {
+  const { auth, exchanged, registry } = makeAuth({
+    discover: async () => [{ id: 'agt_1', dashboardUrl: AGENT_URL }]
+  })
 
-  await expect(auth.reexchange(AGENT_URL, agentTokens({ userId: 'agt_9' }))).resolves.toMatchObject({ userId: 'agt_9' })
-  expect(exchanged).toEqual(['agt_9'])
+  await auth.signIn(AGENT_URL, 'victim-agent')
+  expect(exchanged).toEqual(['agt_1'])
+  expect(registry.agentIdFor(AGENT_URL)).toBe('agt_1')
 })
 
-test('logout clears the portal session and every derived agent token', async () => {
-  const { auth, cleared, stored, portalCleared } = makeAuth()
+test('M1: a URL that is not a discovered agent dashboard is refused — no exchange, even with a hint', async () => {
+  let discoveries = 0
 
+  const { auth, exchanged, stored } = makeAuth({
+    discover: async () => {
+      discoveries++
+
+      return [{ id: 'agt_1', dashboardUrl: AGENT_URL }]
+    }
+  })
+
+  await expect(auth.signIn(EVIL_URL, 'agt_1')).rejects.toThrow(/could not find this agent/i)
+  await expect(auth.signIn(EVIL_URL)).rejects.toThrow(/could not find this agent/i)
+  expect(discoveries).toBe(2)
+  expect(exchanged).toEqual([])
+  expect(stored.size).toBe(0)
+})
+
+test('M1: a non-https dashboard URL is refused before any discovery or exchange', async () => {
+  let discoveries = 0
+
+  const { auth, exchanged } = makeAuth({
+    discover: async () => {
+      discoveries++
+
+      return [{ id: 'agt_1', dashboardUrl: 'http://agent.example.test' }]
+    }
+  })
+
+  await expect(auth.signIn('http://agent.example.test', 'agt_1')).rejects.toThrow(/https/i)
+  expect(discoveries).toBe(0)
+  expect(exchanged).toEqual([])
+})
+
+test('m4: one malformed discovery row is skipped without failing the others (and logs no tokens)', () => {
+  const { auth, registry, logs } = makeAuth()
+
+  expect(() =>
+    auth.rememberDiscovered([
+      { id: 'bad', dashboardUrl: 'ftp://nope' },
+      { id: 'bad2', dashboardUrl: 'http://plain-http.example.test' },
+      { id: 'bad3', dashboardUrl: '::::' },
+      { id: 'agt_1', dashboardUrl: AGENT_URL }
+    ])
+  ).not.toThrow()
+  expect(registry.urls()).toEqual([AGENT_URL])
+  expect(logs.length).toBe(3)
+  expect(logs.join('\n')).not.toMatch(/token|bearer/i)
+})
+
+test('m3: logout clears the portal session and every stored cloud agent bearer, registry or not', async () => {
+  const { auth, cleared, stored, portalCleared, registry } = makeAuth({
+    stored: {
+      // A cloud bearer whose best-effort registry write was lost.
+      'https://orphan.cloud.example.test': agentTokens({ userId: 'agt_orphan' }),
+      // A plain gateway login must survive a Cloud sign-out.
+      'https://gw.example.test': gatewayTokens()
+    }
+  })
+
+  auth.rememberDiscovered([
+    { id: 'agt_1', dashboardUrl: AGENT_URL },
+    { id: 'agt_2', dashboardUrl: 'https://agent-2.cloud.example.test' }
+  ])
   await auth.signIn(AGENT_URL, 'agt_1')
   await auth.signIn('https://agent-2.cloud.example.test', 'agt_2')
   auth.logout()
 
   expect(portalCleared()).toBe(true)
-  expect(cleared.sort()).toEqual([AGENT_URL, 'https://agent-2.cloud.example.test'])
-  expect(stored.size).toBe(0)
+  expect([...new Set(cleared)].sort()).toEqual([
+    AGENT_URL,
+    'https://agent-2.cloud.example.test',
+    'https://orphan.cloud.example.test'
+  ])
+  expect([...stored.keys()]).toEqual(['https://gw.example.test'])
+  // The registry survives sign-out so saved connections re-exchange after
+  // the next sign-in (M2).
+  expect(registry.agentIdFor(AGENT_URL)).toBe('agt_1')
 })
 
-test('isCloudAuthLoss recognises signed-out and access-lost errors only', () => {
-  expect(isCloudAuthLoss(Object.assign(new Error('x'), { needsCloudLogin: true }))).toBe(true)
-  expect(isCloudAuthLoss(Object.assign(new Error('x'), { cloudAgentAccessLost: true }))).toBe(true)
-  expect(isCloudAuthLoss(httpStatusError(401, 'x'))).toBe(false)
-  expect(isCloudAuthLoss(new Error('network'))).toBe(false)
+test('m1: forgetting the old org drops every cloud agent bearer and the registry, not the portal session', async () => {
+  const { auth, stored, registry, portalCleared } = makeAuth({ stored: { 'https://gw.example.test': gatewayTokens() } })
+
+  auth.rememberDiscovered([{ id: 'agt_1', dashboardUrl: AGENT_URL }])
+  await auth.signIn(AGENT_URL, 'agt_1')
+  auth.forgetAgents()
+
+  expect(registry.urls()).toEqual([])
+  expect([...stored.keys()]).toEqual(['https://gw.example.test'])
+  expect(portalCleared()).toBe(false)
 })

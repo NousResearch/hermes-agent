@@ -137,7 +137,8 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
       invalidateTest()
       setOauthConnected(Boolean(result.connected))
 
-      if (!result.connected) {
+      // A Deny in the browser is the user's choice: no error.
+      if (!result.connected && !result.cancelled) {
         setError(copy.signInIncomplete)
       }
     } catch (err) {

@@ -9,7 +9,6 @@ import { Tip } from '@/components/ui/tooltip'
 import type {
   DesktopAuthProvider,
   DesktopCloudAgent,
-  DesktopCloudOrg,
   DesktopConnectionProbeResult,
   DesktopRegistryConnection
 } from '@/global'
@@ -327,18 +326,17 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   const [plainTextConfirm, setPlainTextConfirm] = useState<null | { apply: boolean }>(null)
 
   // --- Hermes Cloud (cloud mode) state ---
-  // One portal session powers discovery + the silent per-agent cascade. These
-  // track the cloud panel: whether we're signed in, the discovered agent list,
-  // and which agent is mid-connect.
+  // One portal session powers discovery + the silent per-agent token
+  // exchange. These track the cloud panel: whether we're signed in, a pending
+  // browser sign-in, the discovered agent list, and which agent is mid-connect.
   const [cloudSignedIn, setCloudSignedIn] = useState(false)
   const [cloudSigningIn, setCloudSigningIn] = useState(false)
+  const [cloudBrowserPending, setCloudBrowserPending] = useState(false)
   const [cloudAgents, setCloudAgents] = useState<DesktopCloudAgent[]>([])
   const [cloudDiscover, setCloudDiscover] = useState<CloudDiscoverStatus>('idle')
   const [cloudConnectingId, setCloudConnectingId] = useState<null | string>(null)
-  // Multi-org users: when discovery returns needsOrgSelection, we hold the org
-  // list here and show a picker. `cloudOrg` is the chosen org slug/id (null =
-  // not yet chosen / single-org user).
-  const [cloudOrgs, setCloudOrgs] = useState<DesktopCloudOrg[]>([])
+  // The org the session is pinned to (slug/id echoed by discovery; null until
+  // discovery resolves it).
   const [cloudOrg, setCloudOrgState] = useState<null | string>(null)
   // Mirror the selected org into a ref so connect reads the CURRENT value, not a
   // value captured in a stale render closure. discoverCloud() resolves the org
@@ -739,7 +737,8 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         const refreshed = await window.hermesDesktop.getConnectionConfig(null)
         acceptSavedConfig(refreshed)
         notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
-      } else {
+      } else if (!result.cancelled) {
+        // A Deny in the browser is the user's choice, not a failure.
         notify({
           kind: 'warning',
           title: t.boot.failure.signInIncompleteTitle,
@@ -788,11 +787,10 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
   // --- Hermes Cloud handlers ---
 
-  // Pull the discovered agent list over the shared portal session. Tolerant of
-  // a lapsed session: a needsCloudLogin error flips us back to signed-out.
-  // `org` scopes discovery for multi-org users; when discovery comes back with
-  // needsOrgSelection we surface the org list and show a picker instead.
-  const discoverCloud = async (org?: string) => {
+  // Pull the discovered agent list with the desktop portal session (the
+  // session pins the org). Tolerant of a lapsed session: a needsCloudLogin
+  // error flips us back to signed-out.
+  const discoverCloud = async () => {
     const desktop = window.hermesDesktop
     const seq = contextSeq.current
 
@@ -803,36 +801,21 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     setCloudDiscover('loading')
 
     try {
-      const result = await desktop.cloud.discover(org)
+      const result = await desktop.cloud.discover()
 
       if (seq !== contextSeq.current) {
         return
       }
 
-      if ('needsOrgSelection' in result && result.needsOrgSelection) {
-        // Multi-org user with no org chosen yet: show the picker. Don't clear a
-        // previously-chosen org list on a refresh.
-        setCloudOrgs(result.orgs)
-        setCloudOrg(null)
-        setCloudAgents([])
-        setCloudDiscover('done')
+      setCloudAgents(result.agents ?? [])
 
-        return
-      }
-
-      // Single org (or org now chosen): we have agents.
-      setCloudAgents('agents' in result ? result.agents : [])
-
-      // Record the org AUTHORITATIVELY from the response (NAS echoes the org the
-      // list was scoped to), falling back to the org we requested. This is what
-      // gets persisted on connect, so it must be set even on single-membership
-      // auto-resolve where no picker ran and no `org` arg was passed.
-      const resolvedOrgRef = 'org' in result && result.org ? (result.org.slug ?? result.org.id) : null
+      // Record the org AUTHORITATIVELY from the response (the portal echoes
+      // the org the list was scoped to). This is what gets persisted on
+      // connect, so it must be set even when no org was ever chosen here.
+      const resolvedOrgRef = result.org ? (result.org.slug ?? result.org.id) : null
 
       if (resolvedOrgRef) {
         setCloudOrg(resolvedOrgRef)
-      } else if (org) {
-        setCloudOrg(org)
       }
 
       setCloudDiscover('done')
@@ -853,23 +836,11 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     }
   }
 
-  // User picked an org from the multi-org picker: remember it and re-run
-  // discovery scoped to it.
-  const selectCloudOrg = (org: DesktopCloudOrg) => {
-    const ref = org.slug ?? org.id
-    setCloudOrg(ref)
-    void discoverCloud(ref)
-  }
-
   // "Change org": the Hermes Cloud sign-in is pinned to the org chosen in the
   // browser, so switching team = signing in again and picking the other org
-  // there. The current session stays in place until the new sign-in lands (a
-  // cancelled browser flow changes nothing); cloudSignIn re-runs discovery.
-  const changeCloudOrg = () => {
-    setCloudOrg(null)
-    setCloudAgents([])
-    void cloudSignIn()
-  }
+  // there. The current org and agent list stay in place until the new sign-in
+  // resolves (a cancelled or failed browser flow changes nothing).
+  const changeCloudOrg = () => void cloudSignIn()
 
   // On entering cloud mode, read the portal session status and
   // auto-discover when already signed in, so the picker is populated on open.
@@ -895,20 +866,14 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         setCloudSignedIn(status.signedIn)
 
         if (status.signedIn) {
-          // Restore the persisted org (if any) so we reopen straight into that
-          // org's agent list instead of the picker; discoverCloud(org) also
-          // records it as the selected org. Empty → normal discovery (single-org
-          // resolves automatically; multi-org shows the picker).
-          const savedOrg = state.cloudOrg || ''
-
-          if (savedOrg) {
-            setCloudOrg(savedOrg)
+          // Show the persisted org until discovery echoes the session's org.
+          if (state.cloudOrg) {
+            setCloudOrg(state.cloudOrg)
           }
 
-          void discoverCloud(savedOrg || undefined)
+          void discoverCloud()
         } else {
           setCloudAgents([])
-          setCloudOrgs([])
           setCloudOrg(null)
           setCloudDiscover('idle')
         }
@@ -923,6 +888,10 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on mode change only
   }, [state.mode])
 
+  // Browser sign-in. Resolves when the loopback redirect lands, the user
+  // denies/cancels, or it fails. Afterwards the session status is re-read and
+  // discovery re-run, so a cancelled or timed-out "Change org" leaves the
+  // current org's agent list intact rather than an empty panel.
   const cloudSignIn = async () => {
     const desktop = window.hermesDesktop
     const seq = ++signingSeq.current
@@ -932,27 +901,53 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     }
 
     setCloudSigningIn(true)
+    setCloudBrowserPending(true)
 
     try {
-      const result = await desktop.cloud.login()
-
-      if (seq !== signingSeq.current) {
-        return
-      }
-
-      setCloudSignedIn(result.signedIn)
-
-      if (result.signedIn) {
-        await discoverCloud()
-      }
+      await desktop.cloud.login()
     } catch (err) {
       if (seq === signingSeq.current) {
         notifyError(err, g.cloudSignInFailed)
       }
     } finally {
       if (seq === signingSeq.current) {
+        setCloudBrowserPending(false)
         setCloudSigningIn(false)
       }
+    }
+
+    if (seq !== signingSeq.current) {
+      return
+    }
+
+    const status = await desktop.cloud.status().catch(() => null)
+
+    if (seq !== signingSeq.current || !status) {
+      return
+    }
+
+    setCloudSignedIn(status.signedIn)
+
+    if (status.signedIn) {
+      await discoverCloud()
+    }
+  }
+
+  // Abort a pending browser sign-in (closing the tab alone leaves it waiting).
+  const cancelCloudSignIn = () => void window.hermesDesktop?.cloud?.cancelLogin?.().catch(() => undefined)
+
+  // "Browser didn't open?" — xdg-open and friends can report success without
+  // a browser actually appearing; hand the user the link instead.
+  const copyCloudSignInLink = async () => {
+    try {
+      const { url } = (await window.hermesDesktop?.cloud?.loginUrl?.()) ?? { url: null }
+
+      if (url) {
+        await navigator.clipboard.writeText(url)
+        notify({ kind: 'success', title: g.cloudSignInLinkCopied, message: g.cloudSignInLinkCopiedMessage })
+      }
+    } catch (err) {
+      notifyError(err, g.cloudSignInFailed)
     }
   }
 
@@ -975,7 +970,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
       setCloudSignedIn(false)
       setCloudAgents([])
-      setCloudOrgs([])
       setCloudOrg(null)
       setCloudDiscover('idle')
       notify({ kind: 'success', title: g.cloudSignedOutTitle, message: g.cloudSignedOutMessage })
@@ -1359,117 +1353,109 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
             title={g.cloudSignInTitle}
           />
 
+          {cloudBrowserPending ? (
+            <ListRow
+              action={
+                <div className="flex items-center gap-2">
+                  <Button onClick={() => void copyCloudSignInLink()} size="sm" variant="text">
+                    {g.cloudCopySignInLink}
+                  </Button>
+                  <Button onClick={cancelCloudSignIn} size="sm" variant="outline">
+                    {g.cloudCancelSignIn}
+                  </Button>
+                </div>
+              }
+              description={g.cloudBrowserPendingDesc}
+              title={g.cloudBrowserPendingTitle}
+            />
+          ) : null}
+
           {cloudSignedIn ? (
-            cloudOrgs.length > 0 && !cloudOrg ? (
-              // Multi-org user who hasn't picked an org yet: show the org picker
-              // instead of the agent list. Selecting one re-runs discovery
-              // scoped to it.
-              <div className="mt-3">
-                <div className="mb-2 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-                  {g.cloudOrgPickerTitle}
+            <div className="mt-3">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
+                  {g.cloudAgentsTitle}
                 </div>
-                <div className="grid gap-1">
-                  {cloudOrgs.map(orgEntry => (
-                    <ListRow
-                      action={
-                        <Button onClick={() => selectCloudOrg(orgEntry)} size="sm">
-                          {g.cloudOrgSelect}
-                        </Button>
-                      }
-                      description={g.cloudOrgRole(orgEntry.role)}
-                      key={orgEntry.id}
-                      title={orgEntry.name}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="mt-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-                    {g.cloudAgentsTitle}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {cloudOrg ? (
-                      // Let the user switch orgs whenever an org is selected:
-                      // clicking re-runs the browser sign-in, where the portal's
-                      // org picker chooses the team the new session is pinned to.
-                      <Button onClick={() => changeCloudOrg()} size="sm" variant="text">
-                        {g.cloudOrgChange}
-                      </Button>
-                    ) : null}
-                    <Button
-                      disabled={cloudDiscover === 'loading'}
-                      onClick={() => void discoverCloud(cloudOrg ?? undefined)}
-                      size="sm"
-                      variant="text"
-                    >
-                      {cloudDiscover === 'loading' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                      {g.cloudRefresh}
+                <div className="flex items-center gap-2">
+                  {cloudOrg ? (
+                    // Let the user switch orgs whenever an org is selected:
+                    // clicking re-runs the browser sign-in, where the portal's
+                    // org picker chooses the team the new session is pinned to.
+                    <Button disabled={cloudBrowserPending} onClick={() => changeCloudOrg()} size="sm" variant="text">
+                      {g.cloudOrgChange}
                     </Button>
-                  </div>
+                  ) : null}
+                  <Button
+                    disabled={cloudDiscover === 'loading'}
+                    onClick={() => void discoverCloud()}
+                    size="sm"
+                    variant="text"
+                  >
+                    {cloudDiscover === 'loading' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                    {g.cloudRefresh}
+                  </Button>
                 </div>
-
-                {cloudDiscover === 'loading' ? (
-                  <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    <Loader2 className="size-4 animate-spin" />
-                    {g.cloudLoadingAgents}
-                  </div>
-                ) : cloudAgents.length === 0 ? (
-                  <div className="flex items-start gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                    <span>
-                      {g.cloudNoAgents.before}
-                      <ExternalLink href="https://portal.nousresearch.com/agents" showExternalIcon={false}>
-                        {g.cloudNoAgents.linkText}
-                      </ExternalLink>
-                      {g.cloudNoAgents.after}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="grid gap-1">
-                    {cloudAgents.map(agent => {
-                      const connected = isConnectedAgent(agent)
-
-                      return (
-                        <div
-                          className={cn('rounded-md px-2', connected && 'bg-primary/5 ring-1 ring-primary/25')}
-                          key={agent.id}
-                        >
-                          <ListRow
-                            action={
-                              connected ? (
-                                <Pill tone="primary">
-                                  <Check className="mr-1 inline size-3" />
-                                  {g.cloudActive}
-                                </Pill>
-                              ) : (
-                                <Button
-                                  disabled={!agent.dashboardUrl || cloudConnectingId !== null}
-                                  onClick={() => void connectCloudAgent(agent)}
-                                  size="sm"
-                                >
-                                  {cloudConnectingId === agent.id ? <Loader2 className="animate-spin" /> : null}
-                                  {agent.dashboardUrl
-                                    ? cloudConnectingId === agent.id
-                                      ? g.cloudConnecting
-                                      : savedAgent(agent)
-                                        ? g.cloudUseSaved
-                                        : g.cloudConnect
-                                    : g.cloudAgentProvisioning}
-                                </Button>
-                              )
-                            }
-                            description={g.cloudStatusLabel(agent.dashboardGatewayState)}
-                            title={savedAgent(agent)?.label || agent.name}
-                          />
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
               </div>
-            )
+
+              {cloudDiscover === 'loading' ? (
+                <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  <Loader2 className="size-4 animate-spin" />
+                  {g.cloudLoadingAgents}
+                </div>
+              ) : cloudAgents.length === 0 ? (
+                <div className="flex items-start gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                  <span>
+                    {g.cloudNoAgents.before}
+                    <ExternalLink href="https://portal.nousresearch.com/agents" showExternalIcon={false}>
+                      {g.cloudNoAgents.linkText}
+                    </ExternalLink>
+                    {g.cloudNoAgents.after}
+                  </span>
+                </div>
+              ) : (
+                <div className="grid gap-1">
+                  {cloudAgents.map(agent => {
+                    const connected = isConnectedAgent(agent)
+
+                    return (
+                      <div
+                        className={cn('rounded-md px-2', connected && 'bg-primary/5 ring-1 ring-primary/25')}
+                        key={agent.id}
+                      >
+                        <ListRow
+                          action={
+                            connected ? (
+                              <Pill tone="primary">
+                                <Check className="mr-1 inline size-3" />
+                                {g.cloudActive}
+                              </Pill>
+                            ) : (
+                              <Button
+                                disabled={!agent.dashboardUrl || cloudConnectingId !== null}
+                                onClick={() => void connectCloudAgent(agent)}
+                                size="sm"
+                              >
+                                {cloudConnectingId === agent.id ? <Loader2 className="animate-spin" /> : null}
+                                {agent.dashboardUrl
+                                  ? cloudConnectingId === agent.id
+                                    ? g.cloudConnecting
+                                    : savedAgent(agent)
+                                      ? g.cloudUseSaved
+                                      : g.cloudConnect
+                                  : g.cloudAgentProvisioning}
+                              </Button>
+                            )
+                          }
+                          description={g.cloudStatusLabel(agent.dashboardGatewayState)}
+                          title={savedAgent(agent)?.label || agent.name}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           ) : null}
         </div>
       ) : null}

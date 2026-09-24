@@ -44,6 +44,7 @@ import {
   oauthErrorCode,
   parseAgentTokenResponse,
   parsePortalTokenResponse,
+  portalTokenOrgId,
   portalTokenUrl,
   refreshTokenGrant
 } from './portal-oauth'
@@ -64,6 +65,12 @@ export interface PortalSessionDependencies {
   loginTimeoutMs?: number
   nowSeconds?: () => number
   rememberLog?: (message: string) => void
+  /**
+   * A sign-in landed on a different org than the session it replaces (the
+   * token's `org_id`, read for this comparison only). Every agent bearer and
+   * registry entry belongs to the old org.
+   */
+  onSessionOrgChanged?: () => void
 }
 
 export interface PortalLoginResult {
@@ -115,9 +122,31 @@ export function createPortalSession(deps: PortalSessionDependencies) {
     return coordinator.ensure(portal(), options)
   }
 
+  // The newest pending browser flow: its cancel handle and the authorize URL
+  // (for the "browser didn't open? copy the link" fallback).
+  let pending: null | { controller: AbortController; authorizeUrl: null | string } = null
+
+  /** Abort the pending browser sign-in; it resolves as a clean cancel. */
+  function cancelLogin(): boolean {
+    if (!pending) {
+      return false
+    }
+
+    pending.controller.abort()
+
+    return true
+  }
+
+  function pendingAuthorizeUrl(): null | string {
+    return pending?.authorizeUrl ?? null
+  }
+
   async function login(): Promise<PortalLoginResult> {
     const portalBaseUrl = portal()
     const isCurrent = coordinator.beginLogin(portalBaseUrl)
+    const flow = { controller: new AbortController(), authorizeUrl: null as null | string }
+
+    pending = flow
 
     let tokens: NativeTokenSet
 
@@ -127,7 +156,11 @@ export function createPortalSession(deps: PortalSessionDependencies) {
           openExternal: deps.openExternal,
           createServer: deps.createServer,
           timeoutMs: deps.loginTimeoutMs,
-          rememberLog: deps.rememberLog
+          rememberLog: deps.rememberLog,
+          signal: flow.controller.signal,
+          onAuthorizeUrl: url => {
+            flow.authorizeUrl = url
+          }
         },
         {
           buildAuthorizeUrl: params => buildPortalAuthorizeUrl(portalBaseUrl, params),
@@ -144,12 +177,17 @@ export function createPortalSession(deps: PortalSessionDependencies) {
       )
     } catch (error) {
       if (error instanceof NativeLoginCancelledError) {
-        log('[cloud] Hermes Cloud sign-in was cancelled in the browser')
+        log('[cloud] Hermes Cloud sign-in was cancelled')
 
+        // A cancel changes nothing: an existing session stays signed in.
         return { signedIn: hasLivePortalSession(), cancelled: true }
       }
 
       throw error
+    } finally {
+      if (pending === flow) {
+        pending = null
+      }
     }
 
     // A newer sign-in (or a sign-out) started while this browser flow was
@@ -158,8 +196,15 @@ export function createPortalSession(deps: PortalSessionDependencies) {
       throw new NativeAuthChangedError()
     }
 
+    const previous = deps.loadTokens(portalBaseUrl)
+
     coordinator.storeTokens(portalBaseUrl, tokens)
     log('[cloud] signed in to Hermes Cloud')
+
+    if (previous && portalTokenOrgId(previous.accessToken) !== portalTokenOrgId(tokens.accessToken)) {
+      log("[cloud] Hermes Cloud sign-in switched org; dropping the previous org's agent bearers")
+      deps.onSessionOrgChanged?.()
+    }
 
     return { signedIn: true }
   }
@@ -227,7 +272,15 @@ export function createPortalSession(deps: PortalSessionDependencies) {
     }
   }
 
-  return { hasLivePortalSession, getPortalAccessToken, login, logout, exchangeForAgent }
+  return {
+    hasLivePortalSession,
+    getPortalAccessToken,
+    login,
+    cancelLogin,
+    pendingAuthorizeUrl,
+    logout,
+    exchangeForAgent
+  }
 }
 
 export type PortalSession = ReturnType<typeof createPortalSession>

@@ -20,7 +20,9 @@
  *   - the loopback server binds 127.0.0.1 on an EPHEMERAL port and shuts down
  *     the instant it receives the callback (or times out) — no long-lived
  *     local listener;
- *   - the `state` is verified before the code is redeemed (CSRF);
+ *   - the `state` is verified before the code is redeemed (CSRF); a request
+ *     on another path or with a missing/foreign state is answered and
+ *     IGNORED, so a stray page cannot abort a pending sign-in;
  *   - the PKCE verifier never leaves this process until the token POST, and
  *     the gateway enforces SHA256(verifier)==challenge server-side;
  *   - the browser sees only a minimal "you can close this window" HTML page,
@@ -34,6 +36,8 @@ import {
   buildNativeAuthorizeUrl,
   generatePkcePair,
   generateState,
+  loopbackStateMatches,
+  NativeLoginCancelledError,
   type NativeTokenSet,
   nativeTokenUrl,
   parseLoopbackCallback,
@@ -44,9 +48,11 @@ import {
 // authenticates, gets redirected back). Matches the server-side pending TTL.
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 
+// The loopback redirect path (the redirect_uri is 127.0.0.1:<port>/callback).
+const CALLBACK_PATH = '/callback'
+
 // The minimal page the browser lands on after the redirect. No tokens, no
-// secrets — just a close affordance. Served for any loopback request so a
-// favicon probe doesn't look like a failure.
+// secrets — just a close affordance.
 const closePage = (heading: string) =>
   '<!doctype html><meta charset="utf-8"><title>Hermes</title>' +
   '<body style="font:15px system-ui;margin:3rem;text-align:center">' +
@@ -56,6 +62,7 @@ const closePage = (heading: string) =>
 
 const DONE_HTML = closePage('&#10003; Signed in to Hermes')
 const CANCELLED_HTML = closePage('Sign-in cancelled')
+const INCOMPLETE_HTML = closePage('Sign-in did not complete')
 
 /** The I/O shared by every loopback authorization (gateway or portal). */
 export interface LoopbackAuthorizationDeps {
@@ -68,6 +75,15 @@ export interface LoopbackAuthorizationDeps {
   timeoutMs?: number
   /** Optional logger for boot diagnostics. */
   rememberLog?: (line: string) => void
+  /** Aborting cancels the pending flow (rejects with NativeLoginCancelledError). */
+  signal?: AbortSignal
+  /**
+   * Receives the authorize URL once the listener is up, so the UI can offer a
+   * "browser didn't open? copy the link" fallback (openExternal can resolve
+   * without a browser actually opening, e.g. xdg-open on a bare Linux box).
+   * The URL carries only the public PKCE challenge and state, not the verifier.
+   */
+  onAuthorizeUrl?: (url: string) => void
 }
 
 export interface NativeLoginDeps extends LoopbackAuthorizationDeps {
@@ -90,9 +106,10 @@ export interface LoopbackAuthorizationFlow<T> {
  * The RFC 8252 loopback core: bind 127.0.0.1 on an ephemeral port → open the
  * system browser at the flow's authorize URL with our PKCE challenge + state →
  * await the ?code= (or ?error=) redirect → verify state → redeem. Rejects on
- * timeout, state mismatch, an error param (access_denied rejects with
- * NativeLoginCancelledError), or a redeem failure. Always tears the listener
- * down.
+ * timeout, an error param carrying our state (access_denied rejects with
+ * NativeLoginCancelledError), an abort (also NativeLoginCancelledError), or
+ * a redeem failure. Requests on another path or without our state are
+ * answered and ignored. Always tears the listener down.
  */
 export async function runLoopbackAuthorization<T>(
   deps: LoopbackAuthorizationDeps,
@@ -110,37 +127,64 @@ export async function runLoopbackAuthorization<T>(
     let timer: NodeJS.Timeout | null = null
     let redirectUri = ''
 
+    const reply = (res: http.ServerResponse, status: number, body: string) => {
+      res.writeHead(status, {
+        'content-type': status === 200 ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8'
+      })
+      res.end(body)
+    }
+
     const server = createServer((req, res) => {
-      // Only the callback path carries the code; any other path (favicon,
-      // etc.) still gets the friendly page so the browser tab looks sane.
       const url = req.url || '/'
+      let parsed: URL
 
-      // Always answer the browser with a close page — we never surface the
-      // outcome (let alone tokens) to the browser, only to the app.
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-      res.end(/[?&]error=/.test(url) ? CANCELLED_HTML : DONE_HTML)
+      try {
+        parsed = new URL(url, 'http://127.0.0.1')
+      } catch {
+        reply(res, 400, 'Bad request')
 
-      if (settled) {
         return
       }
 
-      // Ignore non-callback noise (e.g. /favicon.ico) — wait for the ?code=.
-      if (!/[?&](code|error)=/.test(url)) {
+      // Only the redirect path is ours; favicon probes and anything else are
+      // answered and ignored.
+      if (parsed.pathname !== CALLBACK_PATH) {
+        reply(res, 404, 'Not found')
+
         return
       }
+
+      // Any page can make the browser hit this port. Without OUR state the
+      // request is not the authorization server's redirect: answer 400 and
+      // keep waiting instead of letting it abort (or complete) the sign-in.
+      if (settled || !loopbackStateMatches(url, state)) {
+        reply(res, 400, 'This sign-in link is no longer valid.')
+
+        return
+      }
+
+      const error = parsed.searchParams.get('error')
+
+      // The outcome page is chosen only after the state check. We never
+      // surface tokens to the browser, only to the app.
+      reply(res, 200, error ? (error === 'access_denied' ? CANCELLED_HTML : INCOMPLETE_HTML) : DONE_HTML)
 
       try {
         const { code } = parseLoopbackCallback(url, state)
         finishWith(() => flow.redeem({ code, verifier, redirectUri }))
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error(String(error)))
+      } catch (err) {
+        fail(err instanceof Error ? err : new Error(String(err)))
       }
     })
+
+    const onAbort = () => fail(new NativeLoginCancelledError('cancelled'))
 
     const cleanup = () => {
       if (timer) {
         clearTimeout(timer)
       }
+
+      deps.signal?.removeEventListener('abort', onAbort)
 
       try {
         server.close()
@@ -180,8 +224,23 @@ export async function runLoopbackAuthorization<T>(
 
     server.on('error', err => fail(err instanceof Error ? err : new Error(String(err))))
 
+    if (deps.signal?.aborted) {
+      settled = true
+      reject(new NativeLoginCancelledError('cancelled'))
+
+      return
+    }
+
+    deps.signal?.addEventListener('abort', onAbort, { once: true })
+
     // Bind an ephemeral loopback port, then open the browser.
     server.listen(0, '127.0.0.1', () => {
+      if (settled) {
+        cleanup()
+
+        return
+      }
+
       const addr = server.address() as AddressInfo | null
 
       if (!addr || typeof addr === 'string') {
@@ -212,6 +271,7 @@ export async function runLoopbackAuthorization<T>(
       }, timeoutMs)
 
       log(`[native-oauth] loopback listening on 127.0.0.1:${addr.port}; opening system browser`)
+      deps.onAuthorizeUrl?.(authorizeUrl)
 
       deps.openExternal(authorizeUrl).catch(error => {
         fail(
@@ -244,6 +304,21 @@ export async function runNativeLogin(
         await deps.postJson(nativeTokenUrl(baseUrl), { code, code_verifier: verifier }, { timeoutMs: 15_000 })
       )
   })
+}
+
+/**
+ * The `oauth-login` IPC result for a native login that did not produce
+ * tokens. A browser Deny (or an in-app cancel) is a quiet "not signed in" —
+ * no error string, so the renderer shows no failure toast.
+ */
+export function nativeLoginFailureResult(
+  error: unknown
+): { ok: false; connected: false; cancelled: true } | { ok: false; connected: false; error: string } {
+  if (error instanceof NativeLoginCancelledError) {
+    return { ok: false, connected: false, cancelled: true }
+  }
+
+  return { ok: false, connected: false, error: error instanceof Error ? error.message : String(error) }
 }
 
 export { DEFAULT_LOGIN_TIMEOUT_MS }

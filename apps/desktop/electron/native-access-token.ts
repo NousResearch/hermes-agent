@@ -11,7 +11,14 @@ export interface NativeAccessTokenCoordinatorDeps {
    * Whether a stored set can be renewed at all. Defaults to "has a refresh
    * token"; Hermes Cloud agent bearers carry none but renew by re-exchange.
    */
-  canRefresh?: (tokens: NativeTokenSet) => boolean
+  canRefresh?: (tokens: NativeTokenSet, baseUrl: string) => boolean
+  /**
+   * Mint a token set for a host with nothing stored (Hermes Cloud: a
+   * discovered agent re-exchanges from the live portal session). Resolving
+   * null — or an auth rejection — means "not signed in". Shares the host's
+   * single refresh flight and epoch fence.
+   */
+  bootstrapTokens?: (baseUrl: string) => Promise<NativeTokenSet | null>
   clearTokens: (baseUrl: string) => void
   isRefreshAuthRejection: (error: unknown) => boolean
   loadTokens: (baseUrl: string) => NativeTokenSet | null
@@ -64,7 +71,7 @@ export function createNativeAccessTokenCoordinator(deps: NativeAccessTokenCoordi
     const tokens = deps.loadTokens(baseUrl)
 
     if (!tokens) {
-      return null
+      return deps.bootstrapTokens ? runFlight(baseUrl, () => deps.bootstrapTokens!(baseUrl), false) : null
     }
 
     const nowSeconds = deps.nowSeconds?.() ?? Math.floor(Date.now() / 1_000)
@@ -74,12 +81,23 @@ export function createNativeAccessTokenCoordinator(deps: NativeAccessTokenCoordi
       return tokens.accessToken
     }
 
-    if (!(deps.canRefresh ? deps.canRefresh(tokens) : Boolean(tokens.refreshToken))) {
+    if (!(deps.canRefresh ? deps.canRefresh(tokens, baseUrl) : Boolean(tokens.refreshToken))) {
       deps.clearTokens(baseUrl)
 
       return null
     }
 
+    return runFlight(baseUrl, () => deps.refreshTokens(baseUrl, tokens), true)
+  }
+
+  // One flight per host: a refresh of the stored set, or a bootstrap when
+  // nothing is stored. An auth rejection clears (refresh) / reports signed
+  // out (bootstrap); anything else propagates and keeps the stored set.
+  async function runFlight(
+    baseUrl: string,
+    mint: () => Promise<NativeTokenSet | null>,
+    clearOnRejection: boolean
+  ): Promise<string | null> {
     const flightEpoch = epochFor(baseUrl)
 
     const assertCurrent = () => {
@@ -89,20 +107,26 @@ export function createNativeAccessTokenCoordinator(deps: NativeAccessTokenCoordi
     }
 
     const refreshFlight = (async (): Promise<string | null> => {
-      let rotated: NativeTokenSet
+      let rotated: NativeTokenSet | null
 
       try {
-        rotated = await deps.refreshTokens(baseUrl, tokens)
+        rotated = await mint()
       } catch (error) {
         assertCurrent()
 
         if (deps.isRefreshAuthRejection(error)) {
-          deps.clearTokens(baseUrl)
+          if (clearOnRejection) {
+            deps.clearTokens(baseUrl)
+          }
 
           return null
         }
 
         throw error
+      }
+
+      if (!rotated) {
+        return null
       }
 
       assertCurrent()

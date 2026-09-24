@@ -6,6 +6,13 @@ import { $desktopOnboarding } from '@/store/onboarding'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
 
+const { notifyMock } = vi.hoisted(() => ({ notifyMock: vi.fn() }))
+
+vi.mock('@/store/notifications', async importOriginal => ({
+  ...(await importOriginal<any>()),
+  notify: notifyMock
+}))
+
 // Remote-backend users hit a hard boot failure that isn't OAuth reauth (token
 // auth, wrong URL, unreachable host). The recovery screen must let them fix the
 // remote connection in place — the "Connection settings" action swaps the card
@@ -207,6 +214,49 @@ describe('BootFailureOverlay', () => {
       expect(cloudStatus).toHaveBeenCalledTimes(1)
       expect(cloudLogin).toHaveBeenCalledTimes(1)
       expect(nativeLogin).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('a cloud browser sign-in that is denied or cancelled gets browser copy, not "login window closed"', async () => {
+    const gatewayUrl = 'https://agent-1.agents.nousresearch.com'
+    const cloudAgentSignIn = vi.fn()
+
+    const restore = stubDesktop(
+      {
+        ...remoteToken,
+        mode: 'cloud',
+        remoteAuthMode: 'oauth',
+        remoteOauthConnected: false,
+        remoteTokenSet: false,
+        remoteUrl: gatewayUrl
+      },
+      {
+        cloud: {
+          status: vi.fn().mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: false }),
+          login: vi.fn().mockResolvedValue({ ok: false, signedIn: false, cancelled: true }),
+          agentSignIn: cloudAgentSignIn
+        },
+        oauthLogoutConnectionConfig: vi.fn().mockResolvedValue({ ok: true, connected: false }),
+        probeConnectionConfig: vi.fn().mockResolvedValue({ providers: [{ id: 'nous', type: 'oauth' }] })
+      }
+    )
+
+    try {
+      notifyMock.mockClear()
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+
+      await waitFor(() =>
+        expect(notifyMock).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: 'warning', message: 'Sign-in was not completed in the browser.' })
+        )
+      )
+      expect(notifyMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'The login window closed before authentication finished.' })
+      )
+      expect(cloudAgentSignIn).not.toHaveBeenCalled()
     } finally {
       restore()
     }

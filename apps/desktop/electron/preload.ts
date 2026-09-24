@@ -304,8 +304,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   cloud: {
     status: () => ipcRenderer.invoke('hermes:cloud:status'),
     login: () => ipcRenderer.invoke('hermes:cloud:login'),
+    cancelLogin: () => ipcRenderer.invoke('hermes:cloud:login-cancel'),
+    loginUrl: () => ipcRenderer.invoke('hermes:cloud:login-url'),
     logout: () => ipcRenderer.invoke('hermes:cloud:logout'),
-    discover: org => ipcRenderer.invoke('hermes:cloud:discover', org),
+    discover: () => ipcRenderer.invoke('hermes:cloud:discover'),
     agentSignIn: (dashboardUrl, agentId) => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl, agentId)
   },
   profile: {

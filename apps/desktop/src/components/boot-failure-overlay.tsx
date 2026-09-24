@@ -216,10 +216,11 @@ export function BootFailureOverlay() {
           const login = await desktop.cloud.login()
 
           if (!login.signedIn) {
+            // The Cloud sign-in happens in the default browser, not a window.
             notify({
               kind: 'warning',
               title: t.boot.failure.signInIncompleteTitle,
-              message: t.boot.failure.signInIncompleteMessage
+              message: t.boot.failure.browserSignInIncompleteMessage
             })
 
             return

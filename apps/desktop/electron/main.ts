@@ -99,13 +99,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
-import {
-  canRefreshNativeTokenSet,
-  createCloudAgentAuth,
-  createCloudAgentRegistry,
-  createNativeTokenRefresher,
-  isCloudAuthLoss
-} from './cloud-agent-auth'
+import { createCloudAgentAuth, createCloudAgentRegistry } from './cloud-agent-auth'
 import { discoverCloudAgentsWithBearer } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
@@ -319,8 +313,9 @@ import {
   resolveLoginStrategy,
   tokenNeedsRefresh
 } from './native-oauth'
-import { runNativeLogin } from './native-oauth-login'
-import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { nativeLoginFailureResult, runNativeLogin } from './native-oauth-login'
+import { createNativeTokenCoordinatorDeps } from './native-token-coordinator-deps'
+import { createNativeTokenCache, type NativeTokenStoreIo } from './native-token-store'
 import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
@@ -8011,23 +8006,11 @@ async function clearOauthSession(baseUrl) {
 
 // Open a gateway login window in the OAuth session partition, resolving once
 // the access-token cookie appears (login done) or rejecting if the user closes
-// the window first. The window navigates through the IDP and back to
-// /auth/callback, which sets the session cookies on the partition; we poll the
-// cookie jar rather than try to read the HttpOnly value.
-//
-// `silent` selects the URL the window loads, which decides interactive-vs-silent:
-//   - silent=false (default): load ``/login`` — the public interstitial that
-//     renders the "Log in with X" provider chooser. This is the interactive
-//     remote-gateway login the settings UI drives.
-//   - silent=true: load the PROTECTED root ``/`` instead. ``/login`` is a public
-//     route, so loading it NEVER triggers the gate's auto-SSO and always shows
-//     the chooser. Loading a protected page with no session cookie makes the
-//     gate run ``_auto_sso_response``: single registered provider + a live
-//     portal session in this partition → a silent 302 through
-//     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
-//     → ``/auth/callback``, which sets the gateway cookie with NO interactive
-//     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
+// the window first. The window loads the gateway's public ``/login`` chooser,
+// navigates through the IDP and back to /auth/callback, which sets the session
+// cookies on the partition; we poll the cookie jar rather than try to read the
+// HttpOnly value.
+function openOauthLoginWindow(baseUrl) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -8046,7 +8029,6 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     let settled = false
     let win = null
     let pollTimer = null
-    let revealTimer = null
 
     const finish = err => {
       if (settled) {
@@ -8057,10 +8039,6 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 
       if (pollTimer) {
         clearInterval(pollTimer)
-      }
-
-      if (revealTimer) {
-        clearTimeout(revealTimer)
       }
 
       try {
@@ -8092,14 +8070,8 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
+        title: 'Sign in to Hermes gateway',
         autoHideMenuBar: true,
-        // Silent cascade: start HIDDEN. The auto-SSO 302 chain completes in
-        // well under a second, so the window normally never needs to show. We
-        // only reveal it as a fallback if the cascade DOESN'T complete quickly
-        // (e.g. the portal session lapsed and the gate fell through to the
-        // interactive chooser) — see the reveal timer below.
-        show: !silent,
         webPreferences: {
           contextIsolation: true,
           nodeIntegration: false,
@@ -8126,23 +8098,6 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     installWindowRendererLifecycle(win, { kind: 'oauth', callbacks: { log: rememberLog } })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
-    // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
-    // auto-SSO didn't go through silently (no portal session, multi-provider,
-    // loop-guard tripped, etc.) and the window is now showing an interactive
-    // page. Reveal it so the user can complete sign-in manually rather than
-    // staring at nothing. Cleared on finish().
-    if (silent && win) {
-      revealTimer = setTimeout(() => {
-        try {
-          if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
-            win.show()
-          }
-        } catch {
-          // window torn down
-        }
-      }, 2500)
-    }
-
     win.on('closed', () => {
       if (!settled) {
         finish(new Error('Login window closed before authentication completed.'))
@@ -8152,11 +8107,8 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     // ``next`` is intentionally omitted: the gateway lands on ``/`` after
     // login, which is a valid authenticated page that sets the cookies. We
     // only care that the cookie jar is populated.
-    //
-    // silent=true loads the protected root so the gate auto-SSOs (no chooser);
-    // silent=false loads the public ``/login`` chooser for interactive sign-in.
     const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
-    const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
+    const loginUrl = `${normalizedBase}/login`
     const loginHeaders = headersForRemoteRequest(loginUrl)
     rememberLog(
       `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(normalizedBase).host}`
@@ -8266,10 +8218,6 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // feature; the server half lives in hermes_cli/dashboard_auth/native_flow.py.
 // ---------------------------------------------------------------------------
 
-// In-memory cache of decrypted native tokens, keyed by normalized base URL.
-// Backed by the encrypted on-disk store so it survives restarts.
-const _nativeTokens = new Map<string, NativeTokenSet>()
-
 function _nativeTokenStorePath() {
   // Co-located with the connection config under userData; one JSON file mapping
   // baseUrl → { encoding, value } safeStorage payloads.
@@ -8292,35 +8240,22 @@ function _nativeTokenStoreIo(): NativeTokenStoreIo {
   }
 }
 
-function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
-  persistNativeTokenSet(baseUrl, tokens, _nativeTokenStoreIo())
-}
+// In-memory cache of decrypted native tokens, keyed by normalized base URL,
+// backed by the encrypted on-disk store so it survives restarts. A store
+// updates memory before persisting, so a rotated refresh token survives a
+// failed disk write for the rest of the session (native-token-store.ts).
+const _nativeTokenCache = createNativeTokenCache(_nativeTokenStoreIo(), normalizeRemoteBaseUrl)
 
 function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
-  baseUrl = normalizeRemoteBaseUrl(baseUrl)
-  const cached = _nativeTokens.get(baseUrl)
-
-  if (cached) {
-    return cached
-  }
-
-  const tokens = loadNativeTokenSet(baseUrl, _nativeTokenStoreIo())
-
-  if (tokens) {
-    _nativeTokens.set(baseUrl, tokens)
-  }
-
-  return tokens
+  return _nativeTokenCache.load(baseUrl)
 }
 
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
-  _persistNativeTokens(baseUrl, tokens)
-  _nativeTokens.set(baseUrl, tokens)
+  _nativeTokenCache.store(baseUrl, tokens)
 }
 
 function _clearNativeTokens(baseUrl: string) {
-  _nativeTokens.delete(baseUrl)
-  _persistNativeTokens(baseUrl, null)
+  _nativeTokenCache.clear(baseUrl)
 }
 
 // True when we hold native bearer tokens for this gateway (the native-flow
@@ -8344,18 +8279,20 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
 // All explicit mutations go through the coordinator; only its refresh/store
 // dependencies may call the raw persistence helpers above.
 //
-// The refresh strategy is per connection: a gateway-brokered token set rotates
-// through that gateway's /auth/native/refresh, while a Hermes Cloud agent
-// bearer (minted by the portal token exchange, no refresh token) renews by
-// exchanging a fresh portal access token again. Losing the portal session or
-// the agent's access during that re-exchange signs the connection out.
-const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator({
-  canRefresh: canRefreshNativeTokenSet,
-  clearTokens: _clearNativeTokens,
-  isRefreshAuthRejection: error => readStatusCode(error) === 401 || isCloudAuthLoss(error),
-  loadTokens: _loadNativeTokens,
-  normalizeBaseUrl: normalizeRemoteBaseUrl,
-  refreshTokens: createNativeTokenRefresher({
+// The refresh strategy is per connection and decided ONLY by the Hermes Cloud
+// agent registry (written from portal discovery), never by token-set fields a
+// remote gateway can write: a registry-known dashboard renews by re-exchanging
+// the portal session (and lazily exchanges when nothing is stored yet); every
+// other gateway rotates through its own /auth/native/refresh. See
+// native-token-coordinator-deps.ts. The Hermes Cloud helpers are resolved at
+// call time; they are defined below, long before any request needs a token.
+const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator(
+  createNativeTokenCoordinatorDeps({
+    clearTokens: _clearNativeTokens,
+    loadTokens: _loadNativeTokens,
+    normalizeBaseUrl: normalizeRemoteBaseUrl,
+    storeTokens: _storeNativeTokens,
+    tokenNeedsRefresh,
     refreshGatewayTokens: async (baseUrl, tokens) =>
       parseTokenResponse(
         await postJsonNoAuth(
@@ -8364,13 +8301,11 @@ const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator({
           { timeoutMs: 10_000 }
         )
       ),
-    // Resolved at call time: cloudAgentAuth is defined with the Hermes Cloud
-    // helpers below, long before any request can need a refresh.
-    reexchangeCloudAgent: (baseUrl, tokens) => cloudAgentAuth.reexchange(baseUrl, tokens)
-  }),
-  storeTokens: _storeNativeTokens,
-  tokenNeedsRefresh
-})
+    cloudAgentIdFor: baseUrl => cloudAgentRegistry.agentIdFor(baseUrl),
+    exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
+    hasLivePortalSession: () => portalSession.hasLivePortalSession()
+  })
+)
 
 const ensureNativeAccessToken = nativeAccessTokenCoordinator.ensure
 
@@ -8715,7 +8650,10 @@ const portalSession = createPortalSession({
   clearTokens: key => _clearNativeTokens(normalizeRemoteBaseUrl(key)),
   postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
   openExternal: url => shell.openExternal(url),
-  rememberLog
+  rememberLog,
+  // A sign-in that lands on another org invalidates every agent bearer and
+  // registry entry of the old one (resolved at call time, defined below).
+  onSessionOrgChanged: () => cloudAgentAuth.forgetAgents()
 })
 
 function _cloudAgentRegistryPath() {
@@ -8749,17 +8687,19 @@ const cloudAgentAuth = createCloudAgentAuth({
   exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
   storeAgentTokens: (baseUrl, tokens) => nativeAccessTokenCoordinator.storeTokens(baseUrl, tokens),
   clearAgentTokens: baseUrl => nativeAccessTokenCoordinator.clearTokens(baseUrl),
+  listStoredTokenUrls: () => _nativeTokenCache.urls(),
+  loadStoredTokens: _loadNativeTokens,
   clearPortalSession: () => portalSession.logout(),
-  discoverAgents: async () => (await discoverCloudAgentsRaw()).agents
+  discoverAgents: async () => (await discoverCloudAgentsRaw()).agents,
+  log: rememberLog
 })
 
 // Discover the hosted (Hermes Cloud) agents the signed-in user can see, in
-// the org the desktop token is pinned to. Throws a needsCloudLogin-tagged
-// error when there is no usable portal session. `org` is accepted for IPC
-// compatibility but ignored: with a bearer the portal pins the org from the
-// token, so switching team means signing in again and choosing it in the
-// browser (the 409 team picker can no longer occur here).
-async function discoverCloudAgents(_org?: string) {
+// the org the desktop token is pinned to (switching team = signing in again
+// and choosing it in the browser). Throws a needsCloudLogin-tagged error when
+// there is no usable portal session. Only this portal result feeds the agent
+// registry that decides which URLs may receive exchanged agent bearers.
+async function discoverCloudAgents() {
   const result = await discoverCloudAgentsRaw()
 
   cloudAgentAuth.rememberDiscovered(result.agents)
@@ -8767,12 +8707,37 @@ async function discoverCloudAgents(_org?: string) {
   return result
 }
 
-// Silent per-agent sign-in: exchange the desktop token for this agent's
-// dashboard bearer and store it as the connection's native token set. The
-// agent id comes from the caller when known, else from the last discovery /
-// persisted registry, else one live discovery.
-async function cloudAgentSignIn(dashboardUrl: string, agentId?: null | string) {
-  return cloudAgentAuth.signIn(dashboardUrl, agentId)
+// Earlier builds signed in to the portal inside the shared OAuth cookie
+// partition. Those portal cookies would let an embedded gateway login
+// silently reuse a portal session after a Cloud sign-out, so drop them: on
+// every Cloud sign-out, and once for installs upgrading from the cookie flow.
+function _legacyPortalCookiesPurgedMarkerPath() {
+  return path.join(app.getPath('userData'), 'hermes-cloud-legacy-portal-cookies-purged')
+}
+
+async function clearLegacyPortalCookies() {
+  try {
+    await clearOauthSession(resolvePortalBaseUrl())
+  } catch (error) {
+    rememberLog(
+      `[cloud] could not clear legacy portal cookies: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+}
+
+async function purgeLegacyPortalCookiesOnce() {
+  if (fs.existsSync(_legacyPortalCookiesPurgedMarkerPath())) {
+    return
+  }
+
+  await clearLegacyPortalCookies()
+
+  try {
+    fs.mkdirSync(path.dirname(_legacyPortalCookiesPurgedMarkerPath()), { recursive: true })
+    fs.writeFileSync(_legacyPortalCookiesPurgedMarkerPath(), `${new Date().toISOString()}\n`, { mode: 0o600 })
+  } catch {
+    // Best effort: a repeat purge next launch is harmless.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -16661,9 +16626,15 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
       return { ok: true, baseUrl, connected: true }
     } catch (error) {
-      rememberLog(`[native-oauth] native login failed (${error instanceof Error ? error.message : String(error)})`)
+      const failure = nativeLoginFailureResult(error)
 
-      return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
+      rememberLog(
+        'cancelled' in failure
+          ? '[native-oauth] native login was cancelled in the browser'
+          : `[native-oauth] native login failed (${failure.error})`
+      )
+
+      return failure
     }
   }
 
@@ -16714,28 +16685,34 @@ ipcMain.handle('hermes:cloud:status', async () => ({
 }))
 ipcMain.handle('hermes:cloud:login', async () => {
   // Opens the default browser; resolves when the loopback redirect lands. A
-  // Deny in the browser is a clean `{ ok: false, signedIn: false }`.
+  // Deny in the browser (or login-cancel) is a clean `{ ok: false, cancelled }`
+  // that leaves an existing session signed in.
   const result = await portalSession.login()
 
-  return { ok: result.signedIn && !result.cancelled, signedIn: result.signedIn }
+  return {
+    ok: result.signedIn && !result.cancelled,
+    signedIn: result.signedIn,
+    ...(result.cancelled ? { cancelled: true } : {})
+  }
 })
+ipcMain.handle('hermes:cloud:login-cancel', async () => ({ cancelled: portalSession.cancelLogin() }))
+// The pending sign-in's authorize URL, for "browser didn't open? copy link".
+ipcMain.handle('hermes:cloud:login-url', async () => ({ url: portalSession.pendingAuthorizeUrl() }))
 ipcMain.handle('hermes:cloud:logout', async () => {
   // Clears the desktop portal session AND every derived agent bearer. The
   // contract has no revoke endpoint; the refresh token simply stops being used.
   cloudAgentAuth.logout()
+  await clearLegacyPortalCookies()
 
   return { ok: true, signedIn: portalSession.hasLivePortalSession() }
 })
-ipcMain.handle('hermes:cloud:discover', async (_event, org) => {
-  // Returns { agents } or { needsOrgSelection: true, orgs }. `org` (optional)
-  // scopes discovery to a chosen org for multi-org users.
-  return discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
-})
+ipcMain.handle('hermes:cloud:discover', async () => discoverCloudAgents())
 ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl, agentId) => {
-  // Silent per-agent sign-in via the portal token exchange. Returns the agent's
-  // gateway baseUrl + connected; the renderer then saves a cloud-mode
-  // connection pointed at this dashboardUrl. `agentId` is optional.
-  return cloudAgentSignIn(String(dashboardUrl || ''), typeof agentId === 'string' && agentId ? agentId : null)
+  // Silent per-agent sign-in via the portal token exchange. The agent id hint
+  // is honoured only when it matches portal discovery for this URL; a URL
+  // discovery never returned is refused. The renderer then saves a cloud-mode
+  // connection pointed at this dashboardUrl.
+  return cloudAgentAuth.signIn(String(dashboardUrl || ''), typeof agentId === 'string' && agentId ? agentId : null)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
@@ -18716,6 +18693,9 @@ app.whenReady().then(() => {
   // Settings → Gateway. Must run before createWindow() and the first
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
+  // Hermes Cloud no longer signs in inside the OAuth cookie partition; drop
+  // any portal cookies an earlier build left there (one-shot, best-effort).
+  void purgeLegacyPortalCookiesOnce()
 
   installMediaPermissions()
   installDownloadHandling()

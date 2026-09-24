@@ -258,13 +258,18 @@ declare global {
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one system-browser sign-in powers discovery + silent
-      // per-agent sign-in (portal token exchange). `agentId` is optional; main
-      // resolves it from discovery / its persisted registry when omitted.
+      // per-agent sign-in (portal token exchange). `agentId` is an optional
+      // hint; main honours it only when it matches portal discovery.
       cloud: {
         status: () => Promise<DesktopCloudStatus>
-        login: () => Promise<DesktopCloudStatus & { ok: boolean }>
+        // Resolves when the browser flow ends; `cancelled` = Deny or cancelLogin.
+        login: () => Promise<DesktopCloudStatus & { ok: boolean; cancelled?: boolean }>
+        // Abort the pending browser sign-in (it then resolves as cancelled).
+        cancelLogin: () => Promise<{ cancelled: boolean }>
+        // The pending sign-in's browser URL, for a "copy link" fallback.
+        loginUrl: () => Promise<{ url: string | null }>
         logout: () => Promise<DesktopCloudStatus & { ok: boolean }>
-        discover: (org?: string) => Promise<DesktopCloudDiscoverResult>
+        discover: () => Promise<DesktopCloudDiscoverResult>
         agentSignIn: (dashboardUrl: string, agentId?: string) => Promise<DesktopCloudAgentSignInResult>
       }
       profile: {
@@ -1171,8 +1176,11 @@ export interface DesktopConnectionProbeResult {
 
 export interface DesktopOauthLoginResult {
   ok: boolean
-  baseUrl: string
+  baseUrl?: string
   connected: boolean
+  // The user backed out in the browser (Deny): not signed in, not an error.
+  cancelled?: boolean
+  error?: string
 }
 
 export interface DesktopOauthLogoutResult {
@@ -1180,13 +1188,13 @@ export interface DesktopOauthLogoutResult {
   connected: boolean
 }
 
-// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
+// --- Hermes Cloud ---
 
 export interface DesktopCloudStatus {
   // The portal base URL the desktop talks to (default or env-overridden).
   portalBaseUrl: string
-  // Whether the OAuth partition holds portal access or renewal credentials
-  // (Privy or NAS). Discovery validates them with the portal.
+  // Whether the desktop holds a live portal session (refresh token or an
+  // unexpired access token). Discovery validates it with the portal.
   signedIn: boolean
 }
 
@@ -1201,8 +1209,7 @@ export interface DesktopCloudAgent {
   dashboardGatewayState: string
 }
 
-// An org the signed-in user belongs to — for the org picker shown when a
-// multi-org user's discovery call needs disambiguation (NAS 409).
+// The org the desktop session is pinned to (chosen in the browser at sign-in).
 export interface DesktopCloudOrg {
   id: string
   slug: string | null
@@ -1212,14 +1219,12 @@ export interface DesktopCloudOrg {
   role: string
 }
 
-// Discovery result: either the agent list, OR a request to pick an org first
-// (multi-org user, no org chosen yet). The renderer shows a picker on the
-// latter and re-calls discover(org). On the agents branch, `org` echoes the
-// authoritatively-resolved org the list was scoped to (from NAS), so the
-// desktop persists it without relying on transient picker state.
-export type DesktopCloudDiscoverResult =
-  | { agents: DesktopCloudAgent[]; org?: DesktopCloudOrg | null; needsOrgSelection?: false }
-  | { needsOrgSelection: true; orgs: DesktopCloudOrg[] }
+// Discovery result: the agent list, plus the org it was scoped to (echoed by
+// the portal, else the session's `org_id`) so the desktop persists it.
+export interface DesktopCloudDiscoverResult {
+  agents: DesktopCloudAgent[]
+  org?: DesktopCloudOrg | null
+}
 
 export interface DesktopCloudAgentSignInResult {
   // The agent gateway base URL the silent sign-in targeted.

@@ -3,6 +3,7 @@
 The footer tells the model (and user) when a claimed file mutation did not land; the explainer
 summarises why a turn ended without a final answer. Every method resolves through ``AIAgent``'s MRO.
 """
+import logging
 import os
 import re
 from contextlib import suppress
@@ -14,6 +15,8 @@ from agent.tool_dispatch_helpers import (
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
 )
+
+logger = logging.getLogger("agent.turn_explainers")
 
 _NO_REPLY = "⚠️ No reply: "
 
@@ -231,17 +234,39 @@ class TurnExplainersMixin:
         self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool,
         *, task_id: Optional[str] = None,
     ) -> None:
-        """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
+        """Record a built-in file edit or standard workspace-mutation report.
 
         Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
         spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
         failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
-        if tool_name not in _FILE_MUTATING_TOOLS:
-            return
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
+            return
+
+        from agent.tool_result_classification import extract_workspace_mutation
+
+        mutation = None if is_error else extract_workspace_mutation(result)
+        if mutation is not None:
+            landed_paths = mutation["paths"] or [mutation["workspace"]]
+            changed = getattr(self, "_turn_file_mutation_paths", None)
+            if changed is not None:
+                changed.update(landed_paths)
+            try:
+                from agent.verification_evidence import mark_workspace_edited
+
+                mark_workspace_edited(
+                    session_id=getattr(self, "session_id", None) or task_id,
+                    cwd=mutation["workspace"],
+                    paths=mutation["paths"],
+                )
+            except Exception:
+                logger.debug("workspace mutation stale marker failed", exc_info=True)
+            if tool_name not in _FILE_MUTATING_TOOLS:
+                return
+
+        if tool_name not in _FILE_MUTATING_TOOLS:
             return
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:

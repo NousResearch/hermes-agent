@@ -3,10 +3,56 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 
 FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
+WORKSPACE_MUTATION_KEY = "workspace_mutation"
+WORKSPACE_MUTATION_OPERATIONS = frozenset({"write", "patch", "delete", "rename", "install", "unknown"})
+
+
+def _as_dict(result: Any) -> dict[str, Any] | None:
+    data = result
+    if isinstance(result, str):
+        try:
+            data = json.loads(result.strip())
+        except Exception:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def extract_workspace_mutation(result: Any, *, fallback_workspace: str | None = None) -> dict[str, Any] | None:
+    """Validate and normalize optional common mutation metadata from a tool result."""
+    data = _as_dict(result)
+    raw = data.get(WORKSPACE_MUTATION_KEY) if data else None
+    if not isinstance(raw, dict):
+        return None
+
+    workspace = raw.get("workspace") or fallback_workspace
+    if not isinstance(workspace, str) or not workspace.strip():
+        return None
+    root = Path(workspace).expanduser()
+    if not root.is_absolute():
+        return None
+    root = root.resolve()
+
+    operation = str(raw.get("operation") or "unknown").strip().lower()
+    if operation not in WORKSPACE_MUTATION_OPERATIONS:
+        operation = "unknown"
+
+    raw_paths = raw.get("paths")
+    if raw_paths is None:
+        raw_paths = []
+    if not isinstance(raw_paths, list) or any(not isinstance(path, str) for path in raw_paths):
+        return None
+    paths = []
+    for value in raw_paths:
+        if not value.strip():
+            continue
+        path = Path(value).expanduser()
+        paths.append(str((path if path.is_absolute() else root / path).resolve()))
+    return {"workspace": str(root), "operation": operation, "paths": sorted(set(paths))}
 
 
 # Tools whose interrupted/dangling execution is safe to discard because they

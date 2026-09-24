@@ -256,6 +256,8 @@ def finalize_foreground_result(
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
     result_dict = {"output": output, "exit_code": returncode, "error": None}
+    if isinstance(result.get("workspace_mutation"), dict):
+        result_dict["workspace_mutation"] = result["workspace_mutation"]
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [

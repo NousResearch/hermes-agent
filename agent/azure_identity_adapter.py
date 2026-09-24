@@ -305,15 +305,15 @@ def _strip_auth_headers(request: Any) -> None:
 
 
 def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: Any) -> Any:
-    """``httpx.Client`` minting a fresh Entra bearer JWT per outbound request. The Anthropic SDK computes
+    """``httpx2.Client`` minting a fresh Entra bearer JWT per outbound request. The Anthropic SDK computes
     ``Authorization`` once at construction, so per-request refresh needs a ``request`` hook: mint (cheap —
     azure-identity caches), strip pre-set auth headers, set ``Authorization: Bearer``. ``httpx_kwargs`` are
     forwarded verbatim (``timeout``, ``transport``...)."""
     if not is_token_provider(token_provider):
         raise ValueError("build_bearer_http_client requires a zero-arg callable token provider")
-    import httpx
+    import httpx2
 
-    def _inject_bearer(request: "httpx.Request") -> None:
+    def _inject_bearer(request: "httpx2.Request") -> None:
         try:
             token = materialize_bearer_for_http(token_provider)
         except ValueError as exc:
@@ -328,7 +328,7 @@ def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: 
         _strip_auth_headers(request)
         request.headers["Authorization"] = f"Bearer {token}"
 
-    return httpx.Client(event_hooks={"request": [_inject_bearer]}, **httpx_kwargs)
+    return httpx2.Client(event_hooks={"request": [_inject_bearer]}, **httpx_kwargs)
 
 
 __all__ = [

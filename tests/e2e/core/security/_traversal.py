@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tests.e2e.core.security import _helpers as H
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
@@ -31,14 +31,18 @@ def tool_text(content: Any) -> str:
 
 def run_tool_calls(home: Path, calls: list[tuple[str, dict[str, Any]]], *, cwd: Path,
                    config: str = "", env_lines: dict[str, str] | None = None,
-                   extra_env: dict[str, str] | None = None, timeout: float = 150.0) -> list[str]:
+                   extra_env: dict[str, str] | None = None, timeout: float = 150.0,
+                   prepare: Callable[[], None] | None = None) -> list[str]:
     """Run one ``hermes chat -q`` turn whose model issues ``calls`` sequentially; return each tool
-    result text, in call order. Harness failures (non-zero exit, a lost tool result) are plain
-    ``AssertionError`` so a KNOWN strict xfail never masks them."""
+    result text, in call order. ``prepare`` runs after the home (config.yaml + .env) is written and
+    before Hermes starts (snapshot pre-run state there). Harness failures (non-zero exit, a lost tool
+    result) are plain ``AssertionError`` so a KNOWN strict xfail never masks them."""
     key = H.canary("sk-traversal")
     script: list[Any] = [ToolCall(name, args) for name, args in calls] + [Text("done")]
     with FakeLLMServer(script, api_key=key) as srv:
         H.write_home(home / ".hermes", srv.base_url, api_key=key, config=config, env=env_lines)
+        if prepare is not None:
+            prepare()
         proc = H.run_hermes(["chat", "-q", "run the scripted tools", "-Q"], home, cwd=cwd,
                             extra_env=extra_env, timeout=timeout)
         reqs = srv.main_requests()

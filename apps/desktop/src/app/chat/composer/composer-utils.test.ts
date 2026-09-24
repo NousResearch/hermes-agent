@@ -140,10 +140,13 @@ describe('implicitSlashAcceptIndex', () => {
   it('honours an arrowed pick on a bare `/` query', () => {
     expect(implicitSlashAcceptIndex('/', rows, 1, true)).toBe(1)
     expect(implicitSlashAcceptIndex('/', rows, 2, true)).toBe(2)
+    // detectTrigger('/') yields query '', not '/'. Same empty token, same pick.
+    expect(implicitSlashAcceptIndex('', rows, 1, true)).toBe(1)
   })
 
   it('still returns null on a bare `/` with no arrow-key selection', () => {
     expect(implicitSlashAcceptIndex('/', rows, 0, false)).toBeNull()
+    expect(implicitSlashAcceptIndex('', rows, 0, false)).toBeNull()
   })
 
   it('matches an arg-stage prefix against the full completion text', () => {

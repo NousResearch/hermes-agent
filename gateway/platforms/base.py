@@ -411,7 +411,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -937,7 +937,7 @@ def _tenv(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
+def _parse_docker_volume_mounts() -> List[Tuple[Path, PurePosixPath]]:
     """Parse ``TERMINAL_DOCKER_VOLUMES`` (JSON list of ``host:container[:mode]``) into
     ``(host_path, container_path)``; named volumes / non-absolute hosts can't resolve here."""
     raw = _tenv("TERMINAL_DOCKER_VOLUMES", "").strip()
@@ -949,17 +949,22 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     mounts: List[Tuple[Path, Path]] = []
     for entry in parsed if isinstance(parsed, list) else ():
         spec = entry.strip() if isinstance(entry, str) else ""
-        # Prefer the first ':/' so absolute container paths are unambiguous.
-        sep = spec.find(":/")
+        # Find the host/container delimiter, skipping a Windows drive prefix
+        # ("C:/host:/workspace") whose drive colon would otherwise be taken
+        # as the separator and silently drop a valid mount.
+        start = 2 if len(spec) > 2 and spec[1] == ":" and spec[2] in "\\/" else 0
+        sep = spec.find(":/", start)
         if sep <= 0:
             continue
         container_raw = spec[sep + 1:].split(":", 1)[0]  # starts with /
         # Skip named volumes (no absolute/drive host path).
         host_expanded = os.path.expanduser(spec[:sep])
+        if host_expanded.startswith("//") or host_expanded.startswith("\\\\"):
+            continue
         if not (host_expanded.startswith("/") or (len(host_expanded) > 1 and host_expanded[1] == ":")):
             continue
-        host_path, container_path = _resolve_path(Path(host_expanded)), Path(container_raw)
-        if host_path is not None and container_path.is_absolute():
+        host_path, container_path = _resolve_path(Path(host_expanded)), PurePosixPath(container_raw)
+        if host_path is not None and host_path.is_absolute() and container_path.is_absolute():
             mounts.append((host_path, container_path))
     return mounts
 
@@ -1043,7 +1048,7 @@ def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
         return []
     try:
         from tools.credential_files import get_cache_directory_mounts
-        return [(Path(m["host_path"]), Path(m["container_path"])) for m in get_cache_directory_mounts()]
+        return [(Path(m["host_path"]), PurePosixPath(m["container_path"])) for m in get_cache_directory_mounts()]
     except Exception:
         return []
 
@@ -1062,10 +1067,29 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path(candidate: Union[Path, str], session_key: str = "") -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
-    if not candidate.is_absolute():
+    # A container path is always POSIX. On a native-Windows gateway
+    # ``Path("/workspace")`` is drive-relative and NOT absolute, so this
+    # function used to reject every container path before translation ran.
+    # Re-type as PurePosixPath so container semantics stay independent of the
+    # host path flavour.
+    # ``as_posix()`` first: str(WindowsPath('/workspace/x')) uses backslashes,
+    # which PurePosixPath would treat as one non-absolute component. Callers pass
+    # either a Path (upstream) or a str (this PR's original form).
+    try:
+        raw_str = candidate.as_posix() if hasattr(candidate, "as_posix") else str(candidate)
+        if raw_str.startswith("//") or raw_str.startswith("\\\\"):
+            return None
+        import posixpath
+        norm_str = posixpath.normpath(raw_str)
+        if norm_str.startswith("//") or norm_str.startswith("\\\\"):
+            return None
+        candidate_posix = PurePosixPath(norm_str)
+    except (TypeError, ValueError):
+        return None
+    if not candidate_posix.is_absolute():
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
     # TERMINAL_* env yet; the bridge is idempotent.
@@ -1076,30 +1100,30 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     mounted = {c.as_posix() for _, c in mounts}
     # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
     if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
+        mounts.extend((root, PurePosixPath("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
-    if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
+    if "/root" not in mounted and not candidate_posix.as_posix().startswith("/root/.hermes"):
         mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
+            (root, PurePosixPath("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
     if not mounts:
-        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
+        _warn_unresolved_docker_media(candidate_posix, session_key, "no sandbox mounts resolved")
         return None
     # Longest container-prefix match; equal-length prefixes are tried in insertion order.
-    candidate_posix = candidate.as_posix()
+    posix_str = candidate_posix.as_posix()
     matched = [(host_root, container_root, len(prefix)) for host_root, container_root in mounts
                for prefix in (container_root.as_posix().rstrip("/") or "/",)
-               if candidate_posix == prefix or candidate_posix.startswith(prefix + "/")]
+               if posix_str == prefix or posix_str.startswith(prefix + "/")]
     if not matched:
-        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
+        _warn_unresolved_docker_media(candidate_posix, session_key, "no mounted prefix matches")
         return None
     for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
-        translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
+        translated = _resolve_path(host_root / str(candidate_posix.relative_to(container_root)), strict=True)
         if translated is not None and (
                 translated == host_root or _path_is_within(translated, host_root)):
             return translated
-    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
+    _warn_unresolved_docker_media(candidate_posix, session_key, "host file missing from sandbox")
     return None
 
 
@@ -1112,16 +1136,20 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     candidate = _normalize_media_tag_path(path)
     if not candidate:
         return None
-    try:
-        expanded = Path(os.path.expanduser(candidate))
-    except (OSError, RuntimeError, ValueError):
-        # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
-        return None
-    if not expanded.is_absolute():
+    if candidate.startswith("//") or candidate.startswith("\\\\"):
         return None
     # Docker agents emit MEDIA:/workspace/... — map container paths to host paths first.
-    resolved = _translate_docker_container_media_path(expanded, session_key=session_key)
+    # On Windows, container paths (e.g. /workspace/...) are PurePosixPath absolute, but
+    # Path(candidate).is_absolute() is False because Windows considers drive-less paths relative.
+    resolved = _translate_docker_container_media_path(candidate, session_key=session_key)
     if resolved is None:
+        try:
+            expanded = Path(os.path.expanduser(candidate))
+        except (OSError, RuntimeError, ValueError):
+            # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
+            return None
+        if not expanded.is_absolute():
+            return None
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None

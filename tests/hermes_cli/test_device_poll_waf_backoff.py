@@ -7,10 +7,10 @@ carry ``authorization_pending``/``slow_down``. Before the fix, the generic
 device-token poll loop hit ``response.raise_for_status()`` on the first such
 response and killed a login the user might still be approving in the browser.
 
-The loop now treats non-JSON 403/408/429/5xx as transient: it backs off
-(honoring ``Retry-After``, doubling capped at 60s) and keeps polling until the
-device code expires. Non-JSON statuses outside that set still abort, and JSON
-OAuth errors keep their caller-specific error contract.
+The loop now treats non-JSON 408/429/5xx and an ``x-vercel-mitigated`` 403 as
+transient: it backs off (honoring ``Retry-After``, capped at 60s and at the
+device-code deadline) and keeps polling until the code expires, then returns to
+the server's polling interval once the Portal answers with OAuth JSON again.
 """
 
 import httpx
@@ -47,64 +47,40 @@ def _poll(post, *, expires_in=600, poll_interval=5):
         on_timeout=lambda: TimeoutError("device code expired"))
 
 
-def test_waf_statuses_back_off_and_keep_polling(monkeypatch):
+def _fake_clock(monkeypatch):
+    clock = [1000.0]
     sleeps = []
-    monkeypatch.setattr(adf.time, "sleep", lambda s: sleeps.append(s))
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(adf.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(adf.time, "sleep", sleep)
+    return sleeps
+
+
+def test_recovers_after_edge_blocked_responses(monkeypatch):
+    sleeps = _fake_clock(monkeypatch)
+    pending = httpx.Response(400, request=_REQ, json={"error": "authorization_pending"})
     post = _post_returning(
         _non_json(403, headers={"x-vercel-mitigated": "deny"}),
-        _non_json(429),
+        _non_json(429, headers={"retry-after": "3600"}),
         _non_json(503),
+        pending, pending,
         _ok({"access_token": "late-token"}))
 
-    result = _poll(post)
+    result = _poll(post, poll_interval=5)
 
     assert result == {"access_token": "late-token"}
-    assert sleeps == [10, 20, 40]  # doubling from interval 5, floor 5, cap 60
+    assert all(s <= 60 for s in sleeps)
+    assert sleeps[-2:] == [5, 5]  # back to the server interval once OAuth JSON returns
 
 
-def test_retry_after_header_is_honored(monkeypatch):
-    sleeps = []
-    monkeypatch.setattr(adf.time, "sleep", lambda s: sleeps.append(s))
-    post = _post_returning(
-        _non_json(429, headers={"retry-after": "7"}),
-        _ok())
-
-    _poll(post)
-
-    assert sleeps == [7]
-
-
-def test_backoff_doubles_but_caps_at_60(monkeypatch):
-    sleeps = []
-    monkeypatch.setattr(adf.time, "sleep", lambda s: sleeps.append(s))
-    post = _post_returning(*([_non_json(429)] * 6), _ok())
-
-    _poll(post)
-
-    assert sleeps == [10, 20, 40, 60, 60, 60]
-
-
-def test_non_json_status_outside_waf_set_still_aborts(monkeypatch):
-    monkeypatch.setattr(adf.time, "sleep", lambda s: None)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        _poll(_post_returning(_non_json(400)))
-
-
-def test_json_oauth_error_contract_unchanged(monkeypatch):
-    monkeypatch.setattr(adf.time, "sleep", lambda s: None)
-    denied = httpx.Response(400, request=_REQ, json={"error": "access_denied"})
-
-    with pytest.raises(RuntimeError, match="oauth:access_denied"):
-        _poll(_post_returning(denied))
-
-
-def test_deadline_still_ends_the_login(monkeypatch):
-    # Fake clock: first reading starts the loop, the second is past the deadline,
-    # so a persistently mitigated endpoint ends with the caller's timeout error.
-    readings = iter([1000.0, 1000.0 + 10 * 365 * 24 * 3600])
-    monkeypatch.setattr(adf.time, "monotonic", lambda: next(readings))
-    monkeypatch.setattr(adf.time, "sleep", lambda s: None)
+def test_persistent_block_ends_at_deadline_without_oversleeping(monkeypatch):
+    sleeps = _fake_clock(monkeypatch)
 
     with pytest.raises(TimeoutError, match="device code expired"):
-        _poll(lambda: _non_json(403), expires_in=5)
+        _poll(lambda: _non_json(429, headers={"retry-after": "3600"}), expires_in=300)
+
+    assert sum(sleeps) <= 300

@@ -80,6 +80,10 @@ describe('approval request routing', () => {
 })
 
 describe('preview action request routing', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('retries a replayed scoped request only while no session is bound yet', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: null })).toBe('retry')
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-a' })).toBe('run')
@@ -87,7 +91,9 @@ describe('preview action request routing', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: '', activeSessionId: null })).toBe('run')
   })
 
-  it('leaves a scoped action request unanswered in a window showing another session', () => {
+  it('fails fast when no desktop window hosts a scoped action request', () => {
+    vi.useFakeTimers()
+
     const { handled, respond, fail } = deliver(
       'preview.act',
       { action: 'elements', session_id: 'session-a' },
@@ -97,19 +103,38 @@ describe('preview action request routing', () => {
     expect(handled).toBe(true)
     expect(respond).not.toHaveBeenCalled()
     expect(fail).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(75)
+
+    expect(respond).toHaveBeenCalledWith({
+      value: JSON.stringify({
+        error: 'This chat is not displayed in any desktop window. Bring it to the front and try again.',
+        success: false
+      })
+    })
+    vi.useRealTimers()
   })
 
-  it('leaves scoped pane reads unanswered in a window showing another session', async () => {
+  it('fails fast for scoped pane reads when no desktop window hosts their session', () => {
+    vi.useFakeTimers()
+
     const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
       deliver(method, { session_id: 'session-a' }, 'session-b')
     )
 
-    await Promise.resolve()
+    vi.advanceTimersByTime(75)
 
     for (const { handled, respond } of reads) {
       expect(handled).toBe(true)
-      expect(respond).not.toHaveBeenCalled()
+      expect(respond).toHaveBeenCalledWith({
+        value: JSON.stringify({
+          error: 'This chat is not displayed in any desktop window. Bring it to the front and try again.',
+          success: false
+        })
+      })
     }
+
+    vi.useRealTimers()
   })
 
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {

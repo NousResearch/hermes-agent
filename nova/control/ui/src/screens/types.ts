@@ -103,6 +103,11 @@ export type Budget = {
     api_calls?: number; total_tokens?: number; estimated_cost_usd?: number; models?: any[];
   }>;
   observed_caveat?: string; enforcement_classes?: any[];
+  this_month?: {
+    agents: Array<{ agent_id: string; display_name?: string; spent_usd: number | null; budget_usd: number | null }>;
+    tenant: { spent_usd: number | null; budget_usd: number | null };
+    caveat?: string;
+  };
 };
 
 /** GET /platform/v1/tasks/{id} — the runtime's own record of how the work went.

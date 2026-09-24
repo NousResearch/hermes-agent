@@ -720,6 +720,14 @@ class HermesRuntime(AgentRuntime):
         """Reported usage for one agent. Observation only — see the returned caveats."""
         return _usage.read_usage(self.paths.profile_dir(agent_id), agent_id)
 
+    def spend_this_month(self, agent_id: str) -> Optional[float]:
+        import calendar
+        import time
+
+        t = time.gmtime()
+        since = float(calendar.timegm((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0)))
+        return _usage.month_to_date_spend(self.paths.profile_dir(agent_id), since)
+
     # -- identity -------------------------------------------------------------
 
     def apply_runtime_defaults(

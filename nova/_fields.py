@@ -168,6 +168,17 @@ class Doc:
             raise self._fail(key, f"must be at most {maximum}, got {value}")
         return value
 
+    def money(self, key: str, *, default: Optional[float] = None) -> Optional[float]:
+        """A non-negative amount of money, e.g. a budget in USD. Whole or decimal."""
+        value = self._raw(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise self._fail(key, f"must be an amount such as 50 or 12.5, got {type(value).__name__}")
+        if value < 0 or value != value:  # negative, or NaN
+            raise self._fail(key, f"must be zero or more, got {value}")
+        return float(value)
+
     def str_list(
         self,
         key: str,

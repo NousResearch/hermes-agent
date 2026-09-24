@@ -24,7 +24,7 @@ from nova.spec import AgentSpec
 #: Fields a runtime adapter injects into a compiled document at materialization time.
 #: They are plumbing, not meaning: moving the audit log does not change what an agent is
 #: allowed to do, so they are excluded from the agent's identity.
-RUNTIME_INJECTED_KEYS = frozenset({"audit_log", "tenant_id"})
+RUNTIME_INJECTED_KEYS = frozenset({"audit_log", "tenant_id", "tenant_monthly_budget_usd"})
 
 #: The tool NOVA installs for an agent granted knowledge sources. Named here rather
 #: than imported from the adapter: the compiler is runtime-agnostic, and this is the
@@ -164,6 +164,9 @@ def compile_policy(
         # that creates work for another agent, and on the receiving side, where a task no
         # declared delegation put there is refused (decide.decide_acceptance).
         "may_assign_to": sorted(spec.delegation.may_assign_to),
+        # HARD BOUNDARY at task start and at every tool call (decide.decide_budget). Absent
+        # or zero means no budget. The tenant-wide figure is injected at apply time.
+        "monthly_budget_usd": spec.limits.monthly_budget_usd or 0,
     }
     return CompiledPolicy(agent_id=spec.id, document=document, warnings=tuple(warnings))
 

@@ -1138,6 +1138,13 @@ class AgentRuntime(ABC):
         is not enforceable. The returned summary carries that caveat in its own payload.
         """
 
+    def spend_this_month(self, agent_id: str) -> Optional[float]:
+        """USD this agent has spent this calendar month (UTC), as the budget check counts it.
+
+        None when the runtime does not report spend or it cannot be read.
+        """
+        return None
+
     @property
     @abstractmethod
     def state_location(self) -> Path:

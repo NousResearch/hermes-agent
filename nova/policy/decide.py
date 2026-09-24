@@ -293,3 +293,32 @@ def decide_paths(
                 rule="file-outside-scope",
             )
     return Decision(ALLOW, f"{tool} stays inside its scope", tool=tool, rule="file-in-scope")
+
+
+# -- monthly budgets ---------------------------------------------------------
+#
+# A spend ceiling the runtime cannot enforce on model calls — no plugin can veto one — but
+# can enforce where NOVA has a veto: a task is refused before it starts, and every tool
+# call but the ones that close the task is refused, once month-to-date spend reaches the
+# agent's budget or the tenant's. A reply already in flight can land; the overshoot is at
+# most that reply, and the numbers are the runtime's own cost estimate, not an invoice.
+
+
+def decide_budget(
+    policy: Optional[Mapping[str, Any]], *, agent_spend: float, tenant_spend: float
+) -> Decision:
+    """Is there budget left this month? ``*_spend`` are month-to-date USD estimates."""
+    agent_id = (policy or {}).get("agent_id") or "this agent"
+    for scope, limit, spent in (
+        (f"{agent_id}'s", (policy or {}).get("monthly_budget_usd") or 0, agent_spend),
+        ("the tenant's", (policy or {}).get("tenant_monthly_budget_usd") or 0, tenant_spend),
+    ):
+        if isinstance(limit, (int, float)) and limit > 0 and spent >= limit:
+            return Decision(
+                DENY,
+                f"{scope} monthly budget of ${limit:,.2f} is spent (${spent:,.2f} so far this "
+                "month). New work and tool calls stop until the month turns or an "
+                "administrator raises the budget",
+                rule="budget-exhausted",
+            )
+    return Decision(ALLOW, "within budget", rule="within-budget")

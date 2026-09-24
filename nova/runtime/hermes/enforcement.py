@@ -20,10 +20,12 @@ while one that is silently unrestricted does not.
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import re
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,12 +34,14 @@ from typing import Any, Dict, Optional
 try:  # installed layout: the copied decision module sits beside this file
     from ._decide import (
         ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, FILE_TOOLS, REFUSED_TASK_TOOLS,
-        REQUIRE_APPROVAL, Decision, decide, decide_acceptance, decide_assignment, decide_paths,
+        REQUIRE_APPROVAL, Decision, decide, decide_acceptance, decide_assignment, decide_budget,
+        decide_paths,
     )
 except ImportError:  # in-tree layout, for tests that import this module directly
     from nova.policy.decide import (
         ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, FILE_TOOLS, REFUSED_TASK_TOOLS,
-        REQUIRE_APPROVAL, Decision, decide, decide_acceptance, decide_assignment, decide_paths,
+        REQUIRE_APPROVAL, Decision, decide, decide_acceptance, decide_assignment, decide_budget,
+        decide_paths,
     )
 
 #: Written beside the profile's configuration by the runtime adapter.
@@ -229,6 +233,74 @@ def _file_decision(tool_name: str, args: Dict[str, Any]) -> Optional[Decision]:
     )
 
 
+#: How long a month-to-date reading is reused. Spend moves by one model reply at a time,
+#: and re-reading every agent's store on every tool call would cost more than it buys.
+_SPEND_TTL_SECONDS = 20
+
+
+def _month_start(now: float) -> float:
+    """00:00 UTC on the first of the current month, as a Unix time."""
+    t = time.gmtime(now)
+    return float(calendar.timegm((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0)))
+
+
+def _profile_spend(profile: Path, since: float) -> float:
+    """Month-to-date spend in one profile's session store, read-only. 0 when there is none.
+
+    The runtime's actual cost where it has one, its estimate otherwise. A session is
+    counted in the month it was last active.
+    """
+    db = profile / "state.db"
+    if not db.is_file():
+        return 0.0
+    connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    try:
+        row = connection.execute(
+            "SELECT COALESCE(SUM(CASE WHEN actual_cost_usd > 0 THEN actual_cost_usd "
+            "ELSE estimated_cost_usd END), 0) FROM session_model_usage "
+            "WHERE COALESCE(last_seen, first_seen, 0) >= ?",
+            (since,),
+        ).fetchone()
+        return float(row[0] or 0.0)
+    finally:
+        connection.close()
+
+
+def _budget(policy: Dict[str, Any]) -> Optional[Decision]:
+    """The budget decision for this agent now, or None when it has no budget to keep.
+
+    Fails closed: spend that cannot be read while a budget is set is treated as spent, the
+    same rule every other check in this file follows.
+    """
+    agent_limit = policy.get("monthly_budget_usd") or 0
+    tenant_limit = policy.get("tenant_monthly_budget_usd") or 0
+    if not agent_limit and not tenant_limit:
+        return None
+    cached = _CACHE.get("budget")
+    if cached and time.time() - cached[0] < _SPEND_TTL_SECONDS:
+        return cached[1]
+    try:
+        since = _month_start(time.time())
+        profile = Path(__file__).resolve().parents[2]
+        agent_spend = _profile_spend(profile, since)
+        tenant_spend = 0.0
+        if tenant_limit:
+            # Every NOVA agent on the host: the profiles that carry a compiled policy.
+            for sibling in profile.parent.iterdir():
+                if (sibling / POLICY_FILENAME).is_file():
+                    tenant_spend += _profile_spend(sibling, since)
+        decision = decide_budget(policy, agent_spend=agent_spend, tenant_spend=tenant_spend)
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        decision = Decision(
+            DENY,
+            f"could not read this month's spend ({type(exc).__name__}) while a budget is set; "
+            "refusing rather than spending blind",
+            rule="budget-unreadable",
+        )
+    _CACHE["budget"] = (time.time(), decision)
+    return decision
+
+
 def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
     """Append a governance record for a refusal or an escalation.
 
@@ -295,6 +367,12 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, **
                     "task. Call kanban_block with this reason so a person can route it."
                 ),
             }
+        # Out of budget: everything but the tools that close the task is refused, the same
+        # shape as the per-run tool ceiling — an agent must still be able to say it stopped.
+        budget = _budget(policy) if policy is not None else None
+        if budget is not None and budget.effect == DENY and tool_name not in set(policy.get("baseline") or ()):
+            _record(policy, Decision(DENY, budget.reason, tool=tool_name, rule=budget.rule), tool_name)
+            return {"action": "block", "message": f"BLOCKED by NOVA budget: {budget.reason}."}
         decision = decide(policy, tool_name, calls_used=_CALLS_USED)
         if tool_name == ASSIGNING_TOOL and decision.effect in (ALLOW, REQUIRE_APPROVAL):
             assignment = decide_assignment(policy, (args or {}).get(ASSIGNEE_ARG))
@@ -371,9 +449,19 @@ def on_session_start(**_: Any) -> None:
     """
     try:
         policy = _load_policy()
-        acceptance = _acceptance(policy) if policy is not None else None
-        if acceptance is None or acceptance.effect != DENY or _CACHE.get("refusal_recorded"):
+        if policy is None or _CACHE.get("refusal_recorded") or not os.environ.get("HERMES_KANBAN_TASK"):
             return
+        acceptance = _acceptance(policy)
+        refusal = None
+        if acceptance is not None and acceptance.effect == DENY:
+            refusal = ("NOVA delegation policy", acceptance, "capability")
+        else:
+            budget = _budget(policy)
+            if budget is not None and budget.effect == DENY:
+                refusal = ("NOVA budget", budget, "needs_input")
+        if refusal is None:
+            return
+        label, acceptance, kind = refusal
         _CACHE["refusal_recorded"] = True
         from hermes_cli import kanban_db as kb
         from hermes_cli import kanban_db_connect as kbc
@@ -383,8 +471,8 @@ def on_session_start(**_: Any) -> None:
         with kbc.connect_closing() as connection:
             kb.block_task(
                 connection, task_id,
-                reason=f"NOVA delegation policy: {acceptance.reason}",
-                kind="capability",
+                reason=f"{label}: {acceptance.reason}",
+                kind=kind,
                 expected_run_id=int(raw_run) if raw_run.isdigit() else None,
             )
         _record(policy, Decision(DENY, acceptance.reason, tool="(task)", rule=acceptance.rule), "(task)")

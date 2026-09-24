@@ -236,6 +236,9 @@ class DeploymentSpec:
     #: Empty means the agents reach nothing outside the runtime, which is the default and
     #: the safe one.
     integrations: tuple[IntegrationSpec, ...] = ()
+    #: The whole tenant's month-to-date spend (USD, the runtime's cost estimate) at which
+    #: every agent stops taking new work and calling tools. ``budget.monthly_usd``.
+    monthly_budget_usd: Optional[float] = None
     source: Optional[Path] = None
 
     def __post_init__(self) -> None:
@@ -261,12 +264,18 @@ class DeploymentSpec:
         runtime_config = _parse_runtime_config(doc, source=source)
         infrastructure = parse_infrastructure(doc.child("infrastructure"))
         integrations = parse_integrations(doc._raw("integrations"), source=source, env=env)
+        budget_doc = doc.child("budget")
+        monthly = None
+        if budget_doc is not None:
+            monthly = budget_doc.money("monthly_usd")
+            budget_doc.reject_unknown()
         doc.reject_unknown()
         return cls(
             provider=provider,
             runtime_config=runtime_config,
             infrastructure=infrastructure,
             integrations=integrations,
+            monthly_budget_usd=monthly,
             source=source,
         )
 
@@ -284,6 +293,10 @@ class DeploymentSpec:
             # identity — a grant that could be widened without the provenance moving would
             # be a grant nobody could prove the age of.
             out["integrations"] = [i.to_tfvars() for i in self.integrations]
+        if self.monthly_budget_usd is not None:
+            # In the digest, so changing the tenant's budget re-applies every agent: the
+            # budget is written into each agent's policy at apply time.
+            out["budget"] = {"monthly_usd": self.monthly_budget_usd}
         return out
 
 

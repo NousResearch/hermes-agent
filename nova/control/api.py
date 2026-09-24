@@ -2462,6 +2462,21 @@ class ControlAPI:
 
         observed = [self.runtime.usage(spec.id).to_dict() for spec in self.bundle.agents]
 
+        # Month to date against each budget, counted the way the stop counts it, so the
+        # screen shows how close an agent is before it stops rather than after.
+        spend_rows = []
+        tenant_spent: Optional[float] = 0.0
+        for spec in self.bundle.agents:
+            spent = self.runtime.spend_this_month(spec.id)
+            tenant_spent = None if (spent is None or tenant_spent is None) else tenant_spent + spent
+            spend_rows.append({
+                "agent_id": spec.id,
+                "display_name": identity.display_name_for(spec.id, spec.name),
+                "spent_usd": spent,
+                "budget_usd": spec.limits.monthly_budget_usd,
+            })
+        tenant_budget = self.bundle.deployment.monthly_budget_usd if self.bundle.deployment else None
+
         return Response(
             200,
             {
@@ -2479,5 +2494,14 @@ class ControlAPI:
                     "the runtime's estimate rather than an invoice."
                 ),
                 "enforcement_classes": [fact.to_dict() for fact in self.runtime.limit_facts()],
+                "this_month": {
+                    "agents": spend_rows,
+                    "tenant": {"spent_usd": tenant_spent, "budget_usd": tenant_budget},
+                    "caveat": (
+                        "Spend is the runtime's own cost estimate, month to date (UTC). At a "
+                        "budget, new work and tool calls stop; a reply already in flight can "
+                        "still land."
+                    ),
+                },
             },
         )

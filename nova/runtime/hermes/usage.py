@@ -101,3 +101,29 @@ def read_usage(profile_dir: Path, agent_id: str) -> UsageSummary:
         for (model, provider), bucket in sorted(totals.items())
     )
     return UsageSummary(agent_id=agent_id, available=True, models=models)
+
+
+def month_to_date_spend(profile_dir: Path, since: float) -> Optional[float]:
+    """USD spent since ``since`` (Unix time), as the budget check counts it. None if unreadable.
+
+    The same arithmetic as the policy plugin's budget check (actual cost where the runtime
+    has one, its estimate otherwise; a session counts in the month it was last active), so
+    the Usage screen and the stop agree about how close an agent is.
+    """
+    path = state_db_path(profile_dir)
+    if not path.is_file():
+        return 0.0
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(CASE WHEN actual_cost_usd > 0 THEN actual_cost_usd "
+                "ELSE estimated_cost_usd END), 0) FROM session_model_usage "
+                "WHERE COALESCE(last_seen, first_seen, 0) >= ?",
+                (since,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return None
+    return float(row[0] or 0.0)

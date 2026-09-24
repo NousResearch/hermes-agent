@@ -862,12 +862,14 @@ export function UsageScreen({ budget }: { budget: Loaded<Budget> }) {
           <div className="space-y-5">
             <GlassPanel solid className="border-waiting/30 p-4">
               <p className="text-ink-muted text-[12.5px] leading-relaxed">
-                <span className="text-waiting font-medium">Observed, never enforced.</span>{" "}
-                <Hint text="This runtime's model-boundary hooks discard their return values, so a token or cost ceiling cannot be applied here. Cost control is the provider's own billing console.">
-                  {data.observed_caveat || "These figures are reported by the runtime and are not a spending ceiling."}
+                <span className="text-waiting font-medium">Usage figures are observed.</span>{" "}
+                <Hint text="The runtime cannot refuse a model call, so NOVA enforces budgets where it can: at a budget, new work and tool calls stop. A reply already in flight can still land. Figures are the runtime's estimate, not an invoice.">
+                  {data.observed_caveat || "These figures are reported by the runtime."}
                 </Hint>
               </p>
             </GlassPanel>
+
+            {data.this_month ? <ThisMonth month={data.this_month} /> : null}
 
             <div className="grid gap-3 sm:grid-cols-3">
               <Headline label="Tokens" value={totalTokens.toLocaleString()} />
@@ -922,6 +924,48 @@ export function UsageScreen({ budget }: { budget: Loaded<Budget> }) {
         );
       }}
     </PanelBody>
+  );
+}
+
+/** Month-to-date spend against each budget, counted the way the stop counts it. */
+function ThisMonth({ month }: { month: NonNullable<Budget["this_month"]> }) {
+  const rows = [
+    { key: "tenant", label: "Whole deployment", spent: month.tenant.spent_usd, budget: month.tenant.budget_usd },
+    ...month.agents.map((a) => ({ key: a.agent_id, label: a.display_name ?? a.agent_id, spent: a.spent_usd, budget: a.budget_usd })),
+  ];
+  return (
+    <GlassPanel className="p-5">
+      <SectionHeader title="This month" icon={Gauge}
+        detail={month.caveat || "Month-to-date spend against each budget."} />
+      <ul className="space-y-3">
+        {rows.map((row) => {
+          const spent = row.spent ?? null;
+          const pct = row.budget && spent !== null ? Math.min(100, (spent / row.budget) * 100) : 0;
+          const tone = !row.budget ? "var(--accent)"
+            : pct >= 100 ? "var(--blocked)" : pct >= 80 ? "var(--waiting)" : "var(--accent)";
+          return (
+            <li key={row.key}>
+              <div className="mb-1 flex items-baseline gap-3">
+                <span className="text-ink min-w-0 flex-1 truncate text-[13px]">{row.label}</span>
+                <span className="text-ink text-[12.5px] font-semibold">
+                  {spent === null ? "unreadable" : `$${spent.toFixed(2)}`}
+                </span>
+                <span className="text-ink-faint w-28 text-right text-[11.5px]">
+                  {row.budget ? `of $${row.budget.toFixed(2)}${pct >= 100 ? " · stopped" : ""}` : "no budget"}
+                </span>
+              </div>
+              {row.budget ? (
+                <div className="bg-glass-1 h-1.5 w-full overflow-hidden rounded-full"
+                     role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}
+                     aria-label={`${row.label} budget used`}>
+                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: tone }} />
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </GlassPanel>
   );
 }
 

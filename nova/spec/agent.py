@@ -252,9 +252,12 @@ class LimitsSpec:
     Every value is optional; an unset limit means "use the runtime's default" rather than
     "unlimited", because a runtime default is usually the safer of the two.
 
-    **There is no token or cost limit here, and that is deliberate.** No plugin can veto a
-    model call in this runtime, so a spend ceiling cannot be enforced. Usage and cost are
-    reported instead — see :mod:`nova.policy.limits` for what each control actually does.
+    **No limit here vetoes a model call, and none claims to.** No plugin can veto a model
+    call in this runtime. ``monthly_budget_usd`` is enforced where the runtime *does* give
+    NOVA a veto: a task is refused before it starts, and every tool call but the ones that
+    close the task is refused, once the agent's month-to-date spend reaches it. A model
+    reply already in flight can still land, so a run can overshoot by that one reply — see
+    :mod:`nova.policy.limits` for what each control actually does.
     """
 
     max_concurrent_tasks: Optional[int] = None
@@ -264,6 +267,9 @@ class LimitsSpec:
     max_tool_calls_per_run: Optional[int] = None
     #: Injects a wrap-up request. NOT a limit — nothing terminates if it is ignored.
     soft_wrapup_after_seconds: Optional[int] = None
+    #: Month-to-date spend (the runtime's own cost estimate, USD) at which new work and
+    #: tool calls stop. Calendar month, UTC.
+    monthly_budget_usd: Optional[float] = None
     delegation: "DelegationLimits" = field(default_factory=lambda: DelegationLimits())
 
     @classmethod
@@ -286,6 +292,7 @@ class LimitsSpec:
             max_turns=doc.int_("max_turns", minimum=1),
             max_tool_calls_per_run=doc.int_("max_tool_calls_per_run", minimum=1),
             soft_wrapup_after_seconds=doc.int_("soft_wrapup_after_seconds", minimum=1),
+            monthly_budget_usd=doc.money("monthly_budget_usd"),
             delegation=DelegationLimits.parse(doc.child("delegation")),
         )
         doc.reject_unknown()
@@ -301,6 +308,7 @@ class LimitsSpec:
                 ("max_turns", self.max_turns),
                 ("max_tool_calls_per_run", self.max_tool_calls_per_run),
                 ("soft_wrapup_after_seconds", self.soft_wrapup_after_seconds),
+                ("monthly_budget_usd", self.monthly_budget_usd),
             )
             if value is not None
         }

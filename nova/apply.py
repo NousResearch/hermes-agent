@@ -227,6 +227,9 @@ def _apply_bundle(
             # refusal, and which tenant it belongs to. Injected here, where both are in hand.
             compiled.document["tenant_id"] = bundle.tenant_id
             compiled.document["audit_log"] = str(audit.path)
+            compiled.document["tenant_monthly_budget_usd"] = (
+                bundle.deployment.monthly_budget_usd or 0 if bundle.deployment else 0
+            )
         # Warnings the materializer produced — a spec the runtime cannot fully honour, a
         # profile being adopted by this tenant — were reaching the audit record and not the
         # operator. A warning nobody sees is the same class of problem as a control nobody

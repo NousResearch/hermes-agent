@@ -49,6 +49,19 @@ LIMIT_FACTS: tuple[LimitFact, ...] = (
         verified_at="hermes_cli/plugins_dispatch.py:_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS",
     ),
     LimitFact(
+        key="monthly_budget_usd",
+        enforcement=HARD_BOUNDARY,
+        summary=(
+            "Month-to-date spend (the runtime's own cost estimate) at which the agent stops: "
+            "a task is refused before it starts, and every tool call but the ones that close "
+            "the task is refused. A deployment-wide budget.monthly_usd applies across all "
+            "agents the same way. No plugin can veto a model call, so a reply already in "
+            "flight can land — the overshoot is that one reply."
+        ),
+        compiles_to="(NOVA policy plugin: decide_budget, at session start and pre_tool_call)",
+        verified_at="nova/runtime/hermes/enforcement.py:_budget -> pre_tool_call / on_session_start",
+    ),
+    LimitFact(
         key="delegation.max_concurrent_children",
         enforcement=HARD_PREEMPTIVE,
         summary="Caps parallel subagents. Each child consumes tokens independently.",

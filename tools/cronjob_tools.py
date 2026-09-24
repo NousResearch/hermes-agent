@@ -613,6 +613,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
+            min_response_chars=a["min_response_chars"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
@@ -728,6 +729,8 @@ def _pick(updates: Dict[str, Any], job: Dict[str, Any], key: str) -> Any:
 def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
     """prompt / name / deliver / skills / model pins; returns an error string or None."""
     prompt, deliver, skill, skills = a["prompt"], a["deliver"], a["skill"], a["skills"]
+    if a["min_response_chars"] is not None:
+        updates["min_response_chars"] = a["min_response_chars"]
     if prompt is not None:
         scan_error = _scan_cron_prompt(prompt)
         if scan_error:
@@ -922,7 +925,8 @@ def cronjob(
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
-    pinned: Optional[bool] = None) -> str:
+    pinned: Optional[bool] = None,
+    min_response_chars: Optional[int] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility

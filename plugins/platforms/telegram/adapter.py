@@ -1357,6 +1357,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
 
     _RICH_DETAILS_RE = re.compile(r"<details\b[^>]*>.*?</details>", re.IGNORECASE | re.DOTALL)
+    # \[ ... \] is display math, same as $$ ... $$, and \( ... \) is its inline form.
+    # _RICH_MATH_IN_DETAILS_RE below already treats both as math for the tdesktop guard.
+    _RICH_DISPLAY_MATH_RE = re.compile(r"\\\[.*?\\\]", re.DOTALL)
+    _RICH_INLINE_MATH_RE = re.compile(r"\\\(.*?\\\)", re.DOTALL)
     _RICH_MATH_IN_DETAILS_RE = re.compile(
         r"(\$\$.*?\$\$|\\\[.*?\\\]|\\\(.*?\\\)|"
         r"\\(?:sum|frac|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|"
@@ -1397,7 +1401,25 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
             return True
-        return "$$" in content
+        if "$$" in content:
+            return True
+        # Bare $...$ stays out on purpose: it collides with currency (#66746).
+        # \[ \] and \( \) never appear in prose, so they are safe to act on.
+        return bool(self._RICH_DISPLAY_MATH_RE.search(content)
+                    or self._RICH_INLINE_MATH_RE.search(content))
+
+    def _rich_math_to_dollar_delimiters(self, content: str) -> str:
+        """Rewrite \\[ \\] and \\( \\) math into the $-delimited form Telegram parses.
+
+        Only runs on content already bound for the rich path, so it cannot pull new
+        messages into rich delivery or change what the MarkdownV2 path sends.
+        """
+        if not content:
+            return content
+        content = self._RICH_DISPLAY_MATH_RE.sub(
+            lambda m: "$$" + m.group(0)[2:-2].strip() + "$$", content)
+        return self._RICH_INLINE_MATH_RE.sub(
+            lambda m: "$" + m.group(0)[2:-2].strip() + "$", content)
 
     def _rich_delivery_enabled(self) -> bool:
         """Whether rich delivery is allowed (``rich_messages`` opt-in)."""
@@ -1456,6 +1478,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes."""
+        content = self._rich_math_to_dollar_delimiters(content)
         payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True

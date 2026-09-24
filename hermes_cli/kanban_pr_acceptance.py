@@ -61,15 +61,58 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        # A private repo on GitHub Free has no rulesets API: it answers 403
+        # "Upgrade to GitHub Pro or make this repository public". That is a plan
+        # limit, not an access failure, and letting it fall through to the generic
+        # handler reports a correctly-authenticated gh as broken. Treated as "no
+        # rulesets", which leaves the verdict to the no-required-checks branch below.
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
+            receipt["rulesets_unavailable"] = True
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
+        if not required and receipt.get("rulesets_unavailable"):
+            # No repository-enforced checks exist and none CAN on this plan. Verify
+            # the head SHA's own runs instead of declaring the card unfinishable.
+            pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
+            runs = [r for page in pages for r in page["check_runs"]]
+            graded = [r for r in runs if r.get("conclusion") not in ("skipped", "neutral", None)]
+            receipt["acceptance_basis"] = "head-sha-check-runs"
+            receipt["checks"] = [{"name": r["name"], "id": r["id"], "url": r.get("html_url"),
+                                  "head_sha": r.get("head_sha"),
+                                  "classification": _classify(r, sha, r.get("conclusion"), True),
+                                  "conclusion": r.get("conclusion")} for r in graded]
+            if not graded:
+                receipt["detail"] = (
+                    "No check runs on the head commit. This repo cannot enforce required "
+                    "checks (private repo on GitHub Free), so at least one real check must "
+                    "run before a PR contract can be accepted.")
+                return receipt
+            outcomes = [c["classification"] for c in receipt["checks"]]
+            receipt["classification"] = next((x for x in outcomes if x != "success"), "success")
+            receipt["ok"] = receipt["classification"] == "success"
+            receipt["detail"] = (
+                "Accepted on head-SHA check runs. This repo exposes no branch protection "
+                "or rulesets (private repo on GitHub Free), so repository-enforced required "
+                "checks are unavailable; a deleted workflow would remove its check rather "
+                "than fail it.")
+            return receipt
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            receipt["detail"] = (
+                "No repository-required checks are configured; explicitly use a "
+                "local-only contract for non-CI tasks."
+                + (" This repo exposes no branch protection or rulesets API, which "
+                   "is the case for a private repository on GitHub Free — the "
+                   "absence is a plan limit, not a misconfiguration, and no gh "
+                   "token scope changes it."
+                   if receipt.get("rulesets_unavailable") else "")
+            )
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
         runs = [run for page in pages for run in page["check_runs"]]

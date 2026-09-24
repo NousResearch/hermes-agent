@@ -2,6 +2,10 @@
 import threading
 from types import SimpleNamespace
 
+import pytest
+
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from state_store_runtime_readiness import PostgreSQLRuntimeActivationError, trap_state_db_opens
 from tui_gateway.method_ctx import rebind
 from tui_gateway.session_lifecycle import _session_turn_admission
 from tui_gateway import session_notifications, session_auto_continue
@@ -171,3 +175,40 @@ def test_mailbox_poll_delivers_past_a_schema_damaged_ticket(monkeypatch, tmp_pat
     assert poll("live", session) is True
     assert submitted == ["healthy"]
     assert mailbox.read_delivery_result(tmp_path, queued["delivery_id"])["status"] == "settled"
+def test_selected_postgresql_live_poll_refuses_before_claim_or_prompt_task(tmp_path, monkeypatch):
+    """The consumer cannot turn a selected-PG refusal into a background turn."""
+    home = tmp_path / ".hermes" / "profiles" / "selected-pg"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "state_store:\n  backend: postgresql\n  postgresql:\n    dsn_env: HERMES_STATE_STORE_TEST_DSN\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", "postgresql://fixture/only")
+    submit = lambda *args, **kwargs: pytest.fail("selected PG must not submit a live delivery turn")
+    poll = rebind(session_notifications._poll_bot_live_delivery_once, {
+        "_session_home": lambda _session: home,
+        "_session_turn_admission": _session_turn_admission,
+        "_run_prompt_submit": submit,
+        "_notif_release_turn": lambda _session: pytest.fail("no turn should need release"),
+    })
+    session = {
+        "history_lock": threading.RLock(), "agent": object(), "session_key": "chat",
+        "active_session_lease": SimpleNamespace(lease_id="lease", released=False),
+    }
+    # The current poller deliberately skips its stateful owner lookup until a
+    # mailbox exists. Once one exists, the selected-PG guard must reject before
+    # it can claim a delivery or submit a turn.
+    from tools import bot_live_delivery as mailbox
+    mailbox._root(home).mkdir(parents=True)
+    token = set_hermes_home_override(str(home))
+    try:
+        with trap_state_db_opens(home) as opens:
+            with pytest.raises(PostgreSQLRuntimeActivationError):
+                poll("live", session)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert opens == []
+    assert session.get("running") is None
+    assert not list((home / "runtime" / "bot_live_delivery").glob("*.json"))
+    assert not (home / "state.db").exists()

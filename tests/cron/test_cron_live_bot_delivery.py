@@ -2,6 +2,8 @@
 from pathlib import Path
 from unittest.mock import Mock
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from state_store_runtime_readiness import trap_state_db_opens
 from cron import scheduler_delivery as delivery
 from tools import bot_live_delivery as mailbox
 
@@ -68,3 +70,29 @@ def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
     mailbox.complete_delivery(tmp_path, record["delivery_id"], status="settled", reply="done")
     assert delivery._deliver_result(job, "payload") is None
     assert updates[-1]["last_delivery_queued"] is None
+
+
+def test_selected_postgresql_bot_chat_delivery_refuses_before_cli_or_mailbox(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes" / "profiles" / "selected-pg"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "state_store:\n  backend: postgresql\n  postgresql:\n    dsn_env: HERMES_STATE_STORE_TEST_DSN\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", "postgresql://fixture/only")
+    subprocess_run = Mock(side_effect=AssertionError("selected PG must not invoke the CLI fallback"))
+    monkeypatch.setattr(delivery.subprocess, "run", subprocess_run)
+    token = set_hermes_home_override(str(home))
+    try:
+        with trap_state_db_opens(home) as opens:
+            result = delivery._deliver_to_bot_chat({"id": "digest", "name": "Digest"}, "payload", "")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert result is not None
+    assert "unverified" in result
+    assert "cron-session-transcript-lifecycle" in result
+    assert opens == []
+    assert not (home / "runtime" / mailbox.DELIVERY_DIR_NAME).exists()
+    assert not (home / "state.db").exists()
+    subprocess_run.assert_not_called()

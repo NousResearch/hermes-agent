@@ -313,3 +313,77 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
 
     # The broken cron probe is skipped; sessions still broadcasts.
     assert ("sessions.changed", {}) in events
+
+
+def _pg_home(tmp_path, monkeypatch, name="pg-watched"):
+    """A selected-PostgreSQL home under the watcher's home (config pins backend)."""
+    home = tmp_path / "profiles" / name
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "state_store:\n  backend: postgresql\n  postgresql:\n"
+        '    dsn_env: HERMES_STATE_STORE_TEST_DSN\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", "postgresql://fixture/only")
+    # Drop the memo so the probe re-reads this test's homes/configs.
+    monkeypatch.setattr(server, "_pg_excluded_session_roots.__wrapped__", None, raising=False)
+    if hasattr(server._pg_excluded_session_roots, "_cache"):
+        del server._pg_excluded_session_roots._cache
+    return home
+
+
+def test_selected_postgresql_home_state_db_move_does_not_broadcast_sessions_changed(
+    tmp_path, monkeypatch
+):
+    """Under selected PG the SQLite mtime is not a sessions signal: a stale
+    file (e.g. an import leftover) must not trigger sessions refreshes."""
+    (tmp_path / "config.yaml").write_text("display: {}\n")
+    (tmp_path / "cron").mkdir()
+    monkeypatch.setattr(server, "_hermes_home", str(tmp_path))
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_change_sigs", {})
+    monkeypatch.setattr(server, "_change_checked_at", {})
+    monkeypatch.setattr(server, "_change_broadcast_at", {})
+    monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
+    monkeypatch.setattr(server, "_pairing_roots_cache", None, raising=False)
+    events = []
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: events.append((ev, payload)))
+
+    pg_home = _pg_home(tmp_path, monkeypatch)
+    # A sibling SQLite profile home that MUST keep broadcasting.
+    sqlite_home = tmp_path / "profiles" / "plain"
+    sqlite_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", {pg_home, sqlite_home})
+
+    # Seed first sighting with both files present.
+    (pg_home / "state.db").write_text("stale import leftover")
+    (sqlite_home / "state.db").write_text("x")
+    server._broadcast_watched_changes(now=0.0)
+    assert events == []
+
+    # Only the PG home's file moves -> no sessions broadcast.
+    os.utime(pg_home / "state.db", (1_000, 1_000))
+    (pg_home / "state.db").write_text("moved under selected PG")
+    server._broadcast_watched_changes(now=10.0)
+    assert not [e for e in events if e[0] == "sessions.changed"]
+
+    # The sibling SQLite home's file moves -> broadcast happens.
+    (sqlite_home / "state.db").write_text("y")
+    server._broadcast_watched_changes(now=20.0)
+    assert ("sessions.changed", {}) in events
+
+
+def test_pg_exclusion_cache_rekeys_on_config_change(tmp_path, monkeypatch):
+    """Switching a home's config.yaml from sqlite to postgresql re-keys the
+    memo (config mtime is part of the cache key)."""
+    (tmp_path / "config.yaml").write_text("display: {}\n")
+    monkeypatch.setattr(server, "_hermes_home", str(tmp_path))
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    if hasattr(server._pg_excluded_session_roots, "_cache"):
+        del server._pg_excluded_session_roots._cache
+
+    assert server._pg_excluded_session_roots() == ()
+    _pg_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(server, "_served_profile_homes", {tmp_path / "profiles" / "pg-watched"})
+    excluded = server._pg_excluded_session_roots()
+    assert excluded == (tmp_path / "profiles" / "pg-watched",)

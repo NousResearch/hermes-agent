@@ -20,6 +20,20 @@ GATEWAY_A = {"kind": "gateway", "id": "gateway-a"}
 GATEWAY_B = {"kind": "gateway", "id": "gateway-b"}
 
 
+def test_shared_room_namespace_is_root_global_under_named_profile_context(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    named = root / "profiles" / "alice"
+    named.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    root_path = rooms.default_db_path()
+    monkeypatch.setenv("HERMES_HOME", str(named))
+    named_path = rooms.default_db_path()
+
+    assert rooms.shared_room_namespace_home() == root.resolve()
+    assert root_path == named_path == root / "shared-state.db"
+    assert "alice" not in str(named_path)
+
+
 def _create_pre_actor_database(path) -> None:
     conn = sqlite3.connect(path)
     try:

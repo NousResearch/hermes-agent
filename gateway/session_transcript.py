@@ -26,6 +26,41 @@ class TranscriptReadError(RuntimeError):
         super().__init__(f"transcript read failed for session {session_id}")
 
 
+class _PostgreSQLTranscriptProjection:
+    """Dict -> MessageRecord projection shared by the PostgreSQL transcript branches.
+
+    Mirrors the SQLite append path's field mapping (``_append_transcript_message``):
+    the platform id falls back to ``message_id`` and the api-content sidecar is
+    extracted verbatim; reasoning keys persist on assistant rows only.
+    """
+
+    @staticmethod
+    def record(message: Dict[str, Any]):
+        from state_store import MessageRecord
+        is_assistant = message.get("role") == "assistant"
+        def _optional(name: str):
+            return message.get(name) if is_assistant else None
+        return MessageRecord(
+            role=message.get("role", "unknown"),
+            content=message.get("content"),
+            tool_name=message.get("tool_name"),
+            tool_calls=message.get("tool_calls"),
+            tool_call_id=message.get("tool_call_id"),
+            reasoning=_optional("reasoning"),
+            reasoning_content=_optional("reasoning_content"),
+            reasoning_details=_optional("reasoning_details"),
+            codex_reasoning_items=_optional("codex_reasoning_items"),
+            codex_message_items=_optional("codex_message_items"),
+            finish_reason=message.get("finish_reason"),
+            platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
+            observed=bool(message.get("observed")),
+            timestamp=message.get("timestamp"),
+            api_content=extract_api_content_sidecar(message),
+            display_kind=message.get("display_kind"),
+            display_metadata=message.get("display_metadata"),
+        )
+
+
 def _spool_dropped(session_id: str, message: Dict[str, Any]):
     """Spool one evicted/undeliverable message to disk (same machinery as the shutdown flush, so it
     is replayed after DB recovery); path or None."""
@@ -56,6 +91,36 @@ class SessionTranscriptMixin:
     # ERROR (see _append_to_transcript_serialized); a session stalled past this many attempts is
     # no longer a transient blip and needs operator attention.
     _TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 3
+
+    # Provided by SessionPersistenceMixin on SessionStore; declared for type checkers.
+    if TYPE_CHECKING:
+        _postgresql_state_store: Any
+        _postgresql_route_store: Any
+        _postgresql_route_metadata: Any
+
+    def _postgresql_transcript_store(self):
+        """Selected-PG store for transcript ops, with typed activation failure.
+
+        Unlike the route resolver (which propagates raw connection errors so
+        callers can distinguish transport failure), transcript mutation paths
+        fail closed with ``PostgreSQLRuntimeActivationError`` when the selected
+        store cannot activate: a named profile with no reachable server must
+        never demote to spool/queue/SQLite fallback semantics.
+        """
+        try:
+            return self._postgresql_state_store()
+        except Exception as exc:
+            from state_store_runtime_readiness import (
+                PostgreSQLRuntimeActivationError, RuntimeActivationReport)
+            raise PostgreSQLRuntimeActivationError(RuntimeActivationReport(
+                selected_backend="postgresql",
+                profile_home="",
+                profile_name=None,
+                tenant_schema=None,
+                supported_capabilities=(),
+                missing_capabilities=("gateway-transcript-activation",),
+                raw_state_db_openers=(),
+            )) from exc
 
     def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Latest compression continuation for *session_id* (heals a mapping left pointing at a
@@ -92,6 +157,27 @@ class SessionTranscriptMixin:
         must fail closed."""
         if not session_key or not expected_session_id or not target_session_id:
             return None
+        if (route_store := self._postgresql_route_store()) is not None:
+            # Mirror the SQLite CAS semantics over the durable route row: the
+            # compression transaction owns session-row lifecycle; this only
+            # re-points the route tip. ``None`` = route moved; fail closed.
+            from gateway.session import SessionEntry  # runtime import: module owns the dataclass
+            current = route_store.lookup_by_key(session_key)
+            if current is None:
+                return None
+            if current.session_id == target_session_id:
+                return SessionEntry.from_dict(current.metadata)
+            if current.session_id != expected_session_id:
+                return None
+            entry = SessionEntry.from_dict(current.metadata)
+            entry.session_id = target_session_id
+            switched = route_store.switch_route(
+                session_key=session_key, session_id=target_session_id,
+                expected_session_id=current.session_id,
+                expected_generation=current.generation,
+                metadata=self._postgresql_route_metadata(entry, None),
+                flags=current.flags)
+            return SessionEntry.from_dict(switched.metadata) if switched else None
         with self._lock:
             entry = self._entry_locked(session_key)
             if entry is None:
@@ -112,6 +198,18 @@ class SessionTranscriptMixin:
         store is NOT skipped: the write is queued and counted like any other failed append, so a
         dead/unopenable state.db escalates and spools instead of dropping turns silently
         (#114266)."""
+        if (state_store := self._postgresql_transcript_store()) is not None:
+            # No retry queue/spool under PostgreSQL: the connection pool owns
+            # transient-failure semantics and a failed append propagates to the
+            # caller instead of being deferred into a legacy SQLite-only queue.
+            if skip_db:
+                return
+            state_store.append_message_record(
+                self._follow_reroutes(session_id),
+                _PostgreSQLTranscriptProjection.record(message))
+            return
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+        require_legacy_state_db_runtime()
         if skip_db:
             return
         with self._get_transcript_drain_lock():
@@ -457,6 +555,12 @@ class SessionTranscriptMixin:
         Thin wrapper over SessionDB.has_platform_message_id(). Returns False when no DB is available
         (in-memory sessions). Used by the gateway's transient-failure dedupe guard (#47237).
         """
+        if (state_store := self._postgresql_transcript_store()) is not None:
+            try:
+                return state_store.has_platform_message_id(session_id, platform_message_id)
+            except Exception:
+                logger.debug("has_platform_message_id lookup failed", exc_info=True)
+                return False
         db = self._db_for_session_id(session_id)
         if not db:
             return False
@@ -469,6 +573,13 @@ class SessionTranscriptMixin:
     def transcript_tail_role(self, session_id: str) -> Optional[str]:
         """Role of the newest live conversation row on the route ``load_transcript`` reads (``None``
         when empty, no DB, or the read fails — the boundary write would fail the same way)."""
+        if (state_store := self._postgresql_transcript_store()) is not None:
+            try:
+                tip = state_store.get_compression_tip(session_id) or session_id
+                return state_store.latest_conversation_role(tip)
+            except Exception:
+                logger.debug("transcript tail lookup failed for %s", session_id, exc_info=True)
+                return None
         session_id = self._compression_tip_for_session_id(self._follow_reroutes(session_id))
         db = self._db_for_session_id(session_id)
         if not db:
@@ -488,6 +599,19 @@ class SessionTranscriptMixin:
         or there is no DB, False on failure — callers committing a destructive change on top
         (/compress repointing) must check it. ``reject_active_turn_lease`` is for user-initiated
         rewrites that do not own the cross-process turn lease."""
+        if (state_store := self._postgresql_transcript_store()) is not None:
+            # replace_messages maps each dict through the store's own oracle-parity
+            # projection (_replace_record_from_dict), so pass the dicts verbatim.
+            try:
+                state_store.replace_messages(
+                    session_id, messages, active_only=active_only,
+                    reject_active_turn_lease=reject_active_turn_lease)
+            except Exception as e:
+                logger.debug("Failed to rewrite transcript in PostgreSQL: %s", e)
+                return False
+            return True
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+        require_legacy_state_db_runtime()
         db = self._db_for_session_id(session_id)
         if not db:
             return True
@@ -519,6 +643,21 @@ class SessionTranscriptMixin:
         Content and unrelated writers cannot establish ownership. Query only existence;
         compaction archives can contain many megabytes that replay never needs to load.
         """
+        if (state_store := self._postgresql_transcript_store()) is not None:
+            try:
+                current = state_store.get_compression_tip(session_id) or session_id
+                seen = set()
+                while current and current not in seen:
+                    seen.add(current)
+                    if state_store.has_gateway_input_owner(current, owner):
+                        return True
+                    row = state_store.get_session(current)
+                    if not row or row.get("end_reason") != "compression":
+                        break
+                    current = row.get("parent_session_id")
+                return False
+            except Exception as e:
+                raise TranscriptReadError(session_id) from e
         try:
             current = self._follow_reroutes(session_id)
             db = self._db_for_session_id(current)
@@ -540,6 +679,28 @@ class SessionTranscriptMixin:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the
         same routing writes use — the in-memory reroute map, then the durable compression tip —
         otherwise the transcript "vanishes" while every message sits under the child."""
+        if (state_store := self._postgresql_transcript_store()) is not None:
+            session_id = self._follow_reroutes(session_id)
+            with contextlib.suppress(Exception):
+                # Durable successor survives restart; the reroute map doesn't.
+                session_id = state_store.get_compression_tip(session_id) or session_id
+            try:
+                conversation = state_store.get_messages_as_conversation(session_id)
+                if conversation:
+                    # Same invariant as the SQLite read: this feeds LIVE REPLAY;
+                    # heal a durable user;user wedge before the provider sees it.
+                    from agent.agent_runtime_helpers import repair_message_sequence
+                    repaired = repair_message_sequence(None, conversation)
+                    if repaired:
+                        logger.info(
+                            "Repaired %d message-alternation violation(s) while loading "
+                            "PostgreSQL transcript for session %s", repaired, session_id)
+                return conversation
+            except Exception as e:
+                logger.error(
+                    "PostgreSQL transcript read failed for session %s; refusing to treat "
+                    "the conversation as empty: %s", session_id, e, exc_info=True)
+                raise TranscriptReadError(session_id) from e
         if not self._db_for_session_id(session_id):
             return []
         session_id = self._follow_reroutes(session_id)
@@ -568,6 +729,25 @@ class SessionTranscriptMixin:
         is the gateway ``/retry`` guard: the selected turn must be a composite carrier whose live payload
         is losslessly replayable as text — that replay-policy ``ValueError`` propagates so /retry can
         explain why the carrier is unsafe."""
+        if (state_store := self._postgresql_transcript_store()) is not None:
+            from hermes_state_rewind import RewindTargetUnavailableError, rewind_user_turn
+            try:
+                outcome = rewind_user_turn(
+                    state_store, session_id, -max(n, 1),
+                    require_retryable=require_retryable_composite,
+                    require_composite=require_retryable_composite)
+            except RewindTargetUnavailableError as e:
+                logger.debug("rewind_session: %s", e)
+                return None
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.debug("rewind_session: PostgreSQL rewind failed: %s", e)
+                return None
+            return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
+                    "target_text": outcome.live_text}
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+        require_legacy_state_db_runtime()
         db = self._db_for_session_id(session_id)
         if not db:
             return None

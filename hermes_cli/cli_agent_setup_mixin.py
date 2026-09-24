@@ -637,10 +637,11 @@ class CLIAgentSetupMixin:
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
         if self._session_db is None:
             try:
-                from hermes_state_registry import acquire
-                self._session_db = acquire()
+                from cli import CLI_CONFIG
+                from cli_session_store import open_cli_session_store
+                self._session_db = open_cli_session_store(CLI_CONFIG)
             except Exception as e:
-                logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
+                logger.warning("Session store not available — session will NOT be indexed: %s", e)
         if (
             self._resumed and self._session_db and not self.conversation_history
             and not self._load_resumed_history_late()):

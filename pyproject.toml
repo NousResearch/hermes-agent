@@ -531,6 +531,9 @@ all = [
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]
+state-store = [
+    "psycopg[binary]==3.3.3",
+]
 
 [dependency-groups]
 # Build and test tooling never ships in runtime payloads.

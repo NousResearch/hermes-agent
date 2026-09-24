@@ -775,6 +775,9 @@ class SessionStore(
     """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
 
     def __init__(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
+        # PostgreSQL has no complete gateway routing/transcript contract; reject
+        # before a constructor can retain an in-memory route for JSON persistence.
+        self._require_legacy_gateway_session_routing_runtime()
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
@@ -840,7 +843,20 @@ class SessionStore(
             self._routing_home: Optional[Path] = Path(get_hermes_home())
         except Exception:
             self._routing_home = None
-        self._open_session_db_for_active_scope()
+        # Selected PostgreSQL route authority must not probe or create legacy state.db.
+        # Resolve via the lightweight backend check, not the full route-store open:
+        # opening the PG store would connect to the server, which __init__ must not
+        # require (an unreachable PG server is a per-route failure, not a constructor
+        # failure — and probing it here made named-profile tests open root state.db
+        # via the fallback path when the connection raised).
+        try:
+            from hermes_cli.config import load_config
+            from state_store import resolve_state_store_config
+            _selected_postgresql = resolve_state_store_config(load_config() or {}).backend == "postgresql"
+        except Exception:
+            _selected_postgresql = False
+        if not _selected_postgresql:
+            self._open_session_db_for_active_scope()
 
     def _lazy(self, name: str, factory):
         """``self.<name>``, created via *factory* when missing/None (suites build bare stores via
@@ -850,6 +866,47 @@ class SessionStore(
             value = factory()
             setattr(self, name, value)
         return value
+
+    def _new_postgresql_entry(self, session_key, prior=None, *, source=None, display_name=None, **flags):
+        now = _now()
+        origin = source or (prior.origin if prior else None)
+        return SessionEntry(
+            session_key=session_key, session_id=_new_session_id(now), created_at=now, updated_at=now,
+            origin=origin, display_name=display_name if display_name is not None else (prior.display_name if prior else getattr(source, "chat_name", None)),
+            platform=(prior.platform if prior else getattr(source, "platform", None)),
+            chat_type=(prior.chat_type if prior else getattr(source, "chat_type", "dm")),
+            transport_profile=(prior.transport_profile if prior else transport_profile_of(source)),
+            prev_session_id=prior.session_id if prior else None, **flags,
+        )
+
+    @staticmethod
+    def _postgresql_route_metadata(entry, source):
+        data = entry.to_dict()
+        data["source"] = (source.platform.value if source is not None else "gateway")
+        return data
+
+    def _get_or_create_postgresql_route(self, route_store, source, session_key, force_new, touch_activity):
+        current = route_store.lookup_by_key(session_key)
+        if current is not None and not force_new:
+            entry = SessionEntry.from_dict(current.metadata)
+            if touch_activity:
+                entry.updated_at = _now()
+                switched = route_store.switch_route(
+                    session_key=session_key, session_id=entry.session_id,
+                    expected_session_id=current.session_id, expected_generation=current.generation,
+                    metadata=self._postgresql_route_metadata(entry, source), flags=current.flags)
+                if switched is not None:
+                    entry = SessionEntry.from_dict(switched.metadata)
+            return entry
+        prior = SessionEntry.from_dict(current.metadata) if current else None
+        entry = self._new_postgresql_entry(session_key, prior, source=source, was_auto_reset=bool(current), is_fresh_reset=bool(force_new))
+        if current is None:
+            route = route_store.get_or_create_route(session_key=session_key, session_id=entry.session_id, metadata=self._postgresql_route_metadata(entry, source))
+            return SessionEntry.from_dict(route.metadata)
+        route = route_store.switch_route(session_key=session_key, session_id=entry.session_id, expected_session_id=current.session_id, expected_generation=current.generation, metadata=self._postgresql_route_metadata(entry, source), flags={"new": True})
+        if route is None:
+            raise RuntimeError("gateway route CAS lost; refusing ambiguous selected-PostgreSQL route creation")
+        return SessionEntry.from_dict(route.metadata)
 
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Whether a session has active work, failing closed (True) on registry errors."""
@@ -885,6 +942,8 @@ class SessionStore(
         concurrent ``force_new``) share the owner's result so only one transition and SQLite row is
         created. ``touch_activity=False`` (internal events) preserves the user-activity clock."""
         session_key = self._generate_session_key(source)
+        if (route_store := self._postgresql_route_store()) is not None:
+            return self._get_or_create_postgresql_route(route_store, source, session_key, force_new, touch_activity)
         inflight_lock = self._lazy("_inflight_lock", threading.Lock)
         self._lazy("_inflight_sessions", dict)
 
@@ -1112,6 +1171,16 @@ class SessionStore(
 
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
+        if (route_store := self._postgresql_route_store()) is not None:
+            current = route_store.lookup_by_key(session_key)
+            if current is None:
+                return None
+            prior = SessionEntry.from_dict(current.metadata)
+            entry = self._new_postgresql_entry(session_key, prior, display_name=display_name, was_auto_reset=True, is_fresh_reset=True)
+            route = route_store.switch_route(session_key=session_key, session_id=entry.session_id, expected_session_id=current.session_id, expected_generation=current.generation, metadata=self._postgresql_route_metadata(entry, prior.origin), flags={"reset": True, "new": True})
+            if route is None:
+                return None
+            return SessionEntry.from_dict(route.metadata)
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
@@ -1206,6 +1275,15 @@ class SessionStore(
         the key no longer points at that session, so a caller that resolved against a snapshot
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
         """
+        if (route_store := self._postgresql_route_store()) is not None:
+            current = route_store.lookup_by_key(session_key)
+            if current is None or (expected_session_id is not None and current.session_id != expected_session_id):
+                return None
+            prior = SessionEntry.from_dict(current.metadata)
+            entry = SessionEntry.from_dict(current.metadata)
+            entry.session_id, entry.updated_at = target_session_id, _now()
+            route = route_store.switch_route(session_key=session_key, session_id=target_session_id, expected_session_id=current.session_id, expected_generation=current.generation, metadata=self._postgresql_route_metadata(entry, prior.origin), flags=current.flags)
+            return SessionEntry.from_dict(route.metadata) if route else None
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:

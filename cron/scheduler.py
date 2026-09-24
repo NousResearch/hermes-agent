@@ -1836,6 +1836,8 @@ def _open_cron_session_db(job: dict):
     # no timeout of its own against a wedged sqlite3.connect (e.g. a stale flock left by a crashed sibling
     # process). An unbounded hang here would wedge the job's worker thread, so the init is bounded and a
     # timeout proceeds without a session store instead of blocking the run forever.
+    from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+
     _session_db_timeout = _get_session_db_timeout()
     try:
         from hermes_state_registry import acquire
@@ -1865,8 +1867,41 @@ def _open_cron_session_db(job: dict):
             "Job '%s': SessionDB init did not return within %.0fs — proceeding "
             "without a session store for this run instead of blocking it forever",
             job.get("id", "?"), _session_db_timeout)
+    except PostgreSQLRuntimeActivationError:
+        # ``run_job`` and ``run_one_job`` gate this before scripts, agents, worker handoff, or
+        # delivery. Keep this explicit in case a future caller bypasses that public boundary:
+        # selected PostgreSQL must never turn a missing transcript into ``None`` and continue.
+        raise
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+    return None
+
+
+def _selected_postgresql_cron_refusal(job_id: str) -> Optional[str]:
+    """Return an actionable selected-PG refusal before any cron job side effect.
+
+    Cron still depends on the legacy SessionDB lifecycle (creation, title,
+    lineage, finalization, retry, and lease semantics). A selected PostgreSQL
+    profile cannot safely run with a missing transcript, so this public guard
+    runs before scripts, agents, worker handoff, output, delivery, or ledger
+    bookkeeping. SQLite's bounded SessionDB timeout fallback remains below.
+    """
+    from state_store_runtime_readiness import (
+        PostgreSQLRuntimeActivationError,
+        StateStoreConfigurationError,
+        require_legacy_state_db_runtime,
+    )
+
+    try:
+        require_legacy_state_db_runtime(home=_get_hermes_home())
+    except PostgreSQLRuntimeActivationError as exc:
+        error = f"CRON_TRANSCRIPT_UNAVAILABLE: {exc}"
+        logger.error("Job '%s': %s", job_id, error)
+        return error
+    except StateStoreConfigurationError:
+        # Keep legacy SQLite/non-PG config error handling on its established
+        # paths; this boundary is only for an explicit selected-PG refusal.
+        return None
     return None
 
 
@@ -2487,6 +2522,16 @@ def run_job(
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+    refusal = _selected_postgresql_cron_refusal(job_id)
+    if refusal is not None:
+        return (
+            False,
+            f"# Cron Job: {job_name} (BLOCKED)\n\n"
+            "**Status:** CRON_TRANSCRIPT_UNAVAILABLE\n\n"
+            f"{refusal}\n",
+            "",
+            refusal,
+        )
 
     early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
@@ -2709,8 +2754,15 @@ def run_one_job(
     """Run ONE due job end-to-end: execute → save output → deliver → mark. Shared by the built-in
     ticker and external providers' ``fire_due``; does NOT decide due-ness or acquire the initial
     claim (callers use the store CAS) but keeps it alive. True if processed (a job failure is
-    recorded via ``mark_job_run``), False only if processing raised. ``cancel_event``: optional
-    transport-level cancel (dashboard drain)."""
+    recorded via ``mark_job_run``), False when a pre-side-effect safety boundary
+    refuses the run or processing raises. ``cancel_event``: optional transport-level
+    cancel (dashboard drain)."""
+    refusal = _selected_postgresql_cron_refusal(str(job.get("id") or "?"))
+    if refusal is not None:
+        # No execution ledger, restart-safe worker handoff, output, delivery, or
+        # finalization is safe without the durable transcript lifecycle.
+        return False
+
     # Every gateway path (built-in scheduler, external providers, and direct
     # API fires) crosses this seam.  Ensure the detached worker has a durable
     # attempt to adopt before any launch can occur.

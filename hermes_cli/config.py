@@ -1225,6 +1225,21 @@ def _validate_quoted_containers(config: Dict[str, Any], issues: List[ConfigIssue
                    "or remove the quotes in config.yaml")
 
 
+def _validate_state_store(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """Validate the backend-neutral store policy without rendering its secret value."""
+    try:
+        from state_store import StateStoreConfigurationError, resolve_state_store_config
+
+        resolve_state_store_config(config)
+    except StateStoreConfigurationError as exc:
+        _issue(
+            issues,
+            "error",
+            str(exc),
+            "Correct state_store in config.yaml; keep the DSN only in the active profile secret scope",
+        )
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1265,6 +1280,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     _validate_web_backends(config, issues)
     _validate_quoted_containers(config, issues)
+    _validate_state_store(config, issues)
     return issues
 
 
@@ -3894,7 +3910,8 @@ _CONFIG_SUBCOMMANDS = {
     "path": lambda args: print(get_config_path()),
     "env-path": lambda args: print(get_env_path()),
     "migrate": _cmd_config_migrate,
-    "check": _cmd_config_check}
+    "check": _cmd_config_check,
+    "state-store": lambda args: __import__("hermes_cli.setup_state_store", fromlist=["run_config_state_store"]).run_config_state_store()}
 
 _CONFIG_USAGE = """Available commands:
   hermes config           Show current configuration
@@ -3904,6 +3921,7 @@ _CONFIG_USAGE = """Available commands:
   hermes config unset <key>        Remove a config value
   hermes config check     Check for missing/outdated config
   hermes config migrate   Update config with new options
+  hermes config state-store Configure SQLite or PostgreSQL state storage
   hermes config path      Show config file path
   hermes config env-path  Show .env file path"""
 

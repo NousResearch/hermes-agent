@@ -26,7 +26,7 @@ import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
@@ -2627,6 +2627,10 @@ class _CompressionLease:
         self._lifecycle = lifecycle
         self.holder: Optional[str] = None
         self.watermark: Optional[int] = None
+        # One public compression attempt owns one durable request identity.  It
+        # is generated before provider work and is never regenerated while an
+        # acknowledgement is being classified or recovered.
+        self.request_id = uuid.uuid4().hex
         self._refresher: Optional[_CompressionLockLeaseRefresher] = None
         self._released = False
         self._release_guard = threading.Lock()
@@ -3263,10 +3267,18 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
     transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
     """
+    # PostgreSQL moves controls inside publish_compression_child's transaction.
+    # The post-publication carrier below is therefore strictly the established
+    # SQLite compatibility path; a PG retry here would create duplicate active
+    # controls after an acknowledged publication.
+    try:
+        from hermes_cli.config import load_config
+        from state_store import resolve_state_store_config
+        if resolve_state_store_config(load_config() or {}).backend == "postgresql":
+            return
+    except ImportError:
+        pass
     with _swallow('Could not migrate goal on compression: %s'):
-        # Carry a persistent /goal onto the continuation session. Compression mints a fresh child id;
-        # load_goal does a flat per-session lookup with no parent walk, so without this an active goal
-        # silently dies at the boundary (#33618).
         from hermes_cli.goals import migrate_goal_to_session
         migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
     with _swallow('Could not migrate heartbeat on compression: %s'):
@@ -3339,7 +3351,7 @@ def _publish_rotated_compaction(
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    agent._session_db.publish_compression_child(
+    _publish_kwargs = dict(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=_compression_child_source(agent, old_session_id), model=agent.model,
         model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
@@ -3349,6 +3361,28 @@ def _publish_rotated_compaction(
         watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
         watermark_ceiling=_foreign_tail_ceiling,
     )
+    # Request receipts are an explicit adapter capability, not a duck-typed
+    # extension of the SQLite transaction contract.  Keep legacy SQLite's
+    # public publisher signature and its established rollback behavior intact.
+    capabilities = getattr(agent._session_db, "capabilities", ())
+    receipt_capable = "atomic-compression-rotation-v1" in capabilities
+    if receipt_capable:
+        _publish_kwargs["request_id"] = lease.request_id
+    try:
+        agent._session_db.publish_compression_child(**_publish_kwargs)
+    except Exception:
+        # A connection can fail after PostgreSQL committed but before its result
+        # reached us.  Consult the durable receipt rather than minting another
+        # child or treating a committed parent as a rollback.  Any absent or
+        # mismatched receipt remains an error and follows the normal rollback.
+        lookup = getattr(agent._session_db, "get_compression_publication_receipt", None)
+        receipt = lookup(lease.request_id) if receipt_capable and callable(lookup) else None
+        if (
+            not isinstance(receipt, Mapping)
+            or receipt.get("parent_session_id") != old_session_id
+            or receipt.get("child_session_id") != new_session_id
+        ):
+            raise
     # `already_present` stamping is done by run_agent's _sync_persisted_markers;
     # this branch covers inserted/merged only; direct callers must use that wrapper.
     if compressed_user_turn_outcome in {"inserted", "merged"}:

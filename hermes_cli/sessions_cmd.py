@@ -247,10 +247,10 @@ def _print_recovery_verdict(report, output, allow_partial) -> int:
     return 1
 
 
-def _cmd_import(args):
+def _cmd_import(args, db=None):
     from hermes_cli.foreign_sessions import run_sessions_import
     # Explicit path but nothing imported -> non-zero for scripts. Picker cancel (no path) -> exit 0.
-    if run_sessions_import(args) is None and getattr(args, "path", None):
+    if run_sessions_import(args, db=db) is None and getattr(args, "path", None):
         return 1
 
 
@@ -867,6 +867,22 @@ def _cmd_optimize(db, args):
     _print_size_change(db, before_mb)
 
 
+def _cmd_postgresql_optimize(config) -> int:
+    """Render PostgreSQL-native maintenance evidence without SQLite file claims."""
+    import json
+
+    from postgresql_state_store_operations import PostgreSQLSandboxOperationsError
+    from state_store_maintenance import StateStoreMaintenanceError, require_state_store_maintenance
+
+    try:
+        operations = require_state_store_maintenance("sessions-optimize", config)
+        print(json.dumps(operations.optimize(config), sort_keys=True, indent=2, default=str))
+        return 0
+    except (StateStoreMaintenanceError, PostgreSQLSandboxOperationsError) as exc:
+        print(f"PostgreSQL session optimize failed: {exc}")
+        return 2
+
+
 def _cmd_clean_markers(db, args):
     print(f"{'Dry run — scanning' if args.dry_run else 'Scanning'} for stale tool-call marker rows (#78148)…")
     report = db.purge_stale_tool_call_markers(dry_run=args.dry_run, backup=not args.no_backup)
@@ -979,8 +995,23 @@ def _cmd_stats(db, args):
     for src in ("cli", "telegram", "discord", "whatsapp", "slack"):
         if (c := db.session_count(source=src)) > 0:
             print(f"  {src}: {c} sessions")
-    if db.db_path.exists():
-        print(f"Database size: {_size_mb(db.db_path):.1f} MB")
+    db_path = vars(db).get("db_path")
+    if db_path is not None and db_path.exists():
+        print(f"Database size: {_size_mb(db_path):.1f} MB")
+
+
+def _postgresql_export_capability_error(args) -> str | None:
+    """Reject controls whose complete export contract remains SQLite-only."""
+    if not getattr(args, "session_id", None):
+        return "PostgreSQL session export requires --session-id; bulk and filter export are not supported"
+    if _any_filter_args(args) or getattr(args, "dry_run", False):
+        return "PostgreSQL session export does not support bulk, filter, or dry-run controls"
+    if getattr(args, "format", "jsonl") == "trace":
+        return "PostgreSQL session export does not support trace export"
+    unsupported = [name for name in ("upload", "public", "no_redact", "delete_after_verified") if getattr(args, name, False)]
+    if unsupported:
+        return "PostgreSQL session export does not support " + ", ".join(f"--{name.replace('_', '-')}" for name in unsupported)
+    return None
 
 
 # -- dispatch -----------------------------------------------------------------
@@ -1028,29 +1059,88 @@ _HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
 
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
+    observational = action in _OBSERVATIONAL_DB_ACTIONS
+    from hermes_cli.config import load_config
+    from state_store import resolve_state_store_config
+    try:
+        config = load_config()
+        selected_store = resolve_state_store_config(config)
+    except Exception as e:
+        print(f"Could not resolve your session history store: {e}; no SQLite fallback is permitted.")
+        return 1
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:
+        if selected_store.backend == "postgresql" and action == "import":
+            from cli_session_store import open_cli_session_store
+            try:
+                db = open_cli_session_store(config, read_only=False)
+            except Exception as e:
+                print(f"Could not open your PostgreSQL session history: {e}")
+                return 1
+            try:
+                return pre(args, db=db)
+            finally:
+                db.close()
+        # These handlers own legacy state.db probing/opening, so select before dispatch.
+        from state_store_maintenance import StateStoreMaintenanceError, require_state_store_maintenance
+        try:
+            require_state_store_maintenance(f"sessions-{action}", config)
+        except StateStoreMaintenanceError as e:
+            print(e)
+            return 2
         return pre(args)
-    observational = action in _OBSERVATIONAL_DB_ACTIONS
-    from hermes_state import SessionDB, _default_db_path
-    try:
-        db = SessionDB(read_only=observational)
-    except Exception as e:
-        # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
-        if observational and not _default_db_path().exists():
-            return _print_empty_store(action, args)
-        print("Could not open your session history database. "
-              "Run: hermes sessions repair to fix it (a backup is made first).")
-        print(f"Details: {e}")
-        return 1
+    if selected_store.backend == "postgresql":
+        if action == "optimize":
+            return _cmd_postgresql_optimize(config)
+        if action not in {"list", "stats", "export", "delete", "rename", "pin", "unpin", "pinned", "retitle-skills", "browse", "prune", "archive", "clean-markers"}:
+            print(
+                f"PostgreSQL session history does not support `hermes sessions {action}` yet; "
+                "no SQLite fallback is permitted."
+            )
+            return 2
+        if action in {"prune", "archive", "clean-markers"}:
+            from state_store_maintenance import StateStoreMaintenanceError, require_state_store_maintenance
+            try:
+                require_state_store_maintenance(f"sessions-{action}", config)
+            except StateStoreMaintenanceError as e:
+                print(e)
+                return 2
+        if action == "export":
+            error = _postgresql_export_capability_error(args)
+            if error:
+                print(f"{error}; no SQLite fallback is permitted.")
+                return 2
+        from cli_session_store import open_cli_session_store
+        try:
+            db = open_cli_session_store(
+                config, read_only=action not in {"delete", "rename", "pin", "unpin", "retitle-skills", "prune", "archive", "clean-markers"},
+            )
+        except Exception as e:
+            print(f"Could not open your PostgreSQL session history: {e}")
+            return 1
+    else:
+        from hermes_state import SessionDB, _default_db_path
+        try:
+            db = SessionDB(read_only=observational)
+        except Exception as e:
+            # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
+            if observational and not _default_db_path().exists():
+                return _print_empty_store(action, args)
+            print("Could not open your session history database. "
+                  "Run: hermes sessions repair to fix it (a backup is made first).")
+            print(f"Details: {e}")
+            return 1
     try:
         handler = _DB_HANDLERS.get(action)
         if handler is None:
             sessions_parser.print_help()
             return
-        if action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False):
+        if (selected_store.backend != "postgresql" and action in _HELD_STORE_ACTIONS
+                and not getattr(args, "dry_run", False) and not getattr(args, "force", False)):
             from hermes_state_holders import held_store_refusal
-            # Same resolver the SessionDB above opened, so the scan never depends on the db object.
+            # This protects SQLite file replacement only. Selected PostgreSQL
+            # maintenance uses database-native transactions and must never resolve
+            # or inspect state.db as an implicit fallback.
             refusal = held_store_refusal(_default_db_path(), command=action)
             if refusal:
                 print(refusal)

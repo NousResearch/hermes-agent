@@ -37,8 +37,84 @@ def _is_live_system_guard(exc: BaseException) -> bool:
     return isinstance(exc, RuntimeError) and "live-system guard" in str(exc)
 
 
+def _selected_postgresql_backend() -> bool:
+    """Lightweight selected-backend probe: True when the resolved backend is postgresql.
+
+    No DB connection and no ``state.db``/``sessions.json`` side effect. Resolution
+    errors propagate so fail-closed callers can let them raise rather than silently
+    treating a config error as a SQLite selection.
+    """
+    from hermes_cli.config import load_config
+    from state_store import resolve_state_store_config
+
+    return resolve_state_store_config(load_config() or {}).backend == "postgresql"
+
+
 class SessionPersistenceMixin:
     """SessionStore storage plumbing: SessionDB handle resolution and routing-index load/save."""
+
+    @staticmethod
+    def _require_legacy_gateway_session_routing_runtime() -> None:
+        """Gate legacy gateway routing/transcript runtime on the selected backend.
+
+        PostgreSQL is authoritative for gateway session routing and transcript
+        persistence: the route and transcript mixins dispatch PG-first and return
+        before any legacy path, so a selected PostgreSQL backend must NOT trip the
+        legacy guard (no sessions.json or JSONL fallback may be created). Backend
+        resolution failures still fail closed through the legacy guard.
+        """
+        try:
+            if _selected_postgresql_backend():
+                return
+        except Exception:
+            pass  # config error: fail closed via the legacy guard below
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+
+        require_legacy_state_db_runtime()
+
+    def _postgresql_state_store(self):
+        """The tenant-bound PostgreSQLStateStore when selected, else None.
+
+        Shared by the route adapter and the transcript mixin; resolved per call so
+        a multiplexed profile scope reaches its own tenant.  Never falls back to
+        a legacy SessionDB: connection failures propagate to the caller.
+        """
+        from hermes_cli.config import load_config
+        from state_store import open_state_store, resolve_state_store_config
+
+        config = load_config() or {}
+        if resolve_state_store_config(config).backend != "postgresql":
+            return None
+        cached = getattr(self, "_pg_state_store", None)
+        if cached is not None:
+            return cached
+        cached = open_state_store(config)
+        self._pg_state_store = cached
+        return cached
+
+    def _postgresql_route_store(self):
+        """Return the tenant-bound route authority only when PostgreSQL is selected.
+
+        This must be consulted before any legacy SessionDB resolver.  Transcript
+        methods retain their separate fail-closed guards.
+        """
+        state_store = self._postgresql_state_store()
+        if state_store is None:
+            return None
+        cached = getattr(self, "_pg_route_store", None)
+        if cached is not None:
+            return cached
+        from gateway.session_route_store import PostgreSQLSessionRouteStore
+
+        def _fallback_tenant_schema():
+            from state_store import postgresql_tenant_schema
+            return postgresql_tenant_schema()
+
+        cached = PostgreSQLSessionRouteStore(
+            state_store, tenant_namespace=getattr(
+                state_store, "tenant_schema", None) or _fallback_tenant_schema())
+        self._pg_route_store = cached
+        return cached
 
     def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
         """SessionDB for the active profile scope. ``db_path`` pins the store; otherwise
@@ -49,6 +125,7 @@ class SessionPersistenceMixin:
         Resolving here rather than once in ``__init__`` is the whole fix for #88532: it lets the scoping
         that the multiplexed inbound path already performs actually reach session storage.
         """
+        self._require_legacy_gateway_session_routing_runtime()
         from hermes_state import _default_db_path
         from hermes_state_registry import acquire
 
@@ -270,8 +347,21 @@ class SessionPersistenceMixin:
         sessions.json is the legacy import path for pre-migration installs (its entries are folded in for
         keys the DB doesn't have, then persisted to the DB on the next _save).
         """
+        self._require_legacy_gateway_session_routing_runtime()
         if self._loaded:
             self._reconcile_recovered_routing_locked()
+            return
+        try:
+            selected_postgresql = _selected_postgresql_backend()
+        except Exception:
+            selected_postgresql = False  # unreachable: the guard above already raised
+        if selected_postgresql:
+            # Routes live in the PostgreSQL gateway_session_routes table (v24); the
+            # in-memory legacy index stays empty and no sessions_dir / sessions.json /
+            # state.db artifact is created or read.
+            self._loaded = True
+            self._routing_db_loaded = True
+            self._routing_fallback_baseline = None
             return
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         db_load_succeeded = self._load_routing_rows_locked()
@@ -435,6 +525,7 @@ class SessionPersistenceMixin:
 
     def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
         """Serialize all whole-index writers through one durable write lock."""
+        self._require_legacy_gateway_session_routing_runtime()
         with self._lazy("_save_lock", threading.Lock):
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
@@ -492,6 +583,7 @@ class SessionPersistenceMixin:
         already persisted (the reverse case lives in ``_persist_routing_data``). No DB or a failed
         upsert falls back to the full rewrite. ``entry_data`` persists a candidate BEFORE it is
         published to the live entry (failure-atomic transitions); the fallback carries it too."""
+        self._require_legacy_gateway_session_routing_runtime()
         guard = contextlib.nullcontext() if lock_held else self._lock
         with guard:
             entry = self._entries.get(session_key)

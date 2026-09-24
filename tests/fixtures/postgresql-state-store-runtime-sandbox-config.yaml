@@ -1,0 +1,7 @@
+# Sandbox-only PostgreSQL selection. The DSN remains in the test process secret scope.
+state_store:
+  backend: postgresql
+  postgresql:
+    dsn_env: HERMES_STATE_STORE_TEST_DSN
+    connect_timeout_seconds: 3
+    pool_max_size: 2

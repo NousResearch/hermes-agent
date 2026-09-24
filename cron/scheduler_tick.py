@@ -47,6 +47,25 @@ def _tick_admitted(
             _sched.logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
+        # Selected-backend gate — pure config read, BEFORE any state-mutating tick step
+        # (bot-chat drain, stale-owner reap, next_run advance, execution rows). A selected
+        # PostgreSQL state store lacks the cron transcript lifecycle, so the whole tick is
+        # skipped here; per-job refusals elsewhere still cover manual runs / CLI edits /
+        # startup recovery. Config-parse failures fall through so behavior only changes on a
+        # cleanly resolved PostgreSQL selection.
+        try:
+            from hermes_cli.config import load_config as _gate_load_config
+            from state_store import resolve_state_store_config as _gate_resolve
+
+            if _gate_resolve(_gate_load_config() or {}).backend == "postgresql":
+                _sched.logger.warning(
+                    "cron tick skipped: selected PostgreSQL state store lacks cron transcript "
+                    "lifecycle (cron-session-transcript-lifecycle)"
+                )
+                return 0
+        except Exception as _gate_exc:  # noqa: BLE001 - fail-open to existing tick behavior
+            _sched.logger.debug("Selected-backend tick gate skipped (config probe failed): %s", _gate_exc)
+
         from cron.bot_chat_delivery import drain, drain_in_background
         if sync:
             drain()

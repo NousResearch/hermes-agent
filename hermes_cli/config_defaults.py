@@ -36,6 +36,16 @@ DEFAULT_CONFIG = {
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
+    # Backend-neutral state store. SQLite stays the compatibility default; PostgreSQL
+    # is selected explicitly and reads its DSN from the active profile's secret scope.
+    "state_store": {
+        "backend": "sqlite",  # sqlite | postgresql
+        "postgresql": {
+            "dsn_env": "HERMES_STATE_STORE_POSTGRES_DSN",
+            "connect_timeout_seconds": 10,
+            "pool_max_size": 8,
+        },
+    },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.

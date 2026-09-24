@@ -125,3 +125,24 @@ def test_interrupt_turn_only_while_active():
     assert calls == ["lost"] and lease.interrupt_message == "lost"
     lease.deactivate_after_liveness_abort()
     assert lease.stop.is_set() and lease.is_turn_active() is False
+
+
+def test_refresh_and_release_stay_on_the_admitted_session_after_rotation():
+    class RecordingDb(_Db):
+        def refresh_session_turn_lease(self, session_id, holder, **kwargs):
+            self.events.append(("refresh", session_id, holder))
+            return True
+
+    db = RecordingDb()
+    agent = _agent(db)
+    lease = DurableTurnLease(agent, db, "old-session", "holder")
+    lease.turn_active = True
+    agent.session_id = "new-session"
+
+    assert lease.refresh_tick() is None
+    lease.release()
+
+    assert db.events == [
+        ("refresh", "old-session", "holder"),
+        ("release", "old-session", "holder"),
+    ]

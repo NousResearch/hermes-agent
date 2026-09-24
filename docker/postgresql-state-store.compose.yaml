@@ -1,0 +1,27 @@
+# Local integration fixture only. It is intentionally loopback-bound and uses
+# trust authentication inside the isolated Docker network; never use for production.
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: hermes-agent-postgresql-state-store-dev
+    environment:
+      POSTGRES_DB: hermes_state_store_test
+      POSTGRES_USER: hermes_state_store_test
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - type: volume
+        source: hermes-agent-postgresql-state-store-pgdata
+        target: /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes_state_store_test -d hermes_state_store_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: "no"
+
+volumes:
+  hermes-agent-postgresql-state-store-pgdata:
+    name: hermes-agent-postgresql-state-store-pgdata

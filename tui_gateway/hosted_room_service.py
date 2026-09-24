@@ -17,6 +17,7 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
+from gateway.hosted_room_coordination import HostedRoomCoordination, sqlite_hosted_room_coordination
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
@@ -68,11 +69,17 @@ class HostedRoomService:
         self, server: ModuleType, *, db_path: Path | str | None = None,
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
+        from gateway.hosted_room_coordination import require_hosted_room_coordination_runtime
+
+        require_hosted_room_coordination_runtime()
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
+        # All durable room/driver/policy coordination traverses this boundary.
+        # Runtime selection remains SQLite-only; no PostgreSQL route exists.
+        self.coordination: HostedRoomCoordination = sqlite_hosted_room_coordination(self.db_path)
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
-        self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
+        self.policy_checkpoint = self.coordination.policy_checkpoint()
         self.rpc = HostedRoomServerRPC(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
@@ -90,6 +97,7 @@ class HostedRoomService:
                 self.peer_clients[key] = client
         self.runtime = HostedRoomRuntime(
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
+            coordination=self.coordination,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
@@ -141,11 +149,11 @@ class HostedRoomService:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
         return tuple(
             HostedRoomBinding(str(room["room_id"]), *_authority(room))
-            for room in hosted_rooms.list_rooms(self.db_path)
+            for room in self.coordination.list_rooms()
             if str(room["authority_gateway_id"]) == local_gateway_id)
 
     def _room(self, room_id: str) -> dict[str, Any]:
-        return hosted_rooms.room_state(self.db_path, room_id=room_id)
+        return self.coordination.room_state(room_id=room_id)
 
     def _owned_authority(self, room_id: str) -> tuple[str, int]:
         """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
@@ -223,7 +231,7 @@ class HostedRoomService:
             except PeerRunsHTTPError as exc:
                 if not _grant_revoke_is_terminal(exc):
                     raise
-        hosted_rooms.delete_room_link_records(self.db_path, room_id=room_id)
+        self.coordination.delete_room_link_records(room_id=room_id)
         with self._policy_lock:
             for key, _route in routes:
                 for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
@@ -354,8 +362,7 @@ class HostedRoomService:
         events: list[dict[str, Any]] = []
         cursor = 0
         while True:
-            page = hosted_rooms.read_events(
-                self.db_path, room_id=room_id, since_seq=cursor, limit=hosted_rooms.MAX_LOG_LIMIT)
+            page = self.coordination.read_events(room_id=room_id, since_seq=cursor, limit=hosted_rooms.MAX_LOG_LIMIT)
             rows = page.get("events")
             if isinstance(rows, list):
                 events.extend(row for row in rows if isinstance(row, dict))
@@ -387,7 +394,7 @@ class HostedRoomService:
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:
-                hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id))
+                self.coordination.append_event(**event.append_kwargs(room_id))
             changed = True
         return changed
 
@@ -396,8 +403,8 @@ class HostedRoomService:
         if decision.discussion_event_id is None:
             return
         gateway_id, epoch = _authority(room)
-        hosted_rooms.append_event(
-            self.db_path, room_id=str(room["room_id"]),
+        self.coordination.append_event(
+            room_id=str(room["room_id"]),
             event_id=f"dactivity:{decision.discussion_event_id}:{decision.reason}",
             kind="room.activity", actor={"kind": "gateway", "id": gateway_id},
             payload={
@@ -422,8 +429,8 @@ class HostedRoomService:
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
                 initial_watermarks=snapshot.watermarks)
             if decision.status == "task" and decision.task is not None:
-                driver.admit_task(
-                    self.db_path, decision.task.identity, payload=decision.task.payload,
+                self.coordination.admit_task(
+                    decision.task.identity, payload=decision.task.payload,
                     clock=time.time)
                 # A stop can race the policy read from another process: re-read after admission
                 # and cancel a task whose source event is now behind the room stop fence.
@@ -439,8 +446,8 @@ class HostedRoomService:
 
     def create_room(self, *, room_id: str, name: str, members: Any) -> dict[str, Any]:
         normalized = discussion.validate_roster(members, local_profiles=self.local_profiles())
-        room = hosted_rooms.create_room(
-            self.db_path, room_id=room_id, name=name,
+        room = self.coordination.create_room(
+            room_id=room_id, name=name,
             members=[
                 {
                     "member_id": member.member_id, "profile": member.profile,
@@ -454,8 +461,8 @@ class HostedRoomService:
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
-        event = hosted_rooms.append_event(
-            self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
+        event = self.coordination.append_event(
+            room_id=room_id, event_id=event_id, kind="message.user",
             actor={"kind": "user", "id": "desktop"}, payload=normalized,
             authority_gateway_id=gateway_id, authority_epoch=epoch)
         binding = next((b for b in self.bindings() if b.room_id == room_id), None)
@@ -468,8 +475,8 @@ class HostedRoomService:
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
         gateway_id, epoch = self._owned_authority(room_id)
-        hosted_rooms.request_room_stop(
-            self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
+        self.coordination.request_room_stop(
+            room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
         pending = 0
         with self._policy_lock:

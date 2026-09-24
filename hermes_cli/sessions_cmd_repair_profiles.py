@@ -46,6 +46,9 @@ def _print_report(findings: List[Finding]) -> None:
 
 
 def cmd_repair_profiles(args) -> int:
+    from state_store_maintenance import require_state_store_maintenance
+
+    require_state_store_maintenance("sessions-repair-profiles")
     stores = enumerate_stores()
     apply = bool(getattr(args, "apply", False))
     as_json = bool(getattr(args, "json", False))

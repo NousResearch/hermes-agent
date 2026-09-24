@@ -19,6 +19,9 @@ import re
 import sqlite3
 import threading
 import time
+import socket
+import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from gateway.dead_targets import classify_dead_error
@@ -27,6 +30,32 @@ from hermes_constants import get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
+_LOCAL_RECEIPTS: Dict[str, "DeliveryReceipt"] = {}
+
+
+@dataclass(frozen=True)
+class DeliveryReceipt:
+    """Opaque proof of one fenced delivery lease.
+
+    Backends may choose their own storage, but every mutation below requires
+    this exact obligation/fence pair.  An obligation id alone is deliberately
+    not authority to mutate a later owner's attempt.
+    """
+
+    obligation_id: str
+    fence: int
+
+
+def _receipt(value: DeliveryReceipt | str) -> Optional[DeliveryReceipt]:
+    """Compatibility adapter for old in-process callers, never an ID authority.
+
+    IDs resolve only through the current process's receipt cache.  A restart,
+    steal, or a later claim evicts the old fence, so the legacy spelling cannot
+    mutate a lease it did not obtain.
+    """
+    if isinstance(value, DeliveryReceipt):
+        return value
+    return _LOCAL_RECEIPTS.get(str(value))
 
 # Redelivery policy knobs (deliberately not config — the ledger is gated by
 # ``gateway.delivery_ledger`` and these only matter in the rare recovery path).
@@ -177,11 +206,17 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
+    path = _db_path()
+    # The PostgreSQL StateStore slice does not yet own delivery obligations.
+    # Refuse before connecting so selecting PostgreSQL cannot create this
+    # legacy SQLite ledger as an implicit fallback.
+    from state_store_runtime_readiness import require_legacy_state_db_runtime
+    require_legacy_state_db_runtime(home=path.parent)
     from hermes_cli.sqlite_util import open_db
 
     # Shared state.db: SessionDB owns the durable PRAGMA set; this opener keeps the plain-tuple rows
     # and the 10 s busy timeout it always had.
-    return open_db(_db_path(), db_label="state.db (delivery_ledger)", busy_timeout_ms=10_000,
+    return open_db(path, db_label="state.db (delivery_ledger)", busy_timeout_ms=10_000,
                    row_factory=None, initialize=_initialize_schema)
 
 
@@ -201,11 +236,24 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             owner_pid INTEGER,
             owner_started_at INTEGER,
             last_error TEXT,
-            adapter_profile TEXT
+            adapter_profile TEXT,
+            delivery_fence INTEGER NOT NULL DEFAULT 0,
+            owner_installation_id TEXT,
+            owner_host TEXT,
+            owner_generation TEXT,
+            lease_expires_at REAL
         )"""
     )
-    if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
-        add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}
+    for name, definition in (
+        ("adapter_profile", "TEXT"), ("delivery_fence", "INTEGER NOT NULL DEFAULT 0"),
+        ("owner_installation_id", "TEXT"), ("owner_host", "TEXT"),
+        ("owner_generation", "TEXT"), ("lease_expires_at", "REAL"),
+    ):
+        if name not in columns:
+            add_column_if_missing(conn, "delivery_obligations", name, f"{name} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_delivery_obligations_claim "
+                 "ON delivery_obligations(state, platform, adapter_profile)")
 
 
 def _transaction():
@@ -225,6 +273,27 @@ def _start_time(pid: int) -> Optional[int]:
 def _owner_stamp() -> tuple[int, Optional[int]]:
     pid = os.getpid()
     return pid, _start_time(pid)
+
+
+def _owner_identity() -> tuple[str, str, str]:
+    """Stable installation + host identity and unique process generation."""
+    home = _db_path().parent
+    identity_path = home / ".delivery-ledger-installation-id"
+    try:
+        installation = identity_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        installation = ""
+    if not installation:
+        installation = str(uuid.uuid4())
+        try:
+            identity_path.parent.mkdir(parents=True, exist_ok=True)
+            identity_path.write_text(installation + "\n", encoding="utf-8")
+        except OSError:
+            # A receipt/fence remains the safety boundary if the home is read-only.
+            installation = str(uuid.uuid5(uuid.NAMESPACE_URL, str(home.resolve())))
+    host = socket.gethostname() or "unknown-host"
+    pid, started = _owner_stamp()
+    return installation, host, f"{pid}:{started if started is not None else uuid.uuid4()}"
 
 
 def _owner_alive(pid: Any, started_at: Any) -> bool:
@@ -268,21 +337,35 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
-    """Record a final response as owed to the platform (state='pending')."""
+                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> DeliveryReceipt:
+    """Idempotently create a pending obligation and return its initial fence receipt.
+
+    Existing rows are never replaced: a duplicate producer cannot reopen a delivered
+    row or erase a recovery owner. The receipt is intentionally not send authority;
+    ``mark_attempting`` advances it into an exclusive lease.
+    """
     now, (pid, started) = time.time(), _owner_stamp()
+    installation, host, generation = _owner_identity()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO delivery_obligations
-               (obligation_id, session_key, platform, chat_id, thread_id,
-                content, state, attempts, created_at, updated_at,
-                owner_pid, owner_started_at, adapter_profile)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+            """INSERT OR IGNORE INTO delivery_obligations
+               (obligation_id, session_key, platform, chat_id, thread_id, content, state, attempts,
+                created_at, updated_at, owner_pid, owner_started_at, adapter_profile, delivery_fence,
+                owner_installation_id, owner_host, owner_generation)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default",
+             installation, host, generation))
+        row = conn.execute(
+            "SELECT delivery_fence FROM delivery_obligations WHERE obligation_id=?",
+            (obligation_id,),
+        ).fetchone()
         # Same transaction, same connection: the cron ledgers prune this way too
         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
         _prune_unlocked(conn, now)
+    receipt = DeliveryReceipt(obligation_id, int(row[0]))
+    _LOCAL_RECEIPTS[obligation_id] = receipt
+    return receipt
 
 
 def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
@@ -305,28 +388,65 @@ def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: s
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
              content, now, now, str(adapter_profile).strip() if adapter_profile else "default",
              session_key, content, since))
+        _prune_unlocked(conn, now)
 
 
-def mark_attempting(obligation_id: str) -> None:
-    _update_state(obligation_id, "attempting")
+def mark_attempting(receipt: DeliveryReceipt | str) -> Optional[DeliveryReceipt]:
+    current = _receipt(receipt)
+    if current is None:
+        return None
+    now = time.time()
+    installation, host, generation = _owner_identity()
+    pid, started = _owner_stamp()
+    with _DB_LOCK, _transaction() as conn:
+        cursor = conn.execute(
+            """UPDATE delivery_obligations SET state='attempting', delivery_fence=delivery_fence+1,
+               updated_at=?, owner_pid=?, owner_started_at=?, owner_installation_id=?, owner_host=?,
+               owner_generation=?, lease_expires_at=?
+               WHERE obligation_id=? AND delivery_fence=? AND state='pending'""",
+            (now, pid, started, installation, host, generation, now + STALE_AFTER_SECONDS,
+             current.obligation_id, current.fence))
+    if not cursor.rowcount:
+        return None
+    claimed = DeliveryReceipt(current.obligation_id, current.fence + 1)
+    _LOCAL_RECEIPTS[claimed.obligation_id] = claimed
+    return claimed
 
 
-def mark_delivered(obligation_id: str) -> None:
-    _update_state(obligation_id, "delivered")
+def _update_state(receipt: DeliveryReceipt | str, state: str, error: str = "") -> bool:
+    current = _receipt(receipt)
+    if current is None:
+        return False
+    with _DB_LOCK, _transaction() as conn:
+        cursor = conn.execute(
+            """UPDATE delivery_obligations SET state=?, updated_at=?, last_error=?, lease_expires_at=NULL
+               WHERE obligation_id=? AND delivery_fence=? AND state='attempting'""",
+            (state, time.time(), error[:500] if error else None, current.obligation_id, current.fence))
+    return bool(cursor.rowcount)
 
 
-def mark_failed(obligation_id: str, error: str = "") -> None:
-    _update_state(obligation_id, "failed", error=error)
+def mark_delivered(receipt: DeliveryReceipt | str) -> bool:
+    # Legacy in-process spelling remains fenced: resolve only a receipt this
+    # process created, then claim it before terminal mutation.
+    if isinstance(receipt, str):
+        receipt = mark_attempting(receipt) or _receipt(receipt)  # type: ignore[assignment]
+    return _update_state(receipt, "delivered")
 
 
-def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
+def mark_failed(receipt: DeliveryReceipt | str, error: str = "") -> bool:
+    if isinstance(receipt, str):
+        receipt = mark_attempting(receipt) or _receipt(receipt)  # type: ignore[assignment]
+    return _update_state(receipt, "failed", error=error)
+
+
+def release_runtime_claim(receipt: DeliveryReceipt | str, error: str = "") -> bool:
     """Return an unsent runtime claim to ``failed`` without spending an attempt.
 
     Runtime recovery claims before clearing ``resume_pending`` so two reconnect paths cannot send the
     same row; if the flag cannot be cleared no send was attempted and the claim must not consume the
     redelivery budget. Fail-closed to the exact current process instance and ``attempting`` state."""
-    pid, started = _owner_stamp()
-    if started is None:
+    current = _receipt(receipt)
+    if current is None:
         return False
     with _DB_LOCK, _transaction() as conn:
         cursor = conn.execute(
@@ -334,22 +454,12 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
                SET state='failed', attempts=CASE
                        WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
                    updated_at=?, last_error=?
-               WHERE obligation_id=? AND state='attempting'
-                 AND owner_pid IS ? AND owner_started_at IS ?""",
-            (time.time(), error[:500] if error else None, obligation_id, pid, started))
+               WHERE obligation_id=? AND delivery_fence=? AND state='attempting'""",
+            (time.time(), error[:500] if error else None, current.obligation_id, current.fence))
     return bool(cursor.rowcount)
 
 
-def _update_state(obligation_id: str, state: str, error: str = "") -> None:
-    with _DB_LOCK, _transaction() as conn:
-        conn.execute(
-            """UPDATE delivery_obligations
-               SET state=?, updated_at=?, last_error=?
-               WHERE obligation_id=?""",
-            (state, time.time(), error[:500] if error else None, obligation_id))
-
-
-def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
+def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, fence, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
                  last_error: Optional[str] = None) -> Dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
@@ -358,7 +468,9 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
     restart marker default. ``last_error`` is the row's pre-claim error, carried so a runtime claim that is
     released unsent goes back to ``failed`` with the same error and keeps its retry eligibility."""
     marker = FLOOD_MARKER if flood else (RECONNECTED_MARKER if runtime else None)
-    return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
+    receipt = DeliveryReceipt(oid, fence)
+    _LOCAL_RECEIPTS[oid] = receipt
+    return {"obligation_id": oid, "receipt": receipt, "session_key": session_key, "platform": platform, "chat_id": chat_id,
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
             **({"runtime_recovery": True} if runtime else {}),
@@ -391,12 +503,12 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at, delivery_fence
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
-             owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+             owner_pid, owner_started_at, adapter_profile, last_error, updated_at, fence) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -413,15 +525,16 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # (state and error kept) so this process's flood timer can claim it once the wait passes.
                 cursor = conn.execute(
                     """UPDATE delivery_obligations
-                       SET owner_pid=?, owner_started_at=?,
+                       SET owner_pid=?, owner_started_at=?, delivery_fence=delivery_fence+1,
                            adapter_profile=COALESCE(adapter_profile, 'default')
-                       WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
-                    (pid, started, oid, owner_pid, owner_pid))
+                       WHERE obligation_id=? AND state=? AND delivery_fence=?""",
+                    (pid, started, oid, state, fence))
                 if cursor.rowcount:
                     claimed.append({
                         "obligation_id": oid, "session_key": session_key, "platform": platform,
                         "chat_id": chat_id, "thread_id": thread_id, "content": content,
                         "profile": adapter_profile or "default", "attempts": attempts,
+                        "receipt": DeliveryReceipt(oid, fence + 1),
                         "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
                 continue
             # Every claim starts a send, so the row leaves 'pending'/'failed' for 'attempting' in the same
@@ -430,19 +543,23 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
             # claimed flood row also drops its stale refusal, so an interrupted resend has no error.
             cursor = conn.execute(
                 """UPDATE delivery_obligations
-                   SET owner_pid=?, owner_started_at=?, attempts=attempts+1, updated_at=?,
+                   SET owner_pid=?, owner_started_at=?, attempts=attempts+1,
+                       delivery_fence=delivery_fence+1, updated_at=?,
                        adapter_profile=COALESCE(adapter_profile, 'default'), state='attempting',
                        last_error=CASE WHEN ? THEN NULL ELSE last_error END
-                   WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
-                (pid, started, now, 1 if flood_row else 0, oid, owner_pid, owner_pid))
+                   WHERE obligation_id=? AND state=? AND delivery_fence=?""",
+                (pid, started, now, 1 if flood_row else 0, oid, state, fence))
             if cursor.rowcount:
                 # A never-claimed pending row was never sent: redeliver plainly. Anything else (crashed
                 # mid-await, other rejection, a flood refusal whose earlier chunks the platform may have
                 # accepted, or a pending row an older build already claimed and may have sent) carries
                 # the marker.
-                claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile or "default",
-                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
+                claimed.append(_claimed_row(
+                    oid, session_key, platform, chat_id, thread_id, content, attempts,
+                    adapter_profile or "default", fence + 1,
+                    needs_marker=state != "pending" or attempts > 0,
+                    flood=flood_row,
+                ))
     return claimed
 
 
@@ -467,24 +584,24 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, attempts, created_at, owner_pid,
-                      owner_started_at, last_error, adapter_profile, updated_at
+                      owner_started_at, last_error, adapter_profile, updated_at, delivery_fence
                FROM delivery_obligations
                WHERE state='failed' AND platform=?""", (platform,)).fetchall()
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
-             owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
+             owner_pid, owner_started_at, last_error, adapter_profile, updated_at, fence) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                 continue
             due = retry_not_before(updated_at, last_error, attempts)
             if due is None:
                 continue
-            owner_guard = (now, oid, owner_pid, owner_started_at)
+            owner_guard = (now, oid, owner_pid, owner_started_at, fence)
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
                 conn.execute(
                     """UPDATE delivery_obligations
                        SET state='abandoned', updated_at=?
                        WHERE obligation_id=? AND state='failed'
-                         AND owner_pid IS ? AND owner_started_at IS ?""", owner_guard)
+                         AND owner_pid IS ? AND owner_started_at IS ? AND delivery_fence=?""", owner_guard)
                 continue
             if now < due:
                 continue  # the platform's wait or the backoff has not passed; the timer comes back for it
@@ -492,15 +609,15 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
             # boot must see 'attempting' with no proof of non-delivery, hence the marker.
             cursor = conn.execute(
                 """UPDATE delivery_obligations
-                   SET state='attempting', attempts=attempts+1, updated_at=?, last_error=NULL
+                   SET state='attempting', attempts=attempts+1, delivery_fence=delivery_fence+1, updated_at=?, last_error=NULL
                    WHERE obligation_id=? AND state='failed'
-                     AND owner_pid IS ? AND owner_started_at IS ?""", owner_guard)
+                     AND owner_pid IS ? AND owner_started_at IS ? AND delivery_fence=?""", owner_guard)
             if cursor.rowcount:
                 # The failed send's ack may have been lost (reconnect) or its earlier chunks accepted
                 # (flood): every runtime redelivery carries a marker. The pre-claim error rides along so a
                 # claim released unsent keeps its flood retry eligibility.
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
-                                            attempts, adapter_profile, needs_marker=True, runtime=True,
+                                            attempts, adapter_profile, fence + 1, needs_marker=True, runtime=True,
                                             flood=is_flood_error(last_error), last_error=last_error))
     return claimed
 

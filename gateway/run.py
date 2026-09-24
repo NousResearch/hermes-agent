@@ -3454,6 +3454,10 @@ class GatewayRunner(
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
+        # Do not boot transports or fallback persistence for a backend whose
+        # gateway session-routing/transcript contract is unavailable.
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+        require_legacy_state_db_runtime()
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.

@@ -270,19 +270,48 @@ def _render_cron(ctx):
 
 def _render_sessions(ctx):
     _section("Sessions")
-    # Gateway session count: state.db is the source of truth; fall back to sessions.json for
-    # pre-migration installs.
+    # Gateway session count: the SELECTED store is the source of truth (state.db under
+    # SQLite, the durable gateway route table under selected PostgreSQL); fall back to
+    # sessions.json only for pre-migration SQLite installs. An invalid or unreachable
+    # selected PostgreSQL store surfaces an error line — never silently "Active: 0"
+    # and never a state.db fallback.
+    gateway_rows: list = []
+    store_error: str | None = None
+    store = None
     try:
-        from hermes_state import SessionDB
-        db = SessionDB(read_only=True)  # status only reads; never a writer beside a running gateway
+        from state_store import resolve_state_store_config
+        selected_pg = resolve_state_store_config(ctx.config).backend != "sqlite"
+    except Exception as exc:
+        selected_pg = False
+        store_error = str(exc) or exc.__class__.__name__
+    if store_error is None and selected_pg:
         try:
-            gateway_rows = db.list_gateway_sessions(active_only=True) or []
+            from cli_session_store import open_selected_read_store
+            store = open_selected_read_store(ctx.config)
+            if store is not None:
+                gateway_rows = store.list_gateway_sessions(active_only=True) or []
+        except Exception as exc:
+            gateway_rows = []
+            store_error = str(exc) or exc.__class__.__name__
         finally:
-            db.close()
-    except Exception:
-        gateway_rows = []
+            if store is not None:
+                from contextlib import suppress
+                with suppress(Exception):
+                    store.close()
+    elif store_error is None:
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB(read_only=True)  # status only reads; never a writer beside a running gateway
+            try:
+                gateway_rows = db.list_gateway_sessions(active_only=True) or []
+            finally:
+                db.close()
+        except Exception:
+            gateway_rows = []
 
-    if gateway_rows:
+    if store_error is not None:
+        _kv("Active:", color(f"error reading selected state store: {store_error}", Colors.RED))
+    elif gateway_rows:
         _kv("Active:", f"{len(gateway_rows)} session(s)")
         freshest = max((float(r.get("last_active") or 0) for r in gateway_rows), default=0.0)
         if freshest > 0:

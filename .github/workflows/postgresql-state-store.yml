@@ -1,0 +1,89 @@
+---
+name: PostgreSQL State Store
+
+on:
+  pull_request:
+    paths:
+      - "state_store.py"
+      - "state_store_postgresql.py"
+      - "state_store_*.py"
+      - "postgresql_*.py"
+      - "cli_session_store.py"
+      - "tests/integration/**"
+      - "tests/test_state_store_runtime_readiness.py"
+      - "tests/tools/test_async_delegation_ledger_seam.py"
+      - ".github/workflows/postgresql-state-store.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgresql-state-store-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgresql-state:
+    name: PostgreSQL state-store subset
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: hermes_state_store_test
+          POSTGRES_DB: hermes_state_store_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hermes_state_store_test -d hermes_state_store_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        # Same locked sync as tests.yml plus the state-store extra so psycopg
+        # is present for the PostgreSQL subset (the hermetic conftest forbids
+        # mid-run installs).
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev --extra state-store
+
+      - name: Wait for PostgreSQL
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U hermes_state_store_test -d hermes_state_store_test; then
+              break
+            fi
+            sleep 2
+          done
+          pg_isready -h 127.0.0.1 -p 5432 -U hermes_state_store_test -d hermes_state_store_test
+
+      - name: Run PostgreSQL state-store tests
+        # Live-container integration subset (ownership-validated disposable
+        # schemas on the loopback fixture) plus the no-DB readiness/seam
+        # regressions that guard every consumer seam.
+        run: |
+          HERMES_TEST_WORKERS=4 scripts/run_tests.sh tests/integration/ -k "postgresql or pg18" -q
+          scripts/run_tests.sh tests/test_state_store_runtime_readiness.py tests/tools/test_async_delegation_ledger_seam.py tests/hermes_cli/test_config_read_guard.py -q
+        env:
+          HERMES_STATE_STORE_TEST_DSN: postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test

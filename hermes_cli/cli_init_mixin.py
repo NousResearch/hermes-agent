@@ -324,8 +324,9 @@ class CLIInitMixin:
             # path a moment later from the REPL thread, and a second writer repeats the full
             # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
             # holds the GIL — that repeat was the post-banner freeze before the first prompt.
-            from hermes_state_registry import acquire
-            self._session_db = acquire()
+            from cli_session_store import open_cli_session_store
+            from cli import CLI_CONFIG
+            self._session_db = open_cli_session_store(CLI_CONFIG)
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.

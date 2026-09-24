@@ -23,7 +23,9 @@ def cli_shell(monkeypatch, tmp_path):
     shell._reset_stream_state()
     shell._scrollback_box_width = lambda: 100
     printed = []
-    monkeypatch.setattr(cli_mod, "_cprint", lambda text="", **kwargs: printed.append(str(text)))
+    monkeypatch.setattr(
+        cli_mod, "_cprint", lambda text="", **kwargs: printed.append(str(text))
+    )
     monkeypatch.setitem(cli_mod.CLI_CONFIG, "display", {})
     return shell, printed, cli_mod
 
@@ -31,7 +33,9 @@ def cli_shell(monkeypatch, tmp_path):
 @pytest.mark.parametrize("show_reasoning", [False, True])
 @pytest.mark.parametrize("streaming_enabled", [False, True])
 def test_commentary_renders_as_assistant_independently_of_reasoning_and_streaming(
-    cli_shell, show_reasoning, streaming_enabled,
+    cli_shell,
+    show_reasoning,
+    streaming_enabled,
 ):
     shell, printed, _ = cli_shell
     shell.show_reasoning = show_reasoning
@@ -116,7 +120,9 @@ def test_interim_sanitizes_terminal_control_sequences(cli_shell):
 
 
 @pytest.mark.parametrize("streaming_enabled", [False, True])
-def test_init_agent_installs_interim_consumer_even_without_reasoning(cli_shell, monkeypatch, streaming_enabled):
+def test_init_agent_installs_interim_consumer_even_without_reasoning(
+    cli_shell, monkeypatch, streaming_enabled
+):
     shell, _, cli_mod = cli_shell
     import run_agent
     import hermes_cli.mcp_startup as mcp_startup
@@ -145,14 +151,22 @@ def test_init_agent_installs_interim_consumer_even_without_reasoning(cli_shell, 
     shell.checkpoint_max_total_size_mb = 1
     shell.checkpoint_max_file_size_mb = 1
     for name in (
-        "_providers_only", "_providers_ignore", "_providers_order", "_provider_sort",
-        "_provider_require_params", "_provider_data_collection",
-        "_openrouter_min_coding_score", "_fallback_model",
+        "_providers_only",
+        "_providers_ignore",
+        "_providers_order",
+        "_provider_sort",
+        "_provider_require_params",
+        "_provider_data_collection",
+        "_openrouter_min_coding_score",
+        "_fallback_model",
     ):
         setattr(shell, name, None)
     for name in (
-        "finalize_preloaded_skills", "_install_tool_callbacks", "_ensure_tirith_security",
-        "_clarify_callback", "_on_reaction",
+        "finalize_preloaded_skills",
+        "_install_tool_callbacks",
+        "_ensure_tirith_security",
+        "_clarify_callback",
+        "_on_reaction",
     ):
         setattr(shell, name, noop)
     shell._ensure_runtime_credentials = lambda: True
@@ -168,10 +182,17 @@ def test_init_agent_installs_interim_consumer_even_without_reasoning(cli_shell, 
         return SimpleNamespace()
 
     monkeypatch.setattr(run_agent, "AIAgent", fake_agent)
-    assert shell._init_agent(runtime_override={
-        "provider": "openai-codex", "api_mode": "codex_responses",
-        "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "test-key",
-    }) is True
+    assert (
+        shell._init_agent(
+            runtime_override={
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "test-key",
+            }
+        )
+        is True
+    )
     assert captured["reasoning_callback"] is None
     assert captured["interim_assistant_callback"] == shell._on_interim_assistant
     assert (captured["stream_delta_callback"] is not None) is streaming_enabled

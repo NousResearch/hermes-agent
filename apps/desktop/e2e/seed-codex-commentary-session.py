@@ -41,26 +41,42 @@ def main() -> None:
             role="assistant",
             content=CANONICAL_FINAL,
             reasoning=FLATTENED_REASONING,
-            codex_reasoning_items=[{
-                "type": "reasoning",
-                "id": "rs_resume",
-                "summary": [{"type": "summary_text", "text": REASONING_SUMMARY}],
-                "encrypted_content": "E2E_ENCRYPTED_SENTINEL",
-            }],
+            codex_reasoning_items=[
+                {
+                    "type": "reasoning",
+                    "id": "rs_resume",
+                    "summary": [{"type": "summary_text", "text": REASONING_SUMMARY}],
+                    "encrypted_content": "E2E_ENCRYPTED_SENTINEL",
+                }
+            ],
             codex_message_items=[
                 {
-                    "type": "message", "id": "analysis-e2e", "role": "assistant", "phase": "analysis",
-                    "content": [{"type": "output_text", "text": "E2E_ANALYSIS_SENTINEL"}],
+                    "type": "message",
+                    "id": "analysis-e2e",
+                    "role": "assistant",
+                    "phase": "analysis",
+                    "content": [
+                        {"type": "output_text", "text": "E2E_ANALYSIS_SENTINEL"}
+                    ],
                 },
                 {
-                    "type": "message", "id": "commentary-e2e", "role": "assistant", "phase": "commentary",
+                    "type": "message",
+                    "id": "commentary-e2e",
+                    "role": "assistant",
+                    "phase": "commentary",
                     "content": [{"type": "output_text", "text": COMMENTARY}],
                 },
             ],
-            tool_calls=[{
-                "id": "tc_commentary_e2e", "type": "function",
-                "function": {"name": "terminal", "arguments": json.dumps({"command": "printf commentary-e2e"})},
-            }],
+            tool_calls=[
+                {
+                    "id": "tc_commentary_e2e",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": json.dumps({"command": "printf commentary-e2e"}),
+                    },
+                }
+            ],
         )
     finally:
         db.close()

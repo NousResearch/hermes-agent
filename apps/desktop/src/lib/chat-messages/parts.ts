@@ -7,7 +7,12 @@ export function textPart(text: string, timestamp?: number): ChatMessagePart {
 }
 
 export function reasoningPart(text: string, timestamp?: number, sourceId?: string): ChatMessagePart {
-  return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}), ...(sourceId ? { sourceId } : {}) }
+  return {
+    type: 'reasoning',
+    text,
+    ...(timestamp !== undefined ? { timestamp } : {}),
+    ...(sourceId ? { sourceId } : {})
+  }
 }
 
 /**

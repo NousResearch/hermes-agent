@@ -13,27 +13,38 @@ from agent.codex_responses_adapter import (
 
 def _message(text, phase, item_id="msg_progress"):
     return NS(
-        type="message", role="assistant", id=item_id, phase=phase,
-        status="completed", content=[NS(type="output_text", text=text)],
+        type="message",
+        role="assistant",
+        id=item_id,
+        phase=phase,
+        status="completed",
+        content=[NS(type="output_text", text=text)],
     )
 
 
 def _reasoning(text="Reasoning summary."):
     return NS(
-        type="reasoning", id="rs_summary", status="completed",
+        type="reasoning",
+        id="rs_summary",
+        status="completed",
         encrypted_content="opaque-replay-state",
         summary=[NS(type="summary_text", text=text)],
     )
 
 
-@pytest.mark.parametrize("issuer", [None, "codex_backend", "github_responses", "xai_responses"])
+@pytest.mark.parametrize(
+    "issuer", [None, "codex_backend", "github_responses", "xai_responses"]
+)
 def test_mixed_response_keeps_commentary_out_of_both_reasoning_and_final(issuer):
-    response = NS(status="completed", output=[
-        _reasoning(),
-        _message("I'll inspect the file.", "commentary"),
-        _message("Analysis summary.", "analysis", "msg_analysis"),
-        _message("The file is correct.", "final_answer", "msg_final"),
-    ])
+    response = NS(
+        status="completed",
+        output=[
+            _reasoning(),
+            _message("I'll inspect the file.", "commentary"),
+            _message("Analysis summary.", "analysis", "msg_analysis"),
+            _message("The file is correct.", "final_answer", "msg_final"),
+        ],
+    )
     original = deepcopy(response)
 
     message, finish_reason = _normalize_codex_response(response, issuer_kind=issuer)
@@ -45,13 +56,19 @@ def test_mixed_response_keeps_commentary_out_of_both_reasoning_and_final(issuer)
     assert message.reasoning_details is None
     assert message.codex_message_items == [
         {
-            "type": "message", "role": "assistant", "status": "completed",
-            "id": item.id, "phase": item.phase,
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "id": item.id,
+            "phase": item.phase,
             "content": [{"type": "output_text", "text": item.content[0].text}],
         }
-        for item in response.output if item.type == "message"
+        for item in response.output
+        if item.type == "message"
     ]
-    assert message.codex_reasoning_items[0]["encrypted_content"] == "opaque-replay-state"
+    assert (
+        message.codex_reasoning_items[0]["encrypted_content"] == "opaque-replay-state"
+    )
     assert response == original
 
 
@@ -72,23 +89,32 @@ def test_commentary_only_is_visible_sidecar_not_reasoning_or_final(phase):
 
 
 def test_normalized_commentary_and_encrypted_state_replay_without_reclassification():
-    message, _ = _normalize_codex_response(NS(status="completed", output=[
-        _reasoning(),
-        _message("I'll inspect the file.", "commentary"),
-        _message("The file is correct.", "final_answer", "msg_final"),
-    ]), issuer_kind="codex_backend")
+    message, _ = _normalize_codex_response(
+        NS(
+            status="completed",
+            output=[
+                _reasoning(),
+                _message("I'll inspect the file.", "commentary"),
+                _message("The file is correct.", "final_answer", "msg_final"),
+            ],
+        ),
+        issuer_kind="codex_backend",
+    )
     history = [
         {"role": "user", "content": "Check the file."},
         {"role": "assistant", **vars(message)},
     ]
     original = deepcopy(history)
 
-    replay = _chat_messages_to_responses_input(history, current_issuer_kind="codex_backend")
+    replay = _chat_messages_to_responses_input(
+        history, current_issuer_kind="codex_backend"
+    )
 
     assert replay == [
         {"role": "user", "content": "Check the file."},
         {
-            "type": "reasoning", "encrypted_content": "opaque-replay-state",
+            "type": "reasoning",
+            "encrypted_content": "opaque-replay-state",
             "summary": [{"type": "summary_text", "text": "Reasoning summary."}],
         },
         *message.codex_message_items,

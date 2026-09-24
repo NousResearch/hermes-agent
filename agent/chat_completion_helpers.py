@@ -2552,7 +2552,7 @@ class _BedrockStream:
         # Liveness for the boto3 worker: ``for event in event_stream`` has NO read timeout,
         # so on_event stamps every event and the poll loop trips a watchdog on a long gap.
         self.started_at = time.time()
-        self.last_event = self.started_at
+        self.last_event = time.monotonic()
         # Read (not popped): the worker's own pop inside _open_stream must
         # still resolve the same region.
         self.region = api_kwargs.get("__bedrock_region__", "us-east-1")
@@ -2608,7 +2608,7 @@ class _BedrockStream:
                 return token is None or stream_writer_is_current(agent, token)
 
             def _stamp_event() -> None:
-                self.last_event = time.time()
+                self.last_event = time.monotonic()
 
             try:
                 from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
@@ -2671,7 +2671,7 @@ class _BedrockStream:
             invalidate_runtime_client(self.region)
         except Exception as _inval_exc:
             logger.debug("bedrock: stale client eviction failed: %s", _inval_exc)
-        self.last_event = time.time()
+        self.last_event = time.monotonic()
         # Raises RuntimeError past HERMES_STREAM_STALE_GIVEUP; otherwise end
         # THIS call with a TimeoutError and let the streak carry forward.
         _check_stale_giveup(agent)
@@ -2685,7 +2685,7 @@ class _BedrockStream:
         while t.is_alive():
             t.join(timeout=0.3)
             self._raise_if_interrupted("Agent interrupted during Bedrock API call", worker=t)
-            stale_elapsed = time.time() - self.last_event
+            stale_elapsed = time.monotonic() - self.last_event
             if stale_elapsed > self.stale_timeout:
                 self._on_stale(stale_elapsed)
                 break
@@ -2789,7 +2789,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.deltas_were_sent = {"yes": False}  # for the partial-delivery fallback
         self.provider_tool_in_flight = {"yes": False}
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
-        self.last_chunk_time = {"t": time.time()}
+        self.last_chunk_time = {"t": time.monotonic()}
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
@@ -2925,12 +2925,12 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _count_chunk(self, diag, chunk) -> None:
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = time.monotonic()
         self.agent._touch_activity("receiving stream response")
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
-                diag["first_chunk_at"] = self.last_chunk_time["t"]
+                diag["first_chunk_at"] = time.time()
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
 
@@ -2990,7 +2990,7 @@ class _StreamingCall(StreamingWaitMonitor):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = time.monotonic()
         self.agent._touch_activity("waiting for provider response (streaming)")
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
@@ -3046,7 +3046,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return False
         # Stamp BEFORE Relay processes the chunk so the watchdog can't cancel
         # a live stream mid-interceptor.
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = time.monotonic()
         return True
 
     def _writer_still_current(self, label: str) -> bool:
@@ -3357,7 +3357,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # No message_stop -> EmptyStreamError; saw_stream_event only picks the message.
         saw_stream_event = False
         saw_message_stop = False
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = time.monotonic()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
         self._attempt_request_client = request_client
@@ -3466,7 +3466,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent, jittered_backoff(attempt + 1, base_delay=1.0, max_delay=4.0, jitter_ratio=0.0))
         # The backoff is not the dead attempt's silence: restart the stale clock so the
         # stale monitor cannot kill (and strike) a stream that has not reopened yet.
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = time.monotonic()
 
     def _maybe_disable_streaming(self, e) -> None:
         """Flip to non-streaming for failures streaming itself cannot survive, or that
@@ -3788,7 +3788,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self._shutdown_stale_attempt_socket(_killed_response)
         _bump_stale_streak(self.agent)  # circuit breaker, see ``_stale_streak()``
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = time.monotonic()
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
         self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 

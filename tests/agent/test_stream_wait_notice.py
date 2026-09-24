@@ -24,6 +24,7 @@ def test_resumed_chunks_clear_wait_without_erasing_local_load(monkeypatch, local
     monkeypatch.setattr(h, "_managed_local_load_notice",
                         lambda *args: loading if now[0] >= 1060.6 else None)
     monkeypatch.setattr(h.time, "time", lambda: now[0])
+    monkeypatch.setattr(h.time, "monotonic", lambda: now[0])
 
     if heartbeat_race:
         heartbeat = call._heartbeat

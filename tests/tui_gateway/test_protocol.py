@@ -31,11 +31,14 @@ def server():
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
     #
-    # Import server_requests (pure stdlib) BEFORE the window: the patch drops every module first imported
-    # inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
+    # Import server_requests (pure stdlib) and transport BEFORE the window: the patch drops every module first
+    # imported inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
     # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
-    # unbound copy whose default sinks drop frames and treat every client as answerable.
+    # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
+    # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
+    # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
     import tui_gateway.server_requests  # noqa: F401
+    import tui_gateway.transport  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -1162,8 +1165,10 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
 # ── Config I/O ───────────────────────────────────────────────────────
 
 
-def test_config_roundtrip(server, tmp_path):
-    server._hermes_home = tmp_path
+def test_config_roundtrip(server, tmp_path, monkeypatch):
+    # monkeypatch, not assignment: a bare ``server._hermes_home = tmp_path`` outlives this test and every
+    # later ``_load_cfg()`` in the process reads this file's ``model: test/model`` shorthand.
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
 

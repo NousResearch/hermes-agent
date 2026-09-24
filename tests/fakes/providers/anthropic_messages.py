@@ -20,7 +20,12 @@ Record mode (documented, never run in CI or against a paid key by this suite):
 ``AnthropicMessagesServer(record_upstream="https://api.anthropic.com",
 cassette="<name>")`` proxies each POST to the upstream base URL and appends a
 sanitised exchange (no auth headers, no API keys) to
-``tests/fakes/providers/cassettes/anthropic/<name>.jsonl``.
+``tests/fakes/providers/cassettes/anthropic/<name>.jsonl`` (``cassette_dir``
+overrides the directory).
+
+A ``Responder`` runs on the request's handler thread, so it may block (hold a
+reply until an event fires) and decide at send time; each request record
+carries ``bearer`` / ``x_api_key`` so a responder can branch on the credential.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import typing
 import urllib.error
 import urllib.request
 import uuid
@@ -37,7 +43,9 @@ from pathlib import Path
 from typing import Any, Callable, Union
 
 import anthropic.types as at
+import typing_extensions
 from anthropic.types import message_create_params as ga_params
+from anthropic.types.beta import BetaMessageParam
 from anthropic.types.beta import message_create_params as beta_params
 from anthropic.types.raw_message_delta_event import Delta as MessageDelta
 from pydantic import TypeAdapter, ValidationError
@@ -130,7 +138,29 @@ def _materialise(value: Any) -> Any:
     return value
 
 
+def _param_adapters(message_param: Any) -> dict[str, TypeAdapter]:
+    """``type`` literal -> TypeAdapter of each request-side ``*Param`` TypedDict in a message's content union."""
+    content = typing.get_type_hints(message_param)["content"]
+    iterable = next(arg for arg in typing.get_args(content) if arg is not str)
+    out: dict[str, TypeAdapter] = {}
+    for member in typing.get_args(typing.get_args(iterable)[0]):
+        if typing_extensions.is_typeddict(member):  # the SDK builds its Params with typing_extensions
+            for literal in typing.get_args(typing.get_type_hints(member)["type"]):
+                out[literal] = TypeAdapter(member)
+    return out
+
+
+# A message's content union also admits the RESPONSE BaseModels (ThinkingBlock, ToolUseBlock ...),
+# which accept extra keys, so a replayed assistant block would validate with any bogus key. Content
+# blocks are re-validated against the request-side *Param TypedDicts only: the shapes the real API
+# holds a body to (it 400s "Extra inputs are not permitted").
+_GA_BLOCKS = _param_adapters(at.MessageParam)
+_BETA_BLOCKS = _param_adapters(BetaMessageParam)
+
+
 def _unknown_keys(sent: Any, known: Any, path: str = "$") -> list[str]:
+    # A block the union resolved to a (permissive) response BaseModel stops this walk; content
+    # blocks are checked key-for-key against their *Param TypedDict by _block_problems instead.
     if isinstance(sent, dict) and isinstance(known, dict):
         out = [f"{path}.{k}" for k in sent if k not in known]
         for k in sent:
@@ -147,9 +177,41 @@ def validate_request(body: dict[str, Any], *, beta: bool) -> list[str]:
     adapter = _BETA_ADAPTER if beta else _GA_ADAPTER
     try:
         known = _materialise(adapter.validate_python(body))
+        problems = [f"unknown key {p}" for p in _unknown_keys(body, known)]
     except ValidationError as exc:
-        return [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()]
-    return [f"unknown key {p}" for p in _unknown_keys(body, known)]
+        problems = [_loc(e, "$") for e in exc.errors()]
+    for path, block in _content_blocks(body):
+        problems += [p for p in _block_problems(block, _BETA_BLOCKS if beta else _GA_BLOCKS, path)
+                     if p not in problems]
+    return problems
+
+
+def _loc(err: Any, prefix: str) -> str:
+    return f"{prefix}.{'.'.join(map(str, err['loc']))}: {err['msg']}"
+
+
+def _content_blocks(body: dict[str, Any]) -> list[tuple[str, Any]]:
+    out: list[tuple[str, Any]] = []
+    for i, msg in enumerate(body.get("messages") or []):
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            out += [(f"$.messages[{i}].content[{j}]", b) for j, b in enumerate(content)]
+    if isinstance(body.get("system"), list):
+        out += [(f"$.system[{j}]", b) for j, b in enumerate(body["system"])]
+    return out
+
+
+def _block_problems(block: Any, adapters: dict[str, TypeAdapter], path: str) -> list[str]:
+    if not isinstance(block, dict):
+        return [f"{path}: content block is {type(block).__name__}, not an object"]
+    adapter = adapters.get(block.get("type"))
+    if adapter is None:
+        return [f"{path}.type: {block.get('type')!r} is not a request content block type"]
+    try:
+        known = _materialise(adapter.validate_python(block))
+    except ValidationError as exc:
+        return [_loc(e, path) for e in exc.errors()]
+    return [f"unknown key {p}" for p in _unknown_keys(block, known, path)]
 
 
 # SDK-built responses --------------------------------------------------------------
@@ -235,14 +297,15 @@ class AnthropicMessagesServer:
 
     def __init__(self, script: list[Response] | Responder | None = None, *, default_text: str = "ok",
                  aux: Responder | None = None, models: list[str] | None = None,
-                 record_upstream: str | None = None, cassette: str = "session") -> None:
+                 record_upstream: str | None = None, cassette: str = "session",
+                 cassette_dir: Path = CASSETTE_DIR) -> None:
         self._script: list[Response] = list(script) if isinstance(script, list) else []
         self._responder: Responder | None = script if callable(script) else None
         self.default_text = default_text
         self._aux = aux or (lambda _r: Reply([Text("Fake summary of the earlier conversation.")]))
         self.models = models or [MODEL_ID]
         self.record_upstream = record_upstream
-        self.cassette = CASSETTE_DIR / f"{cassette}.jsonl"
+        self.cassette = Path(cassette_dir) / f"{cassette}.jsonl"
         self.requests: list[dict[str, Any]] = []
         self.gets: list[dict[str, Any]] = []
         self._lock = threading.Lock()
@@ -356,6 +419,8 @@ def _handler_for(server: AnthropicMessagesServer) -> type[BaseHTTPRequestHandler
             headers = {k.lower(): v for k, v in self.headers.items()}
             record = {
                 "path": self.path, "headers": headers, "body": body, "t": time.monotonic(),
+                "bearer": headers.get("authorization", "").removeprefix("Bearer ").strip(),
+                "x_api_key": headers.get("x-api-key", ""),
                 "kind": "main" if body.get("tools") else "aux",
                 "schema_errors": validate_request(body, beta=bool(headers.get("anthropic-beta"))),
             }

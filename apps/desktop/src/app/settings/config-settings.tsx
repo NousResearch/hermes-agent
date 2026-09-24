@@ -40,13 +40,11 @@ import {
   diffConfig,
   enumOptionsFor,
   getNested,
-  isExternalMemoryProvider,
   sectionFieldEntries,
   setNested,
   voiceFieldVisible
 } from './helpers'
-import { MemoryConnect } from './memory/connect'
-import { ProviderConfigPanel } from './memory/provider-config-panel'
+import { MemoryProviderSettings } from './memory/provider-settings'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -54,6 +52,8 @@ import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingDeepLink } from './use-setting-deep-link'
+
+const MEMORY_PROVIDER_KEY = 'memory.provider'
 
 export function ConfigSettings({
   activeSectionId,
@@ -295,6 +295,9 @@ function ConfigSettingsInner({
     ([key]) => subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
   )
 
+  // The provider list owns selection and per-provider configuration; the raw `memory.provider` field would duplicate it.
+  const providerField = fields.find(([key]) => key === MEMORY_PROVIDER_KEY)
+
   const showModelSettings =
     activeSectionId === 'model' && (subpage === undefined || ['main', 'auxiliary', 'moa'].includes(subpage))
 
@@ -426,10 +429,13 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  const visibleFields = (
+    activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  ).filter(([key]) => key !== MEMORY_PROVIDER_KEY)
 
   const showEmptyState =
     visibleFields.length === 0 &&
+    !providerField &&
     (subpage === undefined
       ? activeSectionId !== 'chat'
       : !showModelSettings && !showDesktopSettings && !showAttachments)
@@ -472,6 +478,11 @@ function ConfigSettingsInner({
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}
+      {providerField ? (
+        <div className="mb-6 scroll-mt-6" id={`setting-field-${MEMORY_PROVIDER_KEY}`}>
+          <MemoryProviderSettings owner={{ profile: scopeProfile }} />
+        </div>
+      ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (
@@ -479,11 +490,6 @@ function ConfigSettingsInner({
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
-                descriptionExtra={
-                  key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
-                    <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
-                  ) : undefined
-                }
                 enumOptions={
                   key === 'tts.elevenlabs.voice_id'
                     ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
@@ -495,13 +501,6 @@ function ConfigSettingsInner({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
-              {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
-                <ProviderConfigPanel
-                  key={String(getNested(config, key))}
-                  profile={scopeProfile}
-                  provider={String(getNested(config, key))}
-                />
-              ) : null}
             </div>
           ))}
         </div>

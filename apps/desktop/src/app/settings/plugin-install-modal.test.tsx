@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The host tab lists installed plugins on mount; only an `install` action counts as installing.
@@ -19,6 +19,7 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 import { queryClient } from '@/lib/query-client'
+import { $notifications } from '@/store/notifications'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -34,11 +35,18 @@ import { PluginInstallModal } from './plugin-install-modal'
 const probePluginRepo = vi.fn()
 const installDesktopPlugin = vi.fn()
 
-const renderFlow = () =>
+function LocationProbe() {
+  const { pathname, search, state } = useLocation()
+
+  return <output data-testid="location">{`${pathname}${search} ${JSON.stringify(state)}`}</output>
+}
+
+const renderFlow = (initialEntry = '/capabilities?tab=plugins') =>
   render(
-    <MemoryRouter initialEntries={['/capabilities?tab=plugins']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
-        <PluginsTab profile={null} />
+        {initialEntry.startsWith('/settings') ? null : <PluginsTab profile={null} />}
+        <LocationProbe />
         <PluginInstallModal />
       </QueryClientProvider>
     </MemoryRouter>
@@ -151,6 +159,12 @@ describe('Install from Git entry flow', () => {
         expect.objectContaining({ action: 'install', catalog_name: 'plugin', profile: 'research' })
       )
     )
+    // Capabilities reopens on the profile the plugin went into.
+    await waitFor(() =>
+      expect(screen.getByTestId('location').textContent).toBe(
+        `/capabilities?tab=plugins ${JSON.stringify({ capabilityScope: 'research' })}`
+      )
+    )
   })
 
   it('pins a custom install to a full commit SHA and refuses anything shorter', async () => {
@@ -185,7 +199,9 @@ describe('Unified package desktop half on a local backend', () => {
     $connection.set({ mode } as NonNullable<ReturnType<typeof $connection.get>>)
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
     requestGateway.mockImplementation(async (method, params) =>
-      method === 'plugins.manage' && params?.action === 'install' ? { ok: false, error: alreadyExists } : { plugins: [] }
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: false, error: alreadyExists }
+        : { plugins: [] }
     )
     installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
     vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
@@ -217,5 +233,58 @@ describe('Unified package desktop half on a local backend', () => {
 
     expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
+  })
+})
+
+describe('Install started from Memory settings', () => {
+  it('keeps the owner through Review, installs into it, returns to that provider in Memory settings, and toasts when discovery does not list it', async () => {
+    const owner = { connectionId: 'source-a', profile: 'alpha' }
+    const origin = { kind: 'memory' as const, providerId: 'fixture' }
+    const listed = { name: 'fixture', description: '', configured: false, status: 'needs_config' }
+    const api = vi.fn(async () => ({ active: 'builtin', builtin_files: { memory: 0, user: 0 }, providers: [listed] }))
+    $activeGatewayProfile.set('beta')
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockImplementation(async (_method, params) =>
+      params?.action === 'install' ? { ok: true, plugin_name: 'fixture' } : { plugins: [] }
+    )
+    vi.stubGlobal('hermesDesktop', { probePluginRepo, api })
+
+    const install = async () => {
+      const button = (await screen.findByRole('button', { name: 'Install' })) as HTMLButtonElement
+      await waitFor(() => expect(button.disabled).toBe(false))
+      fireEvent.click(button)
+      await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
+    }
+
+    renderFlow('/settings?tab=config:memory')
+    act(() => openPluginInstallRequest({ repo: '', profile: owner, legacyHint: 'agent', origin }))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Repository' }), {
+      target: { value: 'example/fixture' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Review repository' }))
+    expect($pluginInstallRequest.get()).toMatchObject({ repo: 'example/fixture', profile: owner, origin })
+    await install()
+    expect(requestGateway).toHaveBeenCalledWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'install', profile: 'alpha' })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/memory', profile: 'alpha', connectionId: 'source-a' })
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId('location').textContent).toBe('/settings?tab=config:memory&provider=fixture null')
+    )
+
+    cleanup()
+    api.mockResolvedValue({ active: 'builtin', builtin_files: { memory: 0, user: 0 }, providers: [] })
+    renderFlow('/settings?tab=config:memory')
+    act(() => openPluginInstallRequest({ repo: 'example/fixture', profile: owner, legacyHint: 'agent', origin }))
+    await install()
+    await waitFor(() =>
+      expect($notifications.get().map(n => n.message)).toContain(
+        'Installed fixture on alpha, but this backend does not list its memory provider yet.'
+      )
+    )
+    expect(screen.getByTestId('location').textContent).toBe('/settings?tab=config:memory null')
   })
 })

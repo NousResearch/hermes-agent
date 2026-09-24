@@ -3,6 +3,58 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  memoryProviders: {
+    oauth: {
+      connect: 'Connect',
+      reconnect: 'Reconnect',
+      viaOAuth: 'Connect via OAuth',
+      apiKeySet: 'API key set',
+      connected: 'OAuth connected',
+      checking: 'Checking connection…',
+      waiting: 'Waiting for browser consent…',
+      stopWaiting: 'Stop waiting',
+      retryCheck: 'Retry connection check',
+      checkFailed: 'Could not check the connection. Check the backend and try again.',
+      failed: 'Connection failed. Try again.',
+      timeout:
+        'Timed out waiting. This has not cancelled the request or browser authorization. Check again later; if requests remain stuck, manually recover the backend connection or close and reopen the app.'
+    },
+    title: 'Memory providers',
+    newSessions: 'Provider changes apply to new sessions. Existing conversations keep their memory provider.',
+    active: 'Active',
+    inspect: 'Configure',
+    use: 'Use provider',
+    ready: 'Ready',
+    needsConfig: 'Needs configuration',
+    missing: 'Missing',
+    unavailable: 'Unavailable',
+    unknown: 'Readiness unknown',
+    builtin: 'Built-in memory',
+    builtinDescription: 'Local memory stored with this profile.',
+    loadFailed: 'Could not load memory providers.',
+    configLoadFailed: 'Could not load provider settings.',
+    retry: 'Retry',
+    loading: 'Loading memory providers',
+    configLoading: 'Loading provider settings',
+    noSettings: 'This provider has no settings to configure.',
+    upgrade:
+      'Update the Hermes backend to configure an inactive provider without selecting it. The active provider has not changed.',
+    partialUpdatesUnsupported:
+      'This backend cannot save this configuration form. Update the Hermes backend or use the provider’s native setup. No settings have been changed.',
+    fullFormRequired: 'Open Full configuration to review and save all settings together.',
+    nativeSetup:
+      'For advanced options not shown here, use the provider’s native setup workflow or configuration reference.',
+    save: 'Save changes',
+    saveFailed: 'Could not save settings. Your draft is preserved. Check the backend and try again.',
+    saved: 'Settings saved.',
+    fullConfig: 'Full configuration',
+    other: 'Other',
+    configDescription: 'Settings are saved to this profile without changing the selected provider.',
+    reference: 'Configuration reference',
+    selectionFailed: 'Could not select the provider. Refresh its status and try again.',
+    explore: 'Explore memory plugins',
+    repair: 'Check the plugin installation and its dependencies, then refresh.'
+  },
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   connectors: {
@@ -837,6 +889,8 @@ export const en: Translations = {
       agentHalfMissingTip:
         'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
       installModal: {
+        memoryNotListed: (providerId, targetLabel) =>
+          `Installed ${providerId} on ${targetLabel}, but this backend does not list its memory provider yet.`,
         installFromGit: 'Install from Git',
         reviewRepository: 'Review repository',
         repoPlaceholder: 'https://github.com/owner/repo',

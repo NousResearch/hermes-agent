@@ -1,3 +1,4 @@
+import type { ProfileScope } from '@/api/client'
 import { translateNow } from '@/i18n'
 import { lookupPluginCatalogEntry, type PluginCatalogEntry, type PluginCatalogLookupError } from '@/lib/plugin-catalog'
 
@@ -12,7 +13,7 @@ import { openPluginInstallRequest } from './plugin-install-request'
  * dialog an in-app pick does: `catalogName` makes the backend resolve the
  * pinned SHA and record provenance; `repo#subdir` is what the dialog inspects.
  */
-export function openCatalogPluginInstall(entry: PluginCatalogEntry, profile: null | string): void {
+export function openCatalogPluginInstall(entry: PluginCatalogEntry, profile: ProfileScope): void {
   const existing = $agentPlugins.get().find(row => row.catalog_name === entry.name || row.name === entry.name)
 
   if (existing && !existing.update_available) {

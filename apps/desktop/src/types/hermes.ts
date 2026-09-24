@@ -169,6 +169,8 @@ export interface FreeTierStatus {
 }
 
 export interface MemoryProviderOAuthStatus {
+  /** Only an explicit false means no OAuth flow; older backends omit it. */
+  supported?: boolean
   auth: 'apikey' | 'oauth' | null
   connected: boolean
   detail: string
@@ -205,6 +207,10 @@ export interface MemoryProviderFieldOption {
 }
 
 export interface MemoryProviderField {
+  /** A field repaired to text still compares `when` conditions with its declared kind. */
+  condition_kind?: MemoryProviderFieldKind
+  default?: unknown
+  when?: Record<string, string | number | boolean | null> | null
   description: string
   group: string
   info?: string
@@ -219,6 +225,11 @@ export interface MemoryProviderField {
 }
 
 export interface MemoryProviderConfig {
+  capabilities?: {
+    save_without_activation?: boolean
+    supports_partial_updates?: boolean
+    requires_full_form?: boolean
+  }
   docs_url: string
   fields: MemoryProviderField[]
   label: string
@@ -1710,10 +1721,17 @@ export interface McpCatalogResponse {
   discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
+export interface MemoryProviderStatus {
+  name: string
+  description: string
+  configured: boolean
+  status?: 'ready' | 'needs_config' | 'unavailable' | 'missing'
+}
+
 /** `GET /api/memory` — active provider + built-in memory file sizes. */
 export interface MemoryStatusResponse {
   active: string
-  providers: { name: string; description: string; configured: boolean }[]
+  providers: MemoryProviderStatus[]
   builtin_files: { memory: number; user: number }
 }
 

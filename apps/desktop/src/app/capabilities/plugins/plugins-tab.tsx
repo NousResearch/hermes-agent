@@ -134,7 +134,7 @@ async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
  *  half of a unified package into the scoped profile (the desktop half is
  *  already here). Provenance comes from the package marker Electron stamped
  *  when it copied the half out (catalog sidecar or git remote). */
-function installAgentHalfHere(record: PluginRecord, profile: null | string) {
+function installAgentHalfHere(record: PluginRecord, profile: ProfileScope) {
   const origin = record.packageOrigin
 
   if (!origin?.repo) {
@@ -451,7 +451,7 @@ function PackageRow({
                 <Button
                   className="h-5 px-1.5 text-[0.65rem]"
                   disabled={!desktop.packageOrigin?.repo}
-                  onClick={() => installAgentHalfHere(desktop, scope)}
+                  onClick={() => installAgentHalfHere(desktop, profile)}
                   size="xs"
                   variant="outline"
                 >
@@ -600,14 +600,14 @@ export const PluginsTab = memo(function PluginsTab({
           sha: data.sha ? String(data.sha) : undefined,
           subdir: data.subdir ? String(data.subdir) : undefined
         },
-        scope
+        profile
       )
     }
 
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [open, p, scope])
+  }, [open, p, profile])
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
 
@@ -622,7 +622,7 @@ export const PluginsTab = memo(function PluginsTab({
           </p>
           <div className="flex shrink-0 items-center gap-1">
             <Button
-              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
+              onClick={() => openPluginInstallRequest({ profile, repo: '' })}
               size="sm"
               type="button"
               variant="secondary"

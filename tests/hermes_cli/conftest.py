@@ -181,3 +181,40 @@ def _reset_prompt_toolkit_output_cache():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture
+def memory_homes(tmp_path, monkeypatch):
+    """The launch home and one named profile, empty, with bundled providers and pip entry points hidden."""
+    from pathlib import Path
+    import plugins.memory as memory
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+    monkeypatch.setattr(memory, "_MEMORY_PLUGINS_DIR", tmp_path / "no-bundled")
+    monkeypatch.setattr(memory, "_iter_entry_points", lambda: [])
+    homes = {"default": tmp_path / ".hermes", "b": tmp_path / ".hermes/profiles/b"}
+    monkeypatch.setenv("HERMES_HOME", str(homes["default"]))
+    for home in homes.values():
+        home.mkdir(parents=True, exist_ok=True)
+    return homes
+
+
+@pytest.fixture
+def dashboard_client(memory_homes, monkeypatch):
+    """The real dashboard app hosting every profile home; requests carry the session token."""
+    from fastapi.testclient import TestClient
+    from agent import secret_scope
+    from hermes_cli import web_server
+    from tui_gateway import launch_profile_policy
+
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    launch_profile_policy.activate_multi_profile_hosting()
+    client = TestClient(web_server.app, raise_server_exceptions=False)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    try:
+        yield client
+    finally:
+        client.close()
+        secret_scope.set_multiplex_active(False)

@@ -26,6 +26,31 @@ memory:
                          # or hindsight (plugin catalog — run `hermes plugins install hindsight` first)
 ```
 
+## Desktop
+
+Open **Settings → Memory** for a backend connection and profile. The list shows
+built-in memory and every discovered provider, with **Active** and a readiness
+state: **Ready**, **Needs configuration**, **Missing**, or **Unavailable**.
+
+1. **Install.** **Explore memory plugins** opens Capabilities → Plugins for the
+   same connection and profile; memory plugins have their own section in the
+   catalog picker. A selected provider that is **Missing** offers **Install from
+   Git** and returns here when the install finishes.
+2. **Configure.** **Configure** opens a provider's settings without selecting it.
+   Leave a secret blank to keep its current value; saved secrets are never shown.
+   Providers with a native full-form writer save every visible field together
+   through **Full configuration**.
+3. **Connect.** Providers with an OAuth flow show **Connect**. The browser and
+   callback run on the backend machine, so a headless or remote backend needs the
+   provider's own setup instead. **Stop waiting** stops polling; it does not
+   cancel the authorization, and **Check again** picks it back up.
+4. **Use provider.** When the provider is **Ready**, choose **Use provider**.
+   Built-in memory switches back.
+
+Every step targets the connection and profile of the view it started from, even
+if you switch profiles while it runs. Selection changes apply to new sessions;
+open conversations keep their provider.
+
 ## How It Works
 
 When a memory provider is active, Hermes automatically:

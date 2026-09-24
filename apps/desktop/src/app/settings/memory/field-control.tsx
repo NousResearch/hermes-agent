@@ -31,33 +31,28 @@ export function FieldTitle({ field }: { field: MemoryProviderField }) {
 export function FieldControl({
   field,
   value,
-  onChange,
-  onCommit
+  onChange
 }: {
   field: MemoryProviderField
   value: string
   onChange: (value: string) => void
-  // Present on autosaving surfaces: discrete controls commit on change, text-like
-  // controls commit on blur. Absent (the modal), edits stay drafts until Save.
-  onCommit?: (value: string) => void
 }) {
-  const set = (next: string) => {
-    onChange(next)
-    onCommit?.(next)
-  }
-
-  const commitDraft = onCommit ? () => onCommit(value) : undefined
-
   if (field.kind === 'bool') {
-    return <Switch checked={value === 'true'} onCheckedChange={checked => set(checked ? 'true' : 'false')} />
+    return (
+      <Switch
+        aria-label={field.label}
+        checked={value === 'true'}
+        onCheckedChange={checked => onChange(checked ? 'true' : 'false')}
+      />
+    )
   }
 
   if (field.kind === 'number') {
     return (
       <Input
+        aria-label={field.label}
         className={FIELD_INPUT}
         inputMode="numeric"
-        onBlur={commitDraft}
         onChange={event => onChange(event.target.value)}
         placeholder={field.placeholder}
         type="number"
@@ -69,8 +64,8 @@ export function FieldControl({
   if (field.kind === 'json') {
     return (
       <Textarea
+        aria-label={field.label}
         className={FIELD_INPUT}
-        onBlur={commitDraft}
         onChange={event => onChange(event.target.value)}
         placeholder={field.placeholder}
         spellCheck={false}
@@ -81,8 +76,8 @@ export function FieldControl({
 
   if (field.kind === 'select') {
     return (
-      <Select onValueChange={set} value={value}>
-        <SelectTrigger className={CONTROL_TEXT}>
+      <Select onValueChange={onChange} value={value}>
+        <SelectTrigger aria-label={field.label} className={CONTROL_TEXT}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -100,8 +95,8 @@ export function FieldControl({
     return (
       <div className="flex flex-col gap-1">
         <Input
+          aria-label={field.label}
           className={`w-full ${FIELD_INPUT}`}
-          onBlur={commitDraft}
           onChange={event => onChange(event.target.value)}
           placeholder={field.is_set ? 'Leave blank to keep current value' : field.placeholder}
           type="password"
@@ -119,8 +114,8 @@ export function FieldControl({
 
   return (
     <Input
+      aria-label={field.label}
       className={FIELD_INPUT}
-      onBlur={commitDraft}
       onChange={event => onChange(event.target.value)}
       placeholder={field.placeholder}
       value={value}

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
+import { MEMORY_PLUGINS_ROUTE, NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { getMemoryStatus, type OwnerScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
@@ -29,10 +30,12 @@ import {
   $pluginInstallRequest,
   closePluginInstallRequest,
   openPluginInstallRequest,
-  type PluginInstallRequest
+  type PluginInstallRequest,
+  requestProfileName
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { setSettingsScope } from '@/store/settings-scope'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
@@ -63,6 +66,8 @@ export function PluginInstallModal() {
   const activeProfile = useStore($activeGatewayProfile)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
+  // A memory install is started from Settings and returns to its provider there.
+  const memoryOrigin = request?.origin?.kind === 'memory'
 
   const [repoInput, setRepoInput] = useState('')
   const [targetProfile, setTargetProfile] = useState('default')
@@ -154,10 +159,10 @@ export function PluginInstallModal() {
   )
 
   useEffect(() => {
-    if (request && onSettings) {
+    if (request && onSettings && !memoryOrigin) {
       navigate(NEW_CHAT_ROUTE)
     }
-  }, [request, onSettings, navigate])
+  }, [request, onSettings, memoryOrigin, navigate])
 
   useEffect(() => {
     if (!request) {
@@ -166,7 +171,7 @@ export function PluginInstallModal() {
       return
     }
 
-    setTargetProfile(normalizeProfileKey(request.profile || activeProfile || profileScope))
+    setTargetProfile(normalizeProfileKey(requestProfileName(request.profile) || activeProfile || profileScope))
 
     if (request.repo) {
       void runProbe(request)
@@ -200,6 +205,28 @@ export function PluginInstallModal() {
 
     probeToken.current += 1
     closePluginInstallRequest()
+  }
+
+  // The provider must show up in the owner's discovery before Memory settings can open it.
+  const returnToMemorySettings = async (providerId: string) => {
+    const owner: OwnerScope = {
+      connectionId: typeof request?.profile === 'object' ? request.profile?.connectionId : undefined,
+      profile: targetProfile
+    }
+
+    const listed = await getMemoryStatus(owner).then(
+      status => status.providers.some(provider => provider.name === providerId && provider.status !== 'missing'),
+      () => false
+    )
+
+    if (!listed) {
+      notify({ kind: 'warning', message: m.memoryNotListed(providerId, targetProfileLabel) })
+
+      return
+    }
+
+    setSettingsScope(targetProfile)
+    navigate(`${SETTINGS_ROUTE}?tab=config:memory&provider=${encodeURIComponent(providerId)}`)
   }
 
   const handleInstall = async () => {
@@ -318,8 +345,15 @@ export function PluginInstallModal() {
         }
 
         closePluginInstallRequest()
-        // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
+
+        if (request.origin?.kind === 'memory') {
+          await returnToMemorySettings(request.origin.providerId)
+        } else if (request.catalogName) {
+          // Catalog picks come from Capabilities → Plugins; land back there, on the scope the pick was made under.
+          navigate(MEMORY_PLUGINS_ROUTE, { state: { capabilityScope: request.profile ?? targetProfile } })
+        } else {
+          navigate('/settings?tab=plugins')
+        }
 
         return
       }
@@ -336,7 +370,7 @@ export function PluginInstallModal() {
     }
   }
 
-  const open = request !== null && !onSettings
+  const open = request !== null && (!onSettings || memoryOrigin)
   const busy = phase === 'probing' || installing
   const pinRefTrimmed = pinRef.trim().toLowerCase()
   const pinRefInvalid = pinRefTrimmed !== '' && !COMMIT_SHA_RE.test(pinRefTrimmed)

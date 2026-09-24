@@ -46,47 +46,45 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
   return Math.min(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS, estimated)
 }
 
+const MEMORY_OAUTH_REQUEST_TIMEOUT_MS = 15_000
+
 // surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
-export function getMemoryProviderConfig(provider: string, profile?: null | string): Promise<MemoryProviderConfig> {
-  return hermesApi<MemoryProviderConfig>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
-  })
+const memoryProviderPath = (provider: string, suffix: string) =>
+  `/api/memory/providers/${encodeURIComponent(provider)}/${suffix}?surface=declared`
+
+export function getMemoryProviderConfig(provider: string, owner?: OwnerScope): Promise<MemoryProviderConfig> {
+  return hermesApi<MemoryProviderConfig>({ ...ownerScoped(owner), path: memoryProviderPath(provider, 'config') })
 }
 
+// Without legacyActive the backend saves the values but leaves the selected provider alone.
 export function saveMemoryProviderConfig(
   provider: string,
   values: Record<string, string>,
-  profile?: null | string
+  owner?: OwnerScope,
+  options: { legacyActive?: boolean } = {}
 ): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
+    ...ownerScoped(owner),
+    path: memoryProviderPath(provider, 'config'),
     method: 'PUT',
-    body: { values }
+    body: options.legacyActive ? { values } : { values, activate: false }
   })
 }
 
-// Memory-provider OAuth connect (provider-keyed; 404s for providers without an
-// OAuth flow). Profile-scoped: the grant lands in the active profile's config.
-export function startMemoryProviderOAuth(
-  provider: string,
-  profile?: null | string
-): Promise<MemoryProviderOAuthStatus> {
+export function startMemoryProviderOAuth(provider: string, owner?: OwnerScope): Promise<MemoryProviderOAuthStatus> {
   return hermesApi<MemoryProviderOAuthStatus>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
-    method: 'POST'
+    ...ownerScoped(owner),
+    path: memoryProviderPath(provider, 'oauth/start'),
+    method: 'POST',
+    timeoutMs: MEMORY_OAUTH_REQUEST_TIMEOUT_MS
   })
 }
 
-export function getMemoryProviderOAuthStatus(
-  provider: string,
-  profile?: null | string
-): Promise<MemoryProviderOAuthStatus> {
+export function getMemoryProviderOAuthStatus(provider: string, owner?: OwnerScope): Promise<MemoryProviderOAuthStatus> {
   return hermesApi<MemoryProviderOAuthStatus>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
+    ...ownerScoped(owner),
+    path: memoryProviderPath(provider, 'oauth/status'),
+    timeoutMs: MEMORY_OAUTH_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -94,10 +92,16 @@ export function getMemoryProviderOAuthStatus(
 // Memory data + curator (parity with `hermes memory` / `hermes curator`).
 // ---------------------------------------------------------------------------
 
-export function getMemoryStatus(): Promise<MemoryStatusResponse> {
-  return hermesApi<MemoryStatusResponse>({
-    ...profileScoped(),
-    path: '/api/memory'
+export function getMemoryStatus(owner?: OwnerScope): Promise<MemoryStatusResponse> {
+  return hermesApi<MemoryStatusResponse>({ ...ownerScoped(owner), path: '/api/memory' })
+}
+
+export function setMemoryProvider(provider: string, owner?: OwnerScope): Promise<{ ok: boolean; active: string }> {
+  return hermesApi<{ ok: boolean; active: string }>({
+    ...ownerScoped(owner),
+    path: '/api/memory/provider',
+    method: 'PUT',
+    body: { provider }
   })
 }
 

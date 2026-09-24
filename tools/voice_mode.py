@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 from hermes_constants import is_termux as _is_termux_environment
 from hermes_platform.host.runtime import is_wsl
 from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
+from utils import is_truthy_value
 
 # ── Recording parameters ──
 SAMPLE_RATE = 16000  # Whisper native rate
@@ -972,6 +973,10 @@ def play_audio_file(file_path: str) -> bool:
     """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
     else system players: afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux).
     Interruptible via ``stop_playback()``."""
+    # Process-wide kill switch (#88898): headless/agent/CI contexts can set
+    # this once instead of relying on every entry point being mocked.
+    if is_truthy_value(os.environ.get("HERMES_TTS_NO_PLAYBACK")):
+        return False
     mark_audio_output_active(True)  # ref-count real speaker output for the whole call
     try:
         return _play_audio_file_impl(file_path)

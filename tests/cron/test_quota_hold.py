@@ -81,33 +81,33 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
     assert job["id"] in {due["id"] for due in get_due_jobs()}
 
 
-def test_hold_policy_coalesces_dense_cron_without_accelerating_sparse_interval(monkeypatch):
+def test_recovery_fire_skips_dense_schedules_and_never_re_parks(monkeypatch):
+    """Recovery is one attempt for sparse schedules only: an hourly job whose hold ends two
+    minutes before :00 keeps its natural :00 (no off-lattice near-duplicate), and a job that is
+    already the recovery fire (carries quota_hold_until) failing again is not re-parked."""
     now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
-    window_end = now + timedelta(hours=20, seconds=qh.HOLD_SLACK_SECONDS)
     monkeypatch.setattr(qh, "_hermes_now", lambda: now)
 
-    dense_cron = {
+    dense = {
         "schedule": {"kind": "cron", "expr": "0 * * * *"},
-        "next_run_at": (now + timedelta(hours=1)).isoformat(),
+        "next_run_at": datetime(2026, 9, 18, 13, 0, tzinfo=timezone.utc).isoformat(),
     }
-    assert qh.plan_hold(dense_cron, hold_seconds=20 * 60 * 60)
-    assert datetime.fromisoformat(dense_cron["next_run_at"]) > window_end
+    natural = dense["next_run_at"]
+    assert not qh.plan_hold(dense, hold_seconds=57 * 60 - qh.HOLD_SLACK_SECONDS,
+                            recover_consumed_fire=True)
+    assert dense["next_run_at"] == natural
+    assert qh.STATE_KEY not in dense
 
-    sparse_interval = {
-        "schedule": {"kind": "interval", "minutes": 7 * 24 * 60},
-        "next_run_at": (now + timedelta(days=7)).isoformat(),
-    }
-    original_next = sparse_interval["next_run_at"]
-    assert not qh.plan_hold(sparse_interval, hold_seconds=20 * 60 * 60)
-    assert sparse_interval["next_run_at"] == original_next
-    assert qh.STATE_KEY not in sparse_interval
-
-    manual_sparse_cron = {
+    held_again = {
         "schedule": {"kind": "cron", "expr": "0 12 * * 5"},
         "next_run_at": (now + timedelta(days=7)).isoformat(),
+        qh.STATE_KEY: now.isoformat(),
+        qh.SCHEDULE_EXPR_KEY: "0 12 * * 5",
     }
-    assert not qh.plan_hold(manual_sparse_cron, hold_seconds=20 * 60 * 60)
-    assert qh.STATE_KEY not in manual_sparse_cron
+    natural = held_again["next_run_at"]
+    assert not qh.plan_hold(held_again, hold_seconds=20 * 60 * 60, recover_consumed_fire=True)
+    assert held_again["next_run_at"] == natural
+    assert qh.STATE_KEY not in held_again
 
 
 def _raise_quota(**_kw):

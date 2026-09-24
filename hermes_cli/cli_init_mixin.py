@@ -198,10 +198,14 @@ class CLIInitMixin:
         # A direct-alias --model is ALSO kept by name: the resolved id cannot
         # recover the alias endpoint (foreign labels fail reverse lookup), so
         # the boundary replays the name through the same alias path instead.
-        # No api_key is stored — endpoints re-resolve credentials at the boundary.
+        # The effective base_url is kept too (endpoint identity only) for the
+        # alias + mismatched --provider case the switch pipeline cannot express;
+        # no api_key is stored — endpoints re-resolve credentials at the boundary.
+        # Invariant: the five _startup_* attrs below are always set together here.
         if model or provider:
             self._startup_model = self.model or None
             self._startup_provider = self.requested_provider or None
+            self._startup_base_url = self.base_url or None
             self._startup_provider_input = (provider or "").strip() or None
             from hermes_cli import model_switch as _ms
             _ms._ensure_direct_aliases()
@@ -211,6 +215,7 @@ class CLIInitMixin:
         else:
             self._startup_model = None
             self._startup_provider = None
+            self._startup_base_url = None
             self._startup_model_input = None
             self._startup_provider_input = None
 

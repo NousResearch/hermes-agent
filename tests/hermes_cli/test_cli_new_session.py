@@ -505,6 +505,8 @@ def _offline_route(monkeypatch):
                          "recognized": True, "message": ""})
 
     def _fake_runtime(**kw):
+        import os
+
         requested = str(kw.get("requested") or "")
         if kw.get("explicit_base_url"):
             base_url = kw["explicit_base_url"]
@@ -512,7 +514,12 @@ def _offline_route(monkeypatch):
             base_url = _OPENROUTER_URL
         else:
             base_url = "https://runtime-test.example/v1"
-        return {"api_key": kw.get("explicit_api_key") or "sk-test",
+        # Production resolves provider keys from env/pool, never from the
+        # session being left; the stub reads the same env source.
+        api_key = kw.get("explicit_api_key")
+        if not api_key and requested in ("openrouter", "auto"):
+            api_key = os.environ.get("OPENROUTER_API_KEY") or "sk-test"
+        return {"api_key": api_key or "sk-test",
                 "base_url": base_url, "api_mode": "chat_completions"}
 
     monkeypatch.setattr(
@@ -588,6 +595,7 @@ def test_startup_model_only_survives_boundary(_offline_route, monkeypatch):
         "startup-model-x", "openrouter", _OPENROUTER_URL)
     assert (cli.model, cli.provider, cli.base_url) == (
         "startup-model-x", "openrouter", _OPENROUTER_URL)
+    assert cli.requested_provider == "openrouter"
 
 
 def test_startup_provider_only_custom_survives_boundary(_offline_route, monkeypatch):
@@ -633,6 +641,7 @@ def test_startup_model_and_provider_survive_boundary(_offline_route, monkeypatch
         "startup-model-x", "openrouter", _OPENROUTER_URL)
     assert (cli.model, cli.provider, cli.base_url) == (
         "startup-model-x", "openrouter", _OPENROUTER_URL)
+    assert cli.requested_provider == "openrouter"
 
 
 def test_startup_direct_alias_endpoint_survives_boundary(_offline_route, monkeypatch):
@@ -682,6 +691,39 @@ def test_startup_foreign_label_alias_endpoint_survives_boundary(
     assert (startup_model, startup_base) == ("foreign-model", alias_url)
     assert (cli.model, cli.base_url) == ("foreign-model", alias_url)
     assert cli.provider == cli.requested_provider
+
+
+def test_startup_alias_with_mismatched_provider_keeps_endpoint(
+        _offline_route, monkeypatch):
+    """``--model <url-bearing alias> --provider <different provider>``: startup
+    keeps the alias endpoint, so the boundary must restore it (not the
+    explicit provider's default host) with the same credential startup used."""
+    import os
+
+    alias_url = "http://127.0.0.1:9997/v1"
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n"
+        "model_aliases:\n  mismatchedrelay:\n    model: mismatch-model\n"
+        f"    provider: anthropic\n    base_url: {alias_url}\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="mismatchedrelay", provider="openrouter")
+    assert (cli.model, cli.provider, cli.requested_provider,
+            cli.base_url, cli.api_key) == (
+        "mismatch-model", "openrouter", "openrouter", alias_url, "sk-openrouter")
+    startup_route = (cli.model, cli.provider, cli.requested_provider,
+                     cli.base_url, cli.api_key)
+
+    _boundary_round_trip(cli)
+
+    assert (cli.model, cli.provider, cli.requested_provider,
+            cli.base_url, cli.api_key) == startup_route
+    assert cli.base_url != _OPENROUTER_URL
+    assert cli.api_key != "sk-session"
 
 
 def test_no_flags_boundary_uses_config_default(_offline_route, monkeypatch):

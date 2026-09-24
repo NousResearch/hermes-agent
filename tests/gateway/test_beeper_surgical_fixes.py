@@ -184,3 +184,115 @@ def test_resolve_reply_target_unresolved_when_no_thread_evidence():
     _wire_walk(adapter, events)
     root, _ = asyncio.run(adapter._resolve_reply_target("!room:example.com", "$a"))
     assert root is None, f"expected None (unresolved), got {root}"
+
+
+# ── Cross-bot slash-command gating (multi-bot room) ─────────────────────────
+# Live bug (room !VRZsEmfKaKFzKSmNgl): a thread created by @mentioning @hermes
+# received a /stop that BOTH hermes and healthbot answered, then the follow-up
+# question reached both too. Root cause: main's require_mention gate never
+# drops a slash command, so a foreign bot (never in the thread) processes the
+# /stop, marks the thread in its own tracker, and then answers follow-ups.
+# Fix: a slash command inside a thread this bot did not start is dropped
+# unless the bot is @mentioned.
+
+
+class _FakeThreads:
+    """Minimal stand-in for ThreadParticipationTracker: membership only."""
+
+    def __init__(self, roots):
+        self._roots = set(roots)
+
+    def __contains__(self, thread_id):
+        return thread_id in self._roots
+
+    async def mark_async(self, thread_id):
+        self._roots.add(thread_id)
+
+
+def _make_gate_adapter(roots=(), user_id="@hermes:example.com"):
+    """Adapter wired for _resolve_message_context with require_mention=True."""
+    adapter = _make_adapter()
+    adapter._user_id = user_id
+    adapter._require_mention = True
+    adapter._free_rooms = set()
+    adapter._allowed_rooms = set()
+    adapter._threads = _FakeThreads(roots)
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._resolve_room_identity = AsyncMock(
+        return_value=MagicMock(display_name="Room"))
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._background_read_receipt = MagicMock()
+    return adapter
+
+
+def test_command_in_foreign_thread_is_dropped():
+    """healthbot's case: /stop in hermes's thread, not mentioned → dropped."""
+    adapter = _make_gate_adapter(roots=())  # this bot did NOT start the thread
+    ctx = asyncio.run(adapter._resolve_message_context(
+        room_id="!room:example.com",
+        sender="@admin:example.com",
+        event_id="$stop1",
+        body="/stop",
+        source_content={"body": "/stop"},
+        relates_to={"rel_type": "m.thread", "event_id": "$root"},
+    ))
+    assert ctx is None, "a foreign bot must not process a /stop in someone else's thread"
+
+
+def test_command_in_own_thread_is_processed():
+    """hermes's case: /stop in its own thread (in_bot_thread) → processed."""
+    adapter = _make_gate_adapter(roots=("$root",))  # this bot DID start the thread
+    ctx = asyncio.run(adapter._resolve_message_context(
+        room_id="!room:example.com",
+        sender="@admin:example.com",
+        event_id="$stop2",
+        body="/stop",
+        source_content={"body": "/stop"},
+        relates_to={"rel_type": "m.thread", "event_id": "$root"},
+    ))
+    assert ctx is not None, "the thread's own bot must still process /stop"
+
+
+def test_mentioned_command_in_foreign_thread_is_processed():
+    """@healthbot /stop in a foreign thread: explicit mention wins → processed.
+    The adapter IS healthbot; it was not in the thread but is explicitly mentioned."""
+    adapter = _make_gate_adapter(roots=(), user_id="@healthbot:example.com")
+    ctx = asyncio.run(adapter._resolve_message_context(
+        room_id="!room:example.com",
+        sender="@admin:example.com",
+        event_id="$stop3",
+        body="@healthbot /stop",
+        source_content={"body": "@healthbot /stop",
+                       "m.mentions": {"user_ids": ["@healthbot:example.com"]}},
+        relates_to={"rel_type": "m.thread", "event_id": "$root"},
+    ))
+    assert ctx is not None, "an explicit @mention must still reach the bot"
+
+
+def test_toplevel_command_still_broadcasts():
+    """Top-level /stop (no thread) is unchanged from main: both bots process it."""
+    adapter = _make_gate_adapter(roots=())
+    ctx = asyncio.run(adapter._resolve_message_context(
+        room_id="!room:example.com",
+        sender="@admin:example.com",
+        event_id="$stop4",
+        body="/stop",
+        source_content={"body": "/stop"},
+        relates_to={},  # no thread relation
+    ))
+    assert ctx is not None, "top-level /stop must keep main's broadcast behavior"
+
+
+def test_plain_unmentioned_in_foreign_thread_still_dropped():
+    """Regression guard: a plain (non-command) unmentioned message in a foreign
+    thread was already dropped by main; the fix must not change that."""
+    adapter = _make_gate_adapter(roots=())
+    ctx = asyncio.run(adapter._resolve_message_context(
+        room_id="!room:example.com",
+        sender="@admin:example.com",
+        event_id="$q1",
+        body="why did health reply to this thread",
+        source_content={"body": "why did health reply to this thread"},
+        relates_to={"rel_type": "m.thread", "event_id": "$root"},
+    ))
+    assert ctx is None, "plain unmentioned message in a foreign thread stays dropped"

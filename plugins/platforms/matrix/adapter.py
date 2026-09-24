@@ -2161,11 +2161,21 @@ class MatrixAdapter(BasePlatformAdapter):
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
-                    logger.debug(
-                        "Matrix: ignoring message %s in %s — no @mention "
-                        "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
-                    return None
+                if not is_mentioned:
+                    if not body.startswith("/"):
+                        logger.debug(
+                            "Matrix: ignoring message %s in %s — no @mention "
+                            "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
+                        return None
+                    # A slash command inside a thread this bot did not start. Only the
+                    # mentioned bot or the thread's own bot should handle it. Dropping
+                    # here (not just skipping the command) also stops a foreign bot from
+                    # marking the thread, which would let it answer follow-ups too.
+                    if thread_id:
+                        logger.debug(
+                            "Matrix: ignoring command %s in thread %s — not mentioned "
+                            "and this bot did not start the thread", event_id, thread_id)
+                        return None
             # thread_require_mention: even inside a bot thread require @mention — prevents
             # infinite reply loops when several bots share one thread.
             elif self._thread_require_mention and in_bot_thread and not is_free_room and not is_mentioned:

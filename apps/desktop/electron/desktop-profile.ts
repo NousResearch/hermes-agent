@@ -52,6 +52,21 @@ export function resolveDesktopWindowRoute(
     : { ...fallback }
 }
 
+/** A peer window's launch route plus whether the renderer asked for that
+ * route explicitly ("Open profile in new window"). Only an explicit route is
+ * the window's New-session default; an inherited one seeds boot alone. */
+export interface DesktopWindowLaunch extends DesktopProfileRoute {
+  profileWindow: boolean
+}
+
+export function resolveDesktopWindowLaunch(
+  explicit: unknown,
+  source: WindowConnectionRoute | null,
+  fallback: DesktopProfileRoute
+): DesktopWindowLaunch {
+  return { ...resolveDesktopWindowRoute(explicit, source, fallback), profileWindow: explicit !== undefined }
+}
+
 // A profile-less boot/reconnect belongs to its sender. An explicit profile
 // keeps the legacy route, even if the sender serves the same name remotely.
 export function resolveDesktopConnectionRequest(

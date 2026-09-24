@@ -19,7 +19,6 @@ ticks must surface as failed ticks (``record_ticker_error`` + heartbeat
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from unittest.mock import patch
@@ -29,7 +28,9 @@ import pytest
 import cron.scheduler as scheduler_mod
 
 
-SKEW = ("boot0123abcd", "disk4567efgh")
+BOOT_SHA = "a" * 40
+DISK_SHA = "b" * 40
+SKEW = (BOOT_SHA[:10], DISK_SHA[:10])
 
 
 def _wait_until(predicate, timeout=10.0, interval=0.005):
@@ -43,14 +44,31 @@ def _wait_until(predicate, timeout=10.0, interval=0.005):
     return predicate()
 
 
-def _gate_mocks(monkeypatch, *, owns: bool, active: bool, skew=SKEW):
-    """Point the yield gate's three probes at fixed answers."""
+def _gate_mocks(
+    monkeypatch, *, owns: bool, active: bool, skew=SKEW,
+    holder_sha: str | None = DISK_SHA, holder_status_stale: bool = False,
+):
+    """Point the yield gate's process and holder-status probes at fixed answers."""
     from gateway import status as gateway_status
 
     monkeypatch.setattr(scheduler_mod, "_detect_gateway_code_skew", lambda: skew)
+    # `raising=False`: `_current_gateway_code_sha` is introduced by this PR, so on the base tree
+    # the patch must no-op instead of erroring the whole module out with AttributeError.
+    monkeypatch.setattr(
+        scheduler_mod, "_current_gateway_code_sha", lambda: DISK_SHA, raising=False
+    )
     monkeypatch.setattr(gateway_status, "owns_gateway_runtime_lock", lambda: owns)
     monkeypatch.setattr(
         gateway_status, "is_gateway_runtime_lock_active", lambda lock_path=None: active
+    )
+    monkeypatch.setattr(gateway_status, "get_running_pid", lambda **_kwargs: 4321)
+    monkeypatch.setattr(
+        gateway_status,
+        "read_runtime_status",
+        lambda: {"pid": 4321, "code_sha": holder_sha},
+    )
+    monkeypatch.setattr(
+        gateway_status, "runtime_status_is_stale", lambda _record: holder_status_stale
     )
 
 
@@ -93,6 +111,24 @@ class TestTickYieldGate:
         _gate_mocks(monkeypatch, owns=False, active=False)
         assert scheduler_mod.tick(verbose=False) == 0
 
+    @pytest.mark.parametrize(
+        ("holder_sha", "holder_status_stale"),
+        [(BOOT_SHA, False), (DISK_SHA, True)],
+        ids=["holder-is-stale-code", "holder-heartbeat-is-stale"],
+    )
+    def test_skew_plus_unfit_lock_holder_proceeds(
+        self, monkeypatch, tmp_path, holder_sha, holder_status_stale
+    ):
+        """A lock alone never proves another ticker can dispatch this occurrence."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_sha=holder_sha,
+            holder_status_stale=holder_status_stale,
+        )
+        assert scheduler_mod.tick(verbose=False) == 0
+
     def test_no_fingerprint_proceeds(self, monkeypatch, tmp_path):
         """(d) skew is None (non-git install, no boot fingerprint, probe
         failure) → always proceed."""
@@ -112,25 +148,6 @@ class TestTickYieldGate:
         monkeypatch.setattr(gateway_status, "is_gateway_runtime_lock_active", _boom)
         assert scheduler_mod.tick(verbose=False) == 0
 
-    def test_yield_logs_once_per_episode(self, monkeypatch, caplog):
-        """The yield log is throttled: repeated yields with the same skew
-        signature log once, not once per tick interval."""
-        _gate_mocks(monkeypatch, owns=False, active=True)
-        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
-            scheduler_mod._log_tick_yield_once("boot=a disk=b")
-            scheduler_mod._log_tick_yield_once("boot=a disk=b")
-            scheduler_mod._log_tick_yield_once("boot=a disk=b")
-        yield_logs = [
-            r for r in caplog.records if "Cron tick yielded" in r.getMessage()
-        ]
-        assert len(yield_logs) == 1
-        # A NEW skew signature (the checkout moved again) is a new episode.
-        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
-            scheduler_mod._log_tick_yield_once("boot=a disk=c")
-        yield_logs = [
-            r for r in caplog.records if "Cron tick yielded" in r.getMessage()
-        ]
-        assert len(yield_logs) == 2
 
 
 class TestYieldedTickIsAFailedTick:

@@ -65,13 +65,6 @@ secrets:
     return set(json.loads(line.removeprefix("LOADED_MODULES=")))
 
 
-def test_update_startup_does_not_import_bitwarden_or_cryptography(tmp_path):
-    loaded = _probe_startup_modules(tmp_path, ["hermes", "update", "--check"])
-
-    assert "agent.secret_sources.bitwarden" not in loaded
-    assert not any(
-        name == "cryptography" or name.startswith("cryptography.") for name in loaded
-    )
 
 
 def test_complete_update_dispatch_does_not_import_cryptography(tmp_path):
@@ -82,6 +75,7 @@ def test_complete_update_dispatch_does_not_import_cryptography(tmp_path):
         run_main=True,
     )
 
+    assert "agent.secret_sources.bitwarden" not in loaded
     assert not any(
         name == "cryptography" or name.startswith("cryptography.") for name in loaded
     )

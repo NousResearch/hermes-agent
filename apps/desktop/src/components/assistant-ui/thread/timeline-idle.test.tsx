@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { type ReactNode, useSyncExternalStore } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { setHideThreadTimeline } from '@/store/thread-timeline'
 
 /**
  * The timeline must do NO work it can't currently show. Two gates are proven
@@ -22,6 +24,7 @@ interface FakeMessage {
 
 const selectorCalls = vi.fn()
 const transcriptReads = vi.fn()
+const messageListeners = new Set<() => void>()
 let messages: FakeMessage[] = []
 
 vi.mock('@assistant-ui/react', () => ({
@@ -37,7 +40,14 @@ vi.mock('@assistant-ui/react', () => ({
   useAuiState: (selector: (state: { thread: { messages: FakeMessage[] } }) => unknown) => {
     selectorCalls()
 
-    return selector({ thread: { messages } })
+    return useSyncExternalStore(
+      listener => {
+        messageListeners.add(listener)
+
+        return () => messageListeners.delete(listener)
+      },
+      () => selector({ thread: { messages } })
+    )
   }
 }))
 
@@ -69,6 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  setHideThreadTimeline(false)
   vi.restoreAllMocks()
   selectorCalls.mockClear()
   transcriptReads.mockClear()
@@ -127,18 +138,33 @@ describe('ThreadTimeline idle work', () => {
     expect(container.querySelector('[data-slot="thread-timeline-popover"]')).toBeNull()
     expect(screen.queryByText('prompt 0')).toBeNull()
   })
-
-  it('schedules no history read for an unsaved conversation', () => {
-    messages = transcript(2)
-    const schedule = vi.spyOn(window, 'setTimeout')
-
-    renderTimeline()
-
-    expect(schedule.mock.calls.filter(([, delay]) => delay === 200)).toHaveLength(0)
-  })
 })
 
 describe('ThreadTimeline availability', () => {
+  it('hides every rail without reading transcripts and restores them when enabled', () => {
+    messages = transcript(2)
+    setHideThreadTimeline(true)
+
+    const { container } = renderTimeline(
+      <>
+        <ThreadTimeline />
+        <ThreadTimeline />
+      </>
+    )
+
+    const rails = () => container.querySelectorAll('[data-slot="thread-timeline"]')
+
+    expect(rails()).toHaveLength(0)
+    expect(selectorCalls).not.toHaveBeenCalled()
+    expect(transcriptReads).not.toHaveBeenCalled()
+
+    act(() => setHideThreadTimeline(false))
+    expect(rails()).toHaveLength(2)
+
+    act(() => setHideThreadTimeline(true))
+    expect(rails()).toHaveLength(0)
+  })
+
   it('keeps navigation available for a short thread', () => {
     messages = transcript(2)
 
@@ -153,7 +179,7 @@ describe('ThreadTimeline while a reply streams', () => {
   it('does not re-derive the rail as assistant content grows', () => {
     messages = [...transcript(6), { content: [{ text: 'th', type: 'text' }], id: 'a1', role: 'assistant' }]
 
-    const { rerender } = renderTimeline()
+    renderTimeline()
     const derivations = transcriptReads.mock.calls.length
 
     // A token lands: the assistant message's content changes, the user prompt
@@ -163,7 +189,7 @@ describe('ThreadTimeline while a reply streams', () => {
       ...messages.slice(0, -1),
       { content: [{ text: 'thinking…', type: 'text' }], id: 'a1', role: 'assistant' }
     ]
-    rerender(<ThreadTimeline />)
+    act(() => messageListeners.forEach(listener => listener()))
 
     expect(transcriptReads.mock.calls.length).toBe(derivations)
   })
@@ -171,11 +197,11 @@ describe('ThreadTimeline while a reply streams', () => {
   it('re-derives once a new prompt is sent', () => {
     messages = transcript(6)
 
-    const { rerender } = renderTimeline()
+    renderTimeline()
     const derivations = transcriptReads.mock.calls.length
 
     messages = [...messages, userTurn('u6', 'prompt 6')]
-    rerender(<ThreadTimeline />)
+    act(() => messageListeners.forEach(listener => listener()))
 
     expect(transcriptReads.mock.calls.length).toBeGreaterThan(derivations)
   })

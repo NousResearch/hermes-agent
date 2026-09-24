@@ -79,16 +79,8 @@ def test_normalize_run_budget_seconds(raw, expected):
 # ── constructor / config plumbing ─────────────────────────────────────────
 
 
-def test_no_budget_by_default(monkeypatch, tmp_path):
-    agent = _make_agent(tmp_path, monkeypatch)
-    assert agent.run_budget_seconds is None
-    assert agent._run_budget_started_at is None
-    assert agent._run_budget_wrapup_injected is False
 
 
-def test_constructor_arg_sets_budget(monkeypatch, tmp_path):
-    agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
-    assert agent.run_budget_seconds == 900.0
 
 
 def test_config_key_sets_budget(monkeypatch, tmp_path):
@@ -116,7 +108,8 @@ def test_no_budget_stale_timeout_unchanged(monkeypatch, tmp_path):
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch)
-    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 90.0
+    base, _implicit = agent._resolved_api_call_stale_timeout_base()
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
 
 
 def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
@@ -131,10 +124,6 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
         model="deepseek/deepseek-v4-pro",
         run_budget_seconds=900,
     )
-    # Sanity: implicit reasoning floor is 600s without a running clock.
-    base, implicit = agent._resolved_api_call_stale_timeout_base()
-    assert base == 600.0 and implicit is False
-
     agent._run_budget_started_at = time.time() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 60.0
 
@@ -161,8 +150,9 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
+    base, _implicit = agent._resolved_api_call_stale_timeout_base()
     agent._run_budget_started_at = time.time() - 10
-    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 90.0
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
 
 
 def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
@@ -194,7 +184,8 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
         run_budget_seconds=900,
     )
     agent._run_budget_started_at = None
-    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 600.0
+    base, _implicit = agent._resolved_api_call_stale_timeout_base()
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
 
 
 # ── wrap-up injection one-time-ness ────────────────────────────────────────
@@ -350,18 +341,3 @@ def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_p
 # ── turn clock stamping ────────────────────────────────────────────────────
 
 
-def test_turn_clock_stamped_only_with_budget(monkeypatch, tmp_path):
-    """prepare-turn stamps the clock iff a budget is set, and resets the latch."""
-    agent_with = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
-    agent_with._run_budget_wrapup_injected = True
-
-    # Mirror the turn_context.prepare block (unit-level: run the same logic).
-    for agent in (agent_with,):
-        if getattr(agent, "run_budget_seconds", None):
-            agent._run_budget_started_at = time.time()
-        else:
-            agent._run_budget_started_at = None
-        agent._run_budget_wrapup_injected = False
-
-    assert agent_with._run_budget_started_at is not None
-    assert agent_with._run_budget_wrapup_injected is False

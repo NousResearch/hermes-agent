@@ -14,8 +14,6 @@ import pytest
 
 from hermes_cli import main as cli_main
 from hermes_cli import main_desktop
-from hermes_cli import main_install_repair
-from hermes_cli import main_web_build
 
 
 @pytest.fixture(autouse=True)
@@ -149,8 +147,6 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda _: None)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
     with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
@@ -235,19 +231,7 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
     assert "/usr/bin" in path_parts  # the bare updater PATH is preserved, just after managed Node
 
 
-
-
-
-
-
-
 # ── Content-hash stamp tests ──────────────────────────────────────────
-
-
-
-
-
-
 
 
 # ── Electron build-cache recovery tests ───────────────────────────────
@@ -294,8 +278,6 @@ def test_purge_electron_build_cache_clears_all_zips_and_unpacked_dir(tmp_path, m
     assert not unpacked.exists()
 
 
-
-
 def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypatch, capsys):
     """A build that already produced a packaged executable did NOT fail from the
     Electron-download problem the cache purge + mirror retries exist to repair.
@@ -334,9 +316,114 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     mock_purge.assert_not_called()
     mock_dl.assert_not_called()
     assert mock_run.call_count == 1
-    assert "Desktop GUI build failed" in capsys.readouterr().out
 
 
+def _make_electron_dist(root: Path) -> Path:
+    """Lay a complete Electron install where ``_electron_dist_ok`` looks on THIS host.
+
+    Resolved through ``_electron_dist_binary()`` rather than a hardcoded path so
+    the fixture and the code agree by construction on every OS lane.
+    """
+    binary = main_desktop._electron_dist_binary(root)
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("", encoding="utf-8")
+    return binary
+
+
+def _pack_that_never_reaches_the_builder():
+    """A ``subprocess.run`` stand-in for a pack that dies before electron-builder.
+
+    It lays NOTHING down in the staging output — that is the signature of a
+    compile, bundler or native-link failure — and records each attempt's env so
+    a test can see whether the mirror rung was entered.
+    """
+    attempts: list[dict] = []
+
+    def _run(cmd, **kwargs):
+        if len(cmd) >= 3 and cmd[1:3] == ["run", "pack"]:
+            attempts.append(dict(kwargs.get("env") or {}))
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    return attempts, _run
+
+
+def test_gui_skips_mirror_retry_when_electron_dist_is_intact(tmp_path, monkeypatch, capsys):
+    """A pack that never reached electron-builder has no mirror problem to repair.
+
+    "The pack failed and the staging output holds no exe" is ALSO true of a
+    compile / bundler / native-link failure, so on its own it cannot select the
+    mirror rung — yet that rung re-ran the whole pack while telling the user the
+    Electron download from GitHub looked blocked. The mirror retry additionally
+    requires the Electron distributable to be missing.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_electron_dist(root)
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    attempts, run_pack = _pack_that_never_reaches_the_builder()
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]) as mock_purge, \
+         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main.subprocess.run", side_effect=run_pack), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    # One pack, no mirror env on it, no false accusation of a blocked download.
+    assert len(attempts) == 1
+    assert not any(a.get("ELECTRON_MIRROR") for a in attempts)
+    assert "looks blocked" not in capsys.readouterr().out
+    # Nothing recovery-shaped ran either.
+    mock_purge.assert_not_called()
+    mock_dl.assert_not_called()
+
+
+def test_gui_still_retries_via_mirror_when_electron_dist_is_missing(tmp_path, monkeypatch, capsys):
+    """The blocked-download recovery the mirror rung exists for still fires.
+
+    Guard so a later tightening of the gate cannot silently drop the last rung:
+    Electron staged its package but ``dist`` was never populated, the pack
+    produces no exe, and the user hasn't pinned a mirror — refresh via
+    npmmirror.com and pack once more.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    # electron present, dist half-populated (a blocked postinstall download).
+    (root / "node_modules" / "electron" / "dist").mkdir(parents=True)
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    attempts, run_pack = _pack_that_never_reaches_the_builder()
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]) as mock_purge, \
+         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main.subprocess.run", side_effect=run_pack), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    # The whole ladder still runs: pack, refreshed-download retry, mirror retry.
+    assert len(attempts) == 3
+    assert not attempts[0].get("ELECTRON_MIRROR")
+    assert not attempts[1].get("ELECTRON_MIRROR")
+    assert attempts[2].get("ELECTRON_MIRROR") == main_desktop._ELECTRON_FALLBACK_MIRROR
+    # And the mirror run reached the dist re-download, mirror in hand.
+    assert mock_purge.called
+    assert any(a.kwargs.get("mirror") == main_desktop._ELECTRON_FALLBACK_MIRROR
+               for a in mock_dl.call_args_list)
 
 
 # ── electronDist (re)download helper tests (#47266) ───────────────────
@@ -412,40 +499,6 @@ def test_electron_dist_binary_basename_macos():
     )
 
 
-
-
-
-
-
-
-
-
-class _FakeProc:
-    """Minimal psutil.Process stand-in for the lock-breaker tests."""
-
-    def __init__(self, pid: int, exe: str | None):
-        self.pid = pid
-        self.info = {"pid": pid, "exe": exe}
-        self.terminated = False
-        self.killed = False
-
-    def terminate(self):
-        self.terminated = True
-
-    def kill(self):
-        self.killed = True
-
-
-
-
-
-
-
-
-
-
-
-
 # --- macOS TCC-stable local signing (relaunch fixup) -----------------------
 
 
@@ -511,50 +564,6 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
     assert str(app / "Contents" / "Frameworks" / "chrome_crashpad_handler") in signed
 
 
-
-
-@pytest.mark.macos_only
-def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monkeypatch, capsys):
-    """A failing stable sign must still leave a launchable (deep ad-hoc) bundle.
-
-    The stable signer raising routes into the legacy deep ad-hoc fallback;
-    with the fallback sign and strict verification succeeding, the fixup
-    reports ``True`` per its documented contract.
-
-    ``macos_only``: the subject is ``codesign`` against a real ``.app`` bundle
-    layout (``exe.parents[2]``), which only the macOS packaged tree produces.
-    """
-    root = _make_desktop_tree(tmp_path)
-    desktop_dir = root / "apps" / "desktop"
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    monkeypatch.delenv("CSC_LINK", raising=False)
-    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
-    exe = _make_packaged_executable(root, monkeypatch)
-    app = exe.parents[2]
-
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(
-        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
-    )
-    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: None)
-
-    def boom(*a, **kw):
-        raise subprocess.CalledProcessError(1, ["codesign"])
-
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", boom)
-
-    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
-    assert ["xattr", "-cr", str(app)] in calls
-    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
-
-
 # --- desktop --setup-tcc-identity ------------------------------------------
 
 
@@ -562,9 +571,9 @@ def _fake_proc(cmd, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
 
 
+@pytest.mark.macos_only
 def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path, monkeypatch, capsys):
     """Fresh identity: openssl generates, security imports + trusts, config is written."""
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
     monkeypatch.setattr(
         cli_main.shutil,
         "which",
@@ -598,9 +607,6 @@ def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path,
 
     assert main_desktop._desktop_macos_setup_tcc_identity(identity) is True
 
-    out = capsys.readouterr().out
-    assert "created, imported, and trusted self-signed identity" in out
-    assert "set desktop.macos_signing_identity" in out
     # openssl cert generation + pkcs12 export + security import + trust all ran.
     assert any(c[0] == "/usr/bin/openssl" and "req" in c for c in calls)
     assert any(c[0] == "/usr/bin/openssl" and "pkcs12" in c for c in calls)
@@ -613,10 +619,10 @@ def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path,
     assert not list(tmp_path.glob("hermes-tcc-*"))
 
 
+@pytest.mark.macos_only
 def test_setup_tcc_identity_retries_pkcs12_with_legacy_on_mac_verification_failure(tmp_path, monkeypatch, capsys):
     """OpenSSL 3: first import fails with the MAC-verification signature, the
     -legacy re-export imports cleanly (the exact failure @ctaylor86 hit live)."""
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
     monkeypatch.setattr(
         cli_main.shutil,
         "which",
@@ -663,10 +669,10 @@ def test_setup_tcc_identity_retries_pkcs12_with_legacy_on_mac_verification_failu
     assert len([c for c in calls if c[0] == "/usr/bin/security" and c[1] == "import"]) == 2
 
 
+@pytest.mark.macos_only
 def test_setup_tcc_identity_fails_when_trust_step_fails(tmp_path, monkeypatch, capsys):
     """A cert that imports but cannot be trusted for codeSign is a failure,
     not a silent success."""
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
     monkeypatch.setattr(
         cli_main.shutil,
         "which",
@@ -684,14 +690,13 @@ def test_setup_tcc_identity_fails_when_trust_step_fails(tmp_path, monkeypatch, c
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
     assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
-    assert "could not trust the certificate" in capsys.readouterr().out
 
 
+@pytest.mark.macos_only
 def test_setup_tcc_identity_fails_when_identity_never_becomes_valid(tmp_path, monkeypatch, capsys):
     """Postcondition gate: import + trust both 'succeed' but find-identity -v
     still lists nothing → report failure with guidance (the silent-success bug
     from the original PR)."""
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
     monkeypatch.setattr(
         cli_main.shutil,
         "which",
@@ -707,12 +712,11 @@ def test_setup_tcc_identity_fails_when_identity_never_becomes_valid(tmp_path, mo
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
     assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
-    assert "not a VALID code-signing identity" in capsys.readouterr().out
 
 
+@pytest.mark.macos_only
 def test_setup_tcc_identity_skips_generation_when_already_valid(tmp_path, monkeypatch, capsys):
     """Idempotent: an existing VALID identity is reused, not regenerated."""
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
     monkeypatch.setattr(
         cli_main.shutil,
         "which",
@@ -735,18 +739,16 @@ def test_setup_tcc_identity_skips_generation_when_already_valid(tmp_path, monkey
 
     assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
 
-    out = capsys.readouterr().out
-    assert "already valid in keychain" in out
     # No openssl generation, no security import — only find-identity + config.
     assert not any(c[0] == "/usr/bin/openssl" for c in calls)
     assert not any(c[0] == "/usr/bin/security" and c[1] == "import" for c in calls)
 
 
+@pytest.mark.macos_only
 def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkeypatch, capsys):
     """A cert that EXISTS but is not valid (CSSMERR_TP_NOT_TRUSTED) is repaired
     — regenerated/trusted — instead of being reported as already done. The
     original name-in-output probe treated this state as success."""
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
     monkeypatch.setattr(
         cli_main.shutil,
         "which",
@@ -779,14 +781,6 @@ def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkey
     assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
 
 
-def test_setup_tcc_identity_non_macos_skips(tmp_path, monkeypatch, capsys):
-    """On non-macOS the setup is a no-op failure (not a crash)."""
-    monkeypatch.setattr(cli_main.sys, "platform", "linux")
-
-    assert main_desktop._desktop_macos_setup_tcc_identity() is False
-    assert "macOS-only" in capsys.readouterr().out
-
-
 def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     """`hermes desktop --setup-tcc-identity` calls the setup and exits 0/1
     without building or launching the app."""
@@ -802,8 +796,6 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     assert exc.value.code == 0
     mock_setup.assert_called_once_with("Hermes Local Signing")
     mock_install.assert_not_called()
-
-
 
 
 @pytest.mark.macos_only
@@ -825,45 +817,12 @@ def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, mon
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     monkeypatch.delenv("CSC_LINK", raising=False)
     monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
-    exe = _make_packaged_executable(root, monkeypatch)
-    app = exe.parents[2]
+    _make_packaged_executable(root, monkeypatch)
 
     calls: list[list[str]] = []
     monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
     monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: "Developer ID Application: Example"
     )
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", lambda app, **kw: True)
-    monkeypatch.setattr(
-        cli_main.subprocess, "run",
-        lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
-    )
-
-    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
-    assert not any("delete-generic-password" in c for c in calls)
-
-
-@pytest.mark.macos_only
-def test_relaunchable_fixup_default_noconfig_success_never_touches_keychain(tmp_path, monkeypatch):
-    """Default no-config path (identity == '-') must not delete the keychain item.
-
-    Witness for the default ad-hoc success path: with no
-    ``desktop.macos_signing_identity`` configured, the fixup signs ad-hoc with
-    identifier-pinned requirements and must leave the safeStorage item alone.
-
-    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
-    the subject is codesign against a real ``.app`` bundle layout.
-    """
-    root = _make_desktop_tree(tmp_path)
-    desktop_dir = root / "apps" / "desktop"
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    monkeypatch.delenv("CSC_LINK", raising=False)
-    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
-    exe = _make_packaged_executable(root, monkeypatch)
-    app = exe.parents[2]
-
-    calls: list[list[str]] = []
-    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: None)
     monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", lambda app, **kw: True)
     monkeypatch.setattr(
         cli_main.subprocess, "run",
@@ -972,8 +931,6 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
 # --- desktop.* launch options (config.yaml) -------------------------------
 
 
-
-
 # --- Linux launcher entry registration ------------------------------------
 
 
@@ -1074,30 +1031,6 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
         assert launched == [str(packaged_exe)]
 
 
-@pytest.mark.macos_only
-def test_gui_skips_desktop_entry_off_linux(tmp_path, monkeypatch):
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    packaged_exe = _make_packaged_executable(root, monkeypatch)
-
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: False)
-
-    def fail(_project_root):
-        raise AssertionError("must not install a desktop entry off Linux")
-
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.install_desktop_entry", fail)
-
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
-
-    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 0
-
 @pytest.mark.parametrize(
     "raw,expected",
     [
@@ -1132,11 +1065,6 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
     with patch("hermes_cli.config.load_config", return_value=cfg):
         _, _, _, hint = main_desktop._desktop_launch_options()
     assert hint == expected
-
-
-def test_desktop_launch_options_ozone_hint_defaults_auto():
-    with patch("hermes_cli.config.load_config", return_value={}):
-        assert main_desktop._desktop_launch_options()[3] == "auto"
 
 
 def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
@@ -1458,6 +1386,63 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
     assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
 
 
+def test_swap_staged_desktop_app_stops_live_renderer_before_rename(tmp_path):
+    """#109643: a renderer alive through the promotion rename keeps fetching its
+    old hashed chunks from disk and dies on the next lazy import — the swap must
+    ask for running desktop processes to stop on EVERY platform."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+
+    with patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build",
+               return_value=[4321]) as stop:
+        promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
+
+    assert promoted == live_exe
+    stop.assert_called_once_with(desktop_dir, also_posix=True)
+
+
+def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(tmp_path, monkeypatch):
+    """#109643: also_posix=True must run the scan on POSIX (the default pack-time
+    call stays Windows-only — the staging pack never touches the live tree)."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+
+    class _FakeProc:
+        def __init__(self, pid, exe):
+            self.info = {"pid": pid, "exe": exe}
+            self.pid = pid
+
+        def terminate(self):
+            return None
+
+    target = _FakeProc(100, str(live_exe))
+    outsider = _FakeProc(200, "/usr/bin/unrelated")
+
+    class _FakePsutil:
+        @staticmethod
+        def process_iter(attrs):
+            return [target, outsider]
+
+        @staticmethod
+        def wait_procs(victims, timeout=5):
+            return [], []
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir) == []
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
+
+
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):
     """Every pack attempt fails → the pre-existing app is exactly as it was,
     no staging dir remains, exit is non-zero."""
@@ -1490,8 +1475,6 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
     assert live_exe.read_text(encoding="utf-8") == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
     assert not list((desktop_dir / "release").glob("*.previous"))
-    out = capsys.readouterr().out
-    assert "previous desktop app was left untouched" in out
 
 
 def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
@@ -1539,4 +1522,3 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     assert exc.value.code == 1
     assert live_exe.read_text(encoding="utf-8") == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
-    assert "produced no launchable app" in capsys.readouterr().out

@@ -2,10 +2,13 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
-import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
+import { latestSessionTodos } from '@/lib/todos'
+import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
@@ -31,6 +34,7 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
+import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
@@ -61,9 +65,9 @@ export function resolveActiveTranscriptSession(
   storedSessionId: string,
   runtimeSessionId: string
 ): ActiveTranscriptSession | undefined {
-  const verifiedOwner = $sessionTiles.get().find(
-    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
-  )?.ownerRoute
+  const verifiedOwner = $sessionTiles
+    .get()
+    .find(tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId)?.ownerRoute
 
   if (verifiedOwner) {
     return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
@@ -98,6 +102,42 @@ function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   const state = $sessionStates.get()[runtimeId]
 
   return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
+}
+
+/** Backfill/retention may prepend or release a prefix without changing the tail. */
+function transcriptChangedDuringRead(before: ChatMessage[] | undefined, after: ChatMessage[] | undefined): boolean {
+  if (before === after) {
+    return false
+  }
+
+  if (!before?.length || !after?.length) {
+    return true
+  }
+
+  // Require the entire shorter transcript to be an unchanged suffix. Matching
+  // only the last row would miss edits/tool updates earlier in the current turn.
+  const overlap = Math.min(before.length, after.length)
+
+  for (let offset = 1; offset <= overlap; offset += 1) {
+    if (before[before.length - offset] !== after[after.length - offset]) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/** Zero persisted rows read over a populated runtime bound to the SAME stored
+ *  session. An empty page is not proof the transcript is empty — it is also
+ *  what a respawning backend (or a state.db read racing the change event)
+ *  returns. A runtime rebound to another stored id while the read was in
+ *  flight holds no evidence about the requested transcript. */
+function emptyPageOverPopulatedTranscript(
+  page: readonly unknown[],
+  current: ClientSessionState | undefined,
+  storedSessionId: string
+): boolean {
+  return page.length === 0 && Boolean(current?.messages.length) && current?.storedSessionId === storedSessionId
 }
 
 type TileTranscriptTarget = { ownerRoute?: SessionOwnerRoute; storedSessionId: string; runtimeId?: string }
@@ -185,13 +225,36 @@ export async function reconcileTileTranscripts({
     const signatureKey = tileTranscriptSignatureKey(tile)
 
     try {
+      const replay = pendingSessionReplay(runtimeSessionId)
+
+      if (replay && !(await replay)) {
+        continue
+      }
+
+      if (
+        requestId !== requestSequenceRef.current ||
+        !tileStillPresent() ||
+        tileRuntimeOwnsLiveState(runtimeSessionId)
+      ) {
+        continue
+      }
+
+      const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
       // Passive: a hidden tile's refresh must never cold-start its owner
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
+      const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+      if (replayAtReturn && !(await replayAtReturn)) {
+        continue
+      }
+
+      const current = $sessionStates.get()[runtimeSessionId]
 
       if (
         requestId !== requestSequenceRef.current ||
         tileRuntimeOwnsLiveState(runtimeSessionId) ||
+        transcriptChangedDuringRead(messagesAtRequest, current?.messages) ||
         !tileStillPresent()
       ) {
         // Tile closed or superseded mid-read — discard AND prune its
@@ -199,6 +262,12 @@ export async function reconcileTileTranscripts({
         // for the app's lifetime (#94255 review point 3).
         signatureRef.current.delete(signatureKey)
 
+        continue
+      }
+
+      // Same rule as the active pane below: a transient zero-row page must not
+      // blank a populated tile, and leaves no signature behind.
+      if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
         continue
       }
 
@@ -215,8 +284,12 @@ export async function reconcileTileTranscripts({
         runtimeSessionId,
         state => ({
           ...state,
+          // An un-acked optimistic `user-*` row exists only here, so a
+          // background refresh that lands mid-send would drop it and the
+          // message would have to be retyped. Same composition order as
+          // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
           messages: preserveLocalAssistantErrors(
-            graftRefreshedTailOntoBackfill(messages, state.messages),
+            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
             state.messages
           )
         }),
@@ -224,6 +297,89 @@ export async function reconcileTileTranscripts({
       )
     } catch {
       // Non-fatal: the next change event retries.
+    }
+  }
+}
+
+/** Best-effort post-turn fallback when the live stream did not carry an answer. */
+export async function hydrateStoredSessionTranscript({
+  attempts,
+  storedSessionId,
+  runtimeSessionId,
+  storedProfile,
+  updateSessionState
+}: {
+  attempts: number
+  storedSessionId: string
+  runtimeSessionId: string
+  storedProfile: ProfileScope
+  updateSessionState: ActiveTranscriptRefreshDeps['updateSessionState']
+}): Promise<void> {
+  const replay = pendingSessionReplay(runtimeSessionId)
+
+  if (replay && !(await replay)) {
+    return
+  }
+
+  const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
+
+  const superseded = () =>
+    tileRuntimeOwnsLiveState(runtimeSessionId) ||
+    transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
+
+  for (let index = 0; index < Math.max(1, attempts); index += 1) {
+    if (index > 0) {
+      await new Promise(resolve => window.setTimeout(resolve, 250))
+    }
+
+    if (superseded()) {
+      return
+    }
+
+    try {
+      const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
+      const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+      if (replayAtReturn && !(await replayAtReturn)) {
+        return
+      }
+
+      // This fallback belongs to the completed turn, not any subsequent turn
+      // that ran during the read or retry delay. Its todo restore is stale too.
+      if (superseded()) {
+        return
+      }
+
+      // A zero-row page over the populated turn is a transient read, not the
+      // answer.
+      if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+        continue
+      }
+
+      const messages = toChatMessages(latest.messages)
+      updateSessionState(
+        runtimeSessionId,
+        state => ({
+          ...state,
+          // Keep backfilled pages, un-acked optimistic input and local errors.
+          messages: preserveLocalAssistantErrors(
+            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+            state.messages
+          )
+        }),
+        storedSessionId
+      )
+      const restored = todosForHydration(latestSessionTodos(messages))
+
+      if (restored) {
+        setSessionTodos(runtimeSessionId, restored)
+      } else {
+        clearSessionTodos(runtimeSessionId)
+      }
+
+      return
+    } catch {
+      // Best-effort fallback when live stream payloads are empty.
     }
   }
 }
@@ -241,7 +397,7 @@ export async function reconcileActiveTranscript({
   const storedSessionId = selectedStoredSessionIdRef.current
   const runtimeSessionId = activeSessionIdRef.current
 
-  if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+  if (!storedSessionId || !runtimeSessionId || busyRef.current || tileRuntimeOwnsLiveState(runtimeSessionId)) {
     return
   }
 
@@ -253,15 +409,43 @@ export async function reconcileActiveTranscript({
 
   const requestId = requestSequenceRef.current + 1
   requestSequenceRef.current = requestId
+  const replay = pendingSessionReplay(runtimeSessionId)
+
+  if (replay && !(await replay)) {
+    return
+  }
+
+  if (
+    requestId !== requestSequenceRef.current ||
+    busyRef.current ||
+    tileRuntimeOwnsLiveState(runtimeSessionId) ||
+    selectedStoredSessionIdRef.current !== storedSessionId ||
+    activeSessionIdRef.current !== runtimeSessionId
+  ) {
+    return
+  }
+
+  // Busy at both endpoints can be false even though an entire turn streamed
+  // while HTTP was in flight. Never let that older read replace newer text.
+  const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
   try {
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+    const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+    if (replayAtReturn && !(await replayAtReturn)) {
+      return
+    }
+
+    const current = $sessionStates.get()[runtimeSessionId]
 
     if (
       requestId !== requestSequenceRef.current ||
       busyRef.current ||
+      tileRuntimeOwnsLiveState(runtimeSessionId) ||
+      transcriptChangedDuringRead(messagesAtRequest, current?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
       activeSessionIdRef.current !== runtimeSessionId
     ) {
@@ -277,6 +461,14 @@ export async function reconcileActiveTranscript({
           storedSessionId
         ])
       : `${stored.profile ?? 'default'}:${storedSessionId}`
+
+    // Same rule as the warm-activation guard (use-session-actions/index.ts):
+    // publishing the page would blank the thread and trip the routed loading
+    // branch. Bail before the signature write so the next usable page is not
+    // deduped away.
+    if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
+      return
+    }
 
     const signature = sessionMessagesSignature(latest.messages)
 
@@ -294,7 +486,10 @@ export async function reconcileActiveTranscript({
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
-        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+        messages: preserveLocalAssistantErrors(
+          preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+          state.messages
+        )
       }),
       storedSessionId
     )
@@ -623,8 +818,8 @@ export function useBackgroundSync({
 }: BackgroundSyncParams): void {
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
-  const activeTranscriptBusy = useStore($busy)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
+  const activeTranscriptReadRef = useRef<{ sessionKey: string; preservePending: boolean } | null>(null)
   // Tile reconcile state (#93942 slice 1): shared sequence guard + per-tile
   // transcript signatures, so no-change ticks and closed tiles cost nothing.
   const tileRequestSequenceRef = useRef(0)
@@ -646,7 +841,7 @@ export function useBackgroundSync({
         activeTranscriptRefreshPendingRef.current = sessionKey
       }
 
-      if ($busy.get()) {
+      if ($busy.get() || tileRuntimeOwnsLiveState(runtimeSessionId)) {
         return
       }
 
@@ -654,29 +849,88 @@ export function useBackgroundSync({
         activeTranscriptRefreshPendingRef.current = null
       }
 
-      let sawBusyDuringRead = false
-
-      const unsubscribeBusy = $busy.listen(busy => {
-        sawBusyDuringRead ||= busy
-      })
-
+      const read = { sessionKey, preservePending }
+      activeTranscriptReadRef.current = read
       void Promise.resolve(refreshActiveTranscript()).finally(() => {
-        unsubscribeBusy()
-
-        // If streaming began while the read was in flight, reconciliation was
-        // discarded and the external event still needs one idle retry.
-        if (
-          preservePending &&
-          (sawBusyDuringRead || $busy.get()) &&
-          $activeSessionId.get() === runtimeSessionId &&
-          $selectedStoredSessionId.get() === storedSessionId
-        ) {
-          activeTranscriptRefreshPendingRef.current = sessionKey
+        // A superseded request cannot retire the replacement's observation.
+        if (activeTranscriptReadRef.current === read) {
+          activeTranscriptReadRef.current = null
         }
       })
     },
     [activeSessionId, activeStoredSessionId, refreshActiveTranscript]
   )
+
+  // eslint-disable-next-line no-restricted-syntax -- request obligations updated by synchronous subscriptions, not mirrored atom values
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeSessionId || !activeStoredSessionId) {
+      return
+    }
+
+    const sessionKey = `${activeStoredSessionId}:${activeSessionId}`
+    let disposed = false
+    let queued = false
+
+    const isCurrent = () =>
+      $activeSessionId.get() === activeSessionId && $selectedStoredSessionId.get() === activeStoredSessionId
+
+    const isLive = () => $busy.get() || tileRuntimeOwnsLiveState(activeSessionId)
+
+    const observe = () => {
+      if (!isCurrent()) {
+        return
+      }
+
+      if (isLive()) {
+        const read = activeTranscriptReadRef.current
+
+        if (read?.sessionKey === sessionKey) {
+          // Queue once, before idle, even when a whole turn fits between RAFs
+          // and the legacy $busy mirror never becomes true.
+          activeTranscriptReadRef.current = null
+
+          if (read.preservePending) {
+            activeTranscriptRefreshPendingRef.current = sessionKey
+          }
+        }
+
+        return
+      }
+
+      if (queued || activeTranscriptRefreshPendingRef.current !== sessionKey) {
+        return
+      }
+
+      queued = true
+      queueMicrotask(() => {
+        queued = false
+
+        // Let the canonical publication finish syncing the view before the
+        // retry, and never carry it across navigation/profile/connection scope.
+        if (!disposed && isCurrent() && !isLive() && activeTranscriptRefreshPendingRef.current === sessionKey) {
+          requestActiveTranscriptRefresh(true)
+        }
+      })
+    }
+
+    const unsubscribeState = $sessionStates.listen(observe)
+    const unsubscribeBusy = $busy.listen(observe)
+
+    return () => {
+      disposed = true
+      unsubscribeState()
+      unsubscribeBusy()
+      activeTranscriptReadRef.current = null
+      activeTranscriptRefreshPendingRef.current = null
+    }
+  }, [
+    activeConnectionId,
+    activeGatewayProfile,
+    activeSessionId,
+    activeStoredSessionId,
+    gatewayState,
+    requestActiveTranscriptRefresh
+  ])
 
   useEffect(() => {
     if (gatewayState !== 'open') {
@@ -924,23 +1178,6 @@ export function useBackgroundSync({
       () => void refreshCronJobs()
     )
   }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
-
-  // A busy transition only consumes a pending sessions.changed refresh. It
-  // never creates one, so an ordinary local turn going busy -> idle does not
-  // add a REST read. The event itself is coalesced by the list throttle above.
-  useEffect(() => {
-    if (
-      gatewayState !== 'open' ||
-      activeTranscriptBusy ||
-      !activeSessionId ||
-      !activeStoredSessionId ||
-      activeTranscriptRefreshPendingRef.current !== `${activeStoredSessionId}:${activeSessionId}`
-    ) {
-      return
-    }
-
-    requestActiveTranscriptRefresh(true)
-  }, [activeSessionId, activeStoredSessionId, activeTranscriptBusy, gatewayState, requestActiveTranscriptRefresh])
 
   // Preserve the pre-existing messaging behavior: refresh once when a
   // messaging transcript opens, then keep its visibility backstop. Desktop

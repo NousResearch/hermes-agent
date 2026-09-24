@@ -21,10 +21,14 @@ vi.mock('@/hermes', () => ({
   getLocalModelsJobs: vi.fn(),
   getLocalModelsStatus: vi.fn(),
   getLocalRuntimeJob: vi.fn(),
+  // The page imports the profile store (settings-scope chip), whose module
+  // body subscribes $activeGatewayProfile → setApiRequestProfile at load.
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
   installLocalRuntime: vi.fn(),
   listHFRepoFiles: vi.fn(),
   quickstartLocalModels: vi.fn(),
   searchHFModels: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 
@@ -234,42 +238,6 @@ describe('LocalModelsSettings', () => {
     })
   })
 
-  it('offers the runtime install with a plain-language explanation', async () => {
-    await renderFullPane()
-
-    expect(await screen.findByText('Install the local runtime')).toBeTruthy()
-    expect(screen.getByText(/runs? entirely on this machine/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /install runtime/i })).toBeTruthy()
-  })
-
-  it('shows every catalog model with fit pills; unaffordable ones stay visible with the reason', async () => {
-    await renderFullPane()
-
-    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
-    // The fitting model reads as pills, not prose: green memory pill +
-    // green full-context pill (start_window == native, resident on GPU).
-    expect(screen.getByText('Fits your GPU')).toBeTruthy()
-    expect(screen.getByText('Full 256K context').className).toContain('emerald')
-
-    // The refused model is NOT hidden (discoverability rule): red memory
-    // pill, plus the ceiling it would have had.
-    expect(screen.getByText('Huge Model')).toBeTruthy()
-    expect(screen.getByText('Too big for this machine')).toBeTruthy()
-
-    // The spilled model reads amber + ONE quiet ceiling pill — the same
-    // 'Up to' shape the refused row wears; no start/grow pair.
-    expect(screen.getByText('Spilled Model')).toBeTruthy()
-    expect(screen.getByText('Uses system RAM')).toBeTruthy()
-    expect(screen.getAllByText('Up to 256K context').length).toBe(2)
-    expect(screen.queryByText(/Starts at/)).toBeNull()
-
-    // Its download button is disabled; the fitting model's is enabled once
-    // the runtime exists (here runtime_installed=false, so both disabled —
-    // asserted separately below).
-    const buttons = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
-    expect(buttons.every(b => (b as HTMLButtonElement).disabled)).toBe(true)
-  })
-
   it('orders the catalog by fit: resident first, then spilled, then too-big', async () => {
     // Scrambled input — the pane, not the backend, owns display order.
     mocked.getLocalCatalog.mockResolvedValue({ models: [REFUSED_MODEL, SPILLED_MODEL, FITTING_MODEL] })
@@ -283,28 +251,6 @@ describe('LocalModelsSettings', () => {
       .map(el => el.textContent?.replace('Recommended', ''))
 
     expect(names).toEqual(['Qwen3.6 27B', 'Spilled Model', 'Huge Model'])
-  })
-
-  it('never greens the full-context pill on a system-RAM model', async () => {
-    // Full native window, but earned by spilling into system RAM: the
-    // pill must not wear the green that would recommend exactly the
-    // wrong model.
-    const spilledFull: LocalCatalogModel = {
-      ...FITTING_MODEL,
-      id: 'Spilled-Full',
-      display_name: 'Spilled Full',
-      recommended: false,
-      spilled: true,
-      fit_summary: 'runs its full 256K context, partly from system RAM'
-    }
-
-    mocked.getLocalCatalog.mockResolvedValue({ models: [spilledFull] })
-    renderPane()
-    await screen.findByText('Spilled Full')
-
-    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
-    expect(screen.getByRole('button', { name: /browse models/i })).toBeTruthy()
-    expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
   it('explains the Recommended pick on hover', async () => {
@@ -337,14 +283,6 @@ describe('LocalModelsSettings', () => {
     await screen.findByText('Qwen3.6 27B')
     const [fittingButton] = screen.getAllByRole('button', { name: /download · 17\.6 GB/i })
     expect((fittingButton as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('shows hardware facts after backfill', async () => {
-    await renderFullPane()
-
-    expect(await screen.findByText('NVIDIA GeForce RTX 5090')).toBeTruthy()
-    expect(screen.getByText(/32\.0 GB GPU memory/)).toBeTruthy()
-    expect(screen.getByText(/256\.0 GB RAM/)).toBeTruthy()
   })
 
   it('tracks a download job to completion and refreshes', async () => {

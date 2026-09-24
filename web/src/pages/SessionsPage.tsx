@@ -91,6 +91,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     sms: { icon: MessageCircle, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
     tool: { icon: Play, color: "text-warning" },
+    oneshot: { icon: Terminal, color: "text-warning" },
     api_server: { icon: Globe, color: "text-muted-foreground" },
     acp: { icon: Database, color: "text-muted-foreground" },
     hermes_flow: { icon: Play, color: "text-warning" },
@@ -101,6 +102,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
 const AUTOMATION_SESSION_SOURCES = [
   "cron",
   "tool",
+  "oneshot",
   "api_server",
   "acp",
   "hermes_flow",

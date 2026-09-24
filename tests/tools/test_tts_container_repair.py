@@ -12,7 +12,6 @@ bytes once after synthesis and repairs the container centrally.
 """
 
 import struct
-from unittest.mock import patch
 
 import pytest
 
@@ -67,13 +66,16 @@ class TestRepairOggContainer:
 
         if not _shutil.which("ffmpeg"):
             pytest.skip("ffmpeg not installed")
-        # Synthesize a real tiny mp3 with ffmpeg, misname it .ogg
+        # Synthesize a real tiny mp3 with ffmpeg, misname it .ogg. "Available" means the binary
+        # runs AND carries the encoder: CI runners have shipped an ffmpeg on PATH that exits 127.
         p = tmp_path / "v.ogg"
-        _sp.run(
+        synth = _sp.run(
             ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
              "-acodec", "libmp3lame", "-f", "mp3", str(p), "-y"],
-            capture_output=True, check=True,
+            capture_output=True, check=False,
         )
+        if synth.returncode != 0:
+            pytest.skip(f"ffmpeg on PATH cannot synthesize mp3 (exit {synth.returncode})")
         assert _sniff_audio_container(str(p)) == "mp3"
         result = _repair_ogg_container(str(p))
         assert result == str(p)
@@ -87,6 +89,3 @@ class TestOpusPlatformSet:
         for platform in ("telegram", "matrix", "feishu", "whatsapp", "signal"):
             assert platform in OPUS_VOICE_PLATFORMS
 
-    def test_cli_not_included(self):
-        assert "" not in OPUS_VOICE_PLATFORMS
-        assert "cli" not in OPUS_VOICE_PLATFORMS

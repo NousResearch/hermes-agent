@@ -528,6 +528,18 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     expires_at REAL NOT NULL
 );
 
+-- A turn that is waiting for the lease publishes its wait here for as long as it waits, so the
+-- handoff at release goes to the oldest waiter instead of to whichever process polls first. Rows
+-- are transient (deleted when the wait ends) and are pruned when their waiter's process is gone or
+-- their age exceeds the longest legitimate wait (measured: t_ebfd74d3).
+-- their age exceeds the longest legitimate wait (#84776).
+CREATE TABLE IF NOT EXISTS session_turn_waiters (
+    conversation_id TEXT NOT NULL,
+    holder TEXT NOT NULL,
+    enqueued_at REAL NOT NULL,
+    PRIMARY KEY (conversation_id, holder)
+);
+
 CREATE TABLE IF NOT EXISTS async_delegations (
     delegation_id TEXT PRIMARY KEY,
     origin_session TEXT NOT NULL,
@@ -574,6 +586,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_turn_waiters_queue
+    ON session_turn_waiters(conversation_id, enqueued_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery

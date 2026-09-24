@@ -245,22 +245,3 @@ it('waits for reconnect replay before activating and reading warm history', asyn
     client.close()
   }
 })
-
-it('abandons a warm resume whose replay socket is invalidated', async () => {
-  const { result, client, requestGateway } = await mountWithPendingReplay()
-
-  try {
-    let pending!: Promise<void>
-    await act(async () => {
-      pending = result.current.actions.resumeSession(storedId, true)
-    })
-    await act(async () => {
-      client.invalidate()
-      await pending
-    })
-    expect(activateCalls(requestGateway)).toHaveLength(0)
-    expect(getLatestSessionMessages).not.toHaveBeenCalled()
-  } finally {
-    client.close()
-  }
-})

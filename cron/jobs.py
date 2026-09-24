@@ -1664,8 +1664,29 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_max_turns(value: Any) -> Optional[int]:
+    """Normalize a per-job ``max_turns`` cap: positive int, else None.
+
+    bool is rejected explicitly (bool is an int subclass) and other types are ignored rather than
+    coerced — a malformed cap must fall back to the global config, never silently cap the job at a
+    bogus value.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
+
+
+def _normalize_job_timeout(value: Any) -> Optional[float]:
+    """Normalize a per-job wall-clock ``timeout`` (seconds): positive number -> float, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
-# storing.
+# storing. max_turns/timeout are the exception: an invalid cap is not a create/update-time error,
+# it silently falls back to the global config (or "no ceiling") at run time — see
+# scheduler._resolve_job_max_iterations / _resolve_job_wall_clock_limit.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "model": _normalize_job_optional_text,
     "provider": _normalize_job_optional_text,
@@ -1678,12 +1699,16 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "max_turns": _normalize_max_turns,
+    "timeout": _normalize_job_timeout,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "max_turns": _normalize_max_turns,
+    "timeout": _normalize_job_timeout,
 }
 
 
@@ -1754,6 +1779,8 @@ def create_job(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
+    max_turns: Optional[int] = None,
+    timeout: Optional[Union[int, float]] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1762,7 +1789,10 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    max_turns/timeout: per-job execution caps (turn ceiling / wall-clock seconds), falling back to
+    the global config when unset or not a real cap — see ``_normalize_max_turns`` /
+    ``_normalize_job_timeout``."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1841,6 +1871,9 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
+        # Per-job execution caps (None = fall back to global config/env).
+        "max_turns": f["max_turns"],
+        "timeout": f["timeout"],
     }
     # Optional keys are persisted only when explicitly set: an absent key falls back to global
     # config (attach/reasoning) or to ``deliver`` (failure_deliver), byte-identical to pre-feature

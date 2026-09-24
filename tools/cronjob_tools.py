@@ -615,6 +615,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             reasoning_effort=a["reasoning_effort"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            max_turns=a["max_turns"], timeout=a["timeout"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -812,7 +813,7 @@ def _update_context_from(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[s
 
 
 def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
-    """enabled_toolsets / attach_to_session / workdir / no_agent / repeat / schedule."""
+    """enabled_toolsets / attach_to_session / workdir / no_agent / repeat / schedule / max_turns / timeout."""
     if a["enabled_toolsets"] is not None:
         updates["enabled_toolsets"] = a["enabled_toolsets"] or None
     if a["attach_to_session"] is not None:
@@ -841,6 +842,12 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
         if job.get("state") != "paused":
             updates["state"] = "scheduled"
             updates["enabled"] = True
+    if a["max_turns"] is not None:
+        # 0 clears the cap — update_job() normalizes (invalid -> None).
+        updates["max_turns"] = a["max_turns"]
+    if a["timeout"] is not None:
+        # 0 clears the cap — update_job() normalizes (invalid -> None).
+        updates["timeout"] = a["timeout"]
     return None
 
 
@@ -922,7 +929,9 @@ def cronjob(
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
-    pinned: Optional[bool] = None) -> str:
+    pinned: Optional[bool] = None,
+    max_turns: Optional[int] = None,
+    timeout: Optional[Union[int, float]] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1050,6 +1059,14 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
+            "max_turns": {
+                "type": "integer",
+                "description": "Optional per-job ceiling on agent turns (API call iterations) for LLM-driven jobs. Overrides the global config.yaml agent.max_turns for this job only. Use a low value (e.g. 25-30) for well-delimited recurring jobs so a stuck session cannot burn quota. On update, pass 0 to clear (fall back to global config). Ignored when no_agent=True."
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Optional per-job wall-clock ceiling in seconds for the whole agent run. Unlike the global HERMES_CRON_TIMEOUT (inactivity-based — retry storms count as activity and never trip it), this caps total runtime: when it elapses the job is interrupted regardless of activity. On update, pass 0 to clear. Ignored when no_agent=True (script jobs have their own timeout)."
+            },
         },
         "required": ["action"]
     }
@@ -1078,7 +1095,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned")
+    "paused_reason", "pinned", "max_turns", "timeout")
 
 
 def _cronjob_handler(args, **kw):

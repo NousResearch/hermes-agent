@@ -129,6 +129,25 @@ class TestFutilityGuard:
         )
         assert fired <= 3, f"expected the loop to break early, compacted {fired}x"
 
+    def test_effective_compactions_trip_frequency_guard(self):
+        """Successful rewrites must not compact continuously as the window refills."""
+        cc = _compressor(threshold_tokens=24_576)
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            now = iter((1_000.0, 1_120.0, 1_240.0))
+            monkeypatch.setattr("agent.context_compressor.time.time", lambda: next(now))
+            for _ in range(cc._FREQUENT_COMPACTION_LIMIT):
+                cc.record_completed_compaction()
+                cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 1})
+
+            assert cc._ineffective_compression_count == 0
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr("agent.context_compressor.time.time", lambda: 1_240.0)
+            should_compress, reason = cc.should_compress_info(cc.threshold_tokens + 1)
+
+        assert should_compress is False
+        assert reason == "frequency:360"
 
     def test_effective_compaction_still_resets_the_counter(self):
         """A compaction that gets the prompt under the threshold is not thrashing."""

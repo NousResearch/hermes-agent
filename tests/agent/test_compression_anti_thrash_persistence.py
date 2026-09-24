@@ -19,10 +19,12 @@ The counter now round-trips the durable session-state channel exactly like
   threshold still clears the counter (update_from_response), and that clear
   is durable too.
 """
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, ContextCompressor
+from agent.conversation_compression import _refresh_persisted_compression_guards
 from hermes_state import SessionDB
 
 
@@ -71,6 +73,108 @@ class TestCounterRoundTripsBindSessionState:
             "tripped anti-thrash guard instead of re-compacting"
         )
 
+    def test_frequent_successful_compactions_remain_blocked_after_restart(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        first = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(first._FREQUENT_COMPACTION_LIMIT):
+                first.record_completed_compaction()
+
+        second = _compressor(db, "s1")
+        with patch("agent.context_compressor.time.time", return_value=1_300.0):
+            assert second.should_compress(10**9) is False
+            assert second._compression_block_reason() == "frequency:300"
+
+    def test_frequency_guard_lapse_reenables_compaction_and_clears_storage(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        compressor = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(compressor._FREQUENT_COMPACTION_LIMIT):
+                compressor.record_completed_compaction()
+
+        with patch("agent.context_compressor.time.time", return_value=1_600.0):
+            assert compressor.should_compress(10**9) is True
+
+        assert compressor._compression_frequency_state() == (0.0, 0)
+        assert db.get_session_model_config_value(
+            "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, "missing"
+        ) == "missing"
+
+    def test_stale_compressor_refreshes_frequency_guard_before_entry(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        first = _compressor(db, "s1")
+        stale = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(first._FREQUENT_COMPACTION_LIMIT):
+                first.record_completed_compaction()
+
+        assert stale._compression_frequency_state() == (0.0, 0)
+        with patch("agent.context_compressor.time.time", return_value=1_300.0):
+            _refresh_persisted_compression_guards(stale)
+            assert stale._compression_block_reason() == "frequency:300"
+            stale.record_completed_compaction()
+
+        persisted = db.get_session_model_config_value(
+            "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
+        )
+        assert persisted["count"] == first._FREQUENT_COMPACTION_LIMIT + 1
+
+    def test_stale_compressor_does_not_overwrite_frequency_guard_after_read_failure(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        first = _compressor(db, "s1")
+        stale = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(first._FREQUENT_COMPACTION_LIMIT):
+                first.record_completed_compaction()
+
+        with (
+            patch.object(
+                db,
+                "get_session_model_config_value",
+                side_effect=sqlite3.OperationalError("one-shot read failure"),
+            ),
+            patch("agent.context_compressor.time.time", return_value=1_300.0),
+        ):
+            stale.record_completed_compaction()
+
+        persisted = db.get_session_model_config_value(
+            "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
+        )
+        assert persisted["count"] == first._FREQUENT_COMPACTION_LIMIT
+
+        with patch("agent.context_compressor.time.time", return_value=1_300.0):
+            _refresh_persisted_compression_guards(stale)
+            assert stale.should_compress(10**9) is False
+            assert stale._compression_block_reason().startswith("frequency:")
+
+    def test_refresh_read_failure_preserves_armed_frequency_guard(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        compressor = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(compressor._FREQUENT_COMPACTION_LIMIT):
+                compressor.record_completed_compaction()
+
+        with (
+            patch.object(
+                db,
+                "get_session_model_config_value",
+                side_effect=sqlite3.OperationalError("refresh read failure"),
+            ),
+            patch("agent.context_compressor.time.time", return_value=1_300.0),
+        ):
+            _refresh_persisted_compression_guards(compressor)
+            assert compressor.should_compress(10**9) is False
+            assert compressor._compression_block_reason() == "frequency:300"
 
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""
@@ -210,3 +314,30 @@ class TestCompressionBoundaryCarry:
         # Persisted onto the child row so a restart right after rotation
         # still inherits the armed guard.
         assert db.get_compression_ineffective_count("child") == 1
+
+    def test_parent_frequency_read_failure_preserves_local_history(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("parent", source="cli")
+        cc = _compressor(db, "parent")
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(cc._FREQUENT_COMPACTION_LIMIT):
+                cc.record_completed_compaction()
+
+        db.create_session("child", source="cli", parent_session_id="parent")
+        with patch.object(
+            db,
+            "get_session_model_config_value",
+            side_effect=sqlite3.OperationalError("parent read failure"),
+        ):
+            cc.on_session_start(
+                "child",
+                boundary_reason="compression",
+                old_session_id="parent",
+                session_db=db,
+            )
+
+        assert cc._compression_frequency_state() == (1_000.0, cc._FREQUENT_COMPACTION_LIMIT)
+        persisted = db.get_session_model_config_value(
+            "child", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
+        )
+        assert persisted["count"] == cc._FREQUENT_COMPACTION_LIMIT

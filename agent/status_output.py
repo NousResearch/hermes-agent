@@ -105,7 +105,7 @@ class StatusOutputMixin:
         self._emit_status_kind("warn", message, origin="_emit_warning")
 
     def _warn_context_overflow_blocked(self, reason: str, preflight_tokens: int, threshold_tokens: int) -> None:
-        """Warn (deduped on the block *kind* — ``cooldown`` / ``ineffective`` — not the countdown string;
+        """Warn (deduped on the block *kind*, not the countdown string;
         cleared by ``_clear_context_overflow_warn``) when context is over the threshold but compression is blocked."""
         _warn_kind = (reason or "unknown").split(":", 1)[0]
         _warn_key = ("ctx_overflow_blocked", _warn_kind)
@@ -114,8 +114,7 @@ class StatusOutputMixin:
         self._last_ctx_overflow_warn = _warn_key
         from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 
-        # cooldown + anti-thrash (ineffective) are both "compression blocked".
-        if _warn_kind in ("cooldown", "ineffective"):
+        if _warn_kind in ("cooldown", "frequency", "ineffective"):
             self._touch_activity(f"compression blocked ({reason})", provenance=ActivityProvenance.AGENT_COMPRESSION_COOLDOWN)
         self._emit_warning(CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
             tokens=preflight_tokens, threshold=threshold_tokens, reason=reason,

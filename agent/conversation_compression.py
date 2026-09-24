@@ -1443,7 +1443,11 @@ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
 
 def _refresh_persisted_compression_guards(compressor: Any, *, include_cooldown: bool = True) -> None:
     """Refresh durable automatic-compression guards on a built-in compressor."""
-    method_calls = [("_load_fallback_compression_streak", {}), ("_load_ineffective_compression_count", {})]
+    method_calls = [
+        ("_load_fallback_compression_streak", {}),
+        ("_load_ineffective_compression_count", {}),
+        ("_load_compression_frequency_state", {}),
+    ]
     if include_cooldown:
         method_calls.insert(0, ("get_active_compression_failure_cooldown", {"refresh": True}))
     for method_name, kwargs in method_calls:
@@ -1625,14 +1629,14 @@ def compression_blocked_transiently(agent: Any) -> bool:
 
 def _mark_compression_blocked_transient(agent: Any, compressor: Any) -> None:
     """Publish the transient-block signal when the active guard is transient.
-    Classification comes from ``_compression_block_reason``: ``cooldown:*`` and ``structural_backoff:*`` are
-    transient; ``ineffective`` stays unmarked."""
+    Classification comes from ``_compression_block_reason``: timed backoffs are transient;
+    ``ineffective`` stays unmarked."""
     reason_fn = getattr(compressor, "_compression_block_reason", None)
     reason = None
     if callable(reason_fn):
         with _swallow('compression block-reason read failed', exc_info=True):
             reason = reason_fn()
-    if isinstance(reason, str) and (reason.startswith("cooldown") or reason.startswith("structural_backoff")):
+    if isinstance(reason, str) and reason.startswith(("cooldown", "structural_backoff", "frequency")):
         logger.info(
             "Skipping automatic compression re-entry: transient guard "
             "active (%s, session=%s, last failure: %s) — will retry after "
@@ -4293,6 +4297,8 @@ def _compress_context_via_codex_app_server(
         _cooldown_remaining = _codex_compaction_cooldown_remaining(agent)
         if _cooldown_remaining > 0:
             skip_reason = f"failure cooldown active for {_cooldown_remaining:.0f}s"
+        elif _automatic_compression_gate_blocks(agent, bypass_cooldown=False):
+            skip_reason = "automatic compression guard active"
     codex_session = getattr(agent, "_codex_session", None)
     if skip_reason is None and codex_session is None:
         skip_reason = "no active codex thread"

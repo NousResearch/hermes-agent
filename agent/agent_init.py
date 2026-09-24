@@ -1207,6 +1207,7 @@ def _apply_display_config(agent, _agent_cfg, platform):
             "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
             _model_section.get("streaming"),
         )
+    agent._stream_5xx_probe_ts = None  # monotonic time of the last streaming-5xx unmask probe
 
     try:
         agent._tool_guardrails = ToolCallGuardrailController(

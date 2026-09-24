@@ -29,8 +29,14 @@ def _make_call(api_kwargs, *, deltas_sent=False, api_mode="chat_completions"):
         _interrupt_requested=False,
         _is_provider_stream_parse_error=lambda e: False,
         _buffer_status=lambda text: call.buffered.append(text),
+        _disable_streaming=False, _stream_5xx_probe_ts=None,
+        _fire_stream_delta=lambda text: call.deltas.append(text),
     )
     call.buffered = []
+    call.deltas = []
+    call.first_delta_fired = {"done": True}
+    call.on_first_delta = None
+    call._stream_stale_timeout = 180.0
     call.api_kwargs = api_kwargs
     call.result = {"response": None, "error": None, "partial_tool_names": []}
     call.deltas_were_sent = {"yes": deltas_sent}
@@ -57,43 +63,33 @@ def _run_handle_stream_error(call, e):
     return call._handle_stream_error(e, attempt=2, max_retries=2)
 
 
-def _prime_probe_window(call):
-    """Ensure the agent's probe window is open (no probe yet, or an old one)."""
-    call.agent._stream_5xx_probe_ts = 0.0
-
 def test_stream_5xx_probe_success_delivers_response_without_latch(monkeypatch):
     call = _make_call({"model": "m", "stream": True, "stream_options": {"x": 1}, "messages": []})
-    _prime_probe_window(call)
     seen_kwargs = []
 
     def fake_probe(agent, kwargs):
-        seen_kwargs.append(kwargs)
+        seen_kwargs.append((kwargs, call._stream_stale_timeout))
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok", reasoning_content=None))])
 
     monkeypatch.setattr(h, "interruptible_api_call", fake_probe)
-    adopt_calls = []
-
-    def fake_adopt(r):
-        adopt_calls.append(r)
-        call.agent._disable_streaming = True  # mirror the real latch inside adoption
-        return r
-
-    monkeypatch.setattr(call, "_adopt_final_response", fake_adopt)
 
     handled = not _run_handle_stream_error(call, _StreamErr(500))
 
     assert handled
     assert call.result["response"] is not None
     assert call.result["error"] is None
-    assert seen_kwargs and "stream" not in seen_kwargs[0] and "stream_options" not in seen_kwargs[0]
-    # One-turn recovery: adoption's internal latch is RESTORED, not kept.
+    probe_kwargs, stale_during_probe = seen_kwargs[0]
+    assert "stream" not in probe_kwargs and "stream_options" not in probe_kwargs
+    assert call.deltas == ["ok"]
+    # One-turn recovery: streaming is never latched off for the session.
     assert call.agent._disable_streaming is False
+    # No chunks arrive during the probe: the stream monitor must not stale-kill it.
+    assert stale_during_probe == float("inf") and call._stream_stale_timeout == 180.0
     assert call.buffered and "non-streaming retry succeeded" in call.buffered[0]
 
 
 def test_stream_5xx_unmasked_by_probe_4xx(monkeypatch):
     call = _make_call({"model": "m", "messages": []})
-    _prime_probe_window(call)
     real = _ProbeErr(400)
 
     def fake_probe(agent, kwargs):

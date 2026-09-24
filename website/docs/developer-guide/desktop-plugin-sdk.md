@@ -47,13 +47,15 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   cron — everything the app itself calls.
 - **`captureGatewayFileDownload()`** — capture a gateway file-save action
   immediately before starting a REST read, and retain it alongside the returned
-  data. The action `(storedPath, suggestedName) => Promise<{ saved, canceled?, path? }>`
-  keeps that read's connection/profile scope even if the user switches hosts
-  before clicking. Invoke only on an explicit user download gesture, using the
+  data. The action `(storedPath, suggestedName) => Promise<void>` keeps that
+  read's connection/profile scope even if the user switches hosts before
+  clicking. Invoke only on an explicit user download gesture, using the
   backend's persisted file path, never a guessed workspace path. Electron handles
   authenticated streaming, the native save dialog, and older-gateway fallback;
-  plugins never receive credentials or open remote paths with `file://`.
-  Cancellation resolves quietly; missing bridge/path and failed saves reject.
+  plugins never receive credentials or open remote paths with `file://`. The
+  host shows the same "Saved" / "Download failed" toasts as the Files panel and
+  stays quiet on cancel; the promise settles when the save does and never
+  rejects.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
   (`/api/plugins/<id>`) if you ship a `plugin_api.py`.
 - **`ui.*`** — the design language: the app's real components, theme variables,

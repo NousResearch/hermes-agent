@@ -469,42 +469,49 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
 // administrative note into that slot; hide those (Runs still shows them).
 const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
 
+// The filename is the download action. The path is the backend's own
+// stored_path, saved through the connection/profile that returned this detail;
+// a row without one (older backend) stays inert rather than guessing a path.
 function AttachmentDownload({
   attachment,
   onDownload
 }: {
   attachment: KanbanAttachment
-  onDownload: (path: string, suggestedName: string) => Promise<unknown>
+  onDownload: (path: string, suggestedName: string) => Promise<void>
 }) {
   const { t } = useI18n()
+  const path = attachment.stored_path?.trim()
 
   const download = useMutation({
-    mutationFn: () => onDownload(attachment.stored_path!, attachment.filename),
-    onError: err => host.notify({ kind: 'error', message: errText(err) })
+    mutationFn: () => onDownload(path!, attachment.filename)
   })
 
+  // Long names truncate in the narrow sidebar; the tip reveals the full name.
   return (
-    <Button
-      aria-label={`${t.fileMenu.download} ${attachment.filename}`}
-      disabled={!attachment.stored_path?.trim() || download.isPending}
-      onClick={() => download.mutate()}
-      size="xs"
-      variant="ghost"
-    >
-      <Codicon name={download.isPending ? 'sync' : 'cloud-download'} size="0.75rem" spinning={download.isPending} />
-      {attachment.filename}
-    </Button>
+    <Tip label={attachment.filename} placement="row">
+      <Button
+        aria-label={`${t.fileMenu.download} ${attachment.filename}`}
+        className="max-w-full justify-start font-normal"
+        disabled={!path || download.isPending}
+        onClick={() => download.mutate()}
+        size="inline"
+        variant="text"
+      >
+        <Codicon name={download.isPending ? 'sync' : 'cloud-download'} size="0.75rem" spinning={download.isPending} />
+        <span className="truncate">{attachment.filename}</span>
+      </Button>
+    </Tip>
   )
 }
 
 function AttachmentsSection({
   attachments,
-  onUpload,
   onDownload,
+  onUpload,
   pending
 }: {
-  onDownload: (path: string, suggestedName: string) => Promise<unknown>
   attachments: KanbanAttachment[]
+  onDownload: (path: string, suggestedName: string) => Promise<void>
   onUpload: (file: File) => void
   pending: boolean
 }) {

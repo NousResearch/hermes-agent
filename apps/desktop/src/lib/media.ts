@@ -1,10 +1,12 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
-import { hermesApi, type OwnerScope } from '@/api/client'
+import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
+import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
+import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -302,36 +304,86 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
   return readDesktopFileDataUrl(filePathFromMediaPath(path))
 }
 
-// Remote-mode replacement for opening gateway-local file paths with file://.
-// The file lives on the gateway, so ask the Electron main process to fetch the
-// bytes through the authenticated backend connection and save them locally. This
-// avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
-// used by preview endpoints.
+export interface GatewayFileSaveResult {
+  canceled?: boolean
+  path?: string
+  saved: boolean
+}
+
+export interface GatewayFileOrigin {
+  /** Backend that owns `path`, fixed when the path was read (see
+   *  `captureGatewayFileDownload`). It replaces the window's active connection
+   *  outright: an absent `connectionId` keeps legacy profile-pool routing, and
+   *  an explicit `local` stays pinned when the registry primary is remote. */
+  owner?: OwnerScope
+  /** Profile of the session that produced the file (artifacts). */
+  profile?: string
+  sessionId?: string
+  suggestedName?: string
+}
+
+// Replacement for opening gateway-local file paths with file://. The file lives
+// on the gateway, so ask the Electron main process to fetch the bytes through
+// the authenticated backend connection and save them locally. This avoids
+// browser/OS downloads losing OAuth cookies and avoids the data-URL cap used by
+// preview endpoints. Every renderer gateway-file save resolves its backend here.
 export async function downloadGatewayMediaFile(
   path: string,
-  origin?: { sessionId: string; profile?: string }
-): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
+  origin: GatewayFileOrigin = {}
+): Promise<GatewayFileSaveResult> {
   // URI conversion belongs to the gateway OS, not the renderer's URL parser.
-  const file = path
-  const conn = $connection.get()
+  if (!path?.trim()) {
+    throw new Error('Missing gateway file path')
+  }
 
   if (!window.hermesDesktop?.saveGatewayFile) {
     throw new Error('Desktop file download bridge is unavailable')
   }
 
+  const conn = $connection.get()
+  const owner = origin.owner ?? { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile }
+
   return window.hermesDesktop.saveGatewayFile({
-    connectionId: conn?.connectionId,
-    path: file,
-    profile: origin?.profile ?? conn?.profile,
-    ...(origin ? { sessionId: origin.sessionId } : {}),
-    suggestedName: mediaName(file).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
-      try {
-        return decodeURIComponent(encoded)
-      } catch {
-        return encoded
-      }
-    })
+    ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+    path,
+    ...(owner.profile ? { profile: owner.profile } : {}),
+    ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
+    suggestedName:
+      origin.suggestedName ||
+      mediaName(path).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+        try {
+          return decodeURIComponent(encoded)
+        } catch {
+          return encoded
+        }
+      })
   })
+}
+
+/** A user-initiated gateway file save with the shared feedback: a brief
+ *  "Saved" toast, a "Download failed" toast carrying the reason, and silence
+ *  when the user cancels the save dialog. Never rejects. */
+export async function downloadGatewayFileWithFeedback(path: string, origin?: GatewayFileOrigin): Promise<void> {
+  try {
+    const result = await downloadGatewayMediaFile(path, origin)
+
+    if (result.saved) {
+      notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.downloadSaved') })
+    }
+  } catch (error) {
+    notifyError(error, translateNow('fileMenu.downloadFailed'))
+  }
+}
+
+/** Capture a gateway file download alongside a REST read, never at click time:
+ *  a cached resource belongs to the connection/profile that returned it, not
+ *  to whichever backend is focused when the user clicks. The path stays on the
+ *  gateway; only Electron's authenticated save bridge sees it. */
+export function captureGatewayFileDownload() {
+  const { connectionId, profile } = capabilityScoped()
+
+  return (path: string, suggestedName: string) =>
+    downloadGatewayFileWithFeedback(path, { owner: { connectionId, profile }, suggestedName })
 }
 
 export function mediaDisplayLabel(path: string): string {

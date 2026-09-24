@@ -16,6 +16,10 @@ const run = promisify(execFile)
 const fixture = String.raw`
 param([string]$InstallRoot, [string]$Branch, [int]$DesktopPid, [string]$RelaunchExe, [switch]$NoGateway)
 $ErrorActionPreference = 'Stop'
+trap {
+  [IO.File]::WriteAllText(($env:HERMES_UPDATER_TEST_RESULT + '.error'), ($_ | Out-String))
+  exit 1
+}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -91,16 +95,29 @@ test.skipIf(process.platform !== 'win32').each([
       `
 
       const launcher = path.join(temporary, 'parent.cjs')
+      // Match main.ts's production handoff: observe the wrapper and retain the
+      // full 2500ms dwell before exit, even when the wrapper exits early.
+      // Windows can terminate a non-detached child with its parent's
+      // job; exiting immediately after unref races cmd starting PowerShell.
+      // The fixture still proves the real script survives that parent exit.
       buildSync({
         stdin: {
           contents: `
-            import { resolveUpdateScriptHandoff, wrapHandoffForDetachedConsole, spawnUpdaterProcess } from './updater-process';
+            import { resolveUpdateScriptHandoff, wrapHandoffForDetachedConsole, spawnUpdaterProcess, observeUpdaterHandoff } from './updater-process';
+            (async () => {
             const handoff = resolveUpdateScriptHandoff(${JSON.stringify(root)});
             const extra = ${JSON.stringify(['-InstallRoot', root, '-Branch', branch, '-DesktopPid', '42', '-RelaunchExe', relaunchExe, ...(noGateway ? ['-NoGateway'] : [])])};
             const options = { detached: true, stdio: 'ignore', env: { ...process.env, HERMES_UPDATER_TEST_PARENT: String(process.pid) } };
             const wrapped = wrapHandoffForDetachedConsole(handoff, extra);
-            spawnUpdaterProcess(wrapped.command, wrapped.args, { ...options, detached: wrapped.detached });
-            spawnUpdaterProcess(${JSON.stringify(installer)}, ${JSON.stringify(['-e', recordInstallerArgs, '--', ...installerArgs])}, options);
+            const script = spawnUpdaterProcess(wrapped.command, wrapped.args, { ...options, detached: wrapped.detached });
+            const installer = spawnUpdaterProcess(${JSON.stringify(installer)}, ${JSON.stringify(['-e', recordInstallerArgs, '--', ...installerArgs])}, options);
+            const dwellStarted = Date.now();
+            const outcomes = await Promise.all([script, installer].map(child => observeUpdaterHandoff(child, 2500)));
+            for (const outcome of outcomes) {
+              if (!outcome.ok) throw new Error(JSON.stringify(outcome));
+            }
+            await new Promise(resolve => setTimeout(resolve, Math.max(0, 2500 - (Date.now() - dwellStarted))));
+            })().catch(error => { console.error(error); process.exitCode = 1; });
           `,
           resolveDir: fileURLToPath(new URL('.', import.meta.url)),
           loader: 'ts'
@@ -128,7 +145,11 @@ test.skipIf(process.platform !== 'win32').each([
         await new Promise(resolve => setTimeout(resolve, 100))
       }
 
-      assert.ok(existsSync(resultFile), 'the detached PowerShell script must execute')
+      const diagnostics = [resultFile + '.error']
+        .filter(existsSync)
+        .map(file => readFileSync(file, 'utf8'))
+        .join('\n')
+      assert.ok(existsSync(resultFile), `the detached PowerShell script must execute\n${diagnostics}`)
       const result = JSON.parse(readFileSync(resultFile, 'utf8'))
       assert.deepEqual(
         {

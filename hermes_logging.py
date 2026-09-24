@@ -427,6 +427,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._reopen_stream(st)
 
     def emit(self, record: logging.LogRecord) -> None:
+        self._emit_failed = False
         # The kernel caches inode metadata, so this stat is sub-microsecond on a hot file.
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
@@ -434,7 +435,9 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         # A record actually reached the file: only now has the destination recovered. Resetting
         # in _open() is wrong — open() succeeds on a device whose write/flush still raise EIO,
         # which re-armed the report and printed the path once per record.
-        if self.stream is not None:
+        # CLH closes successful Windows writes immediately, so stream presence
+        # cannot distinguish a recovered destination from a failed one.
+        if not self._emit_failed:
             self._unavailable_reported = False
 
     def handleError(self, record: logging.LogRecord) -> None:
@@ -444,6 +447,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         silence it before stdlib prints to stderr (which the Desktop slash-worker
         captures into chat output).
         """
+        self._emit_failed = True
         exc = sys.exc_info()[1]
         if _is_windows_concurrent_log_lock_timeout(exc):
             return

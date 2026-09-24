@@ -14,9 +14,8 @@ name: Live provider canaries
 on:
   schedule:
     - cron: "17 7 * * *"  # nightly, 07:17 UTC
-  push:
-    tags:
-      - "v*"  # release gate
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       filter:
@@ -35,8 +34,14 @@ concurrency:
 jobs:
   live:
     name: Live provider canaries
-    # Forks and PRs never see these secrets; only run where they exist.
-    if: github.repository == 'NousResearch/hermes-agent'
+    # Only trusted upstream refs may execute code with live provider keys.
+    if: >-
+      github.repository == 'NousResearch/hermes-agent' &&
+      (
+        ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/v'))
+      )
+    environment: live-provider-canaries
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # Only booleans at job level: the key VALUES are scoped to the one step that

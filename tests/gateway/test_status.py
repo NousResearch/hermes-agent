@@ -1287,7 +1287,16 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
+    @pytest.mark.linux_only
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
+        import psutil
+
+        def inaccessible_process(pid):
+            raise psutil.AccessDenied(pid)
+
+        # Exercise the POSIX fallback without consulting a real host PID:
+        # psutil precedes ps and may find an unrelated process on CI.
+        monkeypatch.setattr(psutil, "Process", inaccessible_process)
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
         monkeypatch.setattr(
             status.subprocess, "run",

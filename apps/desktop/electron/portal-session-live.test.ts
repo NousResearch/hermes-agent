@@ -31,6 +31,8 @@ test.skipIf(displayPrefix === null)(
   'real portal windows handle both providers, transitions and expired/rejected access',
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-portal-session-'))
+    let fixtureFailed = false
+    let fixtureError: unknown
 
     try {
       const bundle = join(root, 'main.cjs')
@@ -64,7 +66,10 @@ test.skipIf(displayPrefix === null)(
         stdout = (
           await promisify(execFile)(command, args, {
             env: { ...env, HERMES_HOME: join(root, '.hermes'), XDG_CONFIG_HOME: join(root, 'config') },
-            timeout: 45_000
+            // Real Chromium cookie-store transitions took 44s in an isolated
+            // Windows run and exceeded 45s under the full 2,500-test suite.
+            // Keep a finite process deadline with headroom for native IO.
+            timeout: 90_000
           })
         ).stdout
       } catch (error) {
@@ -77,9 +82,24 @@ test.skipIf(displayPrefix === null)(
       }
 
       expect(stdout).toContain('PORTAL_SESSION_LIVE_OK')
-    } finally {
-      await rm(root, { recursive: true, force: true })
+    } catch (error) {
+      fixtureFailed = true
+      fixtureError = error
+    }
+
+    try {
+      // Chromium may still hold its Network temp file briefly after Electron
+      // is killed by execFile's timeout. Do not hide the fixture's real error.
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    } catch (cleanupError) {
+      if (!fixtureFailed) {
+        throw cleanupError
+      }
+    }
+
+    if (fixtureFailed) {
+      throw fixtureError
     }
   },
-  60_000
+  105_000
 )

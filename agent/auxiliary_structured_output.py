@@ -42,7 +42,10 @@ _CAPABILITY_REJECTION_MARKERS = (
 )
 
 # A 400 status line whose trailing brace payload is the whole error body, on either rendering the
-# logs show (the SDK's ``Error code: 400 - {...}`` repr or the ``HTTP 400: {...}`` JSON form).
+# logs show (the SDK's ``Error code: 400 - {...}`` repr or the ``HTTP 400: {...}`` JSON form). The
+# ``$`` anchor assumes the body is the trailing token: both observed renderings end with the brace,
+# so a wrapping exception that appends anything after it (a stack-trace tail) will not match — the
+# predicate then misses rather than misfires, which is the safe direction for a rejection detector.
 _BARE_ECHO_400 = re.compile(r"400\s*[-:]\s*(\{.*\})\s*$")
 
 

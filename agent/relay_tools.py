@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def execute(
     tool_name: str, args: dict[str, Any], callback: Callable[[dict[str, Any]], Any], *,
     session_id: str, tool_call_id: str | None = None, metadata: dict[str, Any] | None = None,
-    request_guard: Callable[[str, dict[str, Any]], None] | None = None,
+    execution_guard: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Run one tool call through Relay and return its final arguments."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
@@ -27,25 +27,25 @@ def execute(
     raw_result: dict[str, Any] = {}
     callback_error: BaseException | None = None
     callback_context = contextvars.copy_context()
-    request_guard_name: str | None = None
+    execution_guard_name: str | None = None
     scope_local = getattr(runtime.relay, "scope_local", None)
 
-    # A caller-owned terminal request guard runs *inside* Relay after configured
-    # request rewrites but before sanitize/start/execution middleware. Scope-local
-    # registration keeps concurrent profiles/turns isolated and disappears after
-    # this managed call.
-    if request_guard is not None:
-        register = getattr(scope_local, "register_tool_request", None)
+    # Request intercepts may rewrite clean model args (and may break their own chain).
+    # The first execution intercept is therefore the earliest boundary guaranteed to
+    # see Relay's FINAL effective args. Install a scope-local guard at i32::MIN so no
+    # configured execution interceptor receives rejected content.
+    if execution_guard is not None:
+        register = getattr(scope_local, "register_tool_execution", None)
         if not callable(register) or parent is None:
-            raise RuntimeError("NeMo Relay request guard unavailable for managed tool execution")
-        request_guard_name = f"hermes.tool-request-guard.{uuid.uuid4().hex}"
+            raise RuntimeError("NeMo Relay execution guard unavailable for managed tool execution")
+        execution_guard_name = f"hermes.tool-execution-guard.{uuid.uuid4().hex}"
 
-        def _terminal_request_guard(name: str, effective_args: Any) -> Any:
+        async def _first_execution_guard(name: str, effective_args: Any, next_call) -> Any:
             checked = effective_args if isinstance(effective_args, dict) else args
-            request_guard(name, checked)
-            return effective_args
+            execution_guard(name, checked)
+            return await next_call(effective_args)
 
-        register(parent, request_guard_name, 2_147_483_647, True, _terminal_request_guard)
+        register(parent, execution_guard_name, -2_147_483_648, _first_execution_guard)
 
     def guarded(final_args: dict[str, Any]) -> Any:
         # Everything the tool transitively calls (incl. auxiliary LLM calls on worker
@@ -84,13 +84,13 @@ def execute(
             return raw_result["value"], observed_args
         raise
     finally:
-        if request_guard_name is not None:
-            deregister = getattr(scope_local, "deregister_tool_request", None)
+        if execution_guard_name is not None:
+            deregister = getattr(scope_local, "deregister_tool_execution", None)
             if callable(deregister):
                 try:
-                    deregister(parent, request_guard_name)
+                    deregister(parent, execution_guard_name)
                 except Exception:
-                    logger.warning("Failed to remove Hermes Relay request guard %s", request_guard_name, exc_info=True)
+                    logger.warning("Failed to remove Hermes Relay execution guard %s", execution_guard_name, exc_info=True)
     managed_result = managed.result
     if "value" in raw_result and _json_equal(managed_result, raw_result["json"]):
         return raw_result["value"], observed_args

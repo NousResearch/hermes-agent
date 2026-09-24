@@ -140,6 +140,16 @@ test('assertLocalProfileCanStart rejects a delayed retry after the profile direc
   assert.doesNotThrow(() => assertLocalProfileCanStart('selena', gate, profile => profile === 'selena'))
 })
 
+test('assertLocalProfileCanStart does not exempt default when a forced-local spawn asks', () => {
+  const gate = new ProfileDeletionGate()
+
+  assert.throws(
+    () => assertLocalProfileCanStart('default', gate, () => false, { allowImplicitDefault: false }),
+    /Profile "default" no longer exists/
+  )
+  assert.doesNotThrow(() => assertLocalProfileCanStart('default', gate, () => true, { allowImplicitDefault: false }))
+})
+
 test('localProfilePoolKeys returns every local process scope for one profile', () => {
   assert.deepEqual(localProfilePoolKeys('Selena'), ['selena', 'conn:local::selena'])
   assert.deepEqual(localProfilePoolKeys(''), [])

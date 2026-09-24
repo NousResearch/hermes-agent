@@ -166,6 +166,7 @@ import {
   parseBackendScopeKey,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
+  registryDialConnectionId,
   rememberSshEnumeration,
   removeConnection,
   type ResolvedConnectionDescriptor,
@@ -10565,7 +10566,7 @@ async function ensureRegistryBackend(
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   const passive = Boolean(opts.passive)
   const registry = readDesktopConnectionsRegistry()
-  const id = String(connectionId || '').trim() || registry.primary
+  const id = registryDialConnectionId(connectionId, registry.primary)
   const source = registry.connections.find(c => c.id === id)
 
   if (!source) {
@@ -10659,10 +10660,23 @@ async function ensureRegistryBackend(
     // can't collide with the v1 remote descriptor cached at the bare key.
     profileDeletionGate.assertCanStart(profileKey)
 
-    const localRoute = resolveRegistryLocalRoute(profileKey, {
+    const rawProfile = String(profile ?? '').trim()
+
+    const localProfileExists = rawProfile
+      ? directoryExists(path.join(HERMES_HOME, 'profiles', rawProfile.toLowerCase()))
+      : undefined
+
+    // Pass the raw profile, not profileKey: profileKey collapses null to
+    // 'default' and would refuse an unprofiled enumeration as a concrete dial.
+    const localRoute = resolveRegistryLocalRoute(rawProfile || null, {
       globalRemote: globalRemoteActive(),
-      profileRemoteOverride: Boolean(profileHasRemoteOverride(profileKey))
+      profileRemoteOverride: Boolean(profileHasRemoteOverride(profileKey)),
+      ...(rawProfile ? { localProfileExists } : {})
     })
+
+    if (localRoute.refuse) {
+      throw new Error(localRoute.refuse)
+    }
 
     if (localRoute.delegate) {
       return ensureBackend(profile, { passive, spawnPriority })
@@ -11662,8 +11676,11 @@ async function spawnPoolBackend(
   // here, and logging "Starting" first left an orphaned line with no READY
   // and no exit — the exact undiagnosable burst signature in remote-gateway
   // user bundles (Aug 2026, Dash's report).
-  assertLocalProfileCanStart(profile, profileDeletionGate, key =>
-    directoryExists(path.join(HERMES_HOME, 'profiles', key))
+  assertLocalProfileCanStart(
+    profile,
+    profileDeletionGate,
+    key => directoryExists(path.join(HERMES_HOME, 'profiles', key)),
+    { allowImplicitDefault: !opts.forceLocal }
   )
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
@@ -14557,14 +14574,16 @@ async function connectDesktopProfileRoute(
 }
 
 // Registry-scoped variant: resolve a backend for (connectionId, profile).
-// connectionId '' / 'local' / the registry primary all behave sensibly; the
-// local kind delegates to ensureBackend when the v1 route is local, and
-// forces a genuinely-local child when the v1 global mode is remote (the
-// registry 'local' entry always means this machine).
+// An empty connection id is not registry.primary — that substitution dials
+// another SSH host when a scoped caller drops the id. 'local' and an explicit
+// primary id still resolve to those sources. The local kind delegates to
+// ensureBackend when the v1 route is local, and forces a genuinely-local
+// child when the v1 global mode is remote (the registry 'local' entry always
+// means this machine) unless the profile is remote-only.
 ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
-  const id = String(connectionId || '').trim() || registry.primary
+  const id = registryDialConnectionId(connectionId, registry.primary)
   const spawnPriority = spawnPriorityFrom(priority)
 
   return connectDesktopProfileRoute(

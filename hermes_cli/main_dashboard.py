@@ -46,7 +46,13 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
     mode = None
     for candidate in ("dashboard", "serve"):
-        patterns = (f"hermes {candidate}", f"hermes_cli.main {candidate}", f"hermes_cli/main.py {candidate}")
+        # Windows process tables often use backslashes (hermes_cli\main.py); accept both.
+        patterns = (
+            f"hermes {candidate}",
+            f"hermes_cli.main {candidate}",
+            f"hermes_cli/main.py {candidate}",
+            f"hermes_cli\\main.py {candidate}",
+        )
         if any(pattern in command for pattern in patterns):
             mode = candidate
             break

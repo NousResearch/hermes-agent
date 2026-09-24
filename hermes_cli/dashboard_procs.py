@@ -14,10 +14,11 @@ from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
 
 # Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
 # spawns; reaped on update for the same reason).
+# Include Windows backslash paths: wmic/psutil often emit ``hermes_cli\main.py``.
 _DASHBOARD_PATTERNS = tuple(
     f"{launcher} {cmd}"
     for cmd in ("dashboard", "serve")
-    for launcher in ("hermes", "hermes_cli.main", "hermes_cli/main.py"))
+    for launcher in ("hermes", "hermes_cli.main", "hermes_cli/main.py", r"hermes_cli\main.py"))
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 

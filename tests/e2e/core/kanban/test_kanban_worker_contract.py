@@ -11,6 +11,7 @@ Verdicts come from kanban.db rows, files on disk and the provider's request log.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import sys
@@ -33,6 +34,8 @@ KNOWN: dict[str, str] = {
 }
 
 _TASK_RE = re.compile(r"work kanban task (t_[0-9a-f]+)")
+_EXIT_RE = re.compile(r"\[kanban-worker-exit\] rc=(-?\d+)")
+_REFUSAL_KIND_RE = re.compile(r"block|refus|reject|artifact|violation")
 SKILL_MARK = "E2E_PINNED_SKILL_BODY_7f3a"
 
 
@@ -70,10 +73,16 @@ def _artifact_location(board: Board, tid: str, where: str) -> Path:
 ])
 def test_declared_artifact_is_attached_or_reported(tmp_path, where: str) -> None:
     board_ref: dict[str, Board] = {}
+    blocked: dict[str, bool] = {}
     payload = f"DELIVERABLE_{where.upper()}_c0ffee\n"
 
     def responder(rec: dict):
-        if rec["body"]["messages"][-1].get("role") == "tool":
+        last = rec["body"]["messages"][-1]
+        if last.get("role") == "tool":
+            # A refused completion is answered the way a careful worker would: park the card.
+            if '"error"' in str(last.get("content")) and not blocked.get("sent"):
+                blocked["sent"] = True
+                return ToolCall("kanban_block", {"reason": "artifact could not be delivered"})
             return Text("delivered")
         tid = _task_id(rec)
         path = _artifact_location(board_ref["b"], tid, where)
@@ -93,11 +102,30 @@ def test_declared_artifact_is_attached_or_reported(tmp_path, where: str) -> None
                 raise KnownGap(f"card done with its declared {where}-workspace artifact never attached\n"
                                f"{board.diag(tid)}")
             assert status == "done" or where == "outside", board.diag(tid)
+            if status != "done":
+                _assert_visible_refusal(board, srv, tid, _artifact_location(board, tid, where))
             if attached:
                 assert len(attached) == 1 and stored[0].read_text(encoding="utf-8") == payload, attached
                 assert not stored[0].is_relative_to(board.hermes_home / "kanban" / "workspaces"), stored
         finally:
             board.kill_workers()
+
+
+def _assert_visible_refusal(board: Board, srv: FakeLLMServer, tid: str, artifact: Path) -> None:
+    """A completion that did not land must say why, naming the artifact, somewhere a human or the
+    worker sees it; and the refusal must not turn into a crash loop."""
+    board.dispatch("--max", "0")  # reap the exited worker so its run is booked
+    name = artifact.name
+    tool_errors = [str(m.get("content")) for body in srv.main_requests() for m in body["messages"]
+                   if m.get("role") == "tool" and '"error"' in str(m.get("content"))]
+    traces = [c for c in tool_errors if name in c]
+    traces += [e["kind"] for e in board.events(tid)
+               if _REFUSAL_KIND_RE.search(e["kind"]) and name in json.dumps(e["payload"])]
+    traces += [r["error"] for r in board.runs(tid) if name in (r["error"] or "")]
+    assert traces, f"card left {board.task(tid)['status']} with no refusal naming {name}\n{board.diag(tid)}"
+    runs = board.runs(tid)
+    assert len(runs) == 1 and runs[0]["outcome"] != "crashed", board.diag(tid)
+    assert not board.events(tid, "gave_up") and board.task(tid)["consecutive_failures"] <= 1, board.diag(tid)
 
 
 # pinned skills --------------------------------------------------------------------------------
@@ -127,7 +155,8 @@ def test_worker_with_resolvable_pinned_skill_sees_it_on_first_request(tmp_path) 
             first = srv.main_requests()[0]
             assert SKILL_MARK in str(first["messages"]), "pinned skill body never reached the model"
             assert board.task(tid)["status"] == "done", board.diag(tid)
-            assert len(srv.main_requests()) == 2
+            # The terminal call is the first answer; at most one closing turn follows it.
+            assert 1 <= len(srv.main_requests()) <= 2, len(srv.main_requests())
         finally:
             board.kill_workers()
 
@@ -143,9 +172,12 @@ def test_worker_with_unresolvable_pinned_skill_still_starts_its_session(tmp_path
             # The operator removes the skill after the pin was written.
             shutil.rmtree(board.hermes_home / "skills" / "e2e-archived")
             _run_one_card(board, tid)
-            wait_until(lambda: board.worker_log(tid), 10, "worker log")
-            if not srv.main_requests():
-                raise KnownGap(f"worker died before its session; board:\n{board.diag(tid)}")
+            log = wait_until(lambda: board.worker_log(tid), 10, "worker log")
+            exits = [int(rc) for rc in _EXIT_RE.findall(log)]
+            # The bug's own signature: no model call at all, and the worker died of the stale pin
+            # (nonzero exit trailer, or its log names the missing skill). Anything else stays red.
+            if not srv.main_requests() and ((exits and exits[-1] != 0) or "e2e-archived" in log):
+                raise KnownGap(f"worker died before its session (exits={exits}); board:\n{board.diag(tid)}")
             assert SKILL_MARK not in str(srv.main_requests()[0]["messages"]), "removed skill still loaded"
             assert board.task(tid)["status"] == "done", board.diag(tid)
         finally:

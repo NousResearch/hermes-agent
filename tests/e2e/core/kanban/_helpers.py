@@ -42,12 +42,12 @@ def pid_alive(pid: Optional[int]) -> bool:
     if not pid:
         return False
     try:
-        os.kill(int(pid), 0)
+        os.kill(int(pid), 0)  # windows-footgun: ok — Linux-gated (module skips off Linux)
     except (ProcessLookupError, PermissionError):
         return False
     # A zombie child of ours still answers kill(0); /proc tells the truth.
     try:
-        stat = Path(f"/proc/{int(pid)}/stat").read_text()
+        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
         return stat.rsplit(")", 1)[1].split()[0] != "Z"
     except OSError:
         return False
@@ -133,7 +133,7 @@ class Board:
     def kill_workers(self) -> None:
         for pid in list(self.spawned_pids):
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-gated (module skips off Linux)
             except (ProcessLookupError, PermissionError):
                 pass
 

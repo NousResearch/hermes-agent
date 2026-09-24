@@ -12,6 +12,9 @@ Invariants, read from kanban.db and the provider's request log:
 * every card ends ``done`` with exactly one ``completed`` run and one ``completed`` event;
 * each card's ``kanban_complete`` was billed exactly once (no duplicate worker ran a card);
 * no card ever had two runs open at the same time.
+
+A second scenario gives a live worker a claim TTL shorter than its provider call: the dispatcher
+must extend that claim on every expired tick, never reclaim the card and spawn a duplicate.
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ def _kill_dispatcher_after(board: Board, kind: str | None) -> None:
             wait_until(lambda: _event_count(board, kind) > before or proc.poll() is not None, 60,
                        f"dispatcher to write a {kind} event", interval=0.01)
     finally:
-        proc.send_signal(signal.SIGKILL)
+        proc.send_signal(signal.SIGKILL)  # windows-footgun: ok — Linux-gated (module skips off Linux)
         proc.wait(timeout=30)
     for row in board.tasks():
         if row["worker_pid"]:
@@ -122,4 +125,65 @@ def test_dispatcher_sigkill_mid_tick_never_destroys_or_duplicates_cards(tmp_path
             outcomes = Counter(r["outcome"] for t in created for r in board.runs(t))
             assert outcomes["reclaimed"] >= 1, outcomes
         finally:
+            board.kill_workers()
+
+
+class SlowModel:
+    """The worker's first call hangs on the provider (no chunk, no tool, so no heartbeat) until
+    ``release``; every first call is counted so a duplicate worker on the card shows up as a bill."""
+
+    def __init__(self) -> None:
+        self.first_calls = 0
+        self.hanging = threading.Event()
+        self.release = threading.Event()
+        self._lock = threading.Lock()
+
+    def __call__(self, rec: dict):
+        if rec["body"]["messages"][-1].get("role") == "tool":
+            return Text("slow card closed")
+        with self._lock:
+            self.first_calls += 1
+        self.hanging.set()
+        self.release.wait(120)
+        return ToolCall("kanban_complete", {"summary": "slow model finally answered"})
+
+
+def test_ttl_expiry_extends_a_live_hung_workers_claim_instead_of_respawning(tmp_path) -> None:
+    """A claim TTL shorter than one provider call: every tick past expiry must extend the live
+    worker's claim (``claim_extended``), never reclaim it and spawn a second worker beside it."""
+    ttl = 2
+    model = SlowModel()
+    with FakeLLMServer(model) as srv:
+        board = Board(tmp_path, srv.base_url, env_extra={"HERMES_KANBAN_CLAIM_TTL_SECONDS": str(ttl)})
+        try:
+            tid = board.create("slow model card")
+            board.dispatch()
+            pid = int(board.task(tid)["worker_pid"])
+            wait_until(model.hanging.is_set, 90, f"worker to hang on its provider call\n{board.diag(tid)}")
+            first_expiry = int(board.task(tid)["claim_expires"])
+            # Tick until two TTL windows have passed and two ticks saw the claim expired, or the
+            # dispatcher gave the card away (then the assertions below name what went wrong).
+            def settled() -> bool:
+                board.dispatch()
+                if board.events(tid, "reclaimed") or len(board.events(tid, "spawned")) > 1:
+                    return True
+                return (int(time.time()) > first_expiry + 2 * ttl
+                        and len(board.events(tid, "claim_extended")) >= 2)
+            try:
+                wait_until(settled, 60, "two ticks past the claim TTL", interval=0.2)
+            except AssertionError as exc:
+                raise AssertionError(f"{exc}\n{board.diag(tid)}") from None
+            assert not board.events(tid, "reclaimed"), f"live worker's claim reclaimed\n{board.diag(tid)}"
+            task = board.task(tid)
+            assert pid_alive(pid) and task["worker_pid"] == pid, board.diag(tid)
+            assert task["status"] == "running" and int(task["claim_expires"]) > first_expiry, board.diag(tid)
+            assert [e["payload"]["pid"] for e in board.events(tid, "spawned")] == [pid], board.diag(tid)
+            assert all(e["payload"]["worker_pid"] == pid for e in board.events(tid, "claim_extended"))
+            assert model.first_calls == 1, f"a second worker billed the card\n{board.diag(tid)}"
+            model.release.set()
+            board.wait_worker_exit(tid, pid)
+            wait_until(lambda: board.task(tid)["status"] == "done", 30, f"card done\n{board.diag(tid)}")
+            assert [r["outcome"] for r in board.runs(tid)] == ["completed"], board.diag(tid)
+        finally:
+            model.release.set()
             board.kill_workers()

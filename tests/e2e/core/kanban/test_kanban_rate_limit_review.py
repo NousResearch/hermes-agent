@@ -3,9 +3,9 @@ card's later review handoff (#119070).
 
 Real processes end to end: every tick is a real ``hermes kanban dispatch`` process, every worker a
 real ``hermes chat -q`` process spawned by it, talking to the recording fake provider (the only
-fake — it stands in for the vendor HTTP API). The fake plays two roles, told apart by what the
-dispatcher put in the worker's system prompt: a review-lane worker is started with the bundled
-``sdlc-review`` skill preloaded, an implementer is not.
+fake — it stands in for the vendor HTTP API). The fake plays two roles, told apart structurally:
+the scratch home carries its own ``sdlc-review`` skill whose body holds a unique marker, and the
+review lane preloads that skill into the worker it spawns, so only a reviewer's prompt carries it.
 
 Flow under test (``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS=0``, ``agent.api_max_retries: 1``):
 
@@ -20,6 +20,7 @@ result, and the request stream the fake provider recorded — never from log wor
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -37,9 +38,11 @@ pytestmark = [
     pytest.mark.live_system_guard_bypass,
 ]
 
-# The review lane preloads the bundled review skill; the dispatcher's own contract (kanban.md:
-# "spawn the assigned profile with the bundled sdlc-review skill").
+# The review lane preloads the review skill by name (kanban.md: "spawn the assigned profile with
+# the bundled sdlc-review skill"). A same-named user skill wins over the bundled copy, so seeding one
+# with a marker in the scratch home tells a reviewer's prompt apart without reading prompt wording.
 REVIEW_SKILL = "sdlc-review"
+REVIEW_MARK = "E2E_REVIEW_LANE_SKILL_5d21c9"
 RATE_LIMIT_EXIT_CODE = 75  # KANBAN_RATE_LIMIT_EXIT_CODE — documented worker exit contract
 MAX_TICKS = 6  # a healthy rate-limited card is done on tick 3; the rest prove "forever"
 
@@ -62,13 +65,12 @@ def _known(name: str):
 # fake provider -----------------------------------------------------------------------------------
 
 
-def _system_text(body: dict) -> str:
-    parts = []
-    for m in body.get("messages", []):
-        if m.get("role") == "system":
-            c = m.get("content")
-            parts.append(c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or []))
-    return "\n".join(parts)
+def _seed_review_skill(board: Board) -> None:
+    skill = board.hermes_home / "skills" / "devops" / REVIEW_SKILL
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {REVIEW_SKILL}\ndescription: Review Kanban handoffs (e2e stand-in).\n---\n\n"
+        f"# {REVIEW_SKILL}\n\nFollow {REVIEW_MARK} before approving.\n", encoding="utf-8")
 
 
 @dataclass
@@ -95,7 +97,7 @@ class TwoRoleModel:
     def __call__(self, rec: dict[str, Any]) -> Any:
         body = rec["body"]
         msgs = body.get("messages", [])
-        role = "review" if f'"{REVIEW_SKILL}"' in _system_text(body) else "impl"
+        role = "review" if REVIEW_MARK in json.dumps(msgs) else "impl"
         with self._lock:
             last = self.attempts[-1] if self.attempts else None
             if last is None or (last.tick, last.role) != (self.tick, role):
@@ -118,6 +120,13 @@ class TwoRoleModel:
 
     def by_role(self, role: str) -> list[Attempt]:
         return [a for a in self.attempts if a.role == role]
+
+
+def one_terminal_turn(att: Attempt, tool: str) -> bool:
+    """Billing bound for a finishing attempt: its first answer IS the terminal board call, followed by
+    at most one closing turn (dropping that closing call is an improvement, not a regression)."""
+    return (att.answers[:1] == [tool] and att.requests == len(att.answers) <= 2
+            and all(a == "Text" for a in att.answers[1:]))
 
 
 # board driving -----------------------------------------------------------------------------------
@@ -164,6 +173,7 @@ def _flow(root: Path, rate_limited_attempts: int) -> Any:
     model = TwoRoleModel(rate_limited_attempts)
     with FakeLLMServer(model) as srv:
         board = Board(root, srv.base_url)
+        _seed_review_skill(board)
         tid = board.create(f"rate-limit review flow ({rate_limited_attempts} x 429)")
         try:
             ticks = drive(board, tid, model)
@@ -199,11 +209,10 @@ def test_rate_limited_attempt_is_billed_once_and_requeued_without_a_failure(rate
     # Cooldown is 0: the reap and the respawn happen on the SAME tick right after the 429 worker died.
     assert [t["spawned"] for t in f.ticks[:2]] == [1, 1], diag
     # Provider-side billing: the 429 attempt is ONE request (api_max_retries: 1, no retry loop and
-    # no fallback re-send); the retry is exactly the handoff tool call plus its closing turn.
+    # no fallback re-send); the retry opens with the handoff call and at most one closing turn.
     impl = f.model.by_role("impl")
-    assert [(a.tick, a.requests, a.answers) for a in impl] == [
-        (1, 1, ["Error"]), (2, 2, ["kanban_request_review", "Text"]),
-    ], diag
+    assert [(a.tick, a.requests, a.answers) for a in impl[:1]] == [(1, 1, ["Error"])], diag
+    assert [a.tick for a in impl] == [1, 2] and one_terminal_turn(impl[1], "kanban_request_review"), diag
     assert len(runs) - 2 == len(f.model.by_role("review")), diag
 
 
@@ -216,7 +225,9 @@ def test_clean_handoff_spawns_the_reviewer_on_the_next_tick(tmp_path: Path) -> N
     assert f.run_outcomes() == ["review_requested", "completed"], diag
     assert [t["spawned"] for t in f.ticks] == [1, 1], diag
     assert not any(t["guarded"] for t in f.ticks), diag
-    assert [(a.role, a.tick, a.requests) for a in f.model.attempts] == [("impl", 1, 2), ("review", 2, 2)], diag
+    assert [(a.role, a.tick) for a in f.model.attempts] == [("impl", 1), ("review", 2)], diag
+    impl, review = f.model.attempts
+    assert one_terminal_turn(impl, "kanban_request_review") and one_terminal_turn(review, "kanban_complete"), diag
     assert b.task(tid)["consecutive_failures"] == 0, diag
 
 
@@ -236,6 +247,6 @@ def test_rate_limited_then_review_handoff_reaches_the_reviewer(rate_limited_flow
     # Once fixed, the whole contract must hold, not just "something spawned".
     assert f.run_outcomes() == ["rate_limited", "review_requested", "completed"], diag
     # The reviewer starts on the tick right after the handoff (cooldown 0), billed one tool turn.
-    assert [(a.tick, a.requests, a.answers) for a in reviewers] == [(3, 2, ["kanban_complete", "Text"])], diag
+    assert [a.tick for a in reviewers] == [3] and one_terminal_turn(reviewers[0], "kanban_complete"), diag
     assert "blocker_auth" not in guarded, diag
     assert not b.events(tid, "gave_up") and b.task(tid)["consecutive_failures"] == 0, diag

@@ -141,11 +141,11 @@ def gateway(b: Board) -> Iterator[subprocess.Popen]:
     try:
         yield proc
     finally:
-        for sig, grace in ((signal.SIGTERM, 20), (signal.SIGKILL, 10)):
+        for sig, grace in ((signal.SIGTERM, 20), (signal.SIGKILL, 10)):  # windows-footgun: ok — POSIX-gated (skips on win32)
             if proc.poll() is not None:
                 break
             try:
-                os.killpg(proc.pid, sig)
+                os.killpg(proc.pid, sig)  # windows-footgun: ok — POSIX-gated (skips on win32)
             except ProcessLookupError:
                 break
             try:
@@ -156,7 +156,7 @@ def gateway(b: Board) -> Iterator[subprocess.Popen]:
 
 def gateway_tail(b: Board) -> str:
     p = b.root / "gateway.log"
-    return p.read_text(errors="replace")[-3000:] if p.exists() else "(no gateway log)"
+    return p.read_text(encoding="utf-8", errors="replace")[-3000:] if p.exists() else "(no gateway log)"
 
 
 def prove_ticks(b: Board, proc: subprocess.Popen, k: int) -> None:

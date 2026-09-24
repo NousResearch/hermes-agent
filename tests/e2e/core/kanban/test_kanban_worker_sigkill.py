@@ -111,7 +111,7 @@ def _drive(board: Board, director: Director) -> Scenario:
     wait_until(director.hanging.is_set, 90, f"attempt 2 to hang on its provider call\n{board.diag(tid)}")
     hb = board.task(tid)["last_heartbeat_at"]
     assert hb, f"attempt 2 never heartbeat\n{board.diag(tid)}"
-    os.kill(w2, signal.SIGKILL)
+    os.kill(w2, signal.SIGKILL)  # windows-footgun: ok — Linux-gated (module skips off Linux)
     wait_until(lambda: not pid_alive(w2), 15, "SIGKILLed worker to disappear")
     # The fresh claim must start strictly after attempt 2's last heartbeat second.
     wait_until(lambda: int(time.time()) > int(hb) + 1, 5, "clock to pass the last heartbeat")
@@ -158,9 +158,10 @@ def test_sigkilled_worker_is_reclaimed_and_the_retry_completes_once(scenario: Sc
     task = b.task(sc.tid)
     assert task["status"] == "done" and task["worker_pid"] is None and task["claim_lock"] is None
     assert [r for r in runs if r["outcome"] == "completed"][0]["summary"] == "ATTEMPT_THREE_DONE"
-    # Billing: every attempt paid only for its own turns, nothing ran after the card closed.
+    # Billing: every attempt paid only for its own turns, nothing ran after the card closed. Attempt 2
+    # is exactly heartbeat + the hung call; attempt 3 opens with kanban_complete, then <= 1 closing turn.
     billed = sc.director.billed
-    assert sorted(billed) == [1, 2, 3] and billed[2] == 2 and billed[3] == 2, billed
+    assert sorted(billed) == [1, 2, 3] and billed[2] == 2 and 1 <= billed[3] <= 2, billed
     assert all(not t["spawned"] for t in sc.ticks_after_done), sc.ticks_after_done
     assert len(b.events(sc.tid, "completed")) == 1
 

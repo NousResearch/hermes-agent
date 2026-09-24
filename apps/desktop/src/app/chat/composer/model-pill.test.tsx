@@ -191,7 +191,9 @@ describe('ModelPill label providers', () => {
   it('renders a provider-supplied label, and the core label once the provider declines', () => {
     setCurrentModel('deepseek/deepseek-v4-flash')
 
-    const label = vi.fn(({ model, reasoningEffort }: ComposerModelPillContext) => `${model} · ${reasoningEffort || 'none'}`)
+    const label = vi.fn(
+      ({ model, reasoningEffort }: ComposerModelPillContext) => `${model} · ${reasoningEffort || 'none'}`
+    )
     register(label)
 
     const { unmount } = render(
@@ -206,6 +208,7 @@ describe('ModelPill label providers', () => {
     // not consulted at all (the chevron has no text to leak, so only the spy
     // proves the skip).
     label.mockClear()
+
     const compactRender = render(
       <ModelPill compact disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
     )

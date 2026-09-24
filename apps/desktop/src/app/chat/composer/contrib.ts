@@ -182,7 +182,11 @@ export interface ComposerModelPillProvider {
 /** The first provider-supplied pill label, or `null` for the core label. A
  *  throwing provider is treated as declining — a broken plugin can't blank the
  *  pill. */
-export function useComposerModelPillLabel({ compact, model, reasoningEffort }: ComposerModelPillContext): null | string {
+export function useComposerModelPillLabel({
+  compact,
+  model,
+  reasoningEffort
+}: ComposerModelPillContext): null | string {
   const contributions = useContributions(COMPOSER_AREAS.modelPill)
 
   // Memoised on the primitive fields (the caller builds a fresh ctx object

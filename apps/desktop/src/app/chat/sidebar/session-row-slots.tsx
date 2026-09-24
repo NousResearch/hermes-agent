@@ -44,7 +44,12 @@ export const SessionRowSlot: FC<{ area: string; sessionId: string }> = ({ area, 
         const render = (contribution.data as SessionRowSlotContribution | undefined)?.render
 
         return render ? (
-          <SessionRowSlotEntry id={contribution.id} key={`${contribution.source ?? 'core'}:${contribution.id}`} render={render} sessionId={sessionId} />
+          <SessionRowSlotEntry
+            id={contribution.id}
+            key={`${contribution.source ?? 'core'}:${contribution.id}`}
+            render={render}
+            sessionId={sessionId}
+          />
         ) : null
       })}
     </>

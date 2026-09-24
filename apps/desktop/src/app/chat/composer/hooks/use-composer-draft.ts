@@ -297,9 +297,7 @@ export function useComposerDraft({
     return onComposerDraftRequests(
       {
         getIds: () => {
-          const ids = [sessionIdRef.current, activeQueueSessionKeyRef.current].filter(
-            (id): id is string => Boolean(id)
-          )
+          const ids = [sessionIdRef.current, activeQueueSessionKeyRef.current].filter((id): id is string => Boolean(id))
 
           // A surface with no session yet IS the new-chat draft (the stash keys
           // it '__new__'); once one opens, the new-chat draft belongs elsewhere.

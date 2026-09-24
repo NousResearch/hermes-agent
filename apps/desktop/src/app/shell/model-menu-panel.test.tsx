@@ -268,6 +268,37 @@ describe('ModelMenuPanel search', () => {
     })
   })
 
+  it('hovering a model row leaves focus in the search field and arrows still drive the list (#53980)', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    input.focus()
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 2\.5 Pro/i)).not.toBeNull()
+    })
+
+    // A real hand on the mouse: wake the rows, then move over one.
+    fireEvent.mouseMove(window)
+    fireEvent.pointerMove(rowWithText(content, /Gemini 2\.5 Pro/i)!, { pointerType: 'mouse' })
+
+    expect(input.ownerDocument.activeElement).toBe(input)
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-2.5-flash',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
   it('with no query the selection sits on the current model, so Enter closes without switching', async () => {
     $currentProvider.set('google')
     $currentModel.set('gemini-3.1-pro')

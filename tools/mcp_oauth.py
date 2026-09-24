@@ -233,14 +233,14 @@ _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 
 def _load_mcp_server_config(home: Path, server_name: str) -> dict[str, Any] | None:
     """One raw ``mcp_servers`` entry from *home*'s ``config.yaml``; None when absent or unreadable.
-    Reads the file directly: the shared-pool decision must never go through the profile-aware
-    loader, which would inherit or resolve values the export contract requires verbatim."""
+    Uses the as-written primitive, not the profile-aware loader, which would inherit or resolve
+    values the export contract requires verbatim."""
+    import yaml
+
+    from hermes_cli.config import read_user_config_raw
+
     try:
-        import yaml
-    except ImportError:  # pragma: no cover — yaml ships with hermes
-        return None
-    try:
-        data = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        data = read_user_config_raw(home / "config.yaml")
     except (OSError, TypeError, ValueError, yaml.YAMLError):
         return None
     servers = data.get("mcp_servers") if isinstance(data, dict) else None

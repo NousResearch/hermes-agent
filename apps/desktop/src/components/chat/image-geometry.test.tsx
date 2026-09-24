@@ -93,7 +93,9 @@ it.each(cases)('reserves $kind frames through cold decode, warm return and failu
   expect(frame(warm.container).style.cssText).toBe(warmSize)
 
   // A broken image collapses to its text line instead of an empty frame, and
-  // the next mount of that source does not reserve a frame just to collapse it.
+  // the next markdown mount of that source does not reserve a frame just to
+  // collapse it. A generated image's children are all absolutely positioned,
+  // so it keeps its hinted frame: a successful retry must still be visible.
   fireEvent.error(warm.container.querySelector('img')!)
   expect(warm.container.textContent).toMatch(/Open image/i)
   expect(frame(warm.container)?.style.aspectRatio ?? '').toBe('')
@@ -101,14 +103,25 @@ it.each(cases)('reserves $kind frames through cold decode, warm return and failu
 
   const retry = render(content(kind, path, hint))
 
-  if (hint !== 'intrinsic') {
+  if (kind !== 'generated' && hint !== 'intrinsic') {
     expect(frame(retry.container)?.style.aspectRatio ?? '').toBe('')
+  }
+
+  await decode(retry.container)
+  expect(retry.container.querySelector('img')).not.toBeNull()
+
+  if (kind === 'generated') {
+    expect(parseFloat(frame(retry.container).style.aspectRatio)).toBeGreaterThan(0)
   }
 })
 
 it('keeps the pending generated-image frame when its result arrives', async () => {
   const path = '/geometry/pending.svg'
-  const mounted = render(<GeneratedImage aspectRatio="landscape" />)
+  const mounted = render(<GeneratedImage aspectRatio="square" />)
+  expect(parseFloat(frame(mounted.container).style.aspectRatio)).toBe(1)
+  // The hint can arrive after the pending card mounted; nothing is shown yet.
+  mounted.rerender(<GeneratedImage aspectRatio="landscape" />)
+  expect(parseFloat(frame(mounted.container).style.aspectRatio)).toBeCloseTo(16 / 9)
   const pendingStyle = frame(mounted.container).style.cssText
   mounted.rerender(<GeneratedImage aspectRatio="landscape" result={{ success: true, image: path, pixel_size: '900x600' }} />)
 

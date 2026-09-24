@@ -16,7 +16,12 @@ import { $connection } from '@/store/session'
 
 /** Keep a frame for one source/owner for its mounted lifetime. Hints are not
  * intrinsic dimensions: a cold image is contained in that frame, not allowed
- * to resize it at decode. The next mount can use the measured dimensions. */
+ * to resize it at decode. The next mount can use the measured dimensions.
+ *
+ * `preservePendingFrame` is for a caller whose content is all absolutely
+ * positioned (a generated image): it always gets a frame, since without one a
+ * successful retry renders into a zero-height box, and it keeps the frame
+ * shown while its tool was pending. */
 export function useMediaImage(
   path: string,
   fallbackRatio: number,
@@ -44,9 +49,10 @@ export function useMediaImage(
       key,
       ownerKey,
       path,
+      fallbackRatio,
       // A source that just failed gets no frame: it would only collapse again.
       frameStyle:
-        !dimensions && isKnownBrokenMediaImage(key)
+        !dimensions && !preservePendingFrame && isKnownBrokenMediaImage(key)
           ? undefined
           : ({
               aspectRatio: ratio,
@@ -62,7 +68,8 @@ export function useMediaImage(
 
   // Source changes must not paint the previous image/geometry even for one
   // commit. React retries this component before committing its children.
-  if (state.key !== key) {
+  // With no source yet, nothing is painted, so a hint arriving late reshapes.
+  if (state.key !== key || (!path && state.fallbackRatio !== fallbackRatio)) {
     const next = initialState()
     // A generated result fills the frame already visible while its tool was
     // pending. Media state still resets; geometry is never inherited across
@@ -83,13 +90,13 @@ export function useMediaImage(
               rememberMediaImageFailure(key)
             }
 
-            setState(current => ({ ...current, src, failed: !src }))
+            setState(current => (current.key === key ? { ...current, src, failed: !src } : current))
           }
         },
         () => {
           if (!cancelled) {
             rememberMediaImageFailure(key)
-            setState(current => ({ ...current, failed: true }))
+            setState(current => (current.key === key ? { ...current, failed: true } : current))
           }
         }
       )

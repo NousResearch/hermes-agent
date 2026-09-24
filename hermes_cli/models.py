@@ -277,6 +277,25 @@ def union_with_portal_paid_recommendations(
         force_refresh=force_refresh, synthesize_free_pricing=False)
 
 
+def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, dict[str, Any]]) -> list[str]:
+    """Curated list plus every paid Nous model the gateway is discounting right now, deepest
+    discount first. A sale lives only in ``/v1/models`` ``pricing.original``, so without this the
+    picker badges discounts on curated rows but never shows a discounted model the curated list and
+    Portal recommendations omit. Free rows stay with ``freeRecommendedModels``; rows the gateway
+    marks tool-less (``"tools": False``) are skipped because Hermes is tool-calling-first."""
+    from hermes_cli.models_pricing import compute_sale_discount
+
+    seen = set(curated_ids)
+    on_sale: list[tuple[int, str]] = []
+    for mid, entry in (pricing or {}).items():
+        if mid in seen or not isinstance(entry, dict) or entry.get("tools") is False:
+            continue
+        sale = compute_sale_discount(entry.get("prompt", ""), entry.get("completion", ""), entry.get("original"))
+        if sale is not None and isinstance(entry.get("original"), dict) and sale[0] < 100:
+            on_sale.append((-sale[0], mid))
+    return list(curated_ids) + [mid for _, mid in sorted(on_sale)]
+
+
 # Free-tier detection cache, per profile — short so an account upgrade shows within minutes.
 _FREE_TIER_CACHE_TTL: int = 180  # seconds
 _free_tier_cache: dict[str, tuple[bool, float]] = {}  # profile key -> (result, timestamp)

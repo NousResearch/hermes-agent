@@ -224,7 +224,7 @@ def fetch_models_with_pricing(
     ...}}``, cached per *base_url* and per credential so one caller's catalog never answers
     another's read. *include_sale_original* (Nous Portal only) copies the gateway's pre-discount
     ``pricing.original`` rates through as a nested ``original`` dict for sale chrome."""
-    from hermes_cli.models import _HERMES_USER_AGENT
+    from hermes_cli.models import _HERMES_USER_AGENT, _openrouter_model_supports_tools
     url_root = (base_url or "").rstrip("/")
     cache_key = url_root + _pricing_auth_fingerprint(api_key)
     if not force_refresh:
@@ -259,6 +259,9 @@ def fetch_models_with_pricing(
             # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
             if include_sale_original and item.get("billing_mode") == "subscription":
                 entry["billing_mode"] = "subscription"
+            # Nous Portal-only: on-sale rows join the picker, which must not offer a tool-less model.
+            if include_sale_original and not _openrouter_model_supports_tools(item):
+                entry["tools"] = False
             result[mid] = entry
 
     return _cache_catalog(cache_key, result, cache_ttl_seconds)

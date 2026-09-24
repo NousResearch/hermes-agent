@@ -453,12 +453,13 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
         from hermes_cli.models_pricing import get_pricing_for_provider
         from hermes_cli.models import (
             check_nous_free_tier,
+            union_with_nous_on_sale_models,
             union_with_portal_free_recommendations,
             union_with_portal_paid_recommendations,
         )
         from hermes_cli.auth import get_provider_auth_state
-        # Cache-only: both Portal unions below discard the pricing map (``model_ids, _ = ...``);
-        # only the appended ids matter, so a live catalog fetch here buys nothing but latency.
+        # Cache-only: a cold cache must not hold the picker open. The Portal unions only append ids;
+        # the on-sale union reads the same cached rows (the background prewarm fills them).
         pricing = get_pricing_for_provider("nous", cached_only=True) or {}
         try:
             portal = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
@@ -468,6 +469,7 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
             model_ids, _ = union_with_portal_free_recommendations(model_ids, pricing, portal)
         else:
             model_ids, _ = union_with_portal_paid_recommendations(model_ids, pricing, portal)
+            model_ids = union_with_nous_on_sale_models(model_ids, pricing)
     except Exception:
         pass
     try:

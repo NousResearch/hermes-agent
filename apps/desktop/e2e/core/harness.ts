@@ -390,9 +390,11 @@ export function startTcpProxy(targetPort: number): Promise<TcpProxy> {
 }
 
 /**
- * Rewrite the PRIMARY gateway WebSocket URL main hands the renderer (initial
- * connection and every reconnect mint) so it dials `proxyPort`. REST stays on
- * main's IPC bridge. Takes effect on the renderer's next dial (reload/reconnect).
+ * Rewrite WebSocket URLs for this exact host backend (initial descriptors and
+ * reconnect tickets, including registry/profile variants) to `proxyPort`.
+ * REST stays on main's IPC bridge. A shared profile must see the same URL as
+ * the primary, or this fault-injection proxy manufactures a second identity
+ * for the one backend. Other backend ports and remote sources are untouched.
  */
 export async function routePrimaryWebSocket(app: ElectronApplication, backendPort: number, proxyPort: number) {
   await app.evaluate(
@@ -417,7 +419,12 @@ export async function routePrimaryWebSocket(app: ElectronApplication, backendPor
         return value
       }
 
-      for (const channel of ['hermes:connection', 'hermes:gateway:ws-url']) {
+      for (const channel of [
+        'hermes:connection',
+        'hermes:gateway:ws-url',
+        'hermes:connection:for',
+        'hermes:gateway:ws-url-for'
+      ]) {
         const original = handlers.get(channel)
 
         if (!original) {
@@ -425,11 +432,10 @@ export async function routePrimaryWebSocket(app: ElectronApplication, backendPor
         }
 
         ipcMain.removeHandler(channel)
-        ipcMain.handle(channel, async (event: unknown, profile?: unknown, ...rest: unknown[]) => {
-          const result = await original(event, profile, ...rest)
-          const primary = profile === undefined || profile === null || profile === '' || profile === 'default'
+        ipcMain.handle(channel, async (event: unknown, profileOrPayload?: unknown, ...rest: unknown[]) => {
+          const result = await original(event, profileOrPayload, ...rest)
 
-          return primary ? rewrite(result) : result
+          return rewrite(result)
         })
       }
     },

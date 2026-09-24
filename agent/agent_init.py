@@ -1407,7 +1407,7 @@ def _apply_agent_section(agent, _agent_cfg):
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
     for _key in (
         "stall_guards", "task_completion_guidance", "parallel_tool_call_guidance",
-        "environment_probe", "bot_mode_protocol",
+        "environment_probe", "bot_mode_protocol", "host_identity_guidance",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.

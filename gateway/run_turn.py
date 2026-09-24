@@ -398,6 +398,19 @@ class GatewayTurnMixin:
         except Exception:
             return False
 
+    @staticmethod
+    def _silent_replies_allowed(source) -> bool:
+        """``display.allow_silent_replies`` (per-platform overridable): a bare silence marker on a
+        human turn is a deliberate non-reply instead of the "try again" notice."""
+        try:
+            from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
+            return _resolve_gateway_display_bool(
+                _load_gateway_config(), _platform_config_key(source.platform), "allow_silent_replies",
+                default=False, platform=source.platform,
+            )
+        except Exception:
+            return False
+
     async def _hmwa_resolve_session(self, event, source):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
         topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
@@ -543,6 +556,9 @@ class GatewayTurnMixin:
         from gateway.run import _AUTO_RESET_CONTEXT_NOTES
         reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
         context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["suspended"])
+        if reset_reason == "rotated":
+            from gateway.session_lifecycle import rotation_config
+            context_note = rotation_config()["note"] or _AUTO_RESET_CONTEXT_NOTES["rotated"]
         # Long-lived channels: point the agent at the prior same-channel session for session_search.
         try:
             # Returns None (appends nothing) for other platforms or when there's no prior activity to
@@ -1534,7 +1550,10 @@ class GatewayTurnMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        if (
+            _intentional_silence and not is_machinery_display_kind(_silence_kind)
+            and not self._silent_replies_allowed(source)
+        ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -3720,7 +3739,9 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            if is_machinery_display_kind(turn_ctx.persist_user_display_kind) or (
+                turn_ctx.source is not None and self._silent_replies_allowed(turn_ctx.source)
+            ):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",

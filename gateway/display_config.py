@@ -31,6 +31,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
+    # A bare silence marker ([SILENT] / NO_REPLY) answering a human message is normally replaced by
+    # a "try again" notice. True honours it as a deliberate non-reply (an agent allowed to ignore).
+    "allow_silent_replies": False,
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -74,6 +77,17 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "homeassistant": _TIER_MINIMAL,
     "api_server": {**_TIER_HIGH, "tool_preview_length": 0},
 }
+
+def agent_display_name() -> str:
+    """``display.agent_name``: the name gateway notices use for the agent (default "Hermes")."""
+    try:
+        from gateway.run import _load_gateway_config
+        display = (_load_gateway_config() or {}).get("display") or {}
+        name = str(display.get("agent_name") or "").strip() if isinstance(display, dict) else ""
+    except Exception:
+        name = ""
+    return name or "Hermes"
+
 
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
@@ -193,6 +207,7 @@ _NORMALISERS: dict[str, Any] = {
     "busy_steer_ack_enabled": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
+    "allow_silent_replies": _norm_bool,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),

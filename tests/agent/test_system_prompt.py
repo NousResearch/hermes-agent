@@ -437,6 +437,27 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
+def test_host_identity_guidance_can_be_dropped(monkeypatch):
+    """agent.host_identity_guidance: false removes the "You run on Hermes Agent" block."""
+    import agent.system_prompt as system_prompt
+
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP-WITH-SKILL")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP-NO-SKILL")
+
+    def build(**overrides):
+        with (
+            patch("agent.prompt_builder.load_soul_md", return_value="I am a persona."),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+        ):
+            return build_system_prompt(_make_agent(load_soul_identity=True, **overrides))
+
+    assert "HELP-NO-SKILL" in build()
+    dropped = build(_host_identity_guidance=False)
+    assert "HELP-NO-SKILL" not in dropped and "HELP-WITH-SKILL" not in dropped
+    assert dropped.startswith("I am a persona.")
+
+
 def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     """Keep workspace guidance intact after the shared context."""
     import agent.system_prompt as system_prompt

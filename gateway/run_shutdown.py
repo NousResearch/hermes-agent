@@ -923,10 +923,12 @@ class GatewayShutdownMixin:
                 logger.debug("Cron interrupt targets unresolved for %s: %s", job_id, e)
                 continue
             job_name = job.get("name") or job_id
+            from gateway.display_config import agent_display_name
+            name = agent_display_name()
             msg = (
-                f"⚠️ Scheduled job '{job_name}' was cut short because Hermes is {action}; "
+                f"⚠️ Scheduled job '{job_name}' was cut short because {name} is {action}; "
                 "no result this run. It will run again on schedule, or run it now with "
-                f"`hermes cron run {job_name}` once Hermes is back."
+                f"`hermes cron run {job_name}` once {name} is back."
             )
             for target in targets or ():
                 try:
@@ -1013,13 +1015,15 @@ class GatewayShutdownMixin:
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
+        from gateway.display_config import agent_display_name
+        name = agent_display_name()
         msg = (
-            "⚠️ Hermes is shutting down — your current task will be interrupted. "
+            f"⚠️ {name} is shutting down — your current task will be interrupted. "
             "When it is back online, send any message and I'll try to pick up where we left off."
         )
         if self._restart_requested:
             msg = (
-                "⚠️ Hermes is restarting — your current task will be interrupted. "
+                f"⚠️ {name} is restarting — your current task will be interrupted. "
                 "Send any message after the restart and I'll try to resume where you left off."
             )
         restart_key = None

@@ -172,6 +172,9 @@ DEFAULT_CONFIG = {
         "environment_probe": True,
         # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
         "bot_mode_protocol": True,
+        # "You run on Hermes Agent" pointer to the Hermes docs/skill. False drops it, for a persona
+        # (SOUL.md) that should not present itself as Hermes.
+        "host_identity_guidance": True,
         # Embedder-supplied text appended to the system prompt's environment-hints block, so a host
         # wrapping Hermes (sandbox runner, managed platform) can describe proxy/credential/ mount
         # layout without editing SOUL.md. Env HERMES_ENVIRONMENT_HINT overrides it.
@@ -793,6 +796,17 @@ DEFAULT_CONFIG = {
         "moa_aggregator": _aux(900, reasoning_effort=False),
     },
 
+    # Gateway conversation rotation (0 = off, the default). A chat session whose last prompt
+    # reached ``max_prompt_tokens``, or that sat idle ``idle_hours``, starts fresh on the next
+    # message — like /new, but decided before the turn, silently. ``note`` is what the agent is
+    # told at the start of the new conversation.
+    "session_rotation": {
+        "max_prompt_tokens": 0,
+        "idle_hours": 0,
+        "note": "[System note: the previous conversation grew long or went quiet and was closed. "
+                "This is a fresh conversation; earlier ones are reachable with session_search.]",
+    },
+
     "display": {
         "compact": False,
         "personality": "",
@@ -843,6 +857,11 @@ DEFAULT_CONFIG = {
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw
+        # Gateway: a bare [SILENT]/NO_REPLY answering a human message is honoured as a deliberate
+        # non-reply instead of the "try again" notice. Per-platform via display.platforms.<platform>.
+        "allow_silent_replies": False,
+        # Name used in gateway notices ("♻️ Gateway online — <name> is back and ready.").
+        "agent_name": "Hermes",
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
         # emulator misbehaves with replayed scrollback.
         "persistent_output": True,

@@ -1,0 +1,22 @@
+name: wintermute
+version: 0.6.1
+description: "Wintermute's inner life: drives, hormones, unconscious texture, social bonds and reply windows, injected into every turn."
+author: "ziatatous"
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - post_tool_call
+  - post_api_request
+  - post_auxiliary_call
+provides_tools:
+  - wintermute_send
+  - wintermute_set_wake
+  - wintermute_await_reply
+  - wintermute_feel
+  - wintermute_note_peer
+  - wintermute_link
+  - wintermute_unlink
+  - wintermute_rewrite_self
+  - wintermute_keep
+  - wintermute_mark_significant
+  - wintermute_evolve

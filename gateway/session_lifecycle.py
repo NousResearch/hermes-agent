@@ -23,6 +23,38 @@ def _now() -> datetime:
     return datetime.now()
 
 
+def rotation_config() -> dict:
+    """``session_rotation`` from config.yaml; every limit 0 (off) when unset or unreadable."""
+    try:
+        from gateway.run import _load_gateway_config
+        raw = (_load_gateway_config() or {}).get("session_rotation") or {}
+    except Exception:
+        raw = {}
+    raw = raw if isinstance(raw, dict) else {}
+
+    def number(key: str) -> float:
+        try:
+            return max(0.0, float(raw.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {"max_prompt_tokens": number("max_prompt_tokens"), "idle_hours": number("idle_hours"),
+            "note": str(raw.get("note") or "").strip()}
+
+
+def _rotation_reason(entry: SessionEntry) -> Optional[str]:
+    rotation = rotation_config()
+    tokens = rotation["max_prompt_tokens"]
+    if tokens and (entry.last_prompt_tokens or 0) >= tokens:
+        return "rotated"
+    idle = rotation["idle_hours"]
+    updated = getattr(entry, "updated_at", None)
+    if idle and isinstance(updated, datetime) and (entry.last_prompt_tokens or 0) > 0:
+        if _now() - updated.replace(tzinfo=None) >= timedelta(hours=idle):
+            return "rotated"
+    return None
+
+
 def _new_session_id(now: datetime) -> str:
     return new_session_id(now, hex_len=8)
 
@@ -82,8 +114,11 @@ class SessionLifecycleMixin:
         return bool(row is not None and row.get("end_reason") is not None)
 
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
-        """Only explicit suspension replaces a routed conversation; time never does."""
-        return "suspended" if entry.suspended else None
+        """Explicit suspension replaces a routed conversation; so does ``session_rotation``
+        (off by default) once the conversation is too large or has gone quiet."""
+        if entry.suspended:
+            return "suspended"
+        return _rotation_reason(entry)
 
     def _update_entry(self, session_key: str, mutate) -> bool:
         """Apply ``mutate(entry)`` under ``_lock`` and full-save; False when the entry is missing

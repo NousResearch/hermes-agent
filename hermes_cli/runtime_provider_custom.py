@@ -66,6 +66,27 @@ def _model_cfg_key_env_for(model_cfg: Dict[str, Any], base_url: str) -> str:
     return _key_env_secret(model_cfg, "model")
 
 
+def _model_cfg_credential_for_named_provider(model_cfg: Dict[str, Any], *, entry_name: str,
+                                             provider_key: str, base_url: str) -> str:
+    """A model-level credential only belongs to its configured named endpoint.
+
+    ``providers:`` entries are independently routable, so a key on ``model:`` must never leak to
+    another named provider merely because both happen to be custom.  The main provider identity and
+    endpoint must both match before the runtime-less auxiliary route may inherit it (#118721).
+    """
+    configured_provider = _normalize_custom_provider_name(_clean(model_cfg.get("provider")))
+    entry_aliases = custom_provider_aliases(entry_name, provider_key)
+    if configured_provider not in entry_aliases:
+        return ""
+    configured_base_url = _normalize_base_url_for_match(model_cfg.get("base_url"))
+    # A named ``model.provider`` commonly keeps its endpoint solely in ``providers.<name>``.
+    # When model.base_url is explicit it is an additional boundary; when absent, the matched entry
+    # is the configured endpoint.
+    if configured_base_url and configured_base_url != _normalize_base_url_for_match(base_url):
+        return ""
+    return _clean(model_cfg.get("api_key")) or _key_env_secret(model_cfg, "model")
+
+
 def _entry_url(entry: Dict[str, Any]) -> str:
     return entry.get("api") or entry.get("url") or entry.get("base_url") or ""
 
@@ -153,8 +174,13 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         # unrelated entry must not read its profile-scoped secret.
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
         api_key = get_secret_str(key_env, "").strip() if key_env else ""
+        entry_api_key = api_key or _clean(entry.get("api_key", ""))
+        model_api_key = _model_cfg_credential_for_named_provider(
+            rp._get_model_config(), entry_name=str(entry.get("name", "") or ep_name),
+            provider_key=str(ep_name), base_url=base_url,
+        ) if not entry_api_key else ""
         result: Dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
-                                  "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
+                                  "api_key": entry_api_key or model_api_key, "model": entry.get("default_model", "")}
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
         key_cmd = _clean(entry.get("key_cmd", ""))
         if key_cmd:

@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -392,6 +393,25 @@ class TestInstall:
         with pytest.raises(DistributionError, match="requires Hermes"):
             install_distribution(str(staged), name="future")
 
+    def test_install_leaves_shipped_cron_jobs_paused_and_not_due(self, profile_env):
+        """A shipped job must not run until the installer resumes it, even one that was due
+        in the author's profile."""
+        from cron.jobs import create_job, get_due_jobs, is_job_runnable, list_jobs, update_job, use_cron_store
+
+        staged = _make_staging_dir(profile_env, "src")
+        with use_cron_store(staged):
+            shipped = create_job("Summarise new arXiv papers", "every 1d", name="digest")
+            update_job(shipped["id"], {"next_run_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()})
+
+        plan = install_distribution(str(staged), name="cron_paused")
+
+        with use_cron_store(plan.target_dir):
+            installed = {job["id"]: job for job in list_jobs(include_disabled=True)}
+            due = get_due_jobs()
+        assert shipped["id"] in installed
+        assert not is_job_runnable(installed[shipped["id"]])
+        assert due == []
+
 
 # ===========================================================================
 # Update — preserves user data, preserves config by default
@@ -436,6 +456,31 @@ class TestUpdate:
 
         assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
         assert (plan.target_dir / "cron" / "mine.json").exists()
+
+    def test_update_merges_cron_store_per_job(self, profile_env):
+        """cron/jobs.json holds every job of the profile: an update refreshes the definition of a
+        job the distribution ships and keeps the installer's own jobs and each job's state."""
+        from cron.jobs import create_job, list_jobs, pause_job, resume_job, update_job, use_cron_store
+
+        staged = _make_staging_dir(profile_env, "src")
+        with use_cron_store(staged):
+            shipped = create_job("Summarise new arXiv papers", "every 1d", name="digest")
+        plan = install_distribution(str(staged), name="cron_merge")
+        with use_cron_store(plan.target_dir):
+            resume_job(shipped["id"])
+            mine = create_job("Remind me to water the plants", "0 9 * * *", name="mine")
+            pause_job(mine["id"])
+        with use_cron_store(staged):
+            update_job(shipped["id"], {"prompt": "Summarise new arXiv and bioRxiv papers"})
+
+        update_distribution("cron_merge")
+
+        with use_cron_store(plan.target_dir):
+            jobs = {job["id"]: job for job in list_jobs(include_disabled=True)}
+        assert mine["id"] in jobs, "the installer's own cron job was deleted by the update"
+        assert jobs[mine["id"]]["state"] == "paused"
+        assert jobs[shipped["id"]]["prompt"] == "Summarise new arXiv and bioRxiv papers"
+        assert jobs[shipped["id"]]["enabled"] is True
 
     def test_update_refuses_symlinked_owned_container(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")

@@ -203,6 +203,25 @@ backups/
 # Logs
 errors.log
 .hermes_history
+
+# Cron and skills runtime state — cron/jobs.json IS your scheduled jobs, so commit it
+cron/*.lock
+cron/ticker_*
+cron/catch_up_occurrences
+cron/*.db
+cron/*.db-wal
+cron/*.db-shm
+cron/*.jsonl
+cron/suggestions.json
+cron/output/
+cron/external-workers/
+cron/bot_chat_pending/
+skills/.hub/
+skills/.usage.json
+skills/.bundled_manifest
+skills/.curator_*
+skills/.archive/
+skills/.locks/
 ```
 
 This mirrors the [hard-excluded paths](#whats-not-in-a-distribution-ever) that the installer strips on its end. Anything else you want to keep out of the repo (scratch files, large assets, local-only skills) should also go in here.
@@ -255,7 +274,7 @@ research-bot/
 │   ├── paper-summarization/SKILL.md
 │   └── citation-lookup/SKILL.md
 ├── cron/
-│   └── weekly-digest.json       # scheduled tasks
+│   └── jobs.json                # scheduled jobs (`hermes cron add`); installed paused
 └── README.md                    # human-facing description (optional)
 ```
 
@@ -265,7 +284,7 @@ When an installer updates to a new version, some things get replaced (author's d
 
 | Category | Paths | On update |
 |---|---|---|
-| **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/`, `distribution.yaml` | Files are replaced from the new clone. Directories are merged per entry: each skill or cron job the new clone ships replaces its counterpart wholesale (files the author retired disappear), while skills or cron jobs you added yourself stay in place. |
+| **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/`, `distribution.yaml` | Files are replaced from the new clone. Directories are merged per entry: each skill the new clone ships replaces its counterpart wholesale (files the author retired disappear), while skills you added yourself stay in place. `cron/jobs.json` is merged job by job: a job the new clone ships gets its new definition but keeps whether you paused or resumed it and its run history, a job new to your profile arrives paused, and jobs you added yourself stay in place. Runtime state inside `cron/` and `skills/` is never replaced. |
 | **Config override** | `config.yaml` | Actually preserved by default — the installer may have tuned model or provider. Pass `--force-config` on update to reset. |
 | **User-owned** | `memories/`, `sessions/`, `state.db*`, `auth.json`, `.env`, `logs/`, `workspace/`, `plans/`, `home/`, `*_cache/`, `local/` | Never touched |
 
@@ -403,7 +422,7 @@ hermes profile update research-bot
 What happens:
 
 1. Re-clones the repo from the recorded source URL.
-2. Replaces distribution-owned files (SOUL, mcp.json) and every skill or cron job the distribution ships; skills and cron jobs you added to the profile yourself are left alone.
+2. Replaces distribution-owned files (SOUL, mcp.json) and every skill the distribution ships, and refreshes the definition of every cron job it ships without resuming or pausing it; skills and cron jobs you added to the profile yourself are left alone.
 3. **Preserves** your `config.yaml` — you may have tuned the model, temperature, or other settings. Pass `--force-config` to overwrite.
 4. **Never touches** user data: memories, sessions, auth, `.env`, logs, state.
 
@@ -714,6 +733,7 @@ The installer hard-excludes these paths even if an author accidentally ships the
 - `home/` — user's home mount in Docker backends
 - `*_cache/` — image / audio / document caches
 - `local/` — user-reserved customization namespace
+- Runtime state inside `cron/` and `skills/` — locks, ticker markers, the execution and delivery ledgers, `cron/output/`, the skills hub, usage and curator state (the [Step 3](#step-3--create-a-gitignore-before-the-first-commit) list)
 
 When you clone a distribution as an installer, these simply aren't copied into your profile directory. When you update, your copies stay put. If you installed the same distribution on five machines, you have five isolated sets of this data — one per machine.
 
@@ -728,7 +748,7 @@ Profile distributions are unsigned by default. You're trusting:
 - **The git host** (GitHub / GitLab / wherever) to serve the bytes the author pushed.
 - **The author** to not ship a malicious SOUL, skills, or cron jobs.
 
-Cron jobs from a distribution are **not auto-scheduled** — the installer prints `hermes -p <name> cron list` and you enable them explicitly. SOUL.md and skills ARE active as soon as you start chatting with the profile, so read them before your first run if you're installing from someone you don't know.
+Cron jobs from a distribution are **not auto-scheduled** — they are installed paused, the installer prints `hermes -p <name> cron list`, and you enable each one with `hermes -p <name> cron resume <job-id>`. SOUL.md and skills ARE active as soon as you start chatting with the profile, so read them before your first run if you're installing from someone you don't know.
 
 Rough analogy: installing a distribution is like installing a browser extension or a VS Code extension. Low friction, high power, trust the source. For internal company distributions, use a private repo and your normal git auth — nothing new to configure.
 

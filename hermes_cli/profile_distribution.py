@@ -7,6 +7,7 @@ development before the first push).
 
 from __future__ import annotations
 
+import fnmatch
 import operator
 import os
 import re
@@ -54,6 +55,32 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     # User customization namespace
     "local",
 })
+
+# Runtime state the installing profile's own Hermes writes inside distribution-owned dirs. It is
+# never authored content: shipping it would swap the installer's live copy (a lock a running
+# gateway holds, a WAL-mode ledger, the curator's schedule) for the author's and publish the
+# author's run history. Globs match the entry directly under the owned dir.
+_RUNTIME_STATE: Dict[str, Tuple[str, ...]] = {
+    "cron": (
+        "*.lock",  # .jobs.lock, .tick.lock, .fire-*.lock
+        "ticker_*", "catch_up_occurrences",  # ticker liveness read by `hermes cron status`
+        "*.db", "*.db-wal", "*.db-shm",  # executions ledger, delivery queue, notepad
+        "*.jsonl", "suggestions.json",  # scheduler audit and telemetry, job suggestions
+        "output", "external-workers", "bot_chat_pending",  # run output, in-flight handoffs
+    ),
+    "skills": (
+        ".hub", ".usage.json", ".bundled_manifest",  # hub installs, usage counters, bundled-sync hashes
+        ".curator_*", ".archive", ".locks",  # curator schedule, ledger, backups, archive, locks
+    ),
+}
+
+# Cron job fields an author sets (``cron.jobs.create_job`` arguments). The rest of a record is
+# the installing profile's own state: pause flags, next/last run, failure streak, claims.
+_CRON_JOB_DEFINITION: Tuple[str, ...] = (
+    "name", "prompt", "skills", "skill", "model", "provider", "base_url", "script", "no_agent",
+    "monitor_script", "monitor_url", "context_from", "schedule", "schedule_display", "deliver",
+    "origin", "enabled_toolsets", "workdir", "attach_to_session", "reasoning_effort", "failure_deliver",
+)
 
 
 class DistributionError(Exception):
@@ -336,6 +363,11 @@ def plan_install(source: str, workdir: Path, override_name: Optional[str] = None
     )
 
 
+def _is_runtime_state(rel_parts: Tuple[str, ...]) -> bool:
+    patterns = _RUNTIME_STATE.get(rel_parts[0], ()) if len(rel_parts) > 1 else ()
+    return any(fnmatch.fnmatchcase(rel_parts[1], pattern) for pattern in patterns)
+
+
 def _owned_entries(staged: Path, manifest: DistributionManifest):
     """Yield ``(src, rel_parts)`` for every staged path the distribution owns."""
     explicit_owned = [p for p in (p.strip().strip("/") for p in manifest.distribution_owned) if p]
@@ -350,7 +382,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
         rel_parts = PurePosixPath(rel).parts
-        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE:
+        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE or _is_runtime_state(rel_parts):
             continue
         if ".." in rel_parts or PurePosixPath(rel).is_absolute():
             continue
@@ -376,6 +408,53 @@ def _replace_entry(src: Path, dest: Path) -> None:
         shutil.copytree(src, dest)
     else:
         shutil.copy2(src, dest)
+
+
+def _with_job_definition(record: Dict[str, Any], shipped: Dict[str, Any]) -> Dict[str, Any]:
+    """*record* carrying the author's definition from *shipped*, its own state untouched."""
+    merged = {k: v for k, v in record.items() if k not in _CRON_JOB_DEFINITION}
+    merged.update((k, shipped[k]) for k in _CRON_JOB_DEFINITION if k in shipped)
+    # repeat pairs the author's budget (times) with this profile's progress (completed).
+    times = (shipped.get("repeat") or {}).get("times")
+    merged["repeat"] = {"completed": 0, **(record.get("repeat") or {}), "times": times}
+    return merged
+
+
+def _merge_cron_jobs(src: Path, dest: Path) -> None:
+    """Merge a shipped ``cron/jobs.json`` into the profile's store job by job, keyed on the job
+    id the author's store assigned (kept on import, so ``context_from`` chains still resolve).
+
+    The store holds every job of the profile, so replacing the file deleted the installer's own
+    jobs and re-armed shipped ones. A job the profile already has gets the new definition and
+    keeps its enabled/paused state and run history; a job new to the profile arrives paused, so
+    nothing a distribution ships runs before the installer resumes it."""
+    from cron import jobs as cron_jobs
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
+            # load_jobs() repairs legacy shapes in place: read a copy so a local source is never written.
+            (Path(tmp) / "cron").mkdir()
+            shutil.copy2(src, Path(tmp) / "cron" / "jobs.json")
+            with cron_jobs.use_cron_store(tmp):
+                shipped = {j["id"]: j for j in cron_jobs.load_jobs() if isinstance(j, dict) and j.get("id")}
+        now = cron_jobs._hermes_now().isoformat()
+        imported = {
+            "enabled": False, "state": "paused", "paused_at": now, "created_at": now, "next_run_at": None,
+            "paused_reason": "Installed from a profile distribution; review it, then resume.",
+        }
+        with cron_jobs.use_cron_store(dest.parent.parent), cron_jobs._jobs_lock():
+            jobs = []
+            for job in cron_jobs.load_jobs():
+                ship = shipped.pop(job.get("id"), None)
+                jobs.append(job if ship is None else _with_job_definition(job, ship))
+            jobs += [_with_job_definition({"id": job_id, **imported}, ship) for job_id, ship in shipped.items()]
+            cron_jobs.save_jobs(jobs)
+    except RuntimeError as exc:  # load_jobs() on an unreadable or corrupt store
+        raise DistributionError(f"Could not merge cron jobs into {dest}: {exc}") from exc
+
+
+# Owned files the runtime keeps as one store of many records: merged per record, never replaced.
+_MERGED_FILES = {("cron", "jobs.json"): _merge_cron_jobs}
 
 
 def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
@@ -409,22 +488,26 @@ def _is_container(path: Path) -> bool:
     return path.is_dir() and not any(p.is_file() for p in path.iterdir())
 
 
-def _merge_dir(src: Path, dest: Path) -> None:
-    """Replace only the roots *src* ships inside *dest*; a nested container
-    (``skills/<category>``) is merged, not replaced, so sibling roots the user
+def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
+    """Replace only the roots *src* ships inside *dest* (*rel* from the profile root); a nested
+    container (``skills/<category>``) is merged, not replaced, so sibling roots the user
     added under the same category survive."""
     for child in src.iterdir():
+        parts = (*rel, child.name)
+        if _is_runtime_state(parts):
+            continue
         if _is_container(child):
-            _merge_dir(child, _real_dir(dest, (child.name,)))
+            _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
-            _replace_entry(child, dest / child.name)
+            _MERGED_FILES.get(parts, _replace_entry)(child, dest / child.name)
 
 
-def _refuse_symlinked_containers(src: Path, dest: Path) -> None:
+def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     for child in src.iterdir():
-        if _is_container(child):
+        parts = (*rel, child.name)
+        if _is_container(child) and not _is_runtime_state(parts):
             _refuse_symlink(dest / child.name)
-            _refuse_symlinked_containers(child, dest / child.name)
+            _refuse_symlinked_containers(child, dest / child.name, parts)
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:
@@ -440,7 +523,7 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
             path = path / part
             _refuse_symlink(path)
         if src.is_dir() and len(rel_parts) == 1:
-            _refuse_symlinked_containers(src, path)
+            _refuse_symlinked_containers(src, path, rel_parts)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
@@ -467,10 +550,10 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
             if src.is_dir():
-                _merge_dir(src, _real_dir(target, rel_parts))
+                _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
                 continue
         parent = _real_dir(target, rel_parts[:-1])
-        _replace_entry(src, parent / rel_parts[-1])
+        _MERGED_FILES.get(rel_parts, _replace_entry)(src, parent / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():

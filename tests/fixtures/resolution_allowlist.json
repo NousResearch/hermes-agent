@@ -703,5 +703,30 @@
     "path": "tools/computer_use/cua_backend_driver.py",
     "symbol": "_candidate_cua_driver_commands",
     "kind": "known_path_table"
+  },
+  {
+    "path": "tools/bot_desktop/browser.py",
+    "symbol": "_system_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/install.py",
+    "symbol": "_run",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "missing_binaries",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "package_manager",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "installable",
+    "kind": "bare_which"
   }
 ]

@@ -1,4 +1,4 @@
-import { setModelAssignment } from '@/hermes'
+import { type ProfileScope, setModelAssignment } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { dismissNotification, notify } from '@/store/notifications'
 import type { ModelAssignmentRequest, ModelAssignmentResponse } from '@/types/hermes'
@@ -41,7 +41,7 @@ function confirmModelWarning(message: string): Promise<boolean> {
 
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
-  scopeProfile?: null | string,
+  scopeProfile?: ProfileScope,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   // Only pass the extra arg when a scope override exists, so unscoped callers

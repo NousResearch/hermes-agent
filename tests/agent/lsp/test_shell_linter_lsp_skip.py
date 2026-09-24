@@ -69,14 +69,6 @@ def test_shell_linter_skipped_when_lsp_will_handle(ext, tmp_path):
     assert "LSP" in (result.message or "")
 
 
-
-
-
-
-
-
-
-
 def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
     """A flaky LSP service must never break the shell-linter fallback —
     if ``enabled_for`` raises, we treat the file as "not handled" so the
@@ -91,27 +83,6 @@ def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
     with patch.object(fops, "_lsp_local_only", return_value=True), \
          patch("agent.lsp.get_service", return_value=fake_svc):
         assert fops._lsp_will_handle(str(src)) is False
-
-
-
-
-def test_tsx_default_check_lint_returns_skipped(tmp_path):
-    """End-to-end: ``.tsx`` files get ``LintResult(skipped=True)`` from
-    ``_check_lint`` regardless of LSP status — this is the no-regression
-    contract that addresses Copilot review #3271017282."""
-    fops = _make_fops()
-    src = tmp_path / "foo.tsx"
-    src.write_text("export const X = () => <div/>\n")
-
-    # Even with LSP claiming the file, no shell linter runs for .tsx
-    # because there's no LINTERS entry — the ``ext not in LINTERS``
-    # branch fires before the LSP short-circuit is consulted.
-    with patch.object(fops, "_lsp_will_handle", return_value=True), \
-         patch.object(fops, "_exec") as exec_mock:
-        result = fops._check_lint(str(src))
-
-    assert result.skipped is True
-    assert not exec_mock.called, "no shell linter should run for .tsx"
 
 
 def test_ts_shell_linter_skipped_when_ancestor_tsconfig_present(tmp_path):

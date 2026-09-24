@@ -88,11 +88,11 @@ class TestGenericProviderLiveCuratedMerge:
 
     def test_opencode_go_merge_does_not_resurrect_delisted_model(self):
         """#95914 bug class, end-to-end through provider_model_ids with the REAL curated floor:
-        the Go relay (GET /zen/go/v1/models) delisted ox-alpha-free 2026-09-09. The live-first
-        merge must not resurrect it from the curated floor, or the picker keeps offering a model
-        that now 401s (REVERT-PROOF: a stale floor re-adds it and this fails)."""
+        the Go relay (GET /zen/go/v1/models) delisted ox-alpha-free 2026-09-09 but may keep LISTING
+        it (#111749). Neither the live listing nor the curated floor may resurrect it, or the picker
+        keeps offering a model that now 401s."""
         assert "opencode-go" in _LIVE_FIRST_PICKER_PROVIDERS
-        live = ["deepseek-v4-flash", "kimi-k3", "omen-alpha"]  # current Go relay (no ox-alpha-free)
+        live = ["deepseek-v4-flash", "kimi-k3", "omen-alpha", "ox-alpha-free"]
 
         with (
             patch("providers.get_provider_profile", return_value=self._make_profile(live)),
@@ -127,7 +127,6 @@ class TestGenericProviderLiveCuratedMerge:
         assert "x-preview-f-free" not in result
         assert {"kimi-k3", "gpt-5.6-sol", "claude-opus-5"} <= set(result)
 
-
     def test_opencode_zen_offline_catalog_drops_retired_model(self):
         """#115496 without a key: no live fetch, so provider_model_ids serves the curated floor merged
         with models.dev — both still carry the retired x-preview-f-free. The final rows must not."""
@@ -143,3 +142,7 @@ class TestGenericProviderLiveCuratedMerge:
 
         assert "x-preview-f-free" not in result
         assert "kimi-k3" in result
+
+
+
+

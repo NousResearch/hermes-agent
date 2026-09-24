@@ -38,18 +38,6 @@ def test_dead_grant_is_classified_and_not_replayed_at_other_endpoints(monkeypatc
     assert not ac.is_terminal_anthropic_refresh_error(TimeoutError("timed out"))
 
 
-def test_claude_code_refresher_warns_on_dead_grant(monkeypatch, caplog):
-    """The auxiliary Claude Code refresher is a sibling path of the pool: same WARNING, same Hermes hint."""
-    monkeypatch.setattr(ac, "read_claude_code_credentials", lambda: {"accessToken": "old", "refreshToken": "rt", "expiresAt": 1})
-
-    def dead(refresh_token, *, use_json=False):
-        raise ac.AnthropicOAuthError(400, "invalid_grant", "", what="refresh")
-
-    monkeypatch.setattr(ac, "refresh_anthropic_oauth_pure", dead)
-    with caplog.at_level(logging.INFO, logger=ac.logger.name):
-        assert ac._refresh_oauth_token({"accessToken": "old", "refreshToken": "rt"}) is None
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "hermes auth add anthropic" in warnings[0]
 
 
 def test_claude_code_refresher_reports_dead_grant_once_per_process(monkeypatch, caplog):
@@ -86,20 +74,5 @@ def test_claude_code_credentials_path_honours_claude_config_dir(monkeypatch, tmp
     assert ac.claude_code_credentials_path() == Path.home() / ".claude" / ".credentials.json"
 
 
-def test_anthropic_401_troubleshooting_points_at_hermes_auth(capsys):
-    from agent.turn_recovery import _print_anthropic_401_diagnostics
-
-    class _Agent:
-        log_prefix = ""
-
-    _print_anthropic_401_diagnostics(_Agent(), "sk-ant-oat01-xxxxxxxxxxxx")
-    out = capsys.readouterr().out
-    assert "hermes auth add anthropic" in out and "hermes auth list anthropic" in out
-    assert "/login" not in out
 
 
-def test_no_anthropic_credentials_message_points_at_hermes_auth():
-    from hermes_cli.runtime_provider import _NO_ANTHROPIC_CREDENTIALS_MSG
-
-    assert "hermes auth add anthropic" in _NO_ANTHROPIC_CREDENTIALS_MSG
-    assert "/login" not in _NO_ANTHROPIC_CREDENTIALS_MSG

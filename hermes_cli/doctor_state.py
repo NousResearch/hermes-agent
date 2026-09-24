@@ -18,8 +18,8 @@ from hermes_state_holders import read_only_db_uri
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig
-        cfg = HonchoClientConfig.from_global_config()
+        from plugins.memory import import_provider_module
+        cfg = import_provider_module("honcho", "client").HonchoClientConfig.from_global_config()
         return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
     except Exception:
         return False
@@ -473,9 +473,10 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
 
 
 def _memory_provider_honcho(issues: list) -> None:
-    from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-    hcfg = HonchoClientConfig.from_global_config()
-    cfg_path = resolve_config_path()
+    from plugins.memory import import_provider_module
+    client = import_provider_module("honcho", "client")
+    hcfg = client.HonchoClientConfig.from_global_config()
+    cfg_path = client.resolve_config_path()
     if not cfg_path.exists():
         # Config file missing — env-var fallback may still have resolved it.
         check_bool(hcfg.api_key or hcfg.base_url,
@@ -487,18 +488,17 @@ def _memory_provider_honcho(issues: list) -> None:
         _fail_and_issue("Honcho API key or base URL not set", "run: hermes memory setup",
                         "No Honcho API key — run 'hermes memory setup'", issues)
     else:
-        from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
-        reset_honcho_client()
+        client.reset_honcho_client()
         try:
-            get_honcho_client(hcfg)
+            client.get_honcho_client(hcfg)
             check_ok("Honcho connected", f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}")
         except Exception as _e:
             _fail_and_issue("Honcho connection failed", str(_e), f"Honcho unreachable: {_e}", issues)
 
 
 def _memory_provider_mem0(issues: list) -> None:
-    from plugins.memory.mem0 import _load_config as _load_mem0_config
-    mem0_cfg = _load_mem0_config()
+    from plugins.memory import import_provider_module
+    mem0_cfg = import_provider_module("mem0")._load_config()
     if mem0_cfg.get("api_key", ""):
         check_ok("Mem0 API key configured")
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")

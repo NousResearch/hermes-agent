@@ -26,6 +26,9 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text, rmtree_readonly
 
 logger = logging.getLogger(__name__)
+_DEFAULT_CLONE_TIMEOUT_SECONDS = 300
+_MAX_CLONE_TIMEOUT_SECONDS = 3600
+_CLONE_TIMEOUT_HINT = "On a slow connection, raise plugins.clone_timeout_seconds in config.yaml."
 
 
 @functools.lru_cache(maxsize=1)
@@ -101,6 +104,19 @@ def _config_value(*keys: str, default: Any) -> Any:
         return cfg_get(load_config(), *keys, default=default)
     except Exception:
         return default
+
+
+def _clone_timeout_seconds() -> int:
+    """Deadline for plugin clone and pinned fetch, scoped to the active profile."""
+    value = _config_value("plugins", "clone_timeout_seconds", default=_DEFAULT_CLONE_TIMEOUT_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        logger.warning("plugins.clone_timeout_seconds must be a positive integer; using %ss",
+                       _DEFAULT_CLONE_TIMEOUT_SECONDS)
+        return _DEFAULT_CLONE_TIMEOUT_SECONDS
+    if value > _MAX_CLONE_TIMEOUT_SECONDS:
+        logger.warning("plugins.clone_timeout_seconds exceeds %ss; clamping", _MAX_CLONE_TIMEOUT_SECONDS)
+        return _MAX_CLONE_TIMEOUT_SECONDS
+    return value
 
 
 def _config_name_set(*keys: str) -> set:
@@ -280,9 +296,10 @@ def _has_portable_manifest(plugin_dir: Path) -> bool:
 
 def _load_yaml_manifest(manifest_file: Path):
     """``yaml.safe_load`` of *manifest_file* (``{}`` when empty); raises on any read/parse error."""
-    import yaml
+    from utils import fast_safe_load
+
     with open(manifest_file, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        return fast_safe_load(f) or {}
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
@@ -595,16 +612,19 @@ def _git_resolve_commit(repo: Path, git_exe: str, revision: str) -> str:
 
 
 def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url: str = "") -> None:
-    """Fetch and detach at one immutable commit, then verify the resulting HEAD."""
+    """Fetch and detach at one immutable commit, then verify the resulting HEAD. The checkout is
+    a network verb too: in a partial (subdirectory) clone it downloads the file contents."""
+    timeout = _clone_timeout_seconds()
     for verb, args, failure_prefix in (
         ("fetch", ("fetch", "--depth", "1", "origin", revision), f"Git commit '{revision}' could not be fetched:\n"),
         ("checkout", ("checkout", "--detach", revision), f"Git checkout of commit '{revision}' failed:\n"),
     ):
         try:
             _git_or_raise(git_exe, repo, *args, failure_prefix=failure_prefix, source_url=source_url,
-                          auth_url=source_url if verb == "fetch" else "")
+                          auth_url=source_url, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after 60 seconds.") from exc
+            raise PluginOperationError(
+                f"Git {verb} of commit '{revision}' timed out after {timeout} seconds. {_CLONE_TIMEOUT_HINT}") from exc
     actual = _git_head_revision(repo, git_exe)
     if actual != _git_resolve_commit(repo, git_exe, revision):
         raise PluginOperationError(
@@ -659,24 +679,53 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         ) from None
 
 
-def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -> str:
+def _restrict_checkout_to_subdir(repo: Path, git_exe: str, subdir: str) -> None:
+    """Sparse-check-out only *subdir*. Written as the classic ``info/sparse-checkout`` file
+    rather than ``git sparse-checkout set`` so older Git clients work too."""
+    _git_or_raise(git_exe, repo, "config", "core.sparseCheckout", "true", timeout=15,
+                  failure_prefix="Could not enable sparse checkout:\n")
+    pattern_file = repo / ".git" / "info" / "sparse-checkout"
+    pattern_file.parent.mkdir(parents=True, exist_ok=True)
+    escaped = re.sub(r"([\\*?\[])", r"\\\1", subdir.strip("/"))
+    pattern_file.write_text(f"/{escaped}/\n", encoding="utf-8")
+
+
+def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
+                       subdir: Optional[str] = None) -> str:
     """Shallow-clone *git_url* into *tmp_clone* (detached at *revision* when given), scrub any
-    credentials from the recorded origin, and return the installed HEAD SHA."""
+    credentials from the recorded origin, and return the installed HEAD SHA.
+
+    A *subdir* install is a blobless clone with a sparse checkout of that subdirectory: a plugin
+    living in a monorepo (Hindsight: 170 MB at depth 1, 2 MB for its plugin folder) otherwise
+    downloads every file in the repository, which times out on slow connections."""
     git_exe = _resolve_git_executable()
     if not git_exe:
         raise PluginOperationError("git is not installed or not in PATH.")
-    clone_args = ["clone", "--depth", "1", *(["--no-checkout"] if revision else []), git_url, str(tmp_clone)]
+    clone_timeout = _clone_timeout_seconds()
+    partial = ["--filter=blob:none"] if subdir else []
+    no_checkout = ["--no-checkout"] if revision or subdir else []
+    clone_args = ["clone", "--depth", "1", *partial, *no_checkout, git_url, str(tmp_clone)]
     try:
-        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url)
+        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url,
+                                 timeout=clone_timeout)
     except FileNotFoundError as e:
         raise PluginOperationError("git is not installed or not in PATH.") from e
     except subprocess.TimeoutExpired as e:
-        raise PluginOperationError("Git clone timed out after 60 seconds.") from e
+        raise PluginOperationError(f"Git clone timed out after {clone_timeout} seconds. {_CLONE_TIMEOUT_HINT}") from e
     if result.returncode != 0:
         raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
+    if subdir:
+        _restrict_checkout_to_subdir(tmp_clone, git_exe, subdir)
     if revision:
         _checkout_exact_revision(tmp_clone, git_exe, revision, source_url=git_url)
+    elif subdir:
+        try:
+            _git_or_raise(git_exe, tmp_clone, "checkout", "HEAD", timeout=clone_timeout, source_url=git_url,
+                          auth_url=git_url, failure_prefix="Git checkout of the plugin subdirectory failed:\n")
+        except subprocess.TimeoutExpired as e:
+            raise PluginOperationError(
+                f"Git checkout timed out after {clone_timeout} seconds. {_CLONE_TIMEOUT_HINT}") from e
     return _git_head_revision(tmp_clone, git_exe)
 
 
@@ -814,7 +863,7 @@ def _install_plugin_core(
 
     with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
         tmp_clone = Path(tmp) / "plugin"
-        installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision)
+        installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision, subdir)
         git_exe = _resolve_git_executable()
         at_reviewed_pin = bool(reviewed_pin) and installed_revision == (
             _git_resolve_commit(tmp_clone, git_exe, reviewed_pin) if git_exe and reviewed_pin else reviewed_pin)

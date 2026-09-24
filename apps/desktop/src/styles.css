@@ -1674,6 +1674,24 @@ body.guest-pointer-lock :is(webview, iframe) {
   text-align: start;
 }
 
+/* Appearance → Text direction. An explicit RTL/LTR choice stamps dir on the
+   markdown root, each user line block and both composers; the first-strong
+   plaintext vote is exactly what the reader overrode, so it steps aside and
+   every block takes the chosen direction (every line of a multi-line draft
+   included). Auto stamps no dir, so nothing here matches. Code and KaTeX keep
+   their isolated-LTR rules below. */
+[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_user-inline-text'][dir],
+[data-slot='composer-rich-input'][dir] {
+  unicode-bidi: normal;
+}
+
+/* Header cells pin text-left for the Auto (LTR-box) table; a chosen direction
+   aligns headers and cells to its own start edge instead. */
+[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(th, td) {
+  text-align: start;
+}
+
 /* Inline code/KaTeX don't vote on direction and keep their own order: isolate
    makes bidi treat each as one neutral, so a block that *starts* with `./run.sh`
    then Arabic still resolves RTL, and the command's neutrals (dots/slashes)

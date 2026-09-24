@@ -369,20 +369,36 @@ def _plugin_provider_enters_picker(pp) -> bool:
     return pp.name not in _canonical_slugs
 
 
-try:
-    from providers import list_providers as _list_providers_for_canonical
-    for _pp in _list_providers_for_canonical():
-        if not _plugin_provider_enters_picker(_pp):
+def sync_plugin_provider_catalog() -> int:
+    """Admit every registered plugin provider without a built-in row; return how many were added.
+
+    Runs at import and again from ``providers._sync_auth_registry`` whenever a profile is registered
+    after this module was imported. The import-time pass alone observes a *partial* registry: a
+    plugin whose own imports pull ``hermes_cli.models`` in mid-``_discover_providers()``, or a
+    profile registered later at runtime, would otherwise never reach the picker, ``hermes model``,
+    ``/model`` or the Desktop ``model.options`` list until restart — the catalog twin of the auth
+    registry window (#102123). Idempotent by slug; built-in rows are never rewritten.
+    """
+    try:
+        from providers import list_providers
+        profiles = list_providers()
+    except Exception:
+        return 0
+    added = 0
+    for pp in profiles:
+        if not _plugin_provider_enters_picker(pp):
             continue
-        _label = _pp.display_name or _pp.name
-        CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)"))
-        _canonical_slugs.add(_pp.name)
-except Exception:
-    pass
+        label = pp.display_name or pp.name
+        CANONICAL_PROVIDERS.append(ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)"))
+        _canonical_slugs.add(pp.name)
+        _PROVIDER_LABELS[pp.name] = label
+        added += 1
+    return added
 
 
-_PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
+_PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+sync_plugin_provider_catalog()
 
 
 # ---------------------------------------------------------------------------

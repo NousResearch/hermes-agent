@@ -122,6 +122,7 @@ from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -1192,7 +1193,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
-        self._response_store = ResponseStore()
+        from hermes_constants import get_hermes_home
+        self._response_store = ResponseStore()  # this home's; a /p/<profile>/ route gets its own
+        self._response_store_home = str(get_hermes_home())
+        self._response_stores: Dict[str, ResponseStore] = {}
+        self._response_store_lock = threading.Lock()
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -1214,6 +1219,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Every agent inside _run_agent() for shutdown interrupt, keyed by id() (the strong ref
         # keeps the id() from recycling); distinct from the run_id-keyed _active_run_agents.
         self._shutdown_interruptible_agents: Dict[int, Any] = {}
+        # One memory provider per session across requests (this surface rebuilds the agent per turn).
+        self._memory_sessions = ApiServerMemorySessions()
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
@@ -1222,6 +1229,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
         self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
+        # Per-profile single-flight locks for the off-loop store construction in
+        # _artifact_store_for_async(); a lost race would strand receipts (in-memory index).
+        self._browser_control_artifact_locks: Dict[str, asyncio.Lock] = {}
 
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
@@ -1701,6 +1711,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if len(raw) > self._MAX_SESSION_HEADER_LEN:
             return None, _invalid_request("Session key too long")
         return raw, None
+
+    # -- Responses state ----------------------------------------------------------------
+
+    def _current_response_store(self) -> "ResponseStore":
+        """Responses state of the routed profile's home. Conversation names are client-chosen, so one
+        shared store let any profile's key read, chain onto and overwrite another's (#84253)."""
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        if str(home) == self._response_store_home:
+            return self._response_store
+        with self._response_store_lock:
+            store = self._response_stores.get(str(home))
+            if store is None:
+                store = self._response_stores[str(home)] = ResponseStore(db_path=str(home / "response_store.db"))
+            return store
 
     # -- Session DB -------------------------------------------------------------------
 
@@ -2236,7 +2261,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
-            "gateway_session_key": gateway_session_key}
+            "gateway_session_key": gateway_session_key,
+            # The session's provider from the previous request, so its queued recall reaches this turn
+            # (#120116); checked back in by the turn's finally.
+            "memory_manager": self._memory_sessions.checkout(session_id)}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
@@ -2601,6 +2629,30 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.debug("could not attach artifact store to broker", exc_info=True)
         return store
 
+    async def _artifact_store_for_async(self, profile: str) -> ArtifactStore:
+        """Async variant for the artifact routes: resolve the store off the loop.
+
+        ``ArtifactStore.__init__`` mkdirs the root and iterates the whole directory to sweep
+        orphans, and the caller then runs ``prune_expired`` (glob + one unlink per expired
+        entry). On a cold profile under filesystem pressure that is unbounded, and it runs on
+        the single aiohttp event-loop thread. Cache hits stay on the loop; only construction
+        hops. The per-profile single-flight lock is load-bearing: the offload adds a real await
+        between cache miss and cache fill, so two racing first requests would each build a
+        store and the loser's instance — which holds its receipts IN MEMORY — would be evicted,
+        making anything uploaded through it permanently undownloadable. Same shape as
+        ``_ensure_session_db_async``.
+        """
+        profile_key = str(profile or "default")
+        store = self._browser_control_artifacts.get(profile_key)
+        if store is not None:
+            return store
+        lock = self._browser_control_artifact_locks.setdefault(profile_key, asyncio.Lock())
+        async with lock:
+            store = self._browser_control_artifacts.get(profile_key)
+            if store is not None:
+                return store
+            return await asyncio.to_thread(self._artifact_store_for, profile_key)
+
     def _artifact_limiter(self) -> ArtifactRateLimiter:
         """Return the per-principal artifact route limiter (lazy)."""
         if self._browser_control_artifact_limiter is None:
@@ -2653,7 +2705,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not filename:
             return _error_response("X-Artifact-Filename header is required.", 400)
         try:
-            store = self._artifact_store_for(profile)
+            store = await self._artifact_store_for_async(profile)
         except ArtifactError as exc:
             return _error_response(str(exc), 500, code="artifact_rejected")
         max_bytes = store.max_bytes
@@ -2668,7 +2720,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response("Empty artifact body.", 400)
         scope = _ArtifactScopeFacade(principal, transport_family=self._browser_control_transport_family(request))
         try:
-            receipt = store.store(data, filename=filename, content_type=content_type, scope=scope)
+            # store ends in mkstemp + write + os.fsync + os.replace — unbounded under
+            # filesystem pressure, and this is a coroutine on the single loop thread.
+            # Awaited (not fire-and-forget): the caller needs the receipt, and a swallowed
+            # failure would return 201 for bytes that never reached disk.
+            receipt = await asyncio.to_thread(
+                store.store, data, filename=filename, content_type=content_type, scope=scope)
         except ArtifactTooLarge as exc:
             return _error_response(str(exc), 413, code="artifact_too_large")
         except ArtifactError as exc:
@@ -2691,7 +2748,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         artifact_id = request.match_info.get("artifact_id", "")
         scope = _ArtifactScopeFacade(principal, transport_family=self._browser_control_transport_family(request))
         try:
-            data, receipt = self._artifact_store_for(profile).load(artifact_id, scope=scope)
+            # load is the same class as the upload write: whole-file read_bytes, SHA-256
+            # re-hash, unlink — all blocking, all on the loop thread.
+            store = await self._artifact_store_for_async(profile)
+            data, receipt = await asyncio.to_thread(store.load, artifact_id, scope=scope)
         except ArtifactError as exc:
             message = str(exc)
             if "expired" in message:
@@ -4034,6 +4094,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     if agent is not None:
                         _clear_turn_process_ownership(agent)
                         self._shutdown_interruptible_agents.pop(id(agent), None)
+                        self._memory_sessions.checkin(agent)
                         # Bind the declared key to the row the turn actually ended on
                         # (agent.session_id carries a mid-turn rotation). Opt-in per route.
                         # Record the declared conversation on the row the turn actually ended on —
@@ -4282,12 +4343,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
-        if self._response_store is not None:
+        # getattr: disconnect() tolerates bare __new__ fixtures (pinned in test_api_server_run_idempotency).
+        routed = getattr(self, "_response_stores", {})
+        stores = [s for s in (getattr(self, "_response_store", None), *list(routed.values())) if s is not None]
+        routed.clear()
+        for store in stores:
             try:
-                self._response_store.close()
+                store.close()
             except Exception:
                 logger.debug("Failed to close response store for %s", self.name, exc_info=True)
         _api_runs._close_run_state(self)
+        with suppress(Exception):
+            await asyncio.to_thread(self._memory_sessions.close_all)
         try:
             if self._site:
                 await self._site.stop()

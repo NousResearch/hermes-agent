@@ -174,3 +174,35 @@ async def test_unserved_profile_config_is_pruned_from_the_fan_out(tmp_path, monk
     assert "ghost" not in runner._profile_configs
     assert list(runner._served_home_channel_configs()) == [
         (None, Platform.DISCORD, runner.config.platforms[Platform.DISCORD])]
+
+
+@pytest.mark.asyncio
+async def test_a_served_profiles_reconnect_replays_the_owed_notice(multiplex_runner):
+    """A served profile whose bot was down at boot keeps the notice owed "for its reconnect" -- but only
+    the primary reconnect replayed it, so the marker outlived the outage and the notice never went out."""
+    import asyncio
+
+    runner, marker = multiplex_runner
+    runner.adapters[Platform.DISCORD] = _adapter()
+    await runner._replay_pending_planned_restart_notification()  # boot: coder's Telegram is down
+    assert marker.exists()
+
+    coder = SimpleNamespace(send_path_degraded=False, has_fatal_error=False, fatal_error_retryable=True,
+                            send=AsyncMock(return_value=SendResult(success=True, message_id="n")))
+    runner._running = True
+    runner._background_tasks = set()
+    runner._profile_failed_platforms = {}
+    runner._failed_platforms = {}
+    runner._sync_voice_mode_state_to_adapter = Mock()
+    runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=0)
+    runner._schedule_resume_pending_sessions = Mock(return_value=0)
+    runner._secondary_reconnect_attempt = AsyncMock(return_value=(coder, True))
+
+    await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM)
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    assert runner._profile_adapters["coder"][Platform.TELEGRAM] is coder
+    coder.send.assert_awaited_once()
+    assert coder.send.await_args.args[:2] == ("coder-home", ONLINE_NOTICE)
+    assert not marker.exists(), "the owed target was reached on reconnect: the obligation is discharged"

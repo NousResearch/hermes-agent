@@ -73,25 +73,6 @@ class TestHandleFastCommand(unittest.TestCase):
         self.assertIsNone(stub.agent)
 
 
-    def test_unsupported_model_does_not_expose_fast(self):
-        cli_mod = _import_cli()
-        stub = SimpleNamespace(
-            service_tier=None,
-            provider="openai-codex",
-            requested_provider="openai-codex",
-            model="gpt-5.3-codex",
-            _fast_command_available=lambda: False,
-            agent=MagicMock(),
-        )
-
-        with (
-            patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
-        ):
-            cli_mod.HermesCLI._handle_fast_command(stub, "/fast")
-
-        mock_save.assert_not_called()
-        self.assertTrue(mock_cprint.called)
 
 
 class TestPriorityProcessingModels(unittest.TestCase):
@@ -134,14 +115,6 @@ class TestPriorityProcessingModels(unittest.TestCase):
         assert model_supports_fast_mode("grok-4.5") is False
         assert resolve_fast_mode_overrides("grok-4.6") == {"service_tier": "priority"}
 
-    def test_resolve_overrides_returns_service_tier(self):
-        from hermes_cli.models import resolve_fast_mode_overrides
-
-        result = resolve_fast_mode_overrides("gpt-5.4")
-        assert result == {"service_tier": "priority"}
-
-        result = resolve_fast_mode_overrides("gpt-4.1")
-        assert result == {"service_tier": "priority"}
 
 
 
@@ -207,7 +180,7 @@ class TestAnthropicFastMode(unittest.TestCase):
     def test_anthropic_opus_supported(self):
         from hermes_cli.models import model_supports_fast_mode
 
-        # Per the live fast-mode docs: Opus 4.8 + Opus 5, Claude API only.
+        # Per the live fast-mode docs: Opus 4.8, Opus 5 and Opus 5.5, Claude API only.
         # Native Anthropic format (hyphens)
         assert model_supports_fast_mode("claude-opus-4-8") is True
         # OpenRouter format (dots)
@@ -217,15 +190,21 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("anthropic/claude-opus-4.8") is True
         assert model_supports_fast_mode("claude-opus-5") is True
         assert model_supports_fast_mode("anthropic/claude-opus-5") is True
+        assert model_supports_fast_mode("claude-opus-5-5") is True
+        assert model_supports_fast_mode("claude-opus-5.5") is True
+        assert model_supports_fast_mode("anthropic/claude-opus-5.5") is True
+        # Dated snapshot ids resolve to their family
+        assert model_supports_fast_mode("claude-opus-4-8-20260601") is True
 
     def test_anthropic_unsupported_models_excluded(self):
-        """The speed=fast parameter is gated to Opus 4.8 / Opus 5.
+        """The speed=fast parameter is gated to Opus 4.8 / Opus 5 / Opus 5.5.
 
         Per https://platform.claude.com/docs/en/build-with-claude/fast-mode:
         Opus 4.6 LOST fast mode 2026-06-29 (the param is silently ignored —
         standard speed at standard billing — so a toggle would do nothing);
         Opus 4.7 hard-400s; Sonnet/Haiku never had it; dedicated ``…-fast``
         ids select fast inference via the model field, not the parameter.
+        The list is exact: an Opus the docs do not name is unsupported.
         """
         from hermes_cli.models import model_supports_fast_mode
 
@@ -237,26 +216,21 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("claude-opus-4-7") is False
         assert model_supports_fast_mode("claude-opus-4-8-fast") is False
         assert model_supports_fast_mode("anthropic/claude-opus-4.8-fast") is False
+        assert model_supports_fast_mode("anthropic/claude-opus-5-fast") is False
+        assert model_supports_fast_mode("claude-opus-5-6") is False
+        assert model_supports_fast_mode("claude-fable-5") is False
         assert model_supports_fast_mode("anthropic/claude-sonnet-4.6") is False
         assert model_supports_fast_mode("anthropic/claude-opus-4-7") is False
 
 
 
-    def test_resolve_overrides_returns_speed_for_anthropic(self):
-        from hermes_cli.models import resolve_fast_mode_overrides
-
-        result = resolve_fast_mode_overrides("claude-opus-4-8")
-        assert result == {"speed": "fast"}
-
-        result = resolve_fast_mode_overrides("anthropic/claude-opus-4.8")
-        assert result == {"speed": "fast"}
 
 
 
 
 
     def test_fast_command_hidden_for_anthropic_sonnet(self):
-        """Sonnet doesn't support fast mode (Opus 4.8/5 only) — /fast must be hidden."""
+        """Sonnet doesn't support fast mode (Opus 4.8/5/5.5 only) — /fast must be hidden."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             provider="anthropic", requested_provider="anthropic",
@@ -306,6 +280,20 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert "extra_headers" in kwargs
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
 
+    def test_fast_mode_on_opus_5_5_and_not_on_unlisted_opus(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        def _speed(model):
+            return build_anthropic_kwargs(
+                model=model, messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+                tools=None, max_tokens=None, reasoning_config=None, fast_mode=True,
+            ).get("extra_body", {}).get("speed")
+
+        assert _speed("claude-opus-5-5") == "fast"
+        assert _speed("claude-opus-5") == "fast"
+        # An Opus the docs don't list answers ``speed`` with an error: never send it.
+        assert _speed("claude-opus-5-6") is None
+
     def test_fast_mode_off_no_speed(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -340,10 +328,3 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
 
 
 
-class TestConfigDefault(unittest.TestCase):
-    def test_default_config_has_service_tier(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        agent = DEFAULT_CONFIG.get("agent", {})
-        self.assertIn("service_tier", agent)
-        self.assertEqual(agent["service_tier"], "")

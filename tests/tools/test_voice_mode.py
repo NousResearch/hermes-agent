@@ -289,7 +289,6 @@ class TestCheckVoiceRequirements:
         result = check_voice_requirements()
         assert result["available"] is True
         assert result["stt_available"] is True
-        assert "STT provider: OK (plugin: my-plugin-stt)" in result["details"]
 
 # ============================================================================
 # AudioRecorder

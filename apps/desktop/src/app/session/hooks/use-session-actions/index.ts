@@ -34,6 +34,7 @@ import {
   $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
+  pendingSessionReplay,
   requestGatewayForAgent,
   retainGatewayForAgent
 } from '@/store/gateway'
@@ -147,7 +148,6 @@ import { projectPendingConnection, restorePendingConnectionFromSnapshot } from '
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
-  suppressTranscriptForView,
   withoutTranscriptProvenance
 } from './transcript-provenance'
 import {
@@ -1016,12 +1016,28 @@ export function useSessionActions({
       const routeToken = getRouteToken()
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
-      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
         getRouteToken() === routeToken
+
+      // A reconnect re-resumes the runtime this view is streaming. Let its
+      // replay land while that runtime still owns the view. Otherwise the REST
+      // read paints the finished turn first and the replayed rows are then
+      // overlaid onto it as concurrent runtime changes: the turn shows twice.
+      const viewRuntimeId = resumedSameSelectedSession ? activeSessionIdRef.current : null
+      const viewReplay = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+      if (viewReplay) {
+        await viewReplay
+
+        if (!isCurrentResume()) {
+          return
+        }
+      }
+
+      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -1244,14 +1260,16 @@ export function useSessionActions({
           dropSessionState(cachedRuntimeId)
         } else {
           // Bind the warm runtime immediately so cwd/workspace ownership don't
-          // wait on session.activate (#71254). Unproven cache entries (no
-          // persisted-display provenance) stay off the view until REST
-          // authority lands — a compressed runtime tail is legal in cache and
-          // is exactly the session-switch flicker (#73646). Proven caches and
-          // same-session re-resumes still paint immediately. The persisted
-          // refresh itself still starts after activate reattaches the live
-          // transport, so a turn finishing between snapshot and reattach
-          // cannot leave a stale partial on screen.
+          // wait on session.activate (#71254). The armed transcript gate is the
+          // single suppression authority: it hides only the unproven cached
+          // prefix (rows captured at arm time, including a compressed runtime
+          // tail — exactly the session-switch flicker, #73646) while rows that
+          // arrive live during the hold still paint (#117867). Proven caches
+          // and same-session re-resumes never arm the gate, so they paint
+          // immediately. The persisted refresh itself still starts after
+          // activate reattaches the live transport, so a turn finishing
+          // between snapshot and reattach cannot leave a stale partial on
+          // screen.
           const shouldRefreshPersistedTranscript = !isWatchWindow()
 
           const suppressUnprovenWarmTranscript =
@@ -1277,10 +1295,7 @@ export function useSessionActions({
           selectedStoredSessionIdRef.current = storedSessionId
           setActiveSessionId(cachedRuntimeId)
           activeSessionIdRef.current = cachedRuntimeId
-          syncSessionStateToView(
-            cachedRuntimeId,
-            suppressTranscriptForView(cachedViewState, suppressUnprovenWarmTranscript)
-          )
+          syncSessionStateToView(cachedRuntimeId, cachedViewState)
           setCurrentCwdTransient(cachedViewState.cwd)
           // The warm cache IS this conversation's own workspace truth, so the
           // switch is already re-homed here. This claim cannot wait for
@@ -1292,6 +1307,21 @@ export function useSessionActions({
           setSessionStartedAt(Date.now())
 
           try {
+            const replay = pendingSessionReplay(cachedRuntimeId)
+
+            // Only ordering matters here. A lost socket (false) still goes on
+            // to session.activate so its existing branches own the outcome:
+            // degraded warm cache on a transport error, cold resume when the
+            // runtime is gone, or a normal rebind on a redialed socket (whose
+            // history publication is re-gated after the REST read below).
+            if (replay) {
+              await replay
+
+              if (!isCurrentResume()) {
+                return
+              }
+            }
+
             let activated: SessionResumeResult | null = null
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
@@ -1433,10 +1463,7 @@ export function useSessionActions({
               busyRef.current = running
               setBusy(running)
               setAwaitingResponse(running && !pendingClarify)
-              syncSessionStateToView(
-                cachedRuntimeId,
-                suppressTranscriptForView(activatedLivenessState, suppressUnprovenWarmTranscript)
-              )
+              syncSessionStateToView(cachedRuntimeId, activatedLivenessState)
 
               // session.activate is the ordering barrier for reconnect recovery:
               // it atomically rebinds a running turn before returning. If the
@@ -1468,6 +1495,13 @@ export function useSessionActions({
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
+                const replayAtReturn = pendingSessionReplay(cachedRuntimeId)
+
+                if (replayAtReturn && !(await replayAtReturn)) {
+                  hydration.release()
+
+                  return
+                }
 
                 // Navigation only revokes foreground publication, not this
                 // runtime's display read. Edits/rebinds revoke both.
@@ -1769,6 +1803,15 @@ export function useSessionActions({
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
+        }
+
+        // The socket can drop and redial while REST is in flight. Painting now
+        // would let the new socket's replay append the same turn again; a lost
+        // socket (false) drops this read and the resume below binds without it.
+        const viewReplayAtReturn = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+        if (prefetchedResult && viewReplayAtReturn && !(await viewReplayAtReturn)) {
+          prefetchedResult = null
         }
 
         // A completed read still warms its exact durable scope after navigation.

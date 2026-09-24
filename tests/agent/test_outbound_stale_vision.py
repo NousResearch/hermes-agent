@@ -89,11 +89,6 @@ def _outbound_image_blocks(messages: list[dict]) -> int:
 
 
 class TestOutboundStaleVisionEviction:
-    def test_sanitize_alone_keeps_every_screenshot(self):
-        """The previous send chokepoint does not close #89296 by itself."""
-        history = _history_with_screenshots(5)
-        sanitized = sanitize_api_messages(history)
-        assert _image_bearing_tool_ids(sanitized) == [f"call_{i}" for i in range(5)]
 
     def test_nothing_is_evicted_below_the_provider_limit(self):
         """The common case must be append-only: no rewrite, so the cached prefix survives."""

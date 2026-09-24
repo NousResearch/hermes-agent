@@ -386,6 +386,18 @@ declare global {
         onChanged: (callback: (status: { enabled: boolean; available: boolean }) => void) => () => void
       }
       setDisableF12?: (blocked: boolean) => void
+      setF12ShortcutActive?: (active: boolean) => void
+      onF12Shortcut?: (
+        callback: (input: {
+          alt?: boolean
+          code?: string
+          control?: boolean
+          key: string
+          meta?: boolean
+          repeat?: boolean
+          shift?: boolean
+        }) => void
+      ) => () => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       /** One-shot loopback callback listener for MCP OAuth against remote

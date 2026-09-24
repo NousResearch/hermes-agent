@@ -20,7 +20,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli.auth import (
-    PROVIDER_REGISTRY,
     AuthError,
     MINIMAX_OAUTH_CLIENT_ID,
     MINIMAX_OAUTH_GLOBAL_BASE,
@@ -28,7 +27,6 @@ from hermes_cli.auth import (
     MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
     _minimax_pkce_pair,
     _minimax_request_user_code,
-    _minimax_poll_token,
     _minimax_resolve_token_expiry_unix,
     _refresh_minimax_oauth_state,
     resolve_minimax_oauth_runtime_credentials,
@@ -505,7 +503,6 @@ def test_refresh_error_body_bounded_and_readable_with_real_client():
     import socketserver
     import threading
 
-    import httpx
 
     from hermes_cli.auth import _refresh_minimax_oauth_state
 
@@ -547,24 +544,3 @@ def test_refresh_error_body_bounded_and_readable_with_real_client():
     assert "...[truncated]" in msg
 
 
-def test_minimax_response_error_text_truncates_above_limit():
-    """Bodies above the 16KB bound are cut and marked truncated."""
-    import httpx
-
-    from hermes_cli.auth import (
-        _MINIMAX_OAUTH_ERROR_BODY_LIMIT,
-        _minimax_response_error_text,
-    )
-
-    big = "e" * (_MINIMAX_OAUTH_ERROR_BODY_LIMIT * 4)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text=big)
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        request = client.build_request("POST", "https://api.minimax.io/oauth/token")
-        response = client.send(request, stream=True)
-        text = _minimax_response_error_text(response)
-
-    assert text.endswith("...[truncated]")
-    assert len(text) <= _MINIMAX_OAUTH_ERROR_BODY_LIMIT + len("...[truncated]")

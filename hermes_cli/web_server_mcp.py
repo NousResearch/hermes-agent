@@ -126,9 +126,11 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
         from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth, login_connect_timeout
         from tools.mcp_oauth_manager import get_manager
 
-        home_token = set_hermes_home_override(flow.hermes_home)
-        secret_token = set_secret_scope(build_profile_secret_scope(Path(flow.hermes_home)))
+        home_token = secret_token = None
         try:
+            home_token = set_hermes_home_override(flow.hermes_home)
+            secret_token = set_secret_scope(
+                build_profile_secret_scope(Path(flow.hermes_home)), profile_home=flow.hermes_home)
             transaction = _mcp_oauth_transaction(flow)
             with transaction, force_interactive_oauth(), dashboard_oauth_flow(flow):
                 manager = get_manager()
@@ -157,8 +159,10 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                     manager.restore_entry(flow.server_name, previous_entry, hermes_home=flow.hermes_home)
                     raise
         finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
     except Exception as exc:
         from tools.mcp_dashboard_oauth import exception_message
 

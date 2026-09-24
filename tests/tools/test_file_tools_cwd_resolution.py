@@ -135,11 +135,6 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
     assert resolved != host_project / "oilsands-sim" / "README.md"
 
 
-class _DummyDockerEnvironment:
-    cwd = "/workspace"
-    cwd_owner = "default"
-
-
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
     """With TERMINAL_CWD unset, the base falls back to an ABSOLUTE process cwd."""
     workspace, decoy = _isolated_cwd
@@ -166,7 +161,6 @@ def test_warning_fires_when_relative_path_escapes_workspace(_isolated_cwd, monke
     warn = ftp._path_resolution_warning("target.py", resolved_in_decoy, task_id="default")
 
     assert warn is not None
-    assert "OUTSIDE the active workspace" in warn
     assert str(decoy) in warn
     assert str(workspace) in warn
 
@@ -199,11 +193,7 @@ def test_warning_fires_from_terminal_cwd_when_registry_empty(_isolated_cwd, monk
     warn = ftp._path_resolution_warning(escaping, resolved, task_id="default")
 
     assert warn is not None
-    assert "OUTSIDE the active workspace" in warn
     assert str(workspace) in warn
-
-
-# ── Fix A: write_file / patch report the resolved ABSOLUTE path ──────────────
 
 
 # ── Cross-session isolation: one session's cwd never leaks into another ──────

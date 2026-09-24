@@ -514,6 +514,9 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     }
 
 
+WORKSPACE_BLOCK_HEADER = "Workspace (snapshot at session start — re-check with `git` before acting on it):"
+
+
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     """Workspace snapshot for the system prompt (empty outside a workspace): git state when
     in a repo, plus project facts — so marker-only (non-git) projects still get one."""
@@ -521,7 +524,7 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if root is None:
         return ""
     lines = [
-        "Workspace (snapshot at session start — re-check with `git` before acting on it):",
+        WORKSPACE_BLOCK_HEADER,
         f"- Root: {root}",
     ]
     if git_root is not None:

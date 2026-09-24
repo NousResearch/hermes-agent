@@ -22,9 +22,10 @@ from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
-from hermes_cli.web_routers._common import log as _log, destructive_profile, http_failure
+from hermes_cli.web_routers._common import CORRUPT_STORE_DETAIL, log as _log, destructive_profile, http_failure
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import is_transient_sqlite_error
+from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -33,6 +34,7 @@ manage_router = APIRouter()
 _cron_default_profile = late("_cron_default_profile", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
 
 _NOT_FOUND = "Session not found"
 
@@ -219,7 +221,11 @@ def get_sessions(
                 s["pinned"] = bool(s.get("pinned"))
             if not full:
                 _strip_session_list_rows(sessions)
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            # ``storage`` tells an empty page apart from an unreadable store (#72046); same
+            # ``{profile: "corrupt"}`` shape as the /api/profiles/sessions* lists.
+            storage = {row_profile: STORAGE_CORRUPT} if storage_state(db.db_path) == STORAGE_CORRUPT else {}
+            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset,
+                    "storage": storage}
         finally:
             db.close()
     except HTTPException:
@@ -236,6 +242,14 @@ def get_sessions(
                 if transient
                 else "Internal server error"),
         ) from exc
+    except sqlite3.DatabaseError as exc:
+        # A damaged store is unavailable, not empty and not an internal error (#72046).
+        db_path = _session_db_path_for_profile(profile)
+        if not (note_storage_error(db_path, exc) or is_malformed_db_error(exc)):
+            _log.exception("GET /api/sessions failed")
+            raise HTTPException(status_code=500, detail="Internal server error") from exc
+        _log.error("GET /api/sessions: state.db at %s is corrupt: %s", db_path, exc)
+        raise HTTPException(status_code=503, detail=dict(CORRUPT_STORE_DETAIL)) from exc
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -537,13 +551,30 @@ def _with_tool_call_labels(message: dict) -> dict:
     return {**message, "tool_call_labels": labels} if labels else message
 
 
-def _project_for_display(messages: list) -> list:
+def _history_profile_home(profile):
+    if profile:
+        return _cron_profile_home(profile)[1]
+    # An omitted profile reads this process's DB (including custom HERMES_HOME),
+    # not necessarily the registered default profile used by cron routes.
+    from hermes_cli.config import get_hermes_home
+
+    return get_hermes_home()
+
+
+def _project_for_display(messages: list, *, home=None) -> list:
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
+    from agent.history_commentary import project_history_commentary
+    from agent.turn_failure_copy import untyped_failed_turn_display_kind
 
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
+        # Same read-side typing as session.resume (tui_gateway/session_history.py).
+        failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(
+            message.get("role"), message.get("content"))
+        if failed_turn:
+            message = {**message, "display_kind": failed_turn}
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue
@@ -559,7 +590,7 @@ def _project_for_display(messages: list) -> list:
             projected["display_content"] = display_view.get("content")
             projected.pop("display_kind", None)
         projected_messages.append(projected)
-    return projected_messages
+    return project_history_commentary(projected_messages, home=home)
 
 
 @manage_router.get("/api/sessions/{session_id}/messages")
@@ -588,7 +619,8 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
-    projected_messages = _project_for_display(messages)
+    projected_messages = await asyncio.to_thread(
+        _project_for_display, messages, home=_history_profile_home(profile))
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the
@@ -656,7 +688,8 @@ async def get_session_messages_around(
         return {"session_id": sid, "profile": owner, **page}
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
-    result["messages"] = _project_for_display(result["messages"])
+    result["messages"] = await asyncio.to_thread(
+        _project_for_display, result["messages"], home=_history_profile_home(profile))
     return result
 
 
@@ -744,7 +777,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         result["title"] = db.get_session_title(sid) or ""
         return result
 
-    return _with_db(body.profile, _update, read_only=False)
+    return await asyncio.to_thread(_with_db, body.profile, _update, read_only=False)
 
 
 def _compact_json(obj) -> str:

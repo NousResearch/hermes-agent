@@ -26,7 +26,9 @@ import { forgetSessionUnread } from '@/store/session-unread'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
@@ -37,6 +39,8 @@ interface SessionsSettingsProps {
 }
 
 export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+  useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
+
   if (subpage === 'default-directory') {
     return (
       <SettingsContent>
@@ -281,6 +285,7 @@ function AutoArchiveSetting() {
       <ToggleRow
         checked={enabled}
         description={s.autoArchiveDesc}
+        id={settingElementId(SETTING_IDS.sessions.autoArchive)}
         label={s.autoArchiveTitle}
         onChange={on => {
           setEnabled(on)

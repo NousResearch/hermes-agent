@@ -77,6 +77,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     completeAssistantMessage,
     finalizeInterimAssistantMessage,
     flushQueuedDeltas,
+    dropQueuedDeltas,
     nativeSubagentSessionsRef,
     sessionStateByRuntimeIdRef,
     updateSessionState
@@ -87,7 +88,18 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
-    flushQueuedDeltas(sessionId)
+    // Turn-boundary orphan drop (#119543): when no turn is live, anything
+    // still queued belongs to a turn that already ended (a delta reordered
+    // behind its own complete or heartbeat). Flushing it would seed a bubble
+    // the new turn inherits, painting a stale duplicate of the previous
+    // reply. A still-live previous turn (steer) keeps the flush: those bytes
+    // are real output of the bubble on screen.
+    if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
+      flushQueuedDeltas(sessionId)
+    } else {
+      dropQueuedDeltas(sessionId)
+    }
+
     pruneFinishedSessionSubagents(sessionId)
     setSessionCompacting(sessionId, false)
     compactedTurnRef.current.delete(sessionId)
@@ -132,6 +144,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         // Backend accepted the turn — the no-payload settle gate below may
         // now treat a running=false heartbeat as a real turn end.
         turnLive: true,
+        // A new turn is a new occurrence: the previous turn's late terminal
+        // frame (#119569) can no longer claim its heartbeat-settled bubble.
+        heartbeatSettledStreamId: null,
         // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
         // here would hide the submit→accept round trip from the timer.
         // Backend-originated turns (queue drain elsewhere, goal follow-up)

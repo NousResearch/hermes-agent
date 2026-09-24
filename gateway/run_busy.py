@@ -940,7 +940,8 @@ class GatewayBusySessionMixin:
         if policy in ("dispatch", "interrupt_then_dispatch"):
             plain = self._gateway_plain_command_handlers().get(name)
             if plain is not None:
-                return await plain(event)
+                async with self._async_profile_scope_for_source(source):
+                    return await plain(event)
             logger.warning(
                 "busy_policy=%s for /%s has no mid-run handler — "
                 "falling back to busy-reject", policy, name,

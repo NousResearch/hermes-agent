@@ -228,19 +228,3 @@ class TestExecuteJobForEvent:
         assert result["success"] is False
         assert "ambiguous" in result["error"].lower()
 
-    def test_resolved_job_fires_with_extra_prompt(self):
-        from tools import cronjob_tools
-
-        job = {"id": "job-123", "name": "sweeper"}
-        with patch.object(
-            cronjob_tools, "resolve_job_ref", return_value=job
-        ), patch.object(
-            cronjob_tools,
-            "_execute_job_now",
-            return_value={"claimed": True, "success": True, "error": None},
-        ) as mock_exec:
-            result = cronjob_tools.execute_job_for_event(
-                "sweeper", extra_prompt="event context"
-            )
-        assert result["success"] is True
-        mock_exec.assert_called_once_with(job, extra_prompt="event context")

@@ -18,7 +18,6 @@ tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,7 +39,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import build_execute_code_schema, execute_code
+from tools.code_execution_tool import execute_code
 from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
@@ -180,24 +179,24 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertIn("raw-passthrough", result["output"])
 
 
-class TestSchemaSurface(unittest.TestCase):
-    def test_reset_parameter_is_declared(self):
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("reset", schema["parameters"]["properties"])
+class TestModelFacingReset(unittest.TestCase):
+    def test_reset_is_reachable_from_a_model_call_despite_stale_kernel_mode(self):
+        """Session kernels are always on (#96787), so ``reset`` is the model's only
+        way out of poisoned state. A stale ``kernel_mode: per-call`` key must not
+        drop it from the schema, and a model-shaped call routed through the
+        registered handler must actually discard the kernel's state."""
+        from tools.code_execution_tool import _execute_code_handler, build_execute_code_schema
 
-    def test_kernel_persistence_is_taught_unconditionally(self):
-        """Persistence is woven into the tool's main description (always-on
-        since #96787, integrated in the schema diet) — every session must be
-        told state survives across calls, in strict and project mode alike,
-        regardless of any stale kernel_mode key in config."""
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", schema["description"])
-        self.assertIn("reset", schema["parameters"]["properties"])
         with _kernel_config(kernel_mode="per-call"):
-            stale_schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", stale_schema["description"])
+            schema = build_execute_code_schema(mode="strict")
+            self.assertEqual(schema["parameters"]["properties"]["reset"]["type"], "boolean")
+            _execute_code_handler({"code": "x = 41"}, task_id="kernel-test")
+            kept = json.loads(_execute_code_handler({"code": "print(x + 1)"}, task_id="kernel-test"))
+            self.assertIn("42", kept["output"], kept)
+            reset = json.loads(_execute_code_handler(
+                {"code": "print(x + 1)", "reset": True}, task_id="kernel-test"))
+        self.assertEqual(reset["status"], "error", reset)
+        self.assertIn("NameError", reset.get("error", ""))
 
 
 if __name__ == "__main__":

@@ -227,8 +227,3 @@ class TestOllamaModelSupportsThinking:
         )
 
 
-class TestOllamaCloudAuxModel:
-    """Ollama Cloud aux model is set on the profile."""
-
-    def test_profile_advertises_aux_model(self, ollama_cloud_profile):
-        assert ollama_cloud_profile.default_aux_model == "nemotron-3-nano:30b"

@@ -161,6 +161,11 @@ plugins:
     - disk-cleanup
   disabled:       # optional deny-list — always wins if a name appears in both
     - noisy-plugin
+  # Optional: deadline (seconds) for each Git clone, fetch or checkout
+  # during plugin installation, including automatic memory-provider migration.
+  # Default 300; values above 3600 are clamped. A subdirectory install
+  # (owner/repo/path/to/plugin) downloads only that folder's files.
+  clone_timeout_seconds: 300
   # Optional: wall-clock cap (seconds) for timeout-bounded in-process Python
   # plugin hook callbacks (hot-path observers + pre_tool_call). Default 30;
   # set 0 to disable; values above 600 are clamped. Timed-out pre_tool_call

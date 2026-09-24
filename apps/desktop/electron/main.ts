@@ -171,7 +171,7 @@ import {
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
-import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
+import { adoptServedDashboardToken, attachedServedTokenChanged, resolveServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import {
@@ -12954,9 +12954,11 @@ async function prepareProfileRenameRequest(request) {
 const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
 const ATTACHED_LIVENESS_POLL_MS = 15_000
 let attachedBackendMonitor: NodeJS.Timeout | null = null
+let attachedMonitorGeneration = 0
 let hostSpawnReservation: SpawnReservation | null = null
 
 function stopAttachedBackendMonitor() {
+  attachedMonitorGeneration += 1
   if (attachedBackendMonitor) {
     clearInterval(attachedBackendMonitor)
     attachedBackendMonitor = null
@@ -12965,21 +12967,32 @@ function stopAttachedBackendMonitor() {
 
 /**
  * An attached backend has no child process, so `child.exit` can never drive
- * recovery. Poll its readiness instead; a backend that dies under us
- * invalidates the connection and hands the respawn to the same supervisor path
- * a dead child would (which re-runs discovery and spawns, since the host now
- * has no backend).
+ * recovery. Readiness alone is public and still passes after an externally
+ * supervised backend rotates its token, so poll the served credential too.
  */
 function startAttachedBackendMonitor(attached: AttachedBackend) {
   stopAttachedBackendMonitor()
+  const generation = attachedMonitorGeneration
+  let polling = false
 
   attachedBackendMonitor = setInterval(() => {
-    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {}).catch(() => {
+    if (polling) return
+    polling = true
+    void (async () => {
+      try {
+        await waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {})
+        const changed = await attachedServedTokenChanged(attached.baseUrl, attached.token)
+        if (generation !== attachedMonitorGeneration || !changed) return
+      } catch {
+        if (generation !== attachedMonitorGeneration) return
+      } finally {
+        polling = false
+      }
       stopAttachedBackendMonitor()
-      rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
+      rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) changed or exited; recovering`)
       invalidatePrimaryConnection()
-      scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
-    })
+      scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to changed or exited.', ready: true })
+    })()
   }, ATTACHED_LIVENESS_POLL_MS)
 
   attachedBackendMonitor.unref?.()

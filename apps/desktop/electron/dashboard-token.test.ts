@@ -11,6 +11,7 @@ import { test } from 'vitest'
 
 import {
   adoptServedDashboardToken,
+  attachedServedTokenChanged,
   dashboardIndexUrl,
   extractInjectedDashboardToken,
   fetchPublicText,
@@ -87,6 +88,28 @@ test('resolveServedDashboardToken propagates fetch errors so callers can fall ba
       }),
     /boom/
   )
+})
+
+test('attached backend detects a rotated served token without relying on public health auth', async () => {
+  const baseUrl = 'http://127.0.0.1:9120'
+  assert.equal(await attachedServedTokenChanged(baseUrl, 'old', {
+    fetchText: async url => {
+      assert.equal(url, `${baseUrl}/`)
+      return '<script>window.__HERMES_SESSION_TOKEN__="new";</script>'
+    }
+  }), true)
+  assert.equal(await attachedServedTokenChanged(baseUrl, 'new', {
+    fetchText: async () => '<script>window.__HERMES_SESSION_TOKEN__="new";</script>'
+  }), false)
+})
+
+test('attached backend ignores unreadable or tokenless index pages until the next probe', async () => {
+  assert.equal(await attachedServedTokenChanged('http://127.0.0.1:9120', 'old', {
+    fetchText: async () => { throw new Error('temporary failure') }
+  }), false)
+  assert.equal(await attachedServedTokenChanged('http://127.0.0.1:9120', 'old', {
+    fetchText: async () => '<html></html>'
+  }), false)
 })
 
 test('fetchPublicText rejects unsupported protocols', async () => {

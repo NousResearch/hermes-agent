@@ -69,6 +69,12 @@ async function resolveServedDashboardToken(baseUrl, fallbackToken, options: any 
   return servedToken || fallbackToken
 }
 
+/** A failed index read is not evidence that the attached backend changed. */
+async function attachedServedTokenChanged(baseUrl: string, currentToken: string, options: any = {}): Promise<boolean> {
+  const servedToken = await resolveServedDashboardToken(baseUrl, currentToken, options).catch(() => currentToken)
+  return servedToken !== currentToken
+}
+
 /**
  * A served token that differs from our spawn token while our child is DEAD
  * came from a process we did not spawn (orphan/port squatter that satisfied
@@ -103,6 +109,7 @@ async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, labe
 
 export {
   adoptServedDashboardToken,
+  attachedServedTokenChanged,
   dashboardIndexUrl,
   DEFAULT_TOKEN_FETCH_TIMEOUT_MS,
   extractInjectedDashboardToken,

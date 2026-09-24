@@ -100,35 +100,23 @@ class StreamDeliveryMixin:
     def _normalize_interim_visible_text(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip() if isinstance(text, str) else ""
 
+    def _interim_visible_and_streamed(self, content: str) -> tuple[str, str]:
+        """(visible content, streamed text), both think-stripped and whitespace-normalized."""
+        normalize = self._normalize_interim_visible_text
+        streamed = getattr(self, "_current_streamed_assistant_text", "") or ""
+        return normalize(self._strip_think_blocks(content or "")), normalize(self._strip_think_blocks(streamed))
+
     def _interim_content_was_streamed(self, content: str) -> bool:
-        visible_content = self._normalize_interim_visible_text(self._strip_think_blocks(content or ""))
-        streamed = self._normalize_interim_visible_text(
-            self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
-        )
         # Prefix match, not equality: the final may be streamed text plus a trailing delta. The
         # reverse (streamed longer) is NOT matched — it could suppress a needed resend.
-        return bool(visible_content and streamed) and visible_content.startswith(streamed)
+        visible, streamed = self._interim_visible_and_streamed(content)
+        return bool(visible and streamed) and visible.startswith(streamed)
 
     def _interim_content_fully_streamed(self, content: str) -> bool:
-        """Exact-equality variant for the gateway interim-message decision.
-
-        ``_interim_content_was_streamed`` keeps its prefix semantics for the conversation-loop
-        "previewed" marks (the streamed prefix IS on the user's screen there). The gateway interim
-        path is different: a True verdict makes ``_interim_assistant_cb`` call
-        ``on_segment_break()``, which finalizes the streaming bubble as-is — anything after the
-        streamed prefix is never delivered. On Telegram the stream is routinely truncated at the
-        text→tool_calls boundary, so the prefix match marked a truncated bubble complete and the
-        tail was lost (#88954). Only an exact match may skip the full-text resend; a partial prefix
-        falls through to ``on_commentary`` and re-delivers the complete text (benign duplicate,
-        never lost text).
-        """
-        visible_content = self._normalize_interim_visible_text(self._strip_think_blocks(content or ""))
-        if not visible_content:
-            return False
-        streamed = self._normalize_interim_visible_text(
-            self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
-        )
-        return bool(streamed) and streamed == visible_content
+        """Exact-match variant for the gateway interim path: a True verdict finalizes the bubble
+        as-is, so a truncated prefix must fall through to a full-text resend (#88954)."""
+        visible, streamed = self._interim_visible_and_streamed(content)
+        return bool(visible) and visible == streamed
 
     def _extract_codex_interim_visible_parts(self, assistant_msg: Dict[str, Any]) -> List[str]:
         """Visible Codex commentary (``phase=commentary`` items), one string per message item.

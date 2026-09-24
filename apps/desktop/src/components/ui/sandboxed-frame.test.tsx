@@ -16,6 +16,7 @@ describe('sanitizeFrameSandbox', () => {
     expect(sanitizeFrameSandbox('allow-scripts allow-invented-thing')).toBe('allow-scripts')
     // A frame with NO sandbox attribute is fully privileged — an emptied set
     // must fall back to the default posture, not to nothing.
+
     for (const escape of [
       undefined,
       '   ',
@@ -57,6 +58,7 @@ describe('SandboxedFrame', () => {
         title="Feed"
       />
     )
+
     const frame = container.querySelector('iframe')!
 
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts')

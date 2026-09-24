@@ -1008,3 +1008,16 @@ def test_linking_the_same_person_twice_is_a_noop(plugin):
     first = json.loads(plugin.tools["wintermute_link"]({"peer": "telegram:1"}, session_id="d"))
     again = json.loads(plugin.tools["wintermute_link"]({"peer": "telegram:1"}, session_id="d"))
     assert first["linked"] and not again["linked"]
+
+
+def test_he_can_undo_a_wrong_link(plugin):
+    plugin.hooks["pre_llm_call"](session_id="d", user_message="hi", platform="discord", sender_id="999")
+    with store.locked_state() as (drives, peers):
+        peers["telegram:1"] = store.new_peer(T0); peers["telegram:1"]["label"] = "z"
+    json.loads(plugin.tools["wintermute_link"]({"peer": "telegram:1"}, session_id="d"))
+    assert "discord:999" not in _peers()                       # merged away
+    undo = json.loads(plugin.tools["wintermute_unlink"]({"peer": "discord:999"}))
+    assert undo["unlinked"]
+    # From here a discord:999 message is a separate person again.
+    plugin.hooks["pre_llm_call"](session_id="d2", user_message="me", platform="discord", sender_id="999")
+    assert "discord:999" in _peers() and _peers()["discord:999"].get("label") != "z"

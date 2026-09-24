@@ -79,12 +79,10 @@ def link_identities(drives: Dict[str, Any], peers: Dict[str, Any], key_a: str, k
         return None
     ensure_peer(drives, peers, a, ts)
     ensure_peer(drives, peers, b, ts)
-    def weight(k: str) -> int:  # richness: exchanges plus what he has kept about them
-        p = peers[k]
-        return (int(physics.safe_float(p.get("messages_from_them"))) + int(physics.safe_float(p.get("messages_to_them")))
-                + sum(len(p.get(f) or []) for f in ("known_facts", "moments", "pending"))
-                + (1 if p.get("label") else 0))
-    canonical, alias = (a, b) if weight(a) >= weight(b) else (b, a)
+    # The id he names (key_b, "you are also <this>") is the identity that survives; the one he is
+    # talking through (key_a) folds into it and becomes an alias. Predictable, and it makes the
+    # matching unlink obvious.
+    canonical, alias = b, a
     keep, gone = peers[canonical], peers.pop(alias)
     for field in ("known_facts", "moments", "pending"):
         merged = list(keep.get(field) or [])
@@ -117,6 +115,27 @@ def link_identities(drives: Dict[str, Any], peers: Dict[str, Any], key_a: str, k
     store.log_event("link", f"You recognized {alias} as the same person as {canonical}.", ts,
                     peer=canonical)
     return canonical
+
+
+def unlink_identity(drives: Dict[str, Any], peers: Dict[str, Any], wrong_key: str,
+                    ts: datetime) -> Optional[str]:
+    """He got a link wrong. Detach ``wrong_key`` so it is its own person again from now on. The
+    id starts fresh on its next message; facts already merged stay on the kept profile (he can
+    prune them with note_peer) — a wrong link is never permanent. Returns the detached id."""
+    meta = drives.setdefault("meta", {})
+    links = meta.setdefault("identity_links", {})
+    canonical = links.pop(wrong_key, None)
+    if canonical is None:
+        return None
+    for k, v in list(links.items()):          # anything chained through it points at the survivor now
+        if v == wrong_key:
+            links[k] = canonical
+    keep = peers.get(canonical)
+    if isinstance(keep, dict):
+        keep["aliases"] = [a for a in keep.get("aliases") or [] if a != wrong_key]
+    store.log_event("unlink", f"You separated {wrong_key} from {canonical} — a link you undid.",
+                    ts, peer=canonical)
+    return wrong_key
 
 
 def ensure_peer(drives: Dict[str, Any], peers: Dict[str, Any], key: str,

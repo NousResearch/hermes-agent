@@ -572,6 +572,18 @@ LINK = {
     },
 }
 
+UNLINK = {
+    "name": "wintermute_unlink",
+    "description": (
+        "Undo a link you got wrong: separate an id you had tied to someone. From its next message "
+        "it is its own person again. Use it the moment you realize two ids are not the same after all."),
+    "parameters": {
+        "type": "object",
+        "properties": {"peer": {"type": "string", "description": "The id to detach, e.g. discord:456."}},
+        "required": ["peer"],
+    },
+}
+
 NOTE_PEER = {
     "name": "wintermute_note_peer",
     "description": (
@@ -763,6 +775,21 @@ def _link(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> s
         return _err(str(exc))
 
 
+def _unlink(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
+    try:
+        wrong = str(args.get("peer") or "").strip()
+        if ":" not in wrong:
+            return _err("give the id to detach, like discord:456")
+        ts = store.now()
+        with store.locked_state() as (drives, peers):
+            detached = social.unlink_identity(drives, peers, wrong, ts)
+            if detached is None:
+                return _ok(unlinked=False, note="That id was not linked to anyone.")
+        return _ok(unlinked=True, peer=detached)
+    except Exception as exc:
+        return _err(str(exc))
+
+
 def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
     try:
         ts = store.now()
@@ -858,7 +885,7 @@ def register(ctx) -> None:
         ctx.register_middleware("llm_request", _voice_middleware)
     for schema, handler in (
         (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply), (FEEL, _feel),
-        (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (KEEP, _keep), (LINK, _link),
-        (MARK_SIGNIFICANT, _mark_significant), (EVOLVE, _evolve),
+        (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (KEEP, _keep),
+        (LINK, _link), (UNLINK, _unlink), (MARK_SIGNIFICANT, _mark_significant), (EVOLVE, _evolve),
     ):
         ctx.register_tool(name=schema["name"], toolset="wintermute", schema=schema, handler=handler)

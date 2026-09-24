@@ -301,6 +301,22 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _close_one_shot_agent(cli) -> None:
+    """Reach ``agent.close()`` on one-shot exit.
+
+    ``_run_cleanup`` stops terminals and MCP servers but not the agent. Without
+    ``close()``, a codex app-server child dies from stdin EOF and never reaps
+    descendants that live in their own session (#121298).
+    """
+    close = getattr(getattr(cli, "agent", None), "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        logger.debug("one-shot agent close failed", exc_info=True)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _wait_for_oneshot_background_completions
@@ -320,4 +336,7 @@ def _finalize_single_query(cli) -> None:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
+        # After the flush, even when cleanup raises: the lease release must not
+        # leave the codex process tree behind.
+        _close_one_shot_agent(cli)
         cli._release_active_session()

@@ -26,7 +26,6 @@ pytestmark = [
 KNOWN = {
     "q_approval": "#121296 approval in `chat -q` waits the full approvals.timeout instead of single_query_mode",
     "permissions": "#121297 reply to item/permissions/requestApproval omits required `permissions`",
-    "orphan": "#121298 `chat -q` exit never closes the codex session; own-session descendants orphaned",
     "failed_hidden": "#121299 failed turn after an agentMessage prints the message and hides the reason",
 }
 
@@ -137,7 +136,6 @@ def test_permissions_request_reply_matches_protocol(runs):
     assert not violation, f"invalid PermissionsRequestApprovalResponse: {replies[0]}"
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["orphan"])
 def test_cli_exit_reaps_app_server_descendants(runs):
     run = runs["orphan"]
     assert run.results[0].returncode == 0 and "REAP-DONE" in run.results[0].stdout, run.results[0].describe()

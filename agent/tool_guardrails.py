@@ -57,6 +57,16 @@ FAILURE_TOLERANT_TOOL_NAMES = frozenset({
     "terminal", "execute_code", "process_manage", "process", "browser_navigate", "web_extract",
 })
 
+# ``same_tool_failure`` only has enough semantics to hard-stop built-in tools
+# whose loop behavior we explicitly know. Custom and dynamically registered MCP
+# tools can use consecutive failures as a legitimate diagnostic sequence; they
+# retain warnings and exact-call replay protection, but do not enter this broad
+# per-tool halt. ``web_search`` is known through the loop-cap guard even though
+# it is not classified as idempotent or mutating above.
+SAME_TOOL_FAILURE_HALT_TOOL_NAMES = (
+    IDEMPOTENT_TOOL_NAMES | MUTATING_TOOL_NAMES | frozenset({"web_search"})
+) - FAILURE_TOLERANT_TOOL_NAMES
+
 # A successful call to one of these marks progress for every failing signature still counted
 # this turn: the next retry is a new experiment (edit -> re-run), not a replay.
 PROGRESS_RESET_TOOL_NAMES = frozenset({
@@ -388,8 +398,9 @@ class ToolCallGuardrailController:
             exact_count = self._exact_failure_counts[signature] = self._exact_failure_counts.get(signature, 0) + 1
             same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._no_progress.pop(signature, None)
-            # same_tool_failure counts DIFFERENT args on one tool; for failure-tolerant
-            # tools a run of distinct red commands is diagnosis, not a loop — warn, never halt.
+            # same_tool_failure counts DIFFERENT args on one tool. It is only a
+            # hard-stop for known, non-tolerant tools: custom/MCP tools can make
+            # a genuine diagnostic sequence, so they warn but never halt here.
             if (
                 # Hard-stop widening (#89069 / #100849 bundle): the per-turn no-progress BLOCK above only
                 # covers tools in idempotent_tools, so a model replaying the same successful
@@ -398,7 +409,7 @@ class ToolCallGuardrailController:
                 # the same idempotent_no_progress threshold. Pollers stay exempt (an unchanged poll is
                 # progress).
                 self.config.hard_stop_enabled
-                and tool_name not in FAILURE_TOLERANT_TOOL_NAMES
+                and tool_name in SAME_TOOL_FAILURE_HALT_TOOL_NAMES
                 and same_count >= self.config.same_tool_failure_halt_after
             ):
                 return self._decide("halt", "same_tool_failure_halt", tool_name, same_count, signature)

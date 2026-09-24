@@ -11,6 +11,8 @@
  *     when either is empty.
  *   - `tab` (⌘/⌃-click / ⌘-Enter / session refs) — focus if already on screen,
  *     else open as a stacked session tab (never steals main from under you).
+ *   - `split` — focus if already on screen, else open a native edge split
+ *     beside the focused chat zone (right by default), never spending main.
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
@@ -23,13 +25,14 @@ import {
   focusOpenSession,
   openSessionTile,
   reuseBlankDraftTile,
-  setSessionTileWorkspaceScope
+  setSessionTileWorkspaceScope,
+  type SplitDir
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
 
-export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
+export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window' | 'split'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
@@ -95,13 +98,14 @@ export function openSessionFromPicker(
 
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
- *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
+ *   `tab` / `split` / `window` ignore it — pass a no-op when you don't have a router handle.
  */
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
   intent: OpenSessionIntent = 'in-place',
-  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
+  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' },
+  splitDirection: SplitDir = 'right'
 ): void {
   if (!storedSessionId) {
     return
@@ -153,6 +157,15 @@ export function openSession(
     spendBlankDraft =
       Boolean(botWorkspaceScope) || mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
     resolved = spendBlankDraft ? 'tab' : 'in-place'
+  }
+
+  if (resolved === 'split') {
+    // Opening is not a drag: an existing conversation keeps its placement.
+    if (!focusOpenSession(storedSessionId, workspaceScope)) {
+      openSessionTile(storedSessionId, splitDirection, undefined, undefined, workspaceScope)
+    }
+
+    return
   }
 
   if (resolved === 'tab') {

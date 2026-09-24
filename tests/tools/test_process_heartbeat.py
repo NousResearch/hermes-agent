@@ -8,6 +8,7 @@ heartbeats stop at exit, and the normal completion notice still fires.
 import json
 import queue
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,3 +81,46 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monke
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]
     assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
+
+
+def test_cli_rejects_queued_heartbeat_after_process_exit(monkeypatch):
+    """A heartbeat queued while live must not be delivered after exit."""
+    from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
+    from tools.process_registry_notifications import format_process_notification
+
+    heartbeat = {
+        "type": "heartbeat", "session_id": "proc_exited", "session_key": "session-a",
+        "started_at": 12.0, "interval": 60, "command": "sleep 60",
+    }
+    completion = {
+        "type": "completion", "session_id": "proc_exited", "session_key": "session-a",
+        "command": "sleep 60", "exit_code": 0, "output": "done",
+    }
+    registry = SimpleNamespace(
+        get=lambda session_id: SimpleNamespace(exited=True, started_at=12.0),
+        drain_notifications=lambda **kwargs: [
+            (heartbeat, format_process_notification(heartbeat)),
+            (completion, format_process_notification(completion)),
+        ],
+    )
+    delivered = []
+    monkeypatch.setattr(pr, "process_registry", registry)
+    monkeypatch.setattr(
+        "tools.async_delegation.claim_event_delivery",
+        lambda event, consumer: delivered.append(event["type"]) or "claimed",
+    )
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *args: None)
+
+    class CLI(CLIProcessNotificationsMixin):
+        session_id = "session-a"
+        _pending_input = queue.Queue()
+
+    cli = CLI()
+    cli._drain_process_notifications("cli-idle")
+
+    assert delivered == ["completion"]
+    assert cli._pending_input.qsize() == 1
+    live_registry = SimpleNamespace(
+        get=lambda session_id: SimpleNamespace(exited=False, started_at=12.0),
+    )
+    assert not CLIProcessNotificationsMixin._process_heartbeat_is_stale(heartbeat, live_registry)

@@ -1,9 +1,9 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { defineLocale } from './define-locale'
 import { introDe } from './intro-de'
-import type { Translations } from './types'
 
-export const de: Translations = {
+export const de = defineLocale({
   intro: introDe,
   connectors: {
     title: 'Verbinden Sie Ihre Apps',
@@ -6008,4 +6008,4 @@ export const de: Translations = {
       toggle: open => `${open ? 'Anzeigen' : 'Ausblenden'}: Sidebar`
     }
   }
-}
+})

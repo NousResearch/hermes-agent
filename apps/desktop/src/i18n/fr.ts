@@ -1,9 +1,9 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { defineLocale } from './define-locale'
 import { introFr } from './intro-fr'
-import type { Translations } from './types'
 
-export const fr: Translations = {
+export const fr = defineLocale({
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',
@@ -6018,4 +6018,4 @@ export const fr: Translations = {
       toggle: open => `${open ? 'Afficher' : 'Masquer'} la barre latérale`
     }
   }
-}
+})

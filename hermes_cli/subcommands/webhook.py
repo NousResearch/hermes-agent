@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from hermes_cli.subcommands._shared import SCRIPTS_DIR_HELP
+
 
 def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     """Attach the ``webhook`` subcommand to ``subparsers``."""
@@ -43,7 +45,7 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "in that chat has context. Only for sources whose content you trust in your conversation.")
     wh_sub.add_argument(
         "--script", default="",
-        help="Filter/transform script under ~/.hermes/scripts/. The route "
+        help=f"Filter/transform script under {SCRIPTS_DIR_HELP}. The route "
         "payload is passed as JSON on stdin; empty stdout, [SILENT], or a "
         "nonzero exit code ignores the webhook.")
     wh_sub.add_argument(

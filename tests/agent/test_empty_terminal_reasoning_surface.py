@@ -18,6 +18,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 # Stub optional heavy imports so run_agent imports cleanly in isolation.
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -45,12 +47,14 @@ def _build_agent(tmp_path, monkeypatch):
     return agent
 
 
-def _reasoning_only_response(finish_reason="stop"):
+def _reasoning_only_response(
+    finish_reason="stop", reasoning="The answer is 42 because of the calculation above."
+):
     return SimpleNamespace(
         choices=[SimpleNamespace(
             message=SimpleNamespace(
                 content=None,
-                reasoning="The answer is 42 because of the calculation above.",
+                reasoning=reasoning,
                 reasoning_content=None,
                 reasoning_details=None,
                 tool_calls=None,
@@ -97,6 +101,64 @@ def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
     assert row["role"] == "assistant"
     assert not row.get("content")
     assert row["api_content"] == "The answer is 42 because of the calculation above."
+
+
+def test_clean_stop_symbol_only_reasoning_returns_on_first_call(tmp_path, monkeypatch):
+    """A valid terse symbol answer must not be mistaken for corruption."""
+    agent = _build_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: _reasoning_only_response(reasoning="✓")
+    )
+
+    result = agent.run_conversation("did it work?")
+
+    assert result["final_response"] == "✓"
+    assert result["api_calls"] == 1
+
+
+@pytest.mark.parametrize("corruption", ["\ufffd", "\x00", "\x0b", "\x1e"])
+def test_degenerate_reasoning_clean_stop_uses_empty_response_recovery(tmp_path, monkeypatch, corruption):
+    """Corrupted reasoning must not be promoted as an answer on a clean stop."""
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    reasoning=f"garbled {corruption} \u0442\u0435\u043a\u0441\u0442 \u4e71\u7801",
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+            model="test-model",
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Recovered answer.",
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+            model="test-model",
+        ),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["final_response"] == "Recovered answer."
+    assert result["api_calls"] == 2
+    assert all("\ufffd" not in (row.get("api_content") or "") for row in result["messages"])
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):

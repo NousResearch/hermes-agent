@@ -211,6 +211,46 @@ def test_webhook_main_forwards_mutation_exit_status(monkeypatch):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file fsync")
+def test_busy_registry_replace_never_rewrites_target_or_claims_durability(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    path.write_text('{"kept": {"secret": "old"}}')
+    path.chmod(0o600)
+    before = path.read_bytes()
+    inode = path.stat().st_ino
+    real_replace, real_fsync = os.replace, os.fsync
+    target_sync_attempts = []
+
+    def busy_registry_replace(src, dst):
+        if os.fspath(dst) == os.fspath(path):
+            raise OSError(errno.EBUSY, "registry bind mount is busy")
+        return real_replace(src, dst)
+
+    def fail_target_sync(fd):
+        if os.fstat(fd).st_ino == inode:
+            target_sync_attempts.append(fd)
+            raise OSError(errno.EIO, "target file fsync failed")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "replace", busy_registry_replace)
+    monkeypatch.setattr(os, "fsync", fail_target_sync)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(ops.create_webhook(WebhookCreate(name="new", secret="not-published")))
+    assert error.value.status_code == 500
+    assert "not-published" not in str(error.value.detail)
+    assert wh.webhook_command(Namespace(name="cli", webhook_action="subscribe", secret="not-published",
+                                        events="", description="", prompt="", skills="", deliver="log",
+                                        deliver_chat_id="", route_profile=None, script="")) == 1
+    output = capsys.readouterr().out
+    assert "not-published" not in output and "WARNING" not in output
+    assert path.read_bytes() == before and path.stat().st_ino == inode
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert target_sync_attempts == []  # no in-place copy or suppressed target EIO
+    assert not list(tmp_path.glob(".webhook_subscriptions_*.tmp"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file fsync")
 def test_prepublication_fsync_eio_does_not_publish_or_disclose_secret(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)

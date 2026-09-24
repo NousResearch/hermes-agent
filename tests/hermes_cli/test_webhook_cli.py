@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 import pytest
 import stat
 from argparse import Namespace
@@ -184,11 +186,32 @@ class TestPersistence:
 
 class TestWebhookEnabledGate:
 
-    def test_blocks_list_when_disabled(self, capsys, monkeypatch):
-        monkeypatch.setattr("hermes_cli.webhook._is_webhook_enabled", lambda: False)
-        webhook_command(_make_args(webhook_action="list"))
-        out = capsys.readouterr().out
-        assert "not enabled" in out.lower()
+    @pytest.mark.parametrize(
+        ("action", "name", "extra", "enabled", "message"),
+        [
+            ("subscribe", "bad/name", [], True, "Invalid name"),
+            ("subscribe", "valid", ["--deliver-only"], True, "requires --deliver"),
+            ("list", "", [], False, "not enabled"),
+        ],
+    )
+    def test_cli_errors_return_failure(self, action, name, extra, enabled, message, tmp_path):
+        if enabled:
+            (tmp_path / "config.yaml").write_text("platforms:\n  webhook:\n    enabled: true\n")
+        command = [sys.executable, "-m", "hermes_cli.main", "webhook", action]
+        if name:
+            command.append(name)
+        command.extend(extra)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert message.lower() in result.stdout.lower()
+
+    def test_empty_list_and_missing_remove_remain_success(self, capsys):
+        from hermes_cli.main import cmd_webhook
+
+        assert cmd_webhook(_make_args(webhook_action="list")) in (None, 0)
+        assert "No dynamic webhook subscriptions" in capsys.readouterr().out
+        assert cmd_webhook(_make_args(webhook_action="remove", name="missing")) in (None, 0)
+        assert "No subscription named" in capsys.readouterr().out
 
 
 

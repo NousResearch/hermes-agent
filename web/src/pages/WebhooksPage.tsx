@@ -32,6 +32,7 @@ import { errorMessage } from "@/lib/api-error";
 interface CreatedWebhook {
   url: string;
   secret: string;
+  warning?: string;
 }
 
 function CopyButton({ value }: { value: string }) {
@@ -203,8 +204,7 @@ export default function WebhooksPage() {
         deliver_only: deliverOnly,
         prompt: prompt.trim() || undefined,
       });
-      showToast(res.warning || "Created ✓", res.warning ? "error" : "success");
-      setCreated({ url: res.url, secret: res.secret });
+      setCreated({ url: res.url, secret: res.secret, warning: res.warning });
       resetForm();
       loadWebhooks();
     } catch (e) {
@@ -355,6 +355,13 @@ export default function WebhooksPage() {
                     <CopyButton value={created.secret} />
                   </div>
                 </div>
+
+                {created.warning && (
+                  <div role="alert" className="flex items-start gap-2 border border-warning/50 bg-warning/10 p-3 text-sm text-foreground">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                    <span>{created.warning}</span>
+                  </div>
+                )}
 
                 <div className="flex justify-end">
                   <Button

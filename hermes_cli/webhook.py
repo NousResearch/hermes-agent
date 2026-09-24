@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import stat
+import tempfile
 import time
 import urllib.request
 from copy import deepcopy
@@ -16,7 +17,6 @@ from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_json_write
 from hermes_cli.config import cfg_get
 
 
@@ -56,9 +56,36 @@ def _load_subscriptions() -> Dict[str, dict]:
 
 
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
-    # The file holds per-route HMAC secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
-    # rename (no umask window) and re-asserts the mode on the destination afterwards.
-    atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
+    _replace_registry(_subscriptions_path(), subs)
+
+
+def _replace_registry(path: Path, subs: Dict[str, dict]) -> None:
+    """Publish a fully synced private registry, never using the shared copy fallback.
+
+    EBUSY/EXDEV on a bind-mounted registry cannot safely fall back to an
+    in-place rewrite: the plugin and gateway can observe a partial JSON file.
+    Transactions hold the persistent sibling lock through this operation.
+    """
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
+    payload = json.dumps(subs, indent=2, ensure_ascii=True).encode("utf-8")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), _SUBSCRIPTIONS_FILE_MODE)
+            else:
+                os.chmod(tmp, _SUBSCRIPTIONS_FILE_MODE)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # No fallback: only a successful rename can publish these secrets.
+        os.replace(tmp, path)
+        # The temp starts 0600 even under a permissive umask; its final
+        # private permissions are set before publication on every platform.
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 def _existing_route(subs: dict, name: str) -> dict:
     """A writer must not silently replace a damaged route it is targeting."""
@@ -144,7 +171,7 @@ def _subscription_transaction():
             original = deepcopy(data)
             yield data
             if data != original:
-                atomic_json_write(path, data, mode=_SUBSCRIPTIONS_FILE_MODE)
+                _replace_registry(path, data)
                 try:
                     _sync_registry_directory(path)
                 except OSError as exc:
@@ -224,7 +251,7 @@ def webhook_command(args):
         return
     if not _is_webhook_enabled():
         print(_setup_hint())
-        return
+        return 1
     handler = _ACTIONS.get(sub)
     if handler is not None:
         return handler(args)
@@ -234,7 +261,7 @@ def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
-        return
+        return 1
 
     profile_arg = getattr(args, "route_profile", None)
     profile = "default"
@@ -245,10 +272,10 @@ def _cmd_subscribe(args):
             validate_profile_name(profile)
         except ValueError as exc:
             print(f"Error: {exc}")
-            return
+            return 1
         if not profile_exists(profile):
             print(f"Error: Profile '{profile}' does not exist.")
-            return
+            return 1
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
@@ -266,12 +293,12 @@ def _cmd_subscribe(args):
                 "--cron-job fires an existing cron job (which handles its own "
                 "delivery)."
             )
-            return
+            return 1
         if route["deliver"] == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
-            return
+            return 1
         route["deliver_only"] = True
     if getattr(args, "mirror_to_session", False):
         route["mirror_to_session"] = True
@@ -283,10 +310,10 @@ def _cmd_subscribe(args):
             job = resolve_job_ref(cron_job)
         except AmbiguousJobReference as e:
             print(f"Error: {e}")
-            return
+            return 1
         if job is None:
             print(f"Error: no cron job matches '{cron_job}'. List jobs with: hermes cron list")
-            return
+            return 1
         route["cron_job"] = job["id"]
     script = (getattr(args, "script", "") or "").strip()
     if script:
@@ -343,7 +370,7 @@ def _cmd_list(args):
             _existing_route(subs, name)
     except (ValueError, OSError) as exc:
         print(f"Error: Could not read webhook subscriptions: {exc}")
-        return
+        return 1
     if not subs:
         print("  No dynamic webhook subscriptions.")
         print("  Create one with: hermes webhook subscribe <name>")
@@ -398,10 +425,10 @@ def _cmd_test(args):
         subs = _read_subscriptions_strict()
     except (ValueError, OSError) as exc:
         print(f"Error: Could not read webhook subscriptions: {exc}")
-        return
+        return 1
     if name not in subs:
         print(f"  No subscription named '{name}'.")
-        return
+        return 1
     try:
         route = _existing_route(subs, name)
         secret = route.get("secret", "")
@@ -410,7 +437,7 @@ def _cmd_test(args):
         url = _route_url(name, route)
     except ValueError as exc:
         print(f"Error: Could not read webhook subscriptions: {exc}")
-        return
+        return 1
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
     sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     print(f"  Sending test POST to {url}")
@@ -426,6 +453,7 @@ def _cmd_test(args):
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+        return 1
 
 
 _ACTIONS = {

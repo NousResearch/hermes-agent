@@ -753,6 +753,8 @@ class _CodexResponseAssembler:
     active_message_phase: str | None = None
     # Reasoning summary parts carry no separator; a summary_index change is where the blank line belongs.
     active_summary_index: Any = None
+    # A phase-less message item after text already streamed starts a fresh segment; the blank line goes on its first delta.
+    pending_text_separator = False
     terminal_status: str = "completed"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
@@ -780,6 +782,8 @@ class _CodexResponseAssembler:
         self.active_message_phase = _message_phase(item) if item_type == "message" else None
         if self.active_message_phase == "commentary":
             self.commentary_text_deltas = []
+        elif item_type == "message" and self.active_message_phase is None and self.text_deltas:
+            self.pending_text_separator = True
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
         # announced/pending stream without output_index values reorders the calls.
         item_id = str(_event_field(item, "id", ""))
@@ -809,6 +813,9 @@ class _CodexResponseAssembler:
         elif self.active_message_phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
+            if self.pending_text_separator:
+                delta_text = f"\n\n{delta_text}"
+                self.pending_text_separator = False
             self.text_deltas.append(delta_text)
             if self.has_tool_calls:
                 return

@@ -1,5 +1,6 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
+import base64
 import os
 import pytest
 import subprocess
@@ -815,3 +816,166 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+def test_binary_sample_ignores_login_and_xtrace_noise():
+    from tools.file_operations import ShellFileOperations
+
+    payload = b"HEADER\nVERSION=1\n"
+
+    class Env:
+        cwd = "/tmp"
+
+        def execute(self, command, **_kwargs):
+            import re
+            marker = re.search(r"__HERMES_RB_[0-9a-f]+__", command).group(0)
+            encoded = base64.b64encode(payload).decode("ascii")
+            return {
+                "output": (
+                    f"TERM\n+ echo {marker}\n{marker}\n"
+                    f"{encoded}\n+ echo {marker}\n{marker}\nprompt\n"
+                ),
+                "returncode": 0,
+            }
+
+    sample = ShellFileOperations(Env(), cwd="/tmp")._sample_file_bytes("/tmp/file")
+    assert sample == payload
+
+
+def test_exact_byte_reader_stays_usable_with_real_xtrace(tmp_path, monkeypatch):
+    from tools.file_operations import ShellFileOperations
+
+    payload = b"HEADER\nVERSION=1\n"
+    target = tmp_path / "file.txt"
+    target.write_bytes(payload)
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+
+    class Env:
+        cwd = str(tmp_path)
+
+        def execute(self, command, **_kwargs):
+            proc = subprocess.run(
+                ["bash", "-c", f"set -x; {command}"],
+                capture_output=True,
+                text=True,
+            )
+            return {
+                "output": proc.stdout + proc.stderr,
+                "returncode": proc.returncode,
+            }
+
+    data, error = ShellFileOperations(Env(), cwd=str(tmp_path))._read_exact_bytes(str(target))
+    assert error is None
+    assert data == payload
+
+
+class TestFramedBase64Transport:
+    def test_marker_only_lines_ignore_shell_echo_noise(self):
+        from tools.environments.base import decode_framed_base64
+        marker = "__HERMES_RAW_123456789abc__"
+        payload = b"HEADER\nVERSION=1\n"
+        encoded = base64.b64encode(payload).decode("ascii")
+        output = (
+            f"+ echo {marker}\n"
+            f"wrapper command mentions {marker} twice: {marker}\n"
+            f"{marker}\n{encoded}\n{marker}\n"
+        )
+        assert decode_framed_base64(output, marker) == payload
+
+    def test_rejects_ambiguous_marker_only_lines(self):
+        from tools.environments.base import decode_framed_base64
+        marker = "__HERMES_RAW_123456789abc__"
+        output = f"{marker}\nQQ==\n{marker}\n{marker}\n"
+        assert decode_framed_base64(output, marker) is None
+
+
+def test_bom_probe_ignores_xtrace_marker_noise():
+    from tools.file_operations import ShellFileOperations, _UTF8_BOM
+
+    class Env:
+        cwd = "/tmp"
+
+        def execute(self, command, **_kwargs):
+            import re
+            marker = re.search(r"__HERMES_RB_[0-9a-f]+__", command).group(0)
+            encoded = base64.b64encode(_UTF8_BOM.encode("utf-8")).decode("ascii")
+            return {
+                "output": f"+ echo {marker}\n{marker}\n{encoded}\n{marker}\nprompt\n",
+                "returncode": 0,
+            }
+
+    assert ShellFileOperations(Env(), cwd="/tmp")._file_has_bom("/tmp/file") is True
+
+
+def test_binary_read_reuses_framed_exact_transport():
+    from tools.file_operations import ShellFileOperations
+
+    payload = b"\x00TERM\xffpayload"
+
+    class Env:
+        cwd = "/tmp"
+
+        def execute(self, command, **_kwargs):
+            import re
+            marker = re.search(r"__HERMES_RB_[0-9a-f]+__", command).group(0)
+            encoded = base64.b64encode(payload).decode("ascii")
+            return {
+                "output": f"TERM\n+ echo {marker}\n{marker}\n{encoded}\n{marker}\nprompt\n",
+                "returncode": 0,
+            }
+
+    ops = ShellFileOperations(Env(), cwd="/tmp")
+    ops._probe_regular_file = lambda _path: (len(payload), "ok")
+    result = ops.read_file_bytes("/tmp/file")
+    assert result.error is None
+    assert base64.b64decode(result.base64_content, validate=True) == payload
+
+
+def test_exact_byte_reader_falls_back_to_od_when_base64_is_missing():
+    from tools.file_operations import ShellFileOperations
+
+    payload = b"HEADER\nVERSION=1\n"
+
+    class Env:
+        cwd = "/tmp"
+        def execute(self, command, **_kwargs):
+            import re
+            marker = re.search(r"__HERMES_RB_[0-9a-f]+__", command).group(0)
+            if "base64 <" in command:
+                return {"output": f"{marker}\n{marker}\n", "returncode": 127}
+            assert "od -An -v -tx1" in command
+            hexed = " ".join(f"{b:02x}" for b in payload)
+            return {"output": f"+ set +x\n{marker}\n{hexed}\n{marker}\n", "returncode": 0}
+
+    data, error = ShellFileOperations(Env(), cwd="/tmp")._read_exact_bytes("/tmp/file")
+    assert error is None
+    assert data == payload
+
+
+def test_binary_admission_uses_od_sample_when_base64_is_missing():
+    from tools.file_operations import ShellFileOperations
+
+    # A single NUL is binary under the byte-level policy, but the legacy text
+    # heuristic's >30% control-character threshold would misclassify this sample.
+    payload = (b"A" * 500) + b"\x00" + (b"B" * 499)
+
+    class Env:
+        cwd = "/tmp"
+
+        def execute(self, command, **_kwargs):
+            import re
+            marker_match = re.search(r"__HERMES_RB_[0-9a-f]+__", command)
+            if marker_match and "| base64" in command:
+                marker = marker_match.group(0)
+                return {"output": f"{marker}\n{marker}\n", "returncode": 127}
+            if marker_match and "| od -An -v -tx1" in command:
+                marker = marker_match.group(0)
+                hexed = " ".join(f"{b:02x}" for b in payload)
+                return {"output": f"{marker}\n{hexed}\n{marker}\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": payload.decode("latin-1"), "returncode": 0}
+            raise AssertionError(f"unexpected command: {command}")
+
+    is_binary, sample = ShellFileOperations(Env(), cwd="/tmp")._detect_binary("/tmp/file")
+    assert is_binary is True
+    assert sample == payload

@@ -25,6 +25,7 @@ class ReadResult:
     mime_type: Optional[str] = None
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
+    not_found: bool = False  # true only for a confirmed absent path, never a failed read
     similar_files: List[str] = field(default_factory=list)
     _snapshot: Optional[tuple] = None
 

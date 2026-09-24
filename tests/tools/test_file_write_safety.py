@@ -832,3 +832,104 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+@pytest.mark.parametrize("mode", ["replace", "v4a"])
+def test_patch_writeback_preserves_invalid_utf8_beyond_binary_sample(tmp_path: Path, mode: str):
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    target = tmp_path / "legacy.txt"
+    original = b"VERSION=1\n" + (b"a" * 1200) + b"\xffTAIL\n"
+    target.write_bytes(original)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    if mode == "replace":
+        result = ops.patch_replace(str(target), "VERSION=1", "VERSION=2")
+    else:
+        patch = ("*** Begin Patch\n*** Update File: " + str(target) +
+                 "\n@@\n-VERSION=1\n+VERSION=2\n*** End Patch")
+        result = ops.patch_v4a(patch)
+    assert result.success, result.error
+    assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+
+def test_v4a_preserves_marker_literal_and_terminal_bytes(tmp_path: Path):
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    target = tmp_path / "prompt.sh"
+    original = (
+        b'fixture="__HERMES_FENCE_a9f7b3__"; '
+        b'printf "\x1b]8;;https://example.com\x07link\x1b]8;;\x07"\n'
+        b"VERSION=1\n"
+    )
+    target.write_bytes(original)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    patch = ("*** Begin Patch\n*** Update File: " + str(target) +
+             "\n@@\n-VERSION=1\n+VERSION=2\n*** End Patch")
+    result = ops.patch_v4a(patch)
+    assert result.success, result.error
+    assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+
+def test_hash_verification_ignores_digest_shaped_path_in_shell_noise():
+    import hashlib
+    import re
+    from tools.file_operations import ShellFileOperations
+
+    intended = b"intended"
+    expected = hashlib.sha256(intended).hexdigest()
+    actual = hashlib.sha256(b"different").hexdigest()
+
+    class Env:
+        cwd = "/tmp"
+        def execute(self, command, **_kwargs):
+            marker = re.search(r"__HERMES_SHA_[0-9a-f]+__", command).group(0)
+            return {
+                "output": f"+ sha256sum /tmp/{expected}\n{marker}\n{actual}  /tmp/{expected}\n{marker}\n",
+                "returncode": 0,
+            }
+
+    verified, error = ShellFileOperations(Env(), cwd="/tmp")._verify_written_hash(
+        f"/tmp/{expected}", intended)
+    assert verified is False
+    assert error is not None
+
+
+def test_hash_verification_accepts_one_framed_result_with_outer_noise():
+    import hashlib
+    import re
+    from tools.file_operations import ShellFileOperations
+
+    content = b"same"
+    digest = hashlib.sha256(content).hexdigest()
+
+    class Env:
+        cwd = "/tmp"
+        def execute(self, command, **_kwargs):
+            marker = re.search(r"__HERMES_SHA_[0-9a-f]+__", command).group(0)
+            return {"output": f"TERM\n{marker}\n{digest}  /tmp/f\n{marker}\nprompt\n", "returncode": 0}
+
+    verified, error = ShellFileOperations(Env(), cwd="/tmp")._verify_written_hash("/tmp/f", content)
+    assert verified is True and error is None
+
+
+def test_hash_verification_rejects_extra_in_frame_output():
+    import hashlib
+    import re
+    from tools.file_operations import ShellFileOperations
+
+    content = b"same"
+    digest = hashlib.sha256(content).hexdigest()
+
+    class Env:
+        cwd = "/tmp"
+        def execute(self, command, **_kwargs):
+            marker = re.search(r"__HERMES_SHA_[0-9a-f]+__", command).group(0)
+            return {
+                "output": f"{marker}\n{digest}  /tmp/f\nunexpected diagnostic\n{marker}\n",
+                "returncode": 0,
+            }
+
+    verified, error = ShellFileOperations(Env(), cwd="/tmp")._verify_written_hash("/tmp/f", content)
+    assert verified is None and error is None

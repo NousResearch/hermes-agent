@@ -45,3 +45,30 @@ def test_prune_sessions_respects_touch_session_activity(tmp_path):
         assert pruned == 1
         assert db.get_session("truly_old") is None
         assert db.get_session("active_by_heartbeat") is not None
+
+
+def test_prune_sessions_include_unended(tmp_path):
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        now = time.time()
+        old_time = now - 100 * 86400
+
+        # Unended old session
+        db.create_session("unended_old", source="cli")
+        db.append_message("unended_old", "user", "abandoned message", timestamp=old_time)
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = NULL WHERE id = ?",
+            (old_time, "unended_old"),
+        )
+        db._conn.commit()
+
+        # By default (without include_unended), it is NOT a candidate
+        candidates = db.list_prune_candidates(older_than_days=10)
+        assert "unended_old" not in [c["id"] for c in candidates]
+
+        # With include_unended=True, it is matched and pruned
+        candidates_unended = db.list_prune_candidates(older_than_days=10, include_unended=True)
+        assert "unended_old" in [c["id"] for c in candidates_unended]
+
+        pruned = db.prune_sessions(older_than_days=10, include_unended=True)
+        assert pruned == 1
+        assert db.get_session("unended_old") is None

@@ -7,6 +7,8 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 ``base_session_env``, ``base_wait``, ``path_utils``).
 """
 
+import base64
+import binascii
 import json
 import logging
 import os
@@ -216,6 +218,30 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
         return None
 
 
+def extract_framed_payload(output: str, marker: str) -> str | None:
+    """Return text between exactly two marker-only lines, ignoring surrounding shell noise."""
+    if not output or not marker:
+        return None
+    lines = output.splitlines()
+    marks = [i for i, line in enumerate(lines) if line.strip() == marker]
+    if len(marks) != 2:
+        return None
+    start, end = marks
+    return "\n".join(lines[start + 1:end]) if end > start else None
+
+
+def decode_framed_base64(output: str, marker: str) -> bytes | None:
+    """Decode validated base64 carried between marker-only lines."""
+    payload = extract_framed_payload(output, marker)
+    if payload is None:
+        return None
+    compact = "".join(payload.split())
+    try:
+        return base64.b64decode(compact, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+
+
 class BaseEnvironment(ABC):
     """Common interface and unified execution flow for all Hermes backends. Subclasses
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
@@ -282,23 +308,22 @@ class BaseEnvironment(ABC):
         unique markers so login-shell noise in the merged stdout/stderr can't corrupt the decode.
         Raises :class:`FileFetchError` on a missing/unreadable/oversized file.
         """
-        import base64
-        import binascii
         marker = f"__HERMES_FETCH_{uuid.uuid4().hex[:12]}__"
         quoted = shlex.quote(remote_path)
         # ``[ -f ]`` follows symlinks, so a link to a denied host file is judged by the CALLER on
         # ``readlink -f`` output before any bytes move.
         result = self.execute(
-            f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
+            f"set +x 2>/dev/null; [ -f {quoted} ] || exit 1; echo {marker}; "
+            f"head -c {max_bytes + 1} < {quoted} | base64; "
+            f"__hh=${{PIPESTATUS[0]}} __hb=${{PIPESTATUS[1]}}; echo {marker}; "
+            f"[ \"$__hh\" -eq 0 ] && [ \"$__hb\" -eq 0 ]",
             timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
         output = result.get("output") or ""
-        first, last = output.find(marker), output.rfind(marker)
-        if int(result.get("returncode") or 0) != 0 or first == -1 or last <= first:
+        if int(result.get("returncode") or 0) != 0:
             raise FileFetchError(f"could not read {remote_path!r} in the sandbox (missing, not a regular file, or unreadable)")
-        try:
-            data = base64.b64decode("".join(output[first + len(marker):last].split()), validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise FileFetchError(f"transfer of {remote_path!r} was corrupted in transit: {exc}") from exc
+        data = decode_framed_base64(output, marker)
+        if data is None:
+            raise FileFetchError(f"transfer of {remote_path!r} was corrupted in transit")
         if len(data) > max_bytes:
             raise FileFetchError(f"{remote_path!r} exceeds the {max_bytes // (1024 * 1024)} MB delivery limit")
         Path(local_dest).write_bytes(data)

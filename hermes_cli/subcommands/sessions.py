@@ -117,6 +117,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "opened and never used (no messages, tokens, tool calls or title) "
             "and are older than AGE (default 30 days). Ordinary prune can "
             "never reach these — it only ever selects ended sessions")
+    _flag(sessions_prune, "--include-unended",
+        help="Also delete unended/abandoned sessions (ended_at IS NULL) matching the age and filter criteria")
     _flag(sessions_prune, "--force",
         help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
 

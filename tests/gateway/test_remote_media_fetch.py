@@ -95,3 +95,27 @@ def test_fetch_file_round_trips_bytes_and_enforces_the_in_sandbox_size_cap(tmp_p
         env.fetch_file(str(src), dest, max_bytes=100)
     with pytest.raises(FileFetchError, match="could not read"):
         env.fetch_file(str(tmp_path), dest, max_bytes=100)  # a directory is not a regular file
+
+
+class _FailingHeadEnv(_ScriptedEnv):
+    """Make the payload producer fail while base64 still exits successfully."""
+
+    def execute(self, command, cwd="", **kwargs):
+        import subprocess
+        proc = subprocess.run(
+            ["bash", "-c", f"head() {{ return 1; }}; {command}"],
+            capture_output=True,
+            text=True,
+        )
+        return {"output": proc.stdout + proc.stderr, "returncode": proc.returncode}
+
+
+def test_fetch_file_rejects_a_failed_payload_producer(tmp_path):
+    src = tmp_path / "artifact.bin"
+    src.write_bytes(b"must not become an empty successful transfer")
+    dest = tmp_path / "copy.bin"
+
+    with pytest.raises(FileFetchError, match="could not read"):
+        _FailingHeadEnv().fetch_file(str(src), dest, max_bytes=1024)
+
+    assert not dest.exists()

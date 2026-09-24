@@ -23,6 +23,7 @@ from typing import Optional, Dict
 from pathlib import Path
 
 from tools.binary_extensions import has_binary_extension
+from tools.environments.base import decode_framed_base64, extract_framed_payload
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
@@ -149,6 +150,8 @@ MISSING_SENTINEL = "__hermes_missing__"
 
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
+_BYTES_SENTINEL_PREFIX = "__HERMES_RB_"
+_HASH_SENTINEL_PREFIX = "__HERMES_SHA_"
 
 
 def _new_sentinel(prefix: str) -> str:
@@ -249,19 +252,96 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return result
 
     def _sample_file_bytes(self, path: str, length: int = 1000):
-        """First ``length`` raw bytes, base64-wrapped so they survive the terminal
-        transport (which decodes stdout with ``errors="replace"`` and manufactures
-        U+FFFD for every undecodable byte, including a multibyte char cut in half
-        by ``head -c``). None when no clean base64 came back (no ``base64`` binary);
-        callers then fall back to the text heuristic.
+        """First ``length`` raw bytes through the same framed transport as mutation reads.
 
-        Wrapping the sample in base64 lets the original bytes survive the transport, so binary detection can
-        happen at the byte layer where it is well-defined (#80308 and friends).
+        Binary admission is part of the write-back safety boundary: login-shell/xtrace noise must
+        never be decoded as sample bytes and change whether a file is considered editable.
         """
-        result = self._exec(f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64")
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        arg = self._escape_shell_arg(path)
+        result = self._exec(
+            f"set +x 2>/dev/null; echo {sentinel}; "
+            f"head -c {length} {arg} 2>/dev/null | base64; "
+            f"__hs=${{PIPESTATUS[0]}} __bs=${{PIPESTATUS[1]}}; echo {sentinel}; "
+            f"if [ \"$__hs\" -ne 0 ]; then exit \"$__hs\"; fi; exit \"$__bs\"")
+        if result.exit_code == 127:
+            return self._sample_file_bytes_hex(path, length)
         if result.exit_code != 0:
             return None
-        return self._decode_base64_sample(result.stdout)
+        return decode_framed_base64(result.stdout or "", sentinel)
+
+    def _sample_file_bytes_hex(self, path: str, length: int) -> Optional[bytes]:
+        """POSIX ``od`` sample fallback when the backend has no base64 utility."""
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        arg = self._escape_shell_arg(path)
+        result = self._exec(
+            f"set +x 2>/dev/null; echo {sentinel}; "
+            f"head -c {length} {arg} 2>/dev/null | od -An -v -tx1; "
+            f"__hs=${{PIPESTATUS[0]}} __ho=${{PIPESTATUS[1]}}; echo {sentinel}; "
+            f"[ \"$__hs\" -eq 0 ] && [ \"$__ho\" -eq 0 ]")
+        if result.exit_code != 0:
+            return None
+        return self._decode_framed_hex(result.stdout or "", sentinel)
+
+    @staticmethod
+    def _decode_framed_hex(output: str, sentinel: str) -> Optional[bytes]:
+        payload = extract_framed_payload(output, sentinel)
+        if payload is None:
+            return None
+        compact = "".join(payload.split())
+        if not re.fullmatch(r"[0-9a-fA-F]*", compact):
+            return None
+        try:
+            return bytes.fromhex(compact)
+        except ValueError:
+            return None
+
+    def _read_exact_bytes(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+        """Read one regular file byte-for-byte, without trusting merged shell stdout as payload."""
+        if self._native_read_enabled():
+            import stat as _stat
+            full = path if os.path.isabs(path) else os.path.join(
+                getattr(self.env, "cwd", None) or self.cwd, path)
+            try:
+                fd = os.open(full, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+                try:
+                    if _stat.S_ISREG(os.fstat(fd).st_mode):
+                        with open(fd, "rb", closefd=False) as fh:
+                            return fh.read(), None
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
+
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        arg = self._escape_shell_arg(path)
+        result = self._exec(
+            f"set +x 2>/dev/null; echo {sentinel}; base64 < {arg}; "
+            f"__hb=$?; echo {sentinel}; exit $__hb")
+        if result.exit_code == 127:
+            return self._read_exact_bytes_hex(path)
+        if result.exit_code != 0:
+            return None, result
+        data = decode_framed_base64(result.stdout or "", sentinel)
+        if data is None:
+            return None, ExecuteResult(
+                stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
+        return data, None
+
+    def _read_exact_bytes_hex(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+        """POSIX ``od`` fallback when the backend has no base64 utility."""
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        arg = self._escape_shell_arg(path)
+        result = self._exec(
+            f"set +x 2>/dev/null; echo {sentinel}; od -An -v -tx1 < {arg}; "
+            f"__hb=$?; echo {sentinel}; exit $__hb")
+        unavailable = ExecuteResult(
+            stdout=f"{path}: no byte-exact base64/od transport is available", exit_code=1)
+        if result.exit_code != 0:
+            return None, unavailable if result.exit_code == 127 else result
+        data = self._decode_framed_hex(result.stdout or "", sentinel)
+        return (data, None) if data is not None else (None, unavailable)
+
 
     @staticmethod
     def _decode_base64_sample(text: str) -> Optional[bytes]:
@@ -437,11 +517,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return self._exec(script, stdin_data=content)
 
     def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
-        """Whether the on-disk file starts with a UTF-8 BOM. ALWAYS probes disk:
-        ``pre_content`` usually comes from ``read_file_raw``, which strips BOMs, so
-        trusting it would silently drop the marker on rewrite. Missing → False."""
-        head_result = self._head(path, 3)
-        return head_result.exit_code == 0 and _has_bom(head_result.stdout)
+        """Whether the on-disk file starts with a UTF-8 BOM, from byte-exact transport."""
+        sample = self._sample_file_bytes(path, 3)
+        if sample is None:
+            data, _failed = self._read_exact_bytes(path)
+            sample = (data or b"")[:3]
+        return sample.startswith(_UTF8_BOM.encode("utf-8"))
 
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         return ''.join(difflib.unified_diff(
@@ -1010,10 +1091,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 if score > 0:
                     scored.append((score, os.path.join(dir_path, f)))
         scored.sort(key=lambda x: -x[0])
-        return ReadResult(error=f"File not found: {path}", similar_files=[fp for _, fp in scored[:5]])
+        return ReadResult(error=f"File not found: {path}", not_found=True, similar_files=[fp for _, fp in scored[:5]])
 
     def read_file_raw(self, path: str) -> ReadResult:
-        """Whole file as a plain string (no pagination/line numbers/clamping)."""
+        """Whole-file mutation input: exact bytes decoded with surrogateescape."""
         path = self._expand_path(path)
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
@@ -1027,12 +1108,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         is_binary, sample_bytes = self._detect_binary(path)
         if is_binary:
             return ReadResult(is_binary=True, file_size=file_size, error=describe_binary_file(sample_bytes, file_size))
-        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
-        if cat_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
-        # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
-        # write_file re-probes disk and restores it.
-        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
+        data, failed = self._read_exact_bytes(path)
+        if data is None:
+            return ReadResult(error=f"Failed to read file: {(failed.stdout if failed else 'byte-exact transport unavailable')}")
+        raw_content, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
         return ReadResult(content=raw_content, file_size=file_size)
 
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
@@ -1040,7 +1119,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         path = self._expand_path(path)
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
-            return ReadResult(error=f"File not found: {path}")
+            return ReadResult(error=f"File not found: {path}", not_found=True)
         if status == "not_regular":
             return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):
@@ -1051,15 +1130,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(
                 file_size=file_size,
                 error=f"File is too large ({file_size:,} bytes, limit is {max_bytes:,})")
-        encoded = self._exec(f"base64 < {self._escape_shell_arg(path)}")
-        if encoded.exit_code != 0:
-            return ReadResult(error=f"Failed to read binary file: {encoded.stdout}")
-        compact = "".join(_strip_terminal_fence_leaks(encoded.stdout).split())
-        try:
-            base64.b64decode(compact, validate=True)
-        except (ValueError, base64.binascii.Error):
-            return ReadResult(error=f"Backend returned invalid binary data for: {path}")
-        return ReadResult(base64_content=compact, file_size=file_size, is_binary=True)
+        data, failed = self._read_exact_bytes(path)
+        if data is None:
+            detail = failed.stdout if failed else "byte-exact transport unavailable"
+            return ReadResult(error=f"Failed to read binary file: {detail}")
+        return ReadResult(
+            base64_content=base64.b64encode(data).decode("ascii"),
+            file_size=file_size,
+            is_binary=True,
+        )
 
     def delete_file(self, path: str) -> WriteResult:
         """Delete a single file (directories rejected) via the backend's ``python -c``
@@ -1232,14 +1311,22 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return self._file_has_bom(path, pre_content), pre_content, ending
 
     def _verify_written_hash(self, path: str, content_bytes: bytes) -> tuple[Optional[bool], Optional[WriteResult]]:
-        """Compare the on-disk sha256 to the intended bytes: ``(verified, error)``.
-        The explicit flag saves the model a confirming re-read; a mismatch is a hard
-        error. ``verified`` is None when the hash could not be taken."""
+        """Verify one framed sha256sum result; surrounding shell output is never evidence."""
         try:
-            hash_result = self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
-            if hash_result.exit_code == 0 and hash_result.stdout.strip():
-                disk_sha = hash_result.stdout.strip().split()[0]
-                if disk_sha != hashlib.sha256(content_bytes).hexdigest():
+            marker = _new_sentinel(_HASH_SENTINEL_PREFIX)
+            result = self._exec(
+                f"set +x 2>/dev/null; echo {marker}; "
+                f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null; "
+                f"__hs=$?; echo {marker}; exit $__hs")
+            payload = extract_framed_payload(result.stdout or "", marker) if result.exit_code == 0 else None
+            lines = [line.strip() for line in (payload or "").splitlines() if line.strip()]
+            matches = [
+                re.match(r"^([0-9a-fA-F]{64})(?:[ \t]+.*)?$", line)
+                for line in lines
+            ]
+            digests = [m.group(1).lower() for m in matches if m]
+            if len(lines) == 1 and len(digests) == 1:
+                if digests[0] != hashlib.sha256(content_bytes).hexdigest().lower():
                     return False, WriteResult(error=(
                         f"Post-write verification failed for {path}: on-disk "
                         "content hash differs from the intended write. The "
@@ -1339,10 +1426,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         Line endings are normalized first (Windows text-mode ``open()`` writes LF as
         CRLF) and the re-read's BOM stripped (``new_content`` is the BOM-less
         string we matched against)."""
-        verify_result = self._cat(path)
-        if verify_result.exit_code != 0:
+        data, _failed = self._read_exact_bytes(path)
+        if data is None:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
-        bomless, _ = _strip_bom(verify_result.stdout)
+        bomless, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
         on_disk = bomless.replace("\r\n", "\n").replace("\r", "\n")
         intended = new_content.replace("\r\n", "\n").replace("\r", "\n")
         if on_disk != intended:
@@ -1362,12 +1449,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         denied = get_write_denied_error(path)
         if denied:
             return PatchResult(error=denied)
-        read_result = self._cat(path)
-        if read_result.exit_code != 0:
-            return PatchResult(error=read_result.cwd_error or f"Failed to read file: {path}")
-        # Match and diff on BOM-stripped content (a phantom U+FEFF defeats an exact
-        # first-line match); the raw read becomes write_file's pre_content.
-        raw_content = read_result.stdout
+        data, failed = self._read_exact_bytes(path)
+        if data is None:
+            return PatchResult(error=(failed.cwd_error if failed and failed.cwd_error else f"Failed to read file: {path}"))
+        # Every untouched byte is written back; surrogateescape makes that round-trip exact.
+        raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
         from tools.fuzzy_match import fuzzy_find_and_replace

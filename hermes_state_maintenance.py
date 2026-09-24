@@ -72,7 +72,7 @@ _PRUNE_FILTERS = (
     ("min_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) >= ?")),
     ("max_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) <= ?")),
 )
-_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only"}
+_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only", "include_unended"}
 
 
 class SessionMaintenanceMixin:
@@ -176,10 +176,10 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            lineage_tips_only: bool = False, **filters) -> Tuple[str, list]:
+                            lineage_tips_only: bool = False, include_unended: bool = False, **filters) -> Tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
-        AND together, only ended sessions are ever candidates, ``archived`` is tri-state
-        (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
+        AND together, only ended sessions are ever candidates (unless ``include_unended`` is True),
+        ``archived`` is tri-state (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
         ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
         their tip, never on their own age — matching an old ancestor would fan out over the lineage
         and hide its OPEN, recently active tip (#115489)."""
@@ -187,7 +187,9 @@ class SessionMaintenanceMixin:
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
                             f"keyword argument {sorted(unknown)[0]!r}")
-        clauses = ["s.ended_at IS NOT NULL"]
+        clauses = []
+        if not include_unended:
+            clauses.append("s.ended_at IS NOT NULL")
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
@@ -202,7 +204,7 @@ class SessionMaintenanceMixin:
         # Pinned is a durable "keep" flag: bulk prune/delete/archive exclude pinned rows unless opted in.
         if not include_pinned:
             clauses.append("COALESCE(s.pinned, 0) = 0")
-        return " AND ".join(clauses), params
+        return (" AND ".join(clauses) if clauses else "1=1"), params
 
     def _prune_where(self, older_than_days, source, filters) -> Tuple[str, list]:
         """Translate the legacy age window into the shared activity filter, then build WHERE."""

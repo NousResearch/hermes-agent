@@ -676,6 +676,8 @@ def _cmd_prune_or_archive(db, args, action):
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
     filters["include_pinned"] = getattr(args, "include_pinned", False)
+    include_unended = prune and getattr(args, "include_unended", False)
+    filters["include_unended"] = include_unended
     # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
     # never qualifies); the preview must show the same rows the archive will touch.
     filters["lineage_tips_only"] = not prune
@@ -684,11 +686,11 @@ def _cmd_prune_or_archive(db, args, action):
     candidates = db.list_prune_candidates(**filters)
     # Archive expands each matched tip to its compression lineage, so a direct-open count would
     # misdescribe its effect.
-    skipped_open = db.count_open_prune_matches(**filters) if prune else 0
+    skipped_open = db.count_open_prune_matches(**filters) if (prune and not include_unended) else 0
     if skipped_open:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
               "will be skipped because prune only deletes ended sessions. Use `hermes sessions delete <id>` "
-              "to remove one explicitly.")
+              "to remove one explicitly (or pass `--include-unended`).")
     if not candidates:
         print(f"No sessions match ({describe_filters(filters)}).")
         return

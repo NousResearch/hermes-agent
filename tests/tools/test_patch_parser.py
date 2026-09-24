@@ -986,3 +986,27 @@ class TestV4ABomRoundTrip:
             self.BOM.encode("utf-8")
         ), "BOM was injected on a plain file"
         assert b"print('world')" in raw
+
+
+@pytest.mark.parametrize("kind", ["add", "move"])
+def test_v4a_does_not_treat_failed_destination_read_as_free(kind):
+    from tools.file_operations_common import ReadResult
+    from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+    class Ops:
+        def read_file_raw(self, path):
+            if kind == "move" and path == "src.txt":
+                return ReadResult(content="source")
+            return ReadResult(error="transport unavailable")
+        def write_file(self, *_args, **_kwargs):
+            raise AssertionError("write must not run")
+        def move_file(self, *_args, **_kwargs):
+            raise AssertionError("move must not run")
+
+    text = ("*** Begin Patch\n*** Add File: dst.txt\n+new\n*** End Patch" if kind == "add" else
+            "*** Begin Patch\n*** Move File: src.txt -> dst.txt\n*** End Patch")
+    operations, error = parse_v4a_patch(text)
+    assert error is None
+    result = apply_v4a_operations(operations, Ops())
+    assert not result.success
+    assert "could not confirm" in (result.error or "")

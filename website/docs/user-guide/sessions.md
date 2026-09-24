@@ -537,6 +537,9 @@ hermes sessions prune --user 12345678 --chat-type group       # by messaging ori
 hermes sessions prune --max-tokens 500 --older-than 7         # by token usage
 hermes sessions prune --max-cost 0.01 --max-tool-calls 0      # cheap, tool-less runs
 
+# Include abandoned sessions that were never ended cleanly (ended_at IS NULL)
+hermes sessions prune --older-than 30 --include-unended
+
 # Preview what would be deleted, without deleting anything
 hermes sessions prune --newer-than 5h --dry-run
 
@@ -565,10 +568,10 @@ non-`--yes` run shows the match count plus the oldest and newest matching
 session before asking for confirmation.
 
 Archived sessions are skipped by default; pass `--include-archived` to
-delete them too.
+delete them too. Sessions that never cleanly marked an end timestamp (`ended_at IS NULL`, e.g. from killed terminal sessions) are protected by default; pass `--include-unended` to include them.
 
 :::info
-Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
+By default, pruning only targets **ended** sessions (`ended_at IS NOT NULL`). Active or abandoned sessions without an end timestamp are safely skipped unless `--include-unended` is explicitly provided.
 :::
 
 ### Bulk-Archive Sessions

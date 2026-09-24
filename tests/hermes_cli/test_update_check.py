@@ -158,3 +158,22 @@ def test_upstream_main_sha_ls_remote_fallback_disables_git_prompts(monkeypatch):
     assert kwargs["stdin"] is banner.subprocess.DEVNULL
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"
+
+
+def test_homebrew_install_skips_git_distance_update_signal(tmp_path, monkeypatch):
+    """A formula install's currency is ``brew outdated``, not its pinned revision's
+    distance from upstream main — the check must short-circuit before any git probe
+    (#101676)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.detect_install_method", lambda root: "homebrew"
+    )
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: tmp_path)
+
+    def _no_git_probe():
+        raise AssertionError("homebrew install must not reach the repo-dir probe")
+
+    monkeypatch.setattr(banner, "_resolve_repo_dir", _no_git_probe)
+
+    assert banner.check_for_updates(passive=True) is None

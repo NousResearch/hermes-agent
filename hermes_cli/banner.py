@@ -399,7 +399,10 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
         from hermes_cli.config import detect_install_method, get_project_root
         return detect_install_method(get_project_root())
 
-    if _quiet(_install_method) in {"docker", "apt"}:
+    if _quiet(_install_method) in {"docker", "apt", "homebrew"}:
+        # Homebrew formula installs have no ``.git`` and their pinned revision is behind
+        # upstream main by design: the formula's currency is ``brew outdated``, not git
+        # commit distance (#101676).
         return None
     # Cache is invalidated when the embedded rev OR installed version changed since the last check.
     # For a git checkout the local HEAD is part of the key too: `hermes update` moves HEAD, and a

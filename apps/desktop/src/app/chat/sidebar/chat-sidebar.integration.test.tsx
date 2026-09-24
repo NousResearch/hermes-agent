@@ -7,7 +7,9 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
-import { $selectedStoredSessionId, $sessions } from '@/store/session'
+import { setSidebarAgentsGrouped } from '@/store/layout'
+import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { $currentCwd, $selectedStoredSessionId, $sessions, $workspaceCwdOwner } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -160,5 +162,55 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+})
+
+// Entering a project is a scope switch: the conversation main is showing keeps
+// its workspace, so Files/Review and the composer's Git context can't drift to
+// the project while the transcript stays on the old chat (#72772).
+describe('ChatSidebar project entry', () => {
+  const project = {
+    id: '/repos/new-project',
+    label: 'new-project',
+    path: '/repos/new-project',
+    repos: [],
+    sessionCount: 0
+  }
+
+  beforeEach(() => {
+    setSidebarAgentsGrouped(true)
+    $projectTree.set([project])
+    $currentCwd.set('/repos/old-project')
+  })
+
+  afterEach(() => {
+    cleanup()
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    setSidebarAgentsGrouped(false)
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
+    $workspaceCwdOwner.set(null)
+    $sessions.set([])
+  })
+
+  it("leaves a stored conversation's workspace alone", () => {
+    $sessions.set(sessionRows)
+    $selectedStoredSessionId.set('tile-one')
+    $workspaceCwdOwner.set('tile-one')
+    $projectScope.set(project.id)
+
+    renderSidebar('/tile-one', 'chat')
+
+    expect($currentCwd.get()).toBe('/repos/old-project')
+    expect($workspaceCwdOwner.get()).toBe('tile-one')
+  })
+
+  it('re-homes a fresh draft into the entered project', () => {
+    $projectScope.set(project.id)
+
+    renderSidebar('/', 'chat')
+
+    expect($currentCwd.get()).toBe(project.path)
   })
 })

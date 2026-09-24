@@ -27,9 +27,11 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import {
+  $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  setCurrentCwd,
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
@@ -173,6 +175,23 @@ export function resolveNewSessionCwd(): string {
   }
 
   return workspaceCwdForNewSession()
+}
+
+// Entering a project moves the live workspace only when main holds a fresh
+// draft: the draft has no folder of its own yet, and the project root is where
+// its first message should run. A stored conversation keeps its cwd — entering
+// is a scope switch, and moving the workspace under the selected chat re-pointed
+// Files/Review and the composer's Git context at the project while the
+// transcript stayed on the old session (#72772). The next new chat still lands
+// in the project through resolveNewSessionCwd.
+export function followEnteredProjectCwd(cwd: string): void {
+  const target = cwd.trim()
+
+  if (!target || $selectedStoredSessionId.get() || target === $currentCwd.get()) {
+    return
+  }
+
+  setCurrentCwd(target)
 }
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across

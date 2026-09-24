@@ -77,6 +77,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Exit code for an intentional, fail-closed refusal (see the replace-tree
+# preflight in Install-Repository). Stays 0 for every other path, so the
+# top-level catch only forces a non-zero exit for an abort WE raised.
+$script:_InstallAbortExitCode = 0
+
 # Suppress Invoke-WebRequest's per-chunk progress bar.  Windows PowerShell
 # 5.1's progress UI repaints synchronously on every received byte, which
 # pegs CPU on a single core and throttles downloads by 10-100x (a 57MB
@@ -2231,6 +2236,478 @@ function Install-SystemPackages {
 }
 
 # ============================================================================
+# Replace-tree preflight (2026-09-21 incident)
+# ============================================================================
+#
+# What went wrong: Install-Repository moved the whole tree aside
+# (`$InstallDir.broken-<stamp>`) while the desktop App was still running, then
+# could not reach GitHub (os error 10054) and left a half-installed tree behind
+# (venv without pip, .git unusable). The running renderer survived the rename
+# until its first lazy import, then died on
+#
+#   TypeError: Failed to fetch dynamically imported module:
+#   .../app.asar.unpacked/dist/assets/settings-CAEmhRvA.js
+#
+# and the 04:30 upgrade chain plus the Feishu push chain were dead until
+# someone noticed hours later.
+#
+# These two gates run BEFORE the rename, so the old tree stays usable when
+# either one refuses:
+#   1. no Hermes desktop / backend / electron process is alive in the tree
+#   2. GitHub is actually reachable for the clone that is about to happen
+#
+# Both are additive: they gate only the replace-tree branch, and each has an
+# explicit escape hatch (see the env flags at the call site).
+
+function Test-InstallEnvFlag {
+    # Truthy-env-var reader. Env vars rather than new switches: install.ps1 is
+    # delivered via `irm | iex` and driven by several callers (Tauri bootstrap,
+    # desktop bootstrap-runner, hermes update), so a new parameter would have to
+    # be threaded through every one of them to be usable.
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $value = [Environment]::GetEnvironmentVariable($Name)
+
+    if (-not $value) { return $false }
+
+    return @('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant()
+}
+
+function Get-HermesTreeHolder {
+    # Live processes executing out of $InstallDir -- the desktop App itself,
+    # its Electron children (renderer/GPU/utility all run the same exe under
+    # apps\desktop\release\win-unpacked\), and the Python backend under venv\.
+    # Renaming the tree under any of them is what made the chunks vanish.
+    #
+    # Matched by executable path first, then by process name when the image
+    # path is unreadable, then by command line -- the last never applied to
+    # the installer's own ancestor chain, because the PowerShell running
+    # install.ps1 carries the tree path in its own command line and would
+    # otherwise refuse itself.
+    #
+    # Returns $null when the sweep itself fails (WMI unavailable, access
+    # denied). The caller MUST treat $null as "could not prove the tree is
+    # free" and refuse: an empty array would report a broken probe as "no
+    # holders alive", which is the fail-OPEN direction this guard exists to
+    # close.
+    #
+    # The installer's own ancestor chain is exempt (a `hermes update` CLI or
+    # the desktop bootstrap's PowerShell legitimately sits in that chain). The
+    # desktop app and the venv backend are exempt ONLY when they are not the
+    # blocker -- and they always are, because their exe lives under
+    # apps\desktop\ or venv\, which is checked before the exemption. Swapping
+    # the tree while the App drives the install is exactly the bug.
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    # Long form on both sides of the compare. $InstallDir arrives normalized
+    # by ConvertTo-LongPath at script scope, but re-resolve defensively so a
+    # caller handing us a short path cannot make the prefix compare below
+    # fail OPEN.
+    $root = [System.IO.Path]::GetFullPath((ConvertTo-LongPath $InstallDir)).TrimEnd('\')
+    $treePrefix = $root + '\'
+    $desktopPrefix = $root + '\apps\desktop\'
+    $venvPrefix = $root + '\venv\'
+
+    # 8.3-tolerant matcher for the strings no resolver can reach: the raw
+    # image path and the command line.
+    $treePattern = ConvertTo-TreePathPattern $treePrefix
+
+    $exempt = New-Object 'System.Collections.Generic.HashSet[int]'
+    [void]$exempt.Add($PID)
+    $cursor = $PID
+
+    for ($hop = 0; $hop -lt 12; $hop++) {
+        $parent = 0
+
+        try {
+            $probe = Get-CimInstance Win32_Process -Filter "ProcessId = $cursor" -ErrorAction Stop
+            if ($probe) { $parent = [int]$probe.ParentProcessId }
+        } catch { break }
+
+        if ($parent -le 0) { break }
+        if (-not $exempt.Add($parent)) { break }
+
+        $cursor = $parent
+    }
+
+    try {
+        $cmp = [System.StringComparison]::OrdinalIgnoreCase
+
+        # The leading comma is NOT style -- it is the return contract. A
+        # returned array is enumerated into the pipeline, and an EMPTY array
+        # enumerates to nothing: `return @()` hands the caller $null, which is
+        # this function's "the sweep itself failed" sentinel. A successful
+        # sweep that finds no holders -- the ordinary case on a machine with
+        # nothing running out of the tree -- would then read as a broken probe
+        # and refuse every tree swap. `,@(...)` returns the array as a single
+        # object instead, so an empty sweep stays an empty array and ONLY the
+        # catch below can produce $null. Do not "clean this up".
+        return ,@(
+            Get-CimInstance Win32_Process -ErrorAction Stop |
+                Where-Object {
+                    $procId = [int]$_.ProcessId
+                    $isExempt = $exempt.Contains($procId)
+
+                    # Win32_Process reports the 8.3 SHORT form when the profile
+                    # path needs one (C:\Users\jdoe~1\...). [IO.Path]::GetFullPath
+                    # does NOT expand 8.3 -- it is lexical only -- so comparing
+                    # that against the long $treePrefix never matches and this
+                    # guard fails OPEN, silently allowing the exact rename the
+                    # incident was. Resolve the image path with the same
+                    # resolver the install dir went through.
+                    $rawExe = $_.ExecutablePath
+                    $exe = $rawExe
+                    if ($exe) {
+                        try { $exe = [System.IO.Path]::GetFullPath((ConvertTo-LongPath $exe)) } catch { }
+                    }
+
+                    # $false = we could not establish where this process lives.
+                    $placed = [bool]($exe) -and ($exe -notmatch '~\d')
+
+                    if ($placed -and $exe.StartsWith($treePrefix, $cmp)) {
+                        # apps\desktop\ and venv\ are hard blockers even for an
+                        # exempt PID: the App or its backend driving the install
+                        # is exactly the bug.
+                        if ($exe.StartsWith($desktopPrefix, $cmp) -or $exe.StartsWith($venvPrefix, $cmp)) { return $true }
+
+                        return -not $isExempt
+                    }
+
+                    if ($isExempt) { return $false }
+
+                    # No usable image path (unreadable: elevated / another
+                    # session; or still aliased after every resolver). Skipping
+                    # these was the fail-OPEN hole -- the process holding the
+                    # tree is often the elevated one. Go by name, then by the
+                    # unresolved image path itself.
+                    #
+                    # The name list is every runtime the tree ships: hermes*.exe
+                    # / electron.exe (the desktop App), node.exe (managed Node),
+                    # python.exe (venv backend), uv.exe and pip.exe (also under
+                    # venv\Scripts). Anything the INSTALLER spawns is already
+                    # exempt above through the ancestor chain, so widening this
+                    # cannot make the installer refuse its own helpers.
+                    if (-not $placed) {
+                        if ($_.Name -match '^(hermes|electron|node|python|uv|pip)') { return $true }
+                        if ($rawExe -match $treePattern) { return $true }
+                    }
+
+                    # Exe lives elsewhere but the process can still be holding
+                    # the tree: a system node.exe / python.exe interpreting
+                    # in-tree code, or anything started with an in-tree path.
+                    # Not applied to the installer's own chain, whose command
+                    # line legitimately names $InstallDir.
+                    #
+                    # cwd-only holders are not enumerable here -- Win32_Process
+                    # exposes no working directory. Those keep their handle on
+                    # the directory and make the rename itself fail below, so
+                    # they cannot produce the half-moved tree, only a refusal.
+                    $cmdLine = $_.CommandLine
+                    if ($cmdLine -and $cmdLine -match $treePattern) { return $true }
+
+                    # Every channel came back unknown: no image path we can
+                    # place, no runtime name, no command line. That is the
+                    # fail-OPEN residue this guard exists to close, so it gets
+                    # one more question -- can we even attribute the process to
+                    # a session? If not, nothing about it is knowable and the
+                    # sweep cannot defend letting it through.
+                    #
+                    # It does NOT refuse merely for being unknown, and that
+                    # limit is deliberate and measured: on a stock Windows 11
+                    # box, with the installer running unelevated the way users
+                    # run it, 216 processes report neither an image path nor a
+                    # command line -- ctfmon.exe, conhost.exe, taskhostw.exe,
+                    # vendor helpers. They are higher integrity than the
+                    # installer, which is exactly why WMI hides them, and none
+                    # of them runs a Hermes runtime. Refusing every unknown
+                    # process, or every unknown process outside session 0
+                    # (those helpers run in the user's session, not session 0),
+                    # would make this guard refuse on every machine, always --
+                    # worse than the bug it closes.
+                    #
+                    # Known ceiling: a holder that is neither runtime-named nor
+                    # command-line-readable -- a renamed binary, an elevated
+                    # cmd.exe wrapper with everything hidden -- still passes
+                    # this gate. Its image is inside the tree, so the paths the
+                    # App resolves at runtime stop resolving right after the
+                    # swap; that surfaces as the app failing to start, not as
+                    # this refusal. Narrowing it further needs a channel
+                    # Win32_Process does not expose.
+                    if (-not $placed -and -not $cmdLine) {
+                        if ($null -eq $_.SessionId) { return $true }
+
+                        return $false
+                    }
+
+                    return $false
+                } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        ProcessId = $_.ProcessId
+                        Name      = $_.Name
+                        Path      = $_.ExecutablePath
+                    }
+                }
+        )
+    } catch {
+        Write-Warn "Could not enumerate processes holding ${InstallDir}: $($_.Exception.Message)"
+        # Fail-closed sentinel -- NOT an empty array. The caller refuses on
+        # $null; an empty array here would read as "nothing is holding the
+        # tree" and let the swap through on a broken WMI / denied handle.
+        return $null
+    }
+}
+
+function ConvertTo-TreePathPattern {
+    # Regex for "does this text mention a path inside $Path". Used on strings
+    # that are NOT paths we can hand to a resolver: a process command line,
+    # and an image path no resolver could expand.
+    #
+    # ConvertTo-LongPath cannot help here -- it needs a filesystem lookup --
+    # so the pattern accepts, per component of the tree path, either the real
+    # name or the 8.3 alias it may appear as (NAME~1, NAME~1.EXT). Without
+    # this, a tree given as C:\Users\Administrator\... and a command line
+    # naming C:\Users\ADMINI~1\... compare unequal and the holder is missed.
+    #
+    # Eager matching is the SAFE direction: a false positive refuses the swap
+    # (recoverable, and overridable with HERMES_INSTALL_ALLOW_RUNNING_APP),
+    # while a miss is the rename-under-a-live-app this guard exists to stop.
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # DOS 8.3 shape: 1-8 name chars, '~', a serial digit, optional extension.
+    # Deliberately not a general wildcard -- '[^\\]' keeps it inside one
+    # component, so it can never swallow a directory boundary.
+    $alias = '[^\\]{1,6}~\d+(?:\.[^\\\.]{0,3})?'
+
+    $pattern = ''
+    $first = $true
+
+    foreach ($part in ($Path.TrimEnd('\') -split '\\')) {
+        if (-not $first) { $pattern += '\\' }
+        $first = $false
+
+        # A UNC path splits to leading empties; they are the '\\' start.
+        if ($part -eq '') { continue }
+
+        $pattern += '(?:' + [regex]::Escape($part) + '|' + $alias + ')'
+    }
+
+    # Trailing separator: the text must name something INSIDE the tree.
+    # Unanchored on purpose -- in a command line the path is mid-string.
+    return $pattern + '\\'
+}
+
+function Stop-TreeReplaceForHolders {
+    # The single refusal path for a failed tree-swap preflight: prints the
+    # holder list (or the failed sweep) and exits 3 from script scope. `exit`
+    # is deliberately used instead of a throw: a throw can be swallowed by any
+    # catch between here and the entry point, which would leave the abort flag
+    # set while the script carried on to the rename -- an exit code that does
+    # not match what the script then did. Both the preflight and the
+    # immediately-before-rename re-check land here so they cannot drift apart.
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [object[]]$Holders = @(),
+        [switch]$ProbeFailed
+    )
+
+    # U+8BF7 U+5148 U+9000 U+51FA U+684C U+9762 + " App" reads
+    # "please quit the desktop App" in Chinese.
+    # Built from code points because this file must stay PURE ASCII:
+    # PowerShell 5.1 parses a BOM-less .ps1 as ANSI, so a literal
+    # UTF-8 CJK string would be mis-decoded into stray quotes and
+    # braces and break the parser (see the encoding note above).
+    $quitAppZh = (-join @([char]0x8BF7, [char]0x5148, [char]0x9000, [char]0x51FA, [char]0x684C, [char]0x9762)) + " App"
+
+    if ($ProbeFailed) {
+        Write-Err "Could not list the processes running out of $InstallDir -- refusing to replace the tree."
+        Write-Host ""
+        Write-Info "The process sweep failed (WMI unavailable or access denied), so there is no"
+        Write-Info "way to tell whether the desktop app or its backend is live in this tree."
+        Write-Info "Renaming the tree under a running app is what left the desktop UI blank with"
+        Write-Info "'Failed to fetch dynamically imported module'. Nothing was moved or deleted"
+        Write-Info "-- this directory is untouched."
+    } else {
+        Write-Err "Hermes is still running out of $InstallDir -- refusing to replace the tree."
+        Write-Host ""
+        Write-Host ("  {0} -- quit the desktop app (and its backend / Electron children), then re-run." -f $quitAppZh)
+        Write-Host ""
+        foreach ($holder in $Holders) {
+            Write-Host ("  - PID {0}  {1}" -f $holder.ProcessId, $holder.Path)
+        }
+        Write-Host ""
+        Write-Info "Renaming the tree under a live app is what leaves the desktop UI"
+        Write-Info "blank with 'Failed to fetch dynamically imported module'. Nothing was"
+        Write-Info "moved or deleted -- this directory is untouched."
+    }
+
+    Write-Info "Set HERMES_INSTALL_ALLOW_RUNNING_APP=1 to override."
+
+    # Belt and braces: the flag alone would still document the refusal if the
+    # exit were ever moved back to the entry point, but the exit code below is
+    # what the callers actually branch on.
+    $reason = if ($ProbeFailed) {
+        "Could not list the processes running out of $InstallDir; refusing to replace the tree"
+    } else {
+        "Hermes processes are still running from $InstallDir; refusing to replace the tree"
+    }
+
+    $script:_StageAbortReason = $reason
+    $script:_InstallAbortExitCode = 3
+    exit 3
+}
+
+function Test-TcpReachable {
+    # Dependency-free reachability probe, used when no git binary is available
+    # (the clone stage falls back to the ZIP download, so the host is what
+    # matters, not git). ConnectAsync + Wait keeps a blackholed route from
+    # hanging the installer the way a bare Connect() would.
+    #
+    # Known boundary: a raw socket does not honour HTTPS_PROXY. Proxied hosts
+    # are covered by git's own probe, which runs whenever git exists; this
+    # fallback only runs when there is no git binary -- and therefore no git
+    # proxy config to honour either. A proxy-aware TCP probe is not built.
+    param(
+        [Parameter(Mandatory = $true)][string]$HostName,
+        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$TimeoutSeconds = 8
+    )
+
+    $client = New-Object System.Net.Sockets.TcpClient
+
+    try {
+        $async = $client.BeginConnect($HostName, $Port, $null, $null)
+
+        if (-not $async.AsyncWaitHandle.WaitOne($TimeoutSeconds * 1000, $false)) {
+            return @{ Ok = $false; Reason = "TCP connect to ${HostName}:${Port} timed out after ${TimeoutSeconds}s" }
+        }
+
+        $client.EndConnect($async)
+
+        return @{ Ok = $true; Reason = "TCP ${HostName}:${Port} reachable" }
+    } catch {
+        return @{ Ok = $false; Reason = "TCP connect to ${HostName}:${Port} failed: $($_.Exception.Message)" }
+    } finally {
+        $client.Close()
+    }
+}
+
+function Test-GitHubReachable {
+    # Fail-closed preflight for the clone that follows the tree swap. `git
+    # ls-remote` is the faithful probe -- it performs the same HTTPS handshake
+    # and auth as the clone -- run through a bounded Process wait so a stalled
+    # connection reports instead of hanging. GIT_TERMINAL_PROMPT=0 keeps it
+    # from blocking on a credential prompt.
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoUrl,
+        [string]$Branch = "main",
+        [int]$TimeoutSeconds = 20
+    )
+
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+
+    if (-not $gitCmd) {
+        Write-Info "git not found -- falling back to a TCP probe of github.com:443."
+        $tcp = Test-TcpReachable -HostName 'github.com' -Port 443 -TimeoutSeconds 8
+        if (-not $tcp.Ok) { Write-Warn "GitHub TCP probe: $($tcp.Reason)" }
+        return $tcp
+    }
+
+    # Two probes: the branch the clone will ask for, then HEAD. `ls-remote
+    # --heads <url> <missing-branch>` exits 0 with EMPTY output, so a branch
+    # that does not exist (renamed branch, a default that is not 'main') used
+    # to be reported as "GitHub is unreachable" -- a permanent misdiagnosis
+    # that blamed the network for a ref that simply is not there. HEAD only
+    # answers "is this remote served at all", which is the question this gate
+    # means to ask.
+    $attempts = @(
+        @{ Label = "branch '$Branch'"; Args = "-c windows.appendAtomically=false ls-remote --heads `"$RepoUrl`" `"$Branch`"" },
+        @{ Label = 'HEAD';             Args = "-c windows.appendAtomically=false ls-remote `"$RepoUrl`" HEAD" }
+    )
+
+    # Every failure is kept WITH the exact command line that produced it, so a
+    # refusal can be traced from the log alone.
+    $failures = New-Object System.Collections.Generic.List[string]
+
+    foreach ($attempt in $attempts) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $gitCmd.Source
+        $psi.Arguments = $attempt.Args
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
+        $psi.EnvironmentVariables['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes -o ConnectTimeout=5'
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+
+        try {
+            if (-not $proc.Start()) {
+                $failures.Add("git $($attempt.Args) -> could not start git")
+                continue
+            }
+
+            $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+            $stderrTask = $proc.StandardError.ReadToEndAsync()
+
+            if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+                try { $proc.Kill() } catch { }
+
+                $failures.Add("git $($attempt.Args) -> timed out after ${TimeoutSeconds}s")
+                continue
+            }
+
+            # Flush the async readers before reading their results.
+            $proc.WaitForExit()
+
+            $stdout = $stdoutTask.Result
+            $stderr = $stderrTask.Result
+
+            if ($proc.ExitCode -ne 0) {
+                $why = ($stderr -split "`r?`n" | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
+                if (-not $why) { $why = "exit code $($proc.ExitCode)" }
+
+                $failures.Add("git $($attempt.Args) -> failed: $why")
+                continue
+            }
+
+            if (-not ($stdout -match '\S')) {
+                $failures.Add("git $($attempt.Args) -> returned no refs for $($attempt.Label)")
+                continue
+            }
+
+            if ($failures.Count -gt 0) {
+                # The host answered, but not for the branch the clone is about
+                # to request. Still a refusal -- moving the tree aside and then
+                # failing the clone is the half-installed tree this gate exists
+                # to prevent -- but an accurate one: the network is fine.
+                Write-Warn "GitHub is reachable, but: $($failures[0])"
+
+                return @{
+                    Ok     = $false
+                    Reason = "GitHub is reachable, but git ls-remote lists no '$Branch' for ${RepoUrl}: $($failures[0])"
+                }
+            }
+
+            return @{ Ok = $true; Reason = "git ls-remote resolved $RepoUrl ($($attempt.Label))" }
+        } catch {
+            $failures.Add("git $($attempt.Args) -> errored: $($_.Exception.Message)")
+        } finally {
+            $proc.Dispose()
+        }
+    }
+
+    # Fail closed: no probe got an answer. The interactive message carries only
+    # the summary, so the full command-and-reason trace goes to the log here.
+    Write-Warn "GitHub reachability probe failed:"
+    foreach ($failure in $failures) { Write-Warn "  $failure" }
+
+    return @{ Ok = $false; Reason = ($failures -join '; ') }
+}
+
+# ============================================================================
 # Installation
 # ============================================================================
 
@@ -2485,9 +2962,95 @@ function Install-Repository {
             # installer into the "update" branch forever. Move it aside rather
             # than deleting it -- never destroy a directory the user might still
             # want -- and fall through to a fresh clone.
+            #
+            # Both gates below run BEFORE the rename. If either refuses, the
+            # directory is left exactly where it is: the old tree stays usable
+            # and the next attempt starts from the same place. Nothing has been
+            # isolated, renamed or deleted.
+            #
+            # Escape hatches (additive -- default behaviour is fail-closed):
+            #   HERMES_INSTALL_ALLOW_RUNNING_APP=1  swap with a live app anyway
+            #                                       (only if you know it is idle)
+            #   HERMES_INSTALL_SKIP_GITHUB_PREFLIGHT=1  skip the reachability probe
+            $treeHolders = Get-HermesTreeHolder -InstallDir $InstallDir
+
+            # $null (not an empty list) means the sweep itself failed: we could
+            # not prove the tree is free, so this refuses. Treating that as
+            # "no holders" is the fail-open direction -- and the process that
+            # holds the tree is exactly the one we may not be allowed to see.
+            $treeProbeFailed = $null -eq $treeHolders
+
+            # Normalized with @() around the PIPELINE, never by assigning from
+            # an if-block: a statement assignment unrolls a one-element array
+            # back to a scalar, and a scalar PSCustomObject has no .Count at
+            # all -- a single holder would then read as "no holders".
+            $treeHolders = @($treeHolders | Where-Object { $null -ne $_ })
+
+            $allowRunningApp = Test-InstallEnvFlag -Name 'HERMES_INSTALL_ALLOW_RUNNING_APP'
+
+            if (-not $allowRunningApp -and ($treeProbeFailed -or $treeHolders.Count -gt 0)) {
+                Stop-TreeReplaceForHolders -InstallDir $InstallDir -Holders $treeHolders -ProbeFailed:$treeProbeFailed
+            }
+
+            if ($allowRunningApp -and $treeProbeFailed) {
+                Write-Warn "HERMES_INSTALL_ALLOW_RUNNING_APP=1 -- proceeding although the running-process sweep failed."
+            }
+
+            if (-not (Test-InstallEnvFlag -Name 'HERMES_INSTALL_SKIP_GITHUB_PREFLIGHT')) {
+                Write-Info "Checking GitHub reachability before replacing the tree..."
+
+                $reachable = Test-GitHubReachable -RepoUrl $RepoUrlHttps -Branch $Branch
+
+                if (-not $reachable.Ok) {
+                    # Reason is used verbatim: it may be a network failure OR a
+                    # reachable host that does not serve $Branch, and calling
+                    # the latter "cannot reach GitHub" sent people to debug
+                    # their proxy for a branch that simply is not there.
+                    Write-Err "Cannot start the clone: $($reachable.Reason)"
+                    Write-Host ""
+                    Write-Host "  Tree replacement aborted. The old directory was NOT renamed, moved"
+                    Write-Host "  or isolated -- it is untouched and still usable."
+                    Write-Host ""
+                    Write-Info "Moving the tree aside and THEN failing to clone is what produced a"
+                    Write-Info "half-installed tree (venv without pip, .git unusable). The previous"
+                    Write-Info "directory was left intact so the existing install keeps working."
+                    Write-Info "Check your network / proxy / VPN, and your -Branch / the repo's"
+                    Write-Info "default branch, then re-run the installer."
+                    Write-Info "Set HERMES_INSTALL_SKIP_GITHUB_PREFLIGHT=1 to override."
+
+                    # exit, not throw: a throw can be swallowed by an enclosing
+                    # catch, which would set the flag and then let the script go
+                    # on to the rename -- exit code and behaviour disagreeing.
+                    $script:_StageAbortReason = "Cannot start the clone: $($reachable.Reason)"
+                    $script:_InstallAbortExitCode = 4
+                    exit 4
+                }
+
+                Write-Info "GitHub reachable ($($reachable.Reason))"
+            } else {
+                Write-Warn "HERMES_INSTALL_SKIP_GITHUB_PREFLIGHT=1 -- skipping the GitHub reachability check."
+            }
+
             $backupDir = "$InstallDir.broken-" + (Get-Date -Format "yyyyMMdd-HHmmss")
             Write-Warn "Existing directory at $InstallDir is not a valid git repo."
             Write-Warn "Moving it aside to $backupDir before re-cloning."
+
+            # TOCTOU: the gates above ran before the reachability probe (up to
+            # 40s of git), and the App can be launched in that window. Re-run
+            # the same sweep -- same function, same $null sentinel, same
+            # refusal path -- immediately before the one irreversible step.
+            if (-not $allowRunningApp) {
+                $lateHolders = Get-HermesTreeHolder -InstallDir $InstallDir
+
+                if ($null -eq $lateHolders) {
+                    Stop-TreeReplaceForHolders -InstallDir $InstallDir -ProbeFailed
+                }
+
+                if (@($lateHolders).Count -gt 0) {
+                    Stop-TreeReplaceForHolders -InstallDir $InstallDir -Holders @($lateHolders)
+                }
+            }
+
             try {
                 Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
             } catch {
@@ -4979,6 +5542,12 @@ function Invoke-Stage {
     # a prior stage's reason can never leak into a later stage's frame.
     $script:_StageSkippedReason = $null
 
+    # Same channel discipline for a worker that EXITS the script instead of
+    # throwing (the fail-closed tree-swap refusals do exactly that, so no
+    # caller catch can swallow them). The finally below reads it to keep the
+    # -Json / -Stage frame's reason populated rather than null.
+    $script:_StageAbortReason = $null
+
     $start = [DateTime]::UtcNow
     $result = @{
         stage        = $StageDef.Name
@@ -5001,6 +5570,14 @@ function Invoke-Stage {
         throw
     } finally {
         $result.duration_ms = [int]([DateTime]::UtcNow - $start).TotalMilliseconds
+
+        # An exit-abort never reaches the catch above, so the frame would
+        # otherwise report reason=null and the driver would fall back to a
+        # bare exit code. Only fills a frame that is ALREADY a failure.
+        if (-not $result.ok -and -not $result.reason) {
+            $result.reason = $script:_StageAbortReason
+        }
+
         if ($Json -or $Stage) {
             # In stage-driver mode every stage emits a JSON line so the
             # caller can stream progress.  In default interactive mode we
@@ -5187,4 +5764,13 @@ try {
     Write-Host "  Invoke-WebRequest -Uri 'https://hermes-agent.nousresearch.com/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
     Write-Host "  .\install.ps1" -ForegroundColor Yellow
     Write-Host ""
+
+    # A refuse-to-replace-tree abort (see the preflight in Install-Repository)
+    # must report a NON-ZERO exit code -- `hermes update`, the Tauri bootstrap
+    # and the desktop bootstrap-runner all branch on it. Without this the
+    # friendly interactive recovery path above would end the script on the last
+    # Write-Host and exit 0, reporting a refused update as success.
+    if ($script:_InstallAbortExitCode -and $script:_InstallAbortExitCode -ne 0) {
+        exit $script:_InstallAbortExitCode
+    }
 }

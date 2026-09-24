@@ -59,10 +59,29 @@ class MCPServerHealthMixin:
         self.session = None
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
-        """Schedule a background tool refresh (failures logged) and keep it strongly referenced."""
+        """Schedule a background tool refresh (failures logged) and keep it strongly referenced.
+
+        Notifications that arrive while a refresh is live piggyback on it: the running refresh
+        finishes, then exactly ONE follow-up ``tools/list`` picks up whatever changed meanwhile.
+        Why: a server emitting ``tools/list_changed`` in a tight loop used to queue one paginated
+        ``tools/list`` per notification behind the refresh lock — unbounded tasks, sustained CPU
+        and a flood of RPCs at the server (Claude Code fixed the same storm in 2.1.271).
+        """
+        live = next((t for t in self._pending_refresh_tasks if not t.done()), None)
+        if live is not None:
+            self._refresh_requested = True
+            return live
+
         async def _run():
             try:
-                await self._refresh_tools()
+                while True:
+                    self._refresh_requested = False
+                    await self._refresh_tools()
+                    # No await between this check and the task finishing, so a notification
+                    # cannot slip in unobserved: it either set the flag (loop again) or finds
+                    # this task done and starts a fresh one.
+                    if not self._refresh_requested:
+                        return
             except Exception:
                 logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
         task = asyncio.create_task(_run())

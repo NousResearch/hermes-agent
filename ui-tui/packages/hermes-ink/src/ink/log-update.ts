@@ -26,6 +26,7 @@ import {
   setScrollRegion
 } from './termio/csi.js'
 import { LINK_END, link as oscLink } from './termio/osc.js'
+import { hasMultipleCodepoints } from './termio/parser.js'
 
 type State = {
   previousOutput: string
@@ -363,14 +364,15 @@ export class LogUpdate {
         // unchanged.
         if (
           removed &&
-          !isEmptyCellAt(prev.screen, x, y) &&
-          removed.char !== added.char &&
           removed.width === CellWidth.Narrow &&
           added.width === CellWidth.Narrow &&
-          (hasMultipleCodePoints(removed.char) || hasMultipleCodePoints(added.char))
+          removed.char !== added.char &&
+          (hasMultipleCodepoints(removed.char) || hasMultipleCodepoints(added.char)) &&
+          // An unwritten prev cell arrives as removed={' ', Narrow}; nothing to clear.
+          !isEmptyCellAt(prev.screen, x, y)
         ) {
-          currentStyleId = transitionStyle(screen.diff, stylePool, currentStyleId, stylePool.none)
-          currentHyperlink = transitionHyperlink(screen.diff, currentHyperlink, undefined)
+          // No style/hyperlink reset: the glyph overwrites this space at once,
+          // so resetting would only break SGR/OSC8 coalescing across the run.
           screen.diff.push({ type: 'stdout', content: ' ' })
           screen.diff.push({ type: 'cursorTo', col: screen.cursor.x + 1 })
         }
@@ -744,17 +746,6 @@ function needsWidthCompensation(char: string): boolean {
   }
 
   return false
-}
-
-/** Whether a grapheme contains more than one Unicode code point. */
-function hasMultipleCodePoints(char: string): boolean {
-  const first = char.codePointAt(0)
-
-  if (first === undefined) {
-    return false
-  }
-
-  return char.length > (first > 0xffff ? 2 : 1)
 }
 
 class VirtualScreen {

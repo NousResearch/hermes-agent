@@ -90,6 +90,16 @@ describe('LogUpdate.render diff contract', () => {
     expect(stdoutOnly(diff)).toBe('b')
     expect(diff.some(part => part.type === 'cursorTo')).toBe(false)
     expect(diff.some(part => part.type === 'stdout' && part.content === ' ')).toBe(false)
+
+    // A fresh multi-codepoint grapheme over an empty cell has nothing to clear.
+    const fresh = mkScreen(4, 1)
+    setCellAt(fresh, 0, 0, { char: 'ก\u0E31', styleId: stylePool.none, width: CellWidth.Narrow, hyperlink: undefined })
+    fresh.damage = { x: 0, y: 0, width: 1, height: 1 }
+    expect(
+      log
+        .render(mkFrame(mkScreen(4, 1), 4, 1), mkFrame(fresh, 4, 1), true, false)
+        .filter(part => part.type === 'stdout' || part.type === 'cursorTo')
+    ).toEqual([{ type: 'stdout', content: 'ก\u0E31' }])
   })
 
   it('emits only changed cells when most rows match', () => {

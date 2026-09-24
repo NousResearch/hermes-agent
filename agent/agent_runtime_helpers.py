@@ -64,11 +64,12 @@ _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
 
 # An unclosed tool call is unrecoverable (#101899), so drop its remaining block.
 # Stray argument tags only identify fragment lines, not the rest of the text
-# (#102303). Require a line-start tag or a line-ending closer (wait</arg_value>)
-# so inline prose mentions and subsequent prose survive.
+# (#102303). Require a line-start tag (optionally glued to a bare tool name,
+# process_manage<arg_key>) or a line-ending closer (wait</arg_value>) so inline
+# prose mentions and subsequent prose survive.
 _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
     rf'(?:^|\n)[ \t]*<{_NS_PREFIX}(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
-    r'|(?:^|\n)[ \t]*</?arg_(?:key|value)\b[^\n]*'
+    r'|(?:^|\n)[ \t]*[\w.:-]*</?arg_(?:key|value)\b[^\n]*'
     r'|(?:^|\n)[^\n<]*</arg_(?:key|value)>[ \t\r]*(?=\n|$)',
     re.DOTALL | re.IGNORECASE,
 )

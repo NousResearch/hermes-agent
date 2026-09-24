@@ -74,8 +74,11 @@ class TestToolCallStripping:
             (_CUT_FRAGMENT + "\nThird line must survive.",
              "Both gates started.\nThird line must survive."),
             ("Waiting.\n<tool_call>process_manage", "Waiting."),
+            ("Done.\nprocess_manage<arg_key>action</arg_key><arg_value>wait</arg_value>", "Done."),
+            ("Hi.\nterminal<arg_key>command</arg_key><arg_value>ls -la", "Hi."),
         ],
-        ids=["original-fragment", "fragment-only", "prose-after-fragment", "unclosed-call"],
+        ids=["original-fragment", "fragment-only", "prose-after-fragment", "unclosed-call",
+             "name-prefixed-fragment", "name-prefixed-fragment-cut-value"],
     )
     def test_cut_tool_call_stripped_to_visible_prefix(self, stripper, text, expected):
         """A cut call is unrecoverable, but unrelated prose must not be lost."""

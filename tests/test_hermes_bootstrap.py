@@ -196,6 +196,26 @@ class TestEntryPointsImportBootstrap:
         "cli.py",                # legacy direct-launch CLI
     ]
 
+    def test_library_imports_of_dual_use_entry_modules_stay_side_effect_free(self, tmp_path):
+        # The codex hermes-tools MCP server and the compute host are ``python -m`` entry points
+        # that agent/gateway code and tests also import; there the bootstrap exported TMPDIR and
+        # HERMES_SCRATCH_DIR into every importer (gateway.relay's read-only routing included).
+        code = textwrap.dedent("""
+            import json, os, sys
+            before = dict(os.environ)
+            import agent.auxiliary_client, gateway.relay, tui_gateway.compute_host  # noqa: F401
+            changed = sorted(k for k in before.keys() | os.environ.keys() if before.get(k) != os.environ.get(k))
+            print(json.dumps({"bootstrapped": "hermes_bootstrap" in sys.modules, "changed": changed}))
+        """)
+        repo = Path(__file__).resolve().parents[1]
+        env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "WINDIR") if k in os.environ}
+        env.update({"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PYTHONPATH": str(repo),
+                    "HERMES_HOME": str(tmp_path / "home"), "PYTHONDONTWRITEBYTECODE": "1"})
+        child = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=env,
+                               capture_output=True, text=True, timeout=120)
+        assert child.returncode == 0, child.stderr
+        assert child.stdout.splitlines()[-1] == '{"bootstrapped": false, "changed": []}'
+
     @pytest.mark.parametrize("path", ENTRY_POINTS)
     def test_entry_point_imports_bootstrap(self, path):
         """The file must contain 'import hermes_bootstrap' and that

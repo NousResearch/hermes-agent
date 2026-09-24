@@ -337,6 +337,66 @@ class TestRunJobTerminalCwd:
         assert success is True
         assert observed["script_workdir"] == str(workdir)
 
+    @pytest.mark.parametrize("no_agent", [False, True])
+    def test_deleted_workdir_fails_before_agent_or_script_runs(
+        self, monkeypatch, tmp_path, no_agent
+    ):
+        """A stored workdir that disappears must not fall back to the scripts directory."""
+        import cron.scheduler as sched
+
+        workdir = tmp_path / "deleted-project"
+        workdir.mkdir()
+        workdir.rmdir()
+        called = []
+
+        def run_script(*_args, **_kwargs):
+            called.append(True)
+            return True, "unexpected"
+
+        monkeypatch.setattr(sched, "_run_job_script_with_claim_heartbeat", run_script)
+        if not no_agent:
+            self._install_stubs(monkeypatch, {})
+
+        success, _output, _response, error = sched.run_job(
+            {
+                "id": f"deleted-workdir-{no_agent}",
+                "name": "deleted workdir",
+                "prompt": "Review the project.",
+                "script": "collect.py",
+                "workdir": str(workdir),
+                "no_agent": no_agent,
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is False
+        assert "configured workdir" in error.lower()
+        assert called == []
+
+    def test_deleted_workdir_fails_before_constructing_agent(self, monkeypatch, tmp_path):
+        """The no-script agent path validates its task-scoped workdir too."""
+        import cron.scheduler as sched
+
+        workdir = tmp_path / "deleted-project"
+        workdir.mkdir()
+        workdir.rmdir()
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        success, _output, _response, error = sched.run_job(
+            {
+                "id": "deleted-workdir-agent",
+                "name": "deleted workdir",
+                "prompt": "Review the project.",
+                "workdir": str(workdir),
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is False
+        assert "configured workdir" in error.lower()
+        assert observed == {}
+
 
 def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch, tmp_path):
     """Callers that skip the wake-gate (no cached ``prerun_script``) run the script inline from

@@ -20,7 +20,7 @@ _RETRY_HINT = "  Re-run 'hermes honcho setup' to retry, or choose an API key ins
 
 # Settings a new profile host block inherits from the default block.
 _INHERITED_KEYS = (
-    "recallMode", "writeFrequency", "sessionStrategy", "contextTokens",
+    "recallMode", "writeFrequency", "sessionStrategy", "contextTokens", "injection",
     "dialecticReasoningLevel", "dialecticDynamic", "dialecticMaxChars",
     "messageMaxChars", "dialecticMaxInputChars", "saveMessages", "observation",
     "recallSync",
@@ -272,7 +272,7 @@ def _inherit_defaults(block: dict, default_block: dict, cfg: dict, keys: tuple[s
     """Copy ``keys`` (and peerName) from the default host block into ``block`` where unset."""
     for key in keys:
         if (val := default_block.get(key)) is not None and key not in block:
-            block[key] = val
+            block[key] = copy.deepcopy(val)
     if (peer_name := _pref(default_block, cfg, "peerName")) and "peerName" not in block:
         block["peerName"] = peer_name
 

@@ -241,6 +241,20 @@ class TestCloneHonchoForProfile:
         new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["sessionAiPeerPrefix"] is True
 
+    def test_injection_session_start_carries_into_cloned_profile_without_sharing(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"injection": {"sessionStart": ["summary", "peerCard"]}}},
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+
+        assert honcho_cli.clone_honcho_for_profile("coder") is True
+
+        cloned_injection = written["cfg"]["hosts"]["hermes_coder"]["injection"]
+        assert cloned_injection == {"sessionStart": ["summary", "peerCard"]}
+        cloned_injection["sessionStart"].append("aiCard")
+        assert cfg["hosts"]["hermes"]["injection"] == {"sessionStart": ["summary", "peerCard"]}
+
     def test_legacy_pin_peer_name_migrates_to_canonical_on_clone(self, monkeypatch, tmp_path):
         cfg = {
             "apiKey": "***",
@@ -830,6 +844,20 @@ class TestEnabledRequiresACredential:
         honcho_cli, written = self._env(monkeypatch, tmp_path, cfg, env_key=env_key, host=host, profile=profile)
         honcho_cli.cmd_enable(SimpleNamespace())
         assert written["cfg"]["hosts"][host]["enabled"] is True if enabled else written == {}
+
+    def test_enable_inherits_injection_session_start_without_sharing(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "hch-v3-root",
+            "hosts": {"hermes": {"injection": {"sessionStart": ["summary", "peerCard"]}}},
+        }
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+
+        honcho_cli.cmd_enable(SimpleNamespace())
+
+        inherited_injection = written["cfg"]["hosts"]["hermes_dreamer"]["injection"]
+        assert inherited_injection == {"sessionStart": ["summary", "peerCard"]}
+        inherited_injection["sessionStart"].append("aiCard")
+        assert cfg["hosts"]["hermes"]["injection"] == {"sessionStart": ["summary", "peerCard"]}
 
 
 class TestWriteConfigMergesOntoDisk:

@@ -71,6 +71,16 @@ class TestProjectionInvariants:
         r = p.project({"method": "totally/unknown", "params": {}})
         assert r.messages == []
 
+    def test_native_context_compaction_is_not_persisted_as_a_message(self) -> None:
+        """Native compaction is accounted for by the app-server session, not the transcript."""
+        r = CodexEventProjector().project({
+            "method": "item/completed",
+            "params": {"item": {"type": "contextCompaction", "id": "compact-1"}},
+        })
+        assert r.messages == []
+        assert r.is_tool_iteration is False
+        assert r.final_text is None
+
 
 class TestCommandExecutionProjection:
     """Real captured notification → assistant tool_call + tool result."""

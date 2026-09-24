@@ -670,6 +670,22 @@ install_uv() {
     # gains Hermes entries.
     apply_uv_isolated_state_env
 
+    # The runtime updater uses the same kernel lock at this path.  The
+    # installer is stdlib-free, so use the platform's flock utility against
+    # the identical file and fail closed when it is unavailable or busy.
+    local _uv_lock="${HERMES_HOME}/uv/.install.lock"
+    mkdir -p "${HERMES_HOME}/uv"
+    exec 9>"$_uv_lock"
+    if ! command -v flock >/dev/null 2>&1; then
+        log_error "Cannot acquire the managed uv install lock (flock unavailable)"
+        exec 9>&-
+        return 1
+    fi
+    if ! flock -w 300 9; then
+        log_error "Managed uv install lock is busy; retry later"
+        exec 9>&-
+        return 1
+    fi
     # Migrate the old managed binaries before resolving uv. The old bin/
     # location may be persisted on PATH by previous installers, and the
     # astral installer always dropped BOTH uv and uvx there — a leftover
@@ -684,6 +700,8 @@ install_uv() {
         UV_CMD="$_managed_uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "Managed uv found ($UV_VERSION)"
+        flock -u 9 2>/dev/null || true
+        exec 9>&-
         return 0
     fi
 

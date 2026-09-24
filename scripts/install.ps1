@@ -796,6 +796,32 @@ function Test-ManagedUvBinary {
     return $null
 }
 
+function Enter-ManagedUvInstallLock {
+    $lockPath = Join-Path $HermesHome "uv\.install.lock"
+    New-Item -ItemType Directory -Path (Split-Path $lockPath -Parent) -Force | Out-Null
+    $deadline = [DateTime]::UtcNow.AddMinutes(5)
+    while ($true) {
+        try {
+            $stream = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate,
+                [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $script:UvInstallLockStream = $stream
+            return $true
+        } catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { return $false }
+            Start-Sleep -Milliseconds 250
+        } catch {
+            return $false
+        }
+    }
+}
+
+function Exit-ManagedUvInstallLock {
+    if ($script:UvInstallLockStream) {
+        $script:UvInstallLockStream.Dispose()
+        $script:UvInstallLockStream = $null
+    }
+}
+
 function Resolve-UvShimTarget {
     # Package-manager launchers locate the real uv RELATIVE to their own
     # location, so a copied launcher is dead on arrival (issue #110350).
@@ -868,6 +894,12 @@ function Move-LegacyManagedUv {
 
 function Install-Uv {
     $managedUv = Get-ManagedUvPath
+    if (-not (Enter-ManagedUvInstallLock)) {
+        Write-Err "Managed uv install lock is busy or unavailable; retry later."
+        return $false
+    }
+    # The kernel releases the FileStream if the host exits unexpectedly. Keep
+    # explicit release at every normal return below.
     # Migrate before resolving the managed binary.
     Move-LegacyManagedUv | Out-Null
 
@@ -879,6 +911,7 @@ function Install-Uv {
         if ($existingVersion) {
             $script:UvCmd = $managedUv
             Write-Success "Managed uv found ($existingVersion)"
+            Exit-ManagedUvInstallLock
             return $true
         }
         Write-Info "Existing managed uv at $managedUv failed validation; removing and reinstalling"
@@ -992,6 +1025,7 @@ function Install-Uv {
             if ($version) {
                 $script:UvCmd = $managedUv
                 Write-Success "Managed uv installed ($version)"
+                Exit-ManagedUvInstallLock
                 return $true
             }
             Write-Info "Installer output at $managedUv failed validation; removing"
@@ -1004,6 +1038,7 @@ function Install-Uv {
             $installerOutput | Select-Object -Last 15 | ForEach-Object { Write-Info "  $_" }
         }
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        Exit-ManagedUvInstallLock
         return $false
     } catch {
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
@@ -1313,8 +1348,16 @@ function Resolve-UvCmd {
     Set-UvPythonIsolationEnv
 
     # Migration is independent of engine selection, including when a previous
-    # stage already populated $script:UvCmd in this process.
-    Move-LegacyManagedUv | Out-Null
+    # stage already populated $script:UvCmd in this process, but it is still a
+    # shared mutation and must use the same lock as Install-Uv.
+    if (-not (Enter-ManagedUvInstallLock)) {
+        throw "Managed uv install lock is busy or unavailable; retry later."
+    }
+    try {
+        Move-LegacyManagedUv | Out-Null
+    } finally {
+        Exit-ManagedUvInstallLock
+    }
 
     # Already resolved (default invocation path: Install-Uv ran earlier
     # in the same process and set $script:UvCmd).
@@ -1552,6 +1595,7 @@ function Test-GitBashCompatibility {
     } finally {
         $process.Dispose()
     }
+    Exit-ManagedUvInstallLock
 }
 
 function Test-MandatoryAslrEnabled {

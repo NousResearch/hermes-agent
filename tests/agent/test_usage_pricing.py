@@ -902,3 +902,68 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+# --- Negative-rate sentinel guarding (OpenRouter publishes -1 for variable-priced routes) ---
+
+_VARIABLE_PRICED_METADATA = {
+    "openrouter/auto": {"pricing": {"prompt": "-1", "completion": "-1"}},
+    "vendor/model": {"pricing": {"prompt": "0.000001", "completion": "0.000004", "input_cache_read": "0.0000001"}},
+}
+
+
+def test_variable_pricing_sentinel_is_not_a_negative_rate():
+    from agent.usage_pricing import _pricing_entry_from_metadata
+
+    entry = _pricing_entry_from_metadata(
+        _VARIABLE_PRICED_METADATA, "openrouter/auto",
+        source_url="test://models", pricing_version="test",
+    )
+    assert entry is None
+
+
+def test_variable_priced_route_reports_unknown_not_negative_cost(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata", lambda: _VARIABLE_PRICED_METADATA, raising=False
+    )
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=10_000, cache_read_tokens=500_000)
+
+    auto = estimate_usage_cost("openrouter/auto", usage, provider="openrouter")
+    assert auto.amount_usd is None
+    assert auto.status == "unknown"
+
+    # Same catalogue, a route that does carry rates: proves the lookup ran rather than
+    # silently short-circuiting to "no pricing data".
+    priced = estimate_usage_cost("vendor/model", usage, provider="openrouter")
+    assert priced.amount_usd is not None and priced.amount_usd > 0
+
+
+def test_negative_request_cost_is_dropped(monkeypatch):
+    from agent.usage_pricing import _pricing_entry_from_metadata
+
+    metadata = {"vendor/model": {"pricing": {"prompt": "0.000001", "request": "-0.5"}}}
+    entry = _pricing_entry_from_metadata(
+        metadata, "vendor/model", source_url="test://models", pricing_version="test"
+    )
+    assert entry is not None
+    assert entry.request_cost is None
+    assert entry.input_cost_per_million == Decimal("1.000000")
+
+
+def test_negative_total_from_any_entry_is_reported_unknown(monkeypatch):
+    """A corrupt rate reaching ``estimate_usage_cost`` from any source must never be
+    turned into a negative (session-crediting) amount."""
+    from agent.usage_pricing import PricingEntry
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.get_pricing_entry",
+        lambda *_a, **_k: PricingEntry(
+            input_cost_per_million=Decimal("-1"), source="provider_models_api",
+            pricing_version="corrupt",
+        ),
+    )
+    result = estimate_usage_cost(
+        "vendor/model", CanonicalUsage(input_tokens=1_000_000), provider="openrouter"
+    )
+    assert result.amount_usd is None
+    assert result.status == "unknown"

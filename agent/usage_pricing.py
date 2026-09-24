@@ -480,11 +480,20 @@ def _pricing_entry_from_metadata(
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
-        return None if value is None else value * _ONE_MILLION
+        # A negative rate is never a real price. Some catalogues publish -1 as a
+        # "variable pricing" sentinel (OpenRouter's ``openrouter/auto``: prompt/completion
+        # are both "-1"), and multiplying tokens by it stored a large NEGATIVE cost on
+        # the session — a credit in every cost report. Treat it as no pricing data, so
+        # the route reports cost unknown instead of a wrong sign.
+        if value is None or value < 0:
+            return None
+        return value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")
     request = _to_decimal(pricing.get("request"))
+    if request is not None and request < 0:
+        request = None
     if prompt is None and completion is None and request is None:
         return None
     return PricingEntry(
@@ -677,6 +686,11 @@ def estimate_usage_cost(
         amount += Decimal(tokens) * rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
+    # Last line of defence for every rate path (bundled, models.dev, models API, relay):
+    # a negative total can only come from corrupt catalogue data, and storing it would
+    # CREDIT the session in every cost report. Report unknown rather than a wrong sign.
+    if amount < _ZERO:
+        return _unknown_cost(entry.source, "negative computed cost (pricing data rejected)")
 
     notes: list[str] = []
     status: CostStatus = "estimated"

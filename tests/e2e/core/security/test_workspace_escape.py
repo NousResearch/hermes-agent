@@ -26,7 +26,7 @@ from typing import Any, Callable
 import pytest
 
 from tests.e2e.core.security import _helpers as H
-from tests.e2e.core.security._traversal import digest, run_tool_calls
+from tests.e2e.core.security._traversal import digest, result_json, run_tool_calls
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks and ../ spellings")
 
@@ -78,10 +78,11 @@ class Layout:
 
 @dataclass
 class Step:
-    """One tool call. Several spellings share one subject (there is one Hermes-home .env), so a breach
-    through one spelling also reds its siblings; the tool result in the failure names the spelling that
-    did not refuse. ``expect``: ``absent`` (subject must not exist after), ``unchanged`` (subject bytes
-    identical), ``hidden`` (the protected file's canary never appears in the tool result), ``setup`` (no check)."""
+    """One tool call. Each spelling gets its own subject where the layout allows it; the protected rows
+    that cannot (there is one Hermes-home ``.env`` and one ``authorized_keys``) share it, and a breach of a
+    shared subject is charged to the spellings whose tool result was not a refusal (see ``_culprits``).
+    ``expect``: ``absent`` (subject must not exist after), ``unchanged`` (subject bytes identical), ``hidden``
+    (the protected file's canary never appears in the tool result), ``setup`` (no check)."""
 
     scenario: str
     tool: str
@@ -99,12 +100,16 @@ def _replace(path: str, old: str) -> dict[str, Any]:
 
 
 def _confined_steps(lay: Layout) -> list[Step]:
-    """HERMES_WRITE_SAFE_ROOT=<workspace>: every write whose resolved target is outside is refused."""
-    target = lay.out / "target.txt"
-    t_mark = lay.plant(target, "outside-target")
+    """HERMES_WRITE_SAFE_ROOT=<workspace>: every write whose resolved target is outside is refused.
+    Every spelling has its own outside target, so a red names exactly the spelling that escaped."""
+    t_write, t_patch, t_dotdot = (lay.out / f"target-{n}.txt" for n in ("symlink-write", "symlink-patch", "dotdot-patch"))
+    lay.plant(t_write, "outside-symlink-write")
+    m_patch = lay.plant(t_patch, "outside-symlink-patch")
+    m_dotdot = lay.plant(t_dotdot, "outside-dotdot-patch")
     lay.plant(lay.out / "doomed.txt", "outside-doomed")
     lay.plant(lay.ws / "inner.txt", "inner")
-    lay.link("link.txt", target)
+    lay.link("link-write.txt", t_write)
+    lay.link("link-patch.txt", t_patch)
     lay.link("linkdir", lay.out)
     lay.link("innerlink.txt", lay.ws / "inner.txt")
     lay.marks["token"] = token = H.canary("oauth-token")
@@ -116,12 +121,14 @@ def _confined_steps(lay: Layout) -> list[Step]:
         Step("write_absolute", "write_file", {"path": str(lay.out / "new-abs.txt"), "content": "x"},
              "absent", lay.out / "new-abs.txt"),
         # reading first satisfies the stale-overwrite guard, so the sandbox is what must refuse
-        Step("setup_read_link", "read_file", {"path": "link.txt"}, "setup"),
-        Step("write_symlink_file", "write_file", {"path": "link.txt", "content": "PWNED"}, "unchanged", target),
+        Step("setup_read_link_write", "read_file", {"path": "link-write.txt"}, "setup"),
+        Step("setup_read_link_patch", "read_file", {"path": "link-patch.txt"}, "setup"),
+        Step("setup_read_dotdot", "read_file", {"path": "../../outside/target-dotdot-patch.txt"}, "setup"),
+        Step("write_symlink_file", "write_file", {"path": "link-write.txt", "content": "PWNED"}, "unchanged", t_write),
         Step("write_symlink_parent", "write_file", {"path": "linkdir/new-link.txt", "content": "x"},
              "absent", lay.out / "new-link.txt"),
-        Step("patch_symlink_file", "patch", _replace("link.txt", t_mark), "unchanged", target),
-        Step("patch_dotdot", "patch", _replace("../../outside/target.txt", t_mark), "unchanged", target),
+        Step("patch_symlink_file", "patch", _replace("link-patch.txt", m_patch), "unchanged", t_patch),
+        Step("patch_dotdot", "patch", _replace("../../outside/target-dotdot-patch.txt", m_dotdot), "unchanged", t_dotdot),
         Step("v4a_add_symlink_parent", "patch", _v4a("Add", "linkdir/new-v4a.txt", "+x\n"),
              "absent", lay.out / "new-v4a.txt"),
         Step("v4a_add_absolute", "patch", _v4a("Add", str(lay.out / "new-v4a-abs.txt"), "+x\n"),
@@ -225,6 +232,19 @@ def _hidden_breach(step: Step, text: str) -> str | None:
     return "the tool result carries the protected file's content" if mark in text else None
 
 
+def _refused(text: str) -> bool:
+    """The tool's own verdict, from its result envelope's stable fields (never its wording)."""
+    data = result_json(text)
+    return bool(data.get("error")) or data.get("success") is False
+
+
+def _culprits(run: Run, step: Step) -> list[str]:
+    """For a breached subject shared by several spellings: the ones whose tool call was NOT refused.
+    Empty when every sharer claims a refusal (the file changed anyway), so then each sharer stays red."""
+    sharers = [s.scenario for s in run.steps.values() if s.expect == step.expect and s.subject == step.subject]
+    return [n for n in sharers if not _refused(run.results[n])] if len(sharers) > 1 else []
+
+
 def _check(run: Run, scenario: str) -> None:
     step, text = run.steps[scenario], run.results[scenario]
     breach = {
@@ -233,10 +253,10 @@ def _check(run: Run, scenario: str) -> None:
                               if digest(step.subject) != run.before[scenario] else None),
         "hidden": lambda: _hidden_breach(step, text),
     }[step.expect]()
-    if breach:
+    culprits = _culprits(run, step) if breach else []
+    if breach and (not culprits or scenario in culprits):
         raise H.BoundaryBreach(f"{scenario}: {step.tool} {step.args}: {breach}\nresult: {text[:400]}")
-    refused = '"error"' in text or '"success": false' in text
-    assert refused or step.tool == "search_files", \
+    assert _refused(text) or step.tool == "search_files", \
         f"{scenario}: the boundary held on disk but the tool did not report a refusal: {text[:400]}"
 
 

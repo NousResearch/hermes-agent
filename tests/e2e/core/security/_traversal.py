@@ -57,9 +57,10 @@ def run_tool_calls(home: Path, calls: list[tuple[str, dict[str, Any]]], *, cwd: 
 
 
 def result_json(text: str) -> dict[str, Any]:
-    """Tool result as a dict (``{}`` when the result is not a JSON object)."""
+    """Tool result as a dict (``{}`` when the result does not start with a JSON object). Only the leading
+    object is decoded: the agent may append advisory text after the envelope (tool-loop warnings)."""
     try:
-        data = json.loads(text)
+        data, _ = json.JSONDecoder().raw_decode(str(text).lstrip())
     except (json.JSONDecodeError, TypeError):
         return {}
     return data if isinstance(data, dict) else {}

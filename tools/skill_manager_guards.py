@@ -5,6 +5,7 @@ so test patches keep working."""
 
 import contextvars as _ctxvars
 import logging
+import os
 import threading
 from contextlib import suppress
 from pathlib import Path
@@ -128,6 +129,25 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
         if resolved.is_relative_to(root):
             return None
     return f"Refusing to delete '{skill_dir}': path does not resolve inside any known skills root."
+
+
+def _read_only_delete_target(skill_dir: Path) -> Optional[str]:
+    """Refuse up front when rmtree cannot remove the whole tree (#50938).
+
+    rmtree unlinks children before their parent, so a read-only directory met mid-walk
+    leaves the skill half-deleted: a writable skill under a read-only category loses its
+    SKILL.md before the error. Checking the parent and every real subdirectory first keeps
+    the refusal non-destructive; ``os.access`` also reports read-only mounts (EROFS), which
+    a ``PermissionError`` handler alone never sees. Symlinked subdirs are unlinked, not
+    descended into, so their targets don't count."""
+    dirs = [skill_dir.parent, skill_dir]
+    for root, subdirs, _files in os.walk(skill_dir):
+        dirs.extend(p for p in (Path(root) / d for d in subdirs) if not p.is_symlink())
+    blocker = next((d for d in dirs if not os.access(d, os.W_OK | os.X_OK)), None)
+    if blocker is None:
+        return None
+    return (f"Refusing to delete '{skill_dir}': '{blocker}' is read-only (for example a bundled "
+            f"skill in a read-only image or mount). Nothing was removed; retrying will not help.")
 
 
 def _is_pinned(name: str, what: str) -> Optional[bool]:

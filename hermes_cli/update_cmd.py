@@ -1353,9 +1353,18 @@ def _apply_pulled_update(
     # completed restart leaves this marker so the next update catches up even when git is
     # current. Distinct from ``.update-incomplete`` (venv/install repair).
     # See #95294.
+    _marker_runtimes = _pre_update_plan.to_dict().get("runtimes") if _pre_update_plan is not None else None
+    if _marker_runtimes is None:
+        # The plan phase is best-effort, so a probe failure there records nothing — and a
+        # marker without its inventory line can never be discharged by the fail-closed
+        # validator (#115638). Re-probe at arm time: the fleet this marker owes is exactly
+        # what is still running (the restart phase has not touched it yet).
+        with suppress(Exception):
+            from hermes_cli.update_inventory import collect_runtime_inventory
+            _marker_runtimes = collect_runtime_inventory().to_dict().get("runtimes") or None
     _write_fleet_restart_pending_marker(
         expected_sha=post_pull_sha or "",
-        runtimes=_pre_update_plan.to_dict().get("runtimes") if _pre_update_plan is not None else None,
+        runtimes=_marker_runtimes,
     )
     # Stale .pyc would ImportError on gateway restart when new source references new names.
     _sweep_bytecode_after_update(branch)

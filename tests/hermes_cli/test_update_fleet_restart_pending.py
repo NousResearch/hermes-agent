@@ -979,6 +979,76 @@ def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys
     assert update_cmd_fleet._fleet_restart_obligation_armed()
 
 
+def test_marker_inventory_reprobed_at_arm_time_when_plan_phase_failed(monkeypatch):
+    """#115638: the plan phase is best-effort — a probe failure records nothing, and a marker
+    written without its ``inventory=`` line can never be discharged by the fail-closed
+    validator. Arming must re-probe: the fleet the marker owes is exactly what is still
+    running at pull time (the restart phase has not touched it yet)."""
+    from types import SimpleNamespace
+    from hermes_cli import update_cmd
+    from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+
+    plan = UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile=p) for p in ("alpha", "beta")])
+    probes = []
+    monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
+    monkeypatch.setattr(update_cmd, "_verify_head_after_pull", lambda *a, **k: "new")
+
+    def interrupt(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", interrupt)
+
+    def reprobe():
+        probes.append(True)
+        return plan
+
+    monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", reprobe)
+    with pytest.raises(KeyboardInterrupt):
+        update_cmd._apply_pulled_update(
+            [], "main", "old", SimpleNamespace(in_place_update=True), None,
+            gateway_mode=False, is_fork=False, desktop_dir=None,
+            had_desktop_app_before_update=False, pre_update_snapshot_id=None,
+            _pre_update_plan=None, _windows_gateway_resume=None, args=SimpleNamespace(),
+        )
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    fields = dict(line.split("=", 1) for line in marker.read_text().splitlines())
+    assert fields["expected_sha"] == "new"
+    assert json.loads(fields["inventory"]) == {"version": 1, "runtimes": plan.to_dict()["runtimes"]}
+    assert probes == [True]
+
+
+def test_marker_inventory_reprobe_failure_keeps_best_effort_arm(monkeypatch):
+    """Both probes failing is the honest fail-closed residue: the marker is still armed
+    (the pull→restart obligation must not vanish), just without an inventory line."""
+    from types import SimpleNamespace
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
+    monkeypatch.setattr(update_cmd, "_verify_head_after_pull", lambda *a, **k: "new")
+
+    def interrupt(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", interrupt)
+
+    def unavailable():
+        raise OSError("probe unavailable")
+
+    monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", unavailable)
+    with pytest.raises(KeyboardInterrupt):
+        update_cmd._apply_pulled_update(
+            [], "main", "old", SimpleNamespace(in_place_update=True), None,
+            gateway_mode=False, is_fork=False, desktop_dir=None,
+            had_desktop_app_before_update=False, pre_update_snapshot_id=None,
+            _pre_update_plan=None, _windows_gateway_resume=None, args=SimpleNamespace(),
+        )
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    body = marker.read_text()
+    assert "expected_sha=new" in body
+    assert "inventory=" not in body
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+
 def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeypatch, capsys):
     """#112604 aftermath: the update pulled ``pulled``, restarted every gateway onto it, then a
     post-restart step crashed (receipt ``failed``, empty ``fleet`` matrix). Later a manual

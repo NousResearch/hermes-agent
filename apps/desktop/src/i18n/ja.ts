@@ -4,6 +4,28 @@ import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 
 export const ja = defineLocale({
+  quickCapture: {
+    append: '下書きに追加',
+    allowResend: '再送を許可',
+    handoffUnconfirmed: 'チャットへの送信を依頼しましたが、配信は未確認です。再送する前にチャットを確認してください。',
+    handoffRejected: 'チャットへの送信が拒否されました。入力した内容は保持されています。',
+
+    save: '考えを保存',
+    saved: 'この端末に保存しました',
+    saving: '保存中…',
+    browse: '保存した考え',
+    back: '戻る',
+    empty: '保存した考えはありません。',
+    open: '入力欄に戻す',
+    placeholder: '考えを書き留める…',
+    send: 'Enter で送信先',
+    current: '現在のチャット',
+    newSession: '新しいセッション',
+    offline: 'オフラインでもこの端末に保存できます。',
+    loadFailed: '読み込めませんでした。Hermes で接続とプロファイルを開き、クイック入力を開き直してください。',
+    saveFailed: '保存できませんでした。入力は残っています。もう一度保存してください。',
+    local: 'この端末に保存'
+  },
   intro: introJa,
   sessionImport: {
     title: '別のアプリから続ける',

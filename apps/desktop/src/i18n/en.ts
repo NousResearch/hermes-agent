@@ -3,6 +3,28 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  quickCapture: {
+    append: 'Append to draft',
+    allowResend: 'Allow another send',
+    handoffUnconfirmed: 'Chat handoff requested; delivery is unconfirmed. Check chat before sending again.',
+    handoffRejected: 'Chat handoff was rejected. Your text is still here.',
+
+    save: 'Save thought',
+    saved: 'Saved locally',
+    saving: 'Saving…',
+    browse: 'Saved thoughts',
+    back: 'Back',
+    empty: 'No saved thoughts yet.',
+    open: 'Use in input',
+    placeholder: 'Capture a thought…',
+    send: 'Enter sends to',
+    current: 'Current chat',
+    newSession: 'New session',
+    offline: 'Offline — you can still save locally.',
+    loadFailed: 'Could not load thoughts. Open a connection and profile in Hermes, then reopen Quick Entry.',
+    saveFailed: 'Could not save. Your text is still here; retry saving.',
+    local: 'Stored on this device'
+  },
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   connectors: {

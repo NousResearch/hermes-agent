@@ -5,6 +5,7 @@ import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { ThoughtDraft, ThoughtSnapshot } from '../electron/thought-capture'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -187,6 +188,11 @@ declare global {
       // shortcut on a cold launch without the renderer visiting Settings), so
       // the renderer reads/writes it here and adopts the authoritative reply.
       quickEntry: {
+        readThoughts: () => Promise<ThoughtSnapshot>
+        saveThought: (payload: { token: string; draft: ThoughtDraft }) => Promise<ThoughtSnapshot>
+        saveThoughtDraft: (payload: { token: string; draft: ThoughtDraft }) => Promise<void>
+        expandThoughts: (expanded: boolean) => void
+        onThoughtOwnerChanged: (callback: (retiredOwner?: ThoughtSnapshot['owner']) => void) => () => void
         getSettings: () => Promise<QuickEntryStatus>
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed
@@ -195,7 +201,7 @@ declare global {
         // Quick window → main: send this payload (main forwards it to the
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.
-        submit: (payload: QuickEntrySubmitPayload) => void
+        submit: (payload: QuickEntrySubmitPayload) => Promise<boolean>
         // Quick window → main: hide without sending (Escape / blur).
         dismiss: () => void
         // Primary renderer → main → quick window: gateway connection state +

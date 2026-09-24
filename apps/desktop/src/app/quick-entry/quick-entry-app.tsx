@@ -1,5 +1,7 @@
-import { useEffect, useReducer, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n/context'
 import { isSubmitEnter } from '@/lib/ime'
 import {
   initialQuickComposerState,
@@ -7,184 +9,315 @@ import {
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
   quickComposerReducer,
-  type QuickComposerState
+  type QuickEntrySubmitPayload
 } from '@/store/quick-entry'
 
-/**
- * The Quick Entry composer — the whole renderer surface of the global-hotkey
- * mini window. Deliberately one input plus a session-target picker and nothing
- * else: this is a capture surface, not a second chat.
- *
- * All behavior rides `quickComposerReducer` (pure, unit-tested): submit sends
- * the trimmed text + target through the shell and asks to hide; an empty submit
- * does neither so a stray Enter can't make the window vanish; Escape and losing
- * focus dismiss without sending; a dead gateway disables the input entirely
- * (the reducer refuses the send AND the input paints the reconnect hint).
- *
- * The window itself has no gateway connection. Its view of backend truth — is
- * the gateway up, which recent sessions exist — is pushed in by the primary
- * renderer through main (`onState`), and its text goes back the same road to
- * the primary renderer's normal prompt-submit path.
- */
-export function QuickEntryApp() {
-  const inputRef = useRef<HTMLInputElement>(null)
+import type { ThoughtSnapshot } from '../../../electron/thought-capture'
 
-  // The reducer returns { send, state }; this wrapper performs the side effect
-  // (hand the payload to the shell, ask to hide) and stores the next state, so
-  // the decision stays pure and testable while the effects stay in one place.
-  const [state, dispatch] = useReducer((current: QuickComposerState, event: QuickComposerEvent) => {
-    const { send, state: next } = quickComposerReducer(current, event)
-    const api = window.hermesDesktop?.quickEntry
+/** Capture stays local; only Enter sends through the existing chat path. */
+export function QuickEntryApp() {
+  const { t } = useI18n()
+  const copy = t.quickCapture
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [state, setState] = useState(initialQuickComposerState)
+  const stateRef = useRef(state)
+  const [inbox, setInbox] = useState<ThoughtSnapshot | null>(null)
+  const inboxRef = useRef(inbox)
+  const [expanded, setExpanded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+
+  const [notice, setNotice] = useState<
+    'saved' | 'loadFailed' | 'saveFailed' | 'handoffUnconfirmed' | 'handoffRejected' | null
+  >(null)
+
+  const generation = useRef(0)
+  const draftVersion = useRef(0)
+  const pendingDrafts = useRef(new Map<string, ThoughtSnapshot['draft']>())
+  const ownerKey = (value: ThoughtSnapshot) => JSON.stringify(value.owner)
+
+  function dispatch(event: QuickComposerEvent) {
+    const { state: next, send } = quickComposerReducer(stateRef.current, event)
 
     if (send) {
-      api?.submit(send)
-    } else if (!next.visible && current.visible) {
-      api?.dismiss()
+      void handoff(send)
+
+      return
     }
 
-    return next
-  }, initialQuickComposerState)
+    stateRef.current = next
+    setState(next)
 
-  // Re-summoned by the chord: the shell reuses the window, so reset the draft
-  // and take the keyboard back for a fresh capture. Also adopt gateway-state
-  // pushes (connection + recent sessions) relayed from the primary renderer.
+    if (!next.visible) {
+      window.hermesDesktop.quickEntry.dismiss()
+    }
+  }
+
+  async function handoff(send: QuickEntrySubmitPayload) {
+    const current = inboxRef.current
+
+    if (busyRef.current || current?.draft.handoffAttempted) {
+      return
+    }
+
+    busyRef.current = true
+    setBusy(true)
+    const request = generation.current
+
+    try {
+      if (current) {
+        const draft = { ...current.draft, text: stateRef.current.draft, handoffAttempted: true }
+        // Persist uncertainty before dispatch so a restart cannot silently retry a chat prompt.
+        await window.hermesDesktop.quickEntry.saveThoughtDraft({ token: current.token, draft })
+
+        if (request !== generation.current) {return}
+        pendingDrafts.current.delete(ownerKey(current))
+        adopt({ ...current, draft })
+      }
+
+      setNotice('handoffUnconfirmed')
+
+      const forwarded = await window.hermesDesktop.quickEntry.submit({
+        ...send,
+        thoughtOwnerToken: current?.token
+      })
+
+      if (request === generation.current && !forwarded) {setNotice('handoffRejected')}
+    } catch {
+      if (request === generation.current)
+        {setNotice(inboxRef.current?.draft.handoffAttempted ? 'handoffUnconfirmed' : 'saveFailed')}
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+    }
+  }
+
+  function adopt(value: ThoughtSnapshot) {
+    inboxRef.current = value
+    setInbox(value)
+    dispatch({ type: 'edit', draft: value.draft.text })
+  }
+
+  async function load() {
+    const request = ++generation.current
+    const version = draftVersion.current
+
+    try {
+      const value = await window.hermesDesktop.quickEntry.readThoughts()
+
+      if (request !== generation.current || version !== draftVersion.current) {
+        return
+      }
+
+      const pending = pendingDrafts.current.get(ownerKey(value))
+      adopt(pending ? { ...value, draft: pending } : value)
+      setNotice(pending ? 'saveFailed' : value.draft.handoffAttempted ? 'handoffUnconfirmed' : null)
+    } catch {
+      if (request === generation.current) {
+        setNotice('loadFailed')
+      }
+    }
+  }
+
+  function edit(text: string) {
+    dispatch({ type: 'edit', draft: text })
+    const version = ++draftVersion.current
+
+    if (inboxRef.current) {
+      setNotice(null)
+    }
+
+    const current = inboxRef.current
+
+    if (!current) {
+      return
+    }
+
+    const draft = { id: current.draft.id, text }
+    inboxRef.current = { ...current, draft }
+    setInbox(inboxRef.current)
+    const key = ownerKey(current)
+    pendingDrafts.current.set(key, draft)
+    void window.hermesDesktop.quickEntry
+      .saveThoughtDraft({ token: current.token, draft })
+      .then(() => {
+        if (pendingDrafts.current.get(key) === draft) {
+          pendingDrafts.current.delete(key)
+        }
+      })
+      .catch(() => {
+        if (draftVersion.current === version && inboxRef.current?.token === current.token) {
+          setNotice('saveFailed')
+        }
+      })
+  }
+
+  async function save() {
+    const current = inboxRef.current
+
+    if (!current || busyRef.current || !stateRef.current.draft.trim()) {
+      return
+    }
+
+    busyRef.current = true
+    setBusy(true)
+    const request = generation.current
+
+    try {
+      const value = await window.hermesDesktop.quickEntry.saveThought({
+        token: current.token,
+        draft: { ...current.draft, text: stateRef.current.draft }
+      })
+
+      pendingDrafts.current.delete(ownerKey(current))
+
+      if (request !== generation.current) {
+        return
+      }
+
+      adopt(value)
+      setNotice('saved')
+    } catch {
+      if (request === generation.current) {
+        setNotice('saveFailed')
+      }
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+
+      if (request === generation.current && stateRef.current.visible) {inputRef.current?.focus()}
+    }
+  }
+
+  function ownerChanged(retiredOwner?: ThoughtSnapshot['owner']) {
+    if (retiredOwner) {
+      pendingDrafts.current.delete(JSON.stringify(retiredOwner))
+    }
+
+    setNotice(null)
+    inboxRef.current = null
+    setInbox(null)
+    dispatch({ type: 'edit', draft: '' })
+    void load()
+  }
+
+  function invalidateLoad() {
+    generation.current++
+  }
+
   useEffect(() => {
-    const api = window.hermesDesktop?.quickEntry
+    const api = window.hermesDesktop.quickEntry
+    api.expandThoughts(false)
+    void load()
 
-    const offShown = api?.onShown(() => {
+    const offShown = api.onShown(() => {
       dispatch({ type: 'shown' })
+      setExpanded(false)
+      api.expandThoughts(false)
+
+      // Preserve an unconfirmed in-memory draft if its disk write failed.
+      if (!stateRef.current.draft) {
+        void load()
+      }
+
       requestAnimationFrame(() => inputRef.current?.focus())
     })
 
-    const offState = api?.onState(payload => {
+    const offState = api.onState(payload =>
       dispatch({
         connected: payload?.connected === true,
         sessions: Array.isArray(payload?.sessions) ? payload.sessions : [],
         type: 'state'
       })
-    })
+    )
+
+    const offOwner = api.onThoughtOwnerChanged(ownerChanged)
 
     inputRef.current?.focus()
 
     return () => {
-      offShown?.()
-      offState?.()
+      invalidateLoad()
+      offShown()
+      offState()
+      offOwner()
     }
+    // IPC subscriptions live for this window; callbacks read current state from refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
-    <div
-      style={{
-        alignItems: 'center',
-        background: 'transparent',
-        display: 'flex',
-        height: '100vh',
-        justifyContent: 'center',
-        padding: 12,
-        width: '100vw'
-      }}
-    >
+    <div className="flex h-screen w-screen items-start justify-center bg-transparent p-3">
       <div
-        style={{
-          background: 'var(--ui-bg-elevated, var(--background))',
-          border: '1px solid var(--ui-stroke-secondary, rgba(127,127,127,0.35))',
-          borderRadius: 12,
-          boxShadow: '0 18px 48px rgba(0,0,0,0.38)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 8,
-          padding: '10px 14px',
-          width: '100%'
+        className="flex max-h-full w-full flex-col gap-2 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-bg-elevated) p-3 shadow-nous"
+        onKeyDown={event => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            dispatch({ type: 'dismiss' })
+          }
         }}
       >
-        <div style={{ alignItems: 'center', display: 'flex', gap: 10 }}>
-          <span
-            aria-hidden
-            style={{
-              color: 'var(--muted-foreground, #8a8a8a)',
-              flexShrink: 0,
-              fontSize: 15,
-              lineHeight: 1,
-              userSelect: 'none'
-            }}
+        <textarea
+          aria-label={copy.placeholder}
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          className="w-full resize-none bg-transparent text-sm text-(--ui-text-primary) outline-none"
+          disabled={!inbox && !notice}
+          onChange={event => edit(event.target.value)}
+          onKeyDown={event => {
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              void save()
+
+              return
+            }
+
+            if (isSubmitEnter(event) && !event.shiftKey && !busyRef.current) {
+              event.preventDefault()
+              dispatch({ type: 'submit' })
+            }
+          }}
+          placeholder={copy.placeholder}
+          readOnly={busy}
+          ref={inputRef}
+          rows={2}
+          spellCheck={false}
+          value={state.draft}
+        />
+        <div className="flex items-center gap-2">
+          <Button
+            aria-keyshortcuts="Meta+S Control+S"
+            disabled={busy || !inbox || !state.draft.trim()}
+            onClick={() => void save()}
+            size="xs"
+            variant="secondary"
           >
-            ›
-          </span>
-          <input
-            aria-label="Quick Entry"
-            autoCapitalize="off"
-            autoComplete="off"
-            autoCorrect="off"
-            disabled={!state.connected}
-            onBlur={event => {
-              // Moving focus to the target picker is not leaving the window.
-              if (!event.relatedTarget) {
-                dispatch({ type: 'blur' })
-              }
+            {busy ? copy.saving : copy.save}
+          </Button>
+          <Button
+            aria-expanded={expanded}
+            onClick={() => {
+              setExpanded(!expanded)
+              window.hermesDesktop.quickEntry.expandThoughts(!expanded)
             }}
-            onChange={event => dispatch({ draft: event.target.value, type: 'edit' })}
-            onKeyDown={event => {
-              if (isSubmitEnter(event) && !event.shiftKey) {
-                event.preventDefault()
-                dispatch({ type: 'submit' })
-              } else if (event.key === 'Escape') {
-                event.preventDefault()
-                dispatch({ type: 'dismiss' })
-              }
-            }}
-            placeholder={state.connected ? 'Ask Hermes…' : 'Not connected — open Hermes to reconnect'}
-            ref={inputRef}
-            spellCheck={false}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--foreground, #eee)',
-              flex: 1,
-              fontFamily: 'inherit',
-              fontSize: 15,
-              minWidth: 0,
-              opacity: state.connected ? 1 : 0.55,
-              outline: 'none'
-            }}
-            value={state.draft}
-          />
+            size="xs"
+            variant="text"
+          >
+            {expanded ? copy.back : copy.browse}
+          </Button>
         </div>
-        <div style={{ alignItems: 'center', display: 'flex', gap: 8 }}>
-          <label
-            htmlFor="quick-entry-target"
-            style={{
-              color: 'var(--muted-foreground, #8a8a8a)',
-              flexShrink: 0,
-              fontSize: 11,
-              userSelect: 'none'
-            }}
-          >
-            Send to
-          </label>
+        <div className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
+          <label htmlFor="quick-entry-target">{copy.send}</label>
           <select
-            aria-label="Target session"
-            disabled={!state.connected}
+            aria-label={copy.send}
+            className="min-w-0 bg-transparent"
+            disabled={!state.connected || busy}
             id="quick-entry-target"
-            onChange={event => dispatch({ target: event.target.value, type: 'target' })}
-            onKeyDown={event => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                dispatch({ type: 'dismiss' })
-              }
-            }}
-            style={{
-              background: 'transparent',
-              border: '1px solid var(--ui-stroke-secondary, rgba(127,127,127,0.35))',
-              borderRadius: 6,
-              color: 'var(--foreground, #eee)',
-              fontSize: 11,
-              maxWidth: 320,
-              padding: '2px 6px'
-            }}
+            onChange={event => dispatch({ type: 'target', target: event.target.value })}
             value={state.target}
           >
-            <option value={QUICK_TARGET_CURRENT}>Current chat</option>
-            <option value={QUICK_TARGET_NEW}>New session</option>
+            <option value={QUICK_TARGET_CURRENT}>{copy.current}</option>
+            <option value={QUICK_TARGET_NEW}>{copy.newSession}</option>
             {state.sessions.map(session => (
               <option key={session.id} value={session.id}>
                 {session.title}
@@ -192,6 +325,52 @@ export function QuickEntryApp() {
             ))}
           </select>
         </div>
+        <p className="text-xs text-(--ui-text-tertiary)">
+          {copy.local}
+          {inbox ? ` · ${inbox.owner.profile}` : ''}
+        </p>
+        {notice && (
+          <p className="text-xs text-(--ui-text-secondary)" role="status">
+            {copy[notice]}
+          </p>
+        )}
+        {inbox?.draft.handoffAttempted && (
+          <Button
+            disabled={busy}
+            onClick={() => {
+              edit(stateRef.current.draft)
+              inputRef.current?.focus()
+            }}
+            size="xs"
+            variant="text"
+          >
+            {copy.allowResend}
+          </Button>
+        )}
+        {!state.connected && <p className="text-xs text-(--ui-text-tertiary)">{copy.offline}</p>}
+        {expanded && (
+          <div className="min-h-0 overflow-y-auto border-t border-(--ui-stroke-tertiary)">
+            {inbox?.thoughts.length === 0 && <p className="py-2 text-sm">{copy.empty}</p>}
+            {inbox?.thoughts.map(thought => (
+              <article className="flex flex-col gap-1 border-b border-(--ui-stroke-tertiary) py-2" key={thought.id}>
+                <p className="whitespace-pre-wrap break-words text-sm text-(--ui-text-primary)">{thought.text}</p>
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    edit(stateRef.current.draft ? `${stateRef.current.draft}\n${thought.text}` : thought.text)
+                    setExpanded(false)
+                    window.hermesDesktop.quickEntry.expandThoughts(false)
+                    inputRef.current?.focus()
+                  }}
+                  size="xs"
+                  variant="text"
+                >
+                  {state.draft ? copy.append : copy.open}
+                </Button>
+              </article>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

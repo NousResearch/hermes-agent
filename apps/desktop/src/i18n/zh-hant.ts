@@ -4,6 +4,28 @@ import { defineLocale } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
+  quickCapture: {
+    append: '附加至草稿',
+    allowResend: '允許再次傳送',
+    handoffUnconfirmed: '已請求傳送至聊天，但尚未確認送達。再次傳送前請檢查聊天。',
+    handoffRejected: '傳送至聊天的請求遭拒。輸入內容仍保留在此處。',
+
+    save: '儲存想法',
+    saved: '已儲存到本機',
+    saving: '正在儲存…',
+    browse: '已存想法',
+    back: '返回',
+    empty: '尚無已存想法。',
+    open: '放入輸入框',
+    placeholder: '記下一個想法…',
+    send: 'Enter 傳送至',
+    current: '目前對話',
+    newSession: '新工作階段',
+    offline: '離線時仍可儲存到本機。',
+    loadFailed: '無法載入想法。請在 Hermes 中開啟連線和設定檔，再重新開啟快速輸入。',
+    saveFailed: '儲存失敗。文字仍在，請重試儲存。',
+    local: '儲存在本機'
+  },
   intro: introZhHant,
   sessionImport: {
     title: '從其他應用程式繼續',

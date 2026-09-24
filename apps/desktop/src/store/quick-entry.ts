@@ -123,6 +123,8 @@ export interface QuickEntryStatePush {
 
 /** What a quick-window submit carries back to the primary renderer. */
 export interface QuickEntrySubmitPayload {
+  thoughtOwnerToken?: string
+  thoughtOwner?: { connectionId: string; profile: string }
   /** QUICK_TARGET_CURRENT, QUICK_TARGET_NEW, or a stored session id. */
   target: string
   text: string
@@ -180,11 +182,10 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
   switch (event.type) {
     case 'blur':
     case 'dismiss': {
-      // Escape / focus loss discards without sending. A dismiss mid-submit still
-      // hides — the send already left for the main process.
+      // Hiding is not deletion. Keep the draft until an explicit save or send.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: false }
+        state: { ...state, submitting: false, target: QUICK_TARGET_CURRENT, visible: false }
       }
     }
 
@@ -193,11 +194,10 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
     }
 
     case 'shown': {
-      // Re-summoned: a fresh capture surface every time — never a stale draft or
-      // a leftover target — but the pushed gateway truth carries over.
+      // Preserve unfinished input while refreshing the target and visibility.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: true }
+        state: { ...state, submitting: false, target: QUICK_TARGET_CURRENT, visible: true }
       }
     }
 
@@ -278,7 +278,16 @@ function normalizeSubmitPayload(raw: unknown): null | QuickEntrySubmitPayload {
     return null
   }
 
+  const owner = record.thoughtOwner as { connectionId?: unknown; profile?: unknown } | undefined
+
+  if (owner !== undefined && (typeof owner?.connectionId !== 'string' || typeof owner?.profile !== 'string')) {
+    return null
+  }
+
   return {
+    ...(owner
+      ? { thoughtOwner: { connectionId: owner.connectionId as string, profile: owner.profile as string } }
+      : {}),
     target: typeof record.target === 'string' && record.target ? record.target : QUICK_TARGET_CURRENT,
     text
   }

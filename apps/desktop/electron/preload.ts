@@ -232,9 +232,19 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // and hands it back, and the primary renderer submits it through the normal
   // prompt path.
   quickEntry: {
+    readThoughts: () => ipcRenderer.invoke('hermes:thoughts:read'),
+    saveThought: payload => ipcRenderer.invoke('hermes:thoughts:save', payload),
+    saveThoughtDraft: payload => ipcRenderer.invoke('hermes:thoughts:draft', payload),
+    expandThoughts: expanded => ipcRenderer.send('hermes:thoughts:expanded', expanded),
+    onThoughtOwnerChanged: callback => {
+      const listener = (_event, retiredOwner) => callback(retiredOwner)
+      ipcRenderer.on('hermes:thoughts:owner-changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:thoughts:owner-changed', listener)
+    },
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
-    submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
+    submit: payload => ipcRenderer.invoke('hermes:quick-entry:submit', payload),
     dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
     // Primary renderer → main → quick window: gateway connection state + the
     // recent-session options the target picker offers. Main caches the latest

@@ -37,8 +37,8 @@ export function renameProfile(
   name: string,
   newName: string,
   scope?: ProfileScope
-): Promise<{ name: string; ok: boolean; path: string }> {
-  return hermesApi<{ name: string; ok: boolean; path: string }>({
+): Promise<{ name: string; ok: boolean; path: string; thoughtCaptureWarning?: string }> {
+  return hermesApi<{ name: string; ok: boolean; path: string; thoughtCaptureWarning?: string }>({
     ...profileOwnerScoped(scope),
     path: `/api/profiles/${encodeURIComponent(name)}`,
     method: 'PATCH',

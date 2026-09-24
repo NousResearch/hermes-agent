@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.host.runtime import is_wsl
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
@@ -53,9 +54,7 @@ def _cua_no_overlay() -> bool:
     val = _computer_use_cfg().get("no_overlay")
     if val is not None or sys.platform != "linux":
         return bool(val) if val is not None else sys.platform == "darwin"
-    wsl = False
-    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8") as f:
-        wsl = "microsoft" in f.read().lower()
+    wsl = is_wsl()
     return wsl or not os.environ.get("DISPLAY") or (
         # Linux/X11: the cursor overlay is a fullscreen, always-on-top, all-workspaces X11 window
         # (save-unders path). An unclean session end (agent interrupted mid-capture, stale target window)
@@ -76,6 +75,28 @@ def _cua_configured_permission_mode() -> str:
     toggle so a stale config line can never silently bypass approvals."""
     raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
     return "bounded" if raw == "bounded" else "standard"
+
+# ``computer_use.ax_max_elements``: bound on the DRIVER's accessibility-tree walk per capture. The
+# visible-element cap in tool.py (_DEFAULT_MAX_ELEMENTS) trims the RESPONSE only, so without this an
+# unbounded walk pays for nodes the model never sees; 0 disables the bound (driver default: 2,000
+# elements / depth 25).
+_DEFAULT_AX_MAX_ELEMENTS = 200
+
+def _cua_configured_ax_max_elements() -> int:
+    """Bound on ``get_window_state``'s AX walk; 0 = no bound (driver default). Unreadable config fails to
+    the default, never to unbounded. Measured on macOS (cua-driver 0.28.2, M-series): a 1,444-node Chrome
+    window 540 ms -> 83 ms and a 456-node Finder window 6.9 s -> 0.6 s at 200, on the CLI transport. The
+    bounded result is a prefix of the unbounded walk, so the elements the model sees are unchanged. Raise
+    it toward 400 to keep the full first 100 visible elements on a pathological tree (~1.4 s on Finder);
+    cost grows with the bound, and a bound in the thousands buys nothing the response cap keeps. This
+    bounds the nodes COLLECTED, not the walk's wall clock: a target whose accessibility surface exceeds the
+    driver's own 20 s walk timeout still fails at every bound (and every depth bound), so a timeout error is
+    never an argument for a smaller or larger value here."""
+    raw = _computer_use_cfg().get("ax_max_elements", _DEFAULT_AX_MAX_ELEMENTS)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_AX_MAX_ELEMENTS
 
 def _manifest_is_mode_independent(path: str) -> bool:
     """True when this manifest may accompany any permission mode: v1/v2 declare ``mode: bounded`` and abort
@@ -100,12 +121,28 @@ def _computer_use_max_image_dimension() -> Optional[int]:
         dim = 1456
     return dim if dim > 0 else None
 
+def desktop_identity(env: Optional[Dict[str, str]] = None) -> str:
+    """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
+    cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
+    noticed — the cached cua-driver still points at the old seat or at no display at all."""
+    return str((cua_driver_child_env(env) if env is None else env).get("DISPLAY") or "")
+
+
+def backend_display_stale(recorded: str, current: str) -> bool:
+    """True when a cached backend's recorded display identity no longer matches the one a fresh spawn would get."""
+    return (recorded or "") != (current or "")
+
+
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Env for spawning cua-driver: ``base_env`` (default ``os.environ``) plus ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``
     unless the user opted in, plus the native-Wayland bridge (``computer_use.native_wayland`` config opt-in, only when
     the child has a Wayland display). Used by every spawn site (MCP, status, doctor, install) so CLI and gateway
     runtimes share one policy."""
     env = dict(os.environ if base_env is None else base_env)
+    # A running Bot Desktop for this profile owns the agent's screen: DISPLAY/XAUTHORITY/DBUS point there so
+    # cua-driver never acts on a seat the human is sitting at (#90374 class) and headless hosts get a display.
+    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    env = _bot_desktop_env(env)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     if sys.platform == "linux" and env.get("WAYLAND_DISPLAY") and bool(_computer_use_cfg().get("native_wayland", False)):
@@ -141,6 +178,19 @@ def _run_driver(driver_cmd: str, *args: str, timeout: float, swallow: Any = ()) 
     """Run a short cua-driver verb with the sanitized env and hidden window."""
     return _run_quiet([driver_cmd, *args], timeout=timeout, swallow=swallow, encoding="utf-8",
                       errors="replace", creationflags=windows_hide_flags(), env=sanitized_cua_driver_env())
+
+def cua_daemon_listening(driver_cmd: str, socket_path: Optional[str] = None, *, timeout: float = 3.0) -> Optional[bool]:
+    """Socket-level liveness of a ``cua-driver serve`` daemon: ``cua-driver status`` connects to the daemon
+    socket (the driver's default, or ``socket_path``) and exits 0 only when a daemon answers. False when the
+    CLI reports the daemon is not running, None when the probe itself failed (unknown). Never raises.
+    The binary-level runtime contract (``manifest``) cannot see this — a dead daemon looks healthy there (#114748)."""
+    args = ("status", "--socket", socket_path) if socket_path else ("status",)
+    proc = _run_driver(driver_cmd, *args, timeout=timeout, swallow=(OSError, subprocess.SubprocessError))
+    if proc is None:
+        return None
+    if proc.returncode == 0:
+        return True
+    return False if "not running" in f"{proc.stdout}\n{proc.stderr}".lower() else None
 
 def _linux_session_locked() -> Optional[bool]:
     """Is the graphical session locked? (Linux; best-effort.) A locked KDE/GNOME session freezes renderers and

@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
+from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_cli._early_recovery import interrupted_pull_marker
 from hermes_constants import get_default_hermes_root, project_venv_dir, venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
@@ -651,7 +653,7 @@ def _repair_venv_on_current_checkout(
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
     # Same order as the pull and ZIP paths: the ``[all]`` reinstall above may have stripped the
-    # active memory provider's bridge packages (hindsight-embed, torch, ...).
+    # active memory provider's bridge packages (torch, embedding stacks, ...).
     _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
@@ -865,11 +867,27 @@ def _pull_updates(
     # critical-path file (PR #28452 incident: orphan merge-conflict markers in hermes_cli/config.py bricked
     # every user who ran ``hermes update`` for the 7 minutes between the bad commit and the fix landing).
     pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+    # Git moves the tree file by file and HEAD last: if this process dies in between, the next launch
+    # of any entry point finds this marker and puts the old tree back (_early_recovery). The target is
+    # the resolved commit, so a later `git fetch` cannot widen what that restore considers.
+    pull_marker = interrupted_pull_marker(_m().PROJECT_ROOT)
+    target_sha = (_git_run(git_cmd, ["rev-parse", f"origin/{branch}^{{commit}}"]).stdout or "").strip()
+    with _best_effort('Could not write the interrupted-pull marker: %s'):
+        pull_marker.write_text(
+            f"pid={os.getpid()}\npre={pre_pull_sha}\ntarget={target_sha}\nstash={auto_stash_ref or ''}\n",
+            encoding="utf-8")
     try:
-        # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
-        # SECOND network fetch; identical in effect given the fresh tracking ref.
-        if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
-            _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
+        try:
+            # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
+            # SECOND network fetch; identical in effect given the fresh tracking ref.
+            if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
+                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
+        except KeyboardInterrupt:
+            raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
+        except BaseException:
+            pull_marker.unlink(missing_ok=True)  # git exited on its own (sys.exit on conflict/reset failure)
+            raise
+        pull_marker.unlink(missing_ok=True)  # git is done: the tree is whole again
         _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
         update_succeeded = True
     finally:
@@ -1280,7 +1298,18 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
-    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    # Same contract as the pull path's _resume_windows_gateways_and_merge_outcome: a failed
+    # Windows gateway resume (e.g. the relaunch verification racing a Job-Object kill, #48820)
+    # must demote this run to incomplete, never abort it. A bare call here let the identical
+    # RuntimeError the pull path treats as a warning kill "Already up to date" outright (#115563).
+    resume_outcome = _GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
+        restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+    )
+    _resume_windows_gateways_and_merge_outcome(resume_outcome, _windows_gateway_resume, gateway_mode)
+    if resume_outcome.incomplete:
+        current_checkout_complete = False
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.
     # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale
@@ -1381,11 +1410,11 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     The parent detaches from the receipt and its Windows resume hook — the child owns both —
     and only relays the exit code (``hermes_cli/update_handoff.py``).
     """
-    from hermes_cli.update_handoff import continue_update_in_fresh_interpreter
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _post_swap_payload(**payload_kwargs)
-    code = continue_update_in_fresh_interpreter(payload, argv_tail=_post_swap_argv_tail(args))
+    code = _update_handoff.continue_update_in_fresh_interpreter(
+        payload, argv_tail=_post_swap_argv_tail(args))
     token = payload_kwargs.get("_windows_gateway_resume")
     if token and code is not None:
         # The child got its own copy (serialized before this flip) and owns the resume; every
@@ -1408,10 +1437,9 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
 def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     """Child half of the update (``--post-swap``): resume the receipt and finish the run on the
     pulled code."""
-    from hermes_cli.update_handoff import read_handoff
     from hermes_cli.update_receipt import resume_update_receipt
 
-    payload = read_handoff(args.post_swap)
+    payload = _update_handoff.read_handoff(args.post_swap)
     with suppress(OSError):
         Path(args.post_swap).unlink()
     if payload.get("receipt"):

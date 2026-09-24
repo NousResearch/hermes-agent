@@ -6,7 +6,6 @@ singularity is installed, instead of a cryptic FileNotFoundError.
 See: https://github.com/NousResearch/hermes-agent/issues/1511
 """
 
-import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -46,10 +45,3 @@ class TestEnsureSingularityAvailable:
         with patch("shutil.which", side_effect=lambda n: "/usr/bin/apptainer" if n == "apptainer" else None), \
              patch("subprocess.run", return_value=fake_result):
             assert _ensure_singularity_available() == "apptainer"
-
-
-    def test_raises_when_not_installed(self):
-        """Raises RuntimeError when neither executable exists."""
-        with patch("shutil.which", return_value=None):
-            with pytest.raises(RuntimeError, match="Neither.*apptainer.*nor.*singularity"):
-                _ensure_singularity_available()

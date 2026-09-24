@@ -19,7 +19,7 @@ import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import { pinFloatingComposerCapture } from '../floating-target'
 import type { ComposerTarget } from '../focus'
-import { onComposerVoiceToggleRequest } from '../focus'
+import { onComposerDictationRequest, onComposerVoiceToggleRequest } from '../focus'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -79,9 +79,7 @@ export function useComposerVoice({
 
         // Runs on every streamed flush: test the parts in place instead of
         // joining the whole reply into a string just to check it is non-blank.
-        return last?.pending && last.parts.some(part => part.type === 'text' && /\S/.test(part.text))
-          ? last.id
-          : null
+        return last?.pending && last.parts.some(part => part.type === 'text' && /\S/.test(part.text)) ? last.id : null
       }),
     [$messages]
   )
@@ -313,6 +311,14 @@ export function useComposerVoice({
   useEffect(
     () => onComposerVoiceToggleRequest(toggled => toggled === target && toggleVoiceConversation()),
     [target, toggleVoiceConversation]
+  )
+
+  // The bindable `composer.dictate` action shares the mic button's callback,
+  // including its recording/transcribing state machine. Ignore disabled
+  // composers so an unavailable draft cannot acquire the microphone.
+  useEffect(
+    () => onComposerDictationRequest(requested => requested === target && !disabled && dictate()),
+    [dictate, disabled, target]
   )
 
   useEffect(() => {

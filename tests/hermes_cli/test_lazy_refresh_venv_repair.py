@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import textwrap
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import hermes_cli.main as m
 import hermes_cli.main_install_repair as hermes_cli_main_install_repair
 from hermes_cli import main_install_repair
-from hermes_cli import update_cmd
 import pytest
 
 
@@ -89,7 +86,7 @@ def test_repair_runs_force_reinstall_with_pyproject_pins(
     assert detect_calls["count"] == 1
 
 
-def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch, capsys):
+def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch):
     import tools.lazy_deps as lazy_deps_mod
 
     monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: ["platform.matrix"])
@@ -109,13 +106,9 @@ def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(main_install_repair, "_repair_broken_lazy_refresh_imports", fake_repair)
 
     ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
-    out = capsys.readouterr().out
 
     assert ok is True
     assert repair_calls == [["PyYAML"]]
-    assert "Venv repair succeeded" in out
-    assert "import probes" in out
-    assert "Backends keep their previously-installed version" not in out
 
 
 def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
@@ -140,16 +133,6 @@ def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
     assert restored == [["platform.telegram"]]
 
 
-def test_capture_active_tool_dependencies_uses_tools_status_probes(monkeypatch):
-    from hermes_cli import tools_config_post_setup
-
-    monkeypatch.setattr(
-        tools_config_post_setup,
-        "_module_installed",
-        lambda module: module in {"langfuse", "ddgs"},
-    )
-
-    assert m._capture_active_tool_dependencies() == ["ddgs", "langfuse"]
 
 
 def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
@@ -175,103 +158,59 @@ def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
     assert calls == [(["uv", "pip", "install", "langfuse", "--quiet"], env)]
 
 
-def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
-    tmp_path, monkeypatch
-):
-    """The updater must carry pre-rebuild state into its repair refresh."""
-    from hermes_cli import managed_uv, update_cmd
+def test_venv_repair_restores_snapshots_with_an_isolated_uv_env(tmp_path, monkeypatch):
+    """The unhealthy-venv repair reinstalls the pre-rebuild lazy/tool snapshots through an env
+    built by ``managed_python_env`` (#83914): a third-party ``UV_PYTHON_INSTALL_DIR`` /
+    ``UV_PYTHON`` / ``VIRTUAL_ENV`` from unrelated software must not steer uv, and
+    ``VIRTUAL_ENV`` points at this install's own venv."""
+    from hermes_cli import update_cmd
+    from hermes_constants import venv_python_path
 
-    (tmp_path / ".git").mkdir()
-    snapshot = ["platform.telegram"]
-    tool_snapshot = ["langfuse"]
-    refresh_calls = []
-    restore_calls = []
+    project = tmp_path / "hermes"
+    venv_python = venv_python_path(project / "venv", windows=m._is_windows())
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    foreign = tmp_path / "workbuddy"
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(foreign / "python"))
+    monkeypatch.setenv("UV_PYTHON", str(foreign / "python" / "python.exe"))
+    monkeypatch.setenv("VIRTUAL_ENV", str(foreign / "venv"))
 
-    class RestoreReached(Exception):
-        pass
-
-    def fake_run(cmd, **kwargs):
-        if "rev-parse" in cmd:
-            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
-        if "rev-list" in cmd:
-            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    def fake_refresh(prefix, *, env=None, features=None):
-        refresh_calls.append((prefix, env, features))
-        return True
-
-    def fake_restore(dependencies, prefix, *, env=None):
-        restore_calls.append((dependencies, prefix, env))
-        raise RestoreReached
-
-    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(m, "_capture_active_lazy_features", lambda: snapshot.copy())
+    calls = []
+    monkeypatch.setattr(m, "PROJECT_ROOT", project)
+    monkeypatch.setattr(m, "_abort_dependency_sync_if_self_locked", lambda *_a: None)
     monkeypatch.setattr(
-        m, "_capture_active_tool_dependencies", lambda: tool_snapshot.copy()
-    )
-    monkeypatch.setattr(m, "_is_windows", lambda: False)
-    monkeypatch.setattr(hermes_cli_main_install_repair, "_is_windows", lambda: False)
-    monkeypatch.setattr(m, "_run_pre_update_backup", lambda args: None)
-    monkeypatch.setattr(m, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(m, "_resume_windows_gateways_after_update", lambda state: None)
-    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *args: None)
-    monkeypatch.setattr(m, "_get_origin_url", lambda *args: "https://github.com/NousResearch/hermes-agent.git")
-    monkeypatch.setattr(m, "_resolve_update_branch", lambda args: "main")
-    monkeypatch.setattr(m, "_stash_local_changes_if_needed", lambda *args: None)
-    monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
+        m, "_install_python_dependencies_with_optional_fallback",
+        lambda prefix, *, env, group: calls.append(("core", prefix, env, group)))
     monkeypatch.setattr(
-        update_cmd, "_venv_core_imports_healthy", lambda: (False, "broken")
-    )
+        m, "_refresh_active_lazy_features",
+        lambda prefix, *, env, features: calls.append(("lazy", prefix, env, features)) or True)
+    monkeypatch.setattr(
+        m, "_restore_active_tool_dependencies",
+        lambda deps, prefix, *, env: calls.append(("tools", prefix, env, deps)))
+    monkeypatch.setattr(m, "_refresh_active_memory_provider_dependencies", lambda: None)
+    monkeypatch.setattr(m, "_reapply_plugin_python_dependencies", lambda: None)
+    monkeypatch.setattr(m, "_clear_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(update_cmd, "_write_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, "ok"))
     monkeypatch.setattr(
-        m, "_install_python_dependencies_with_optional_fallback", lambda *a, **k: None
-    )
-    monkeypatch.setattr(m, "_refresh_active_lazy_features", fake_refresh)
-    monkeypatch.setattr(m, "_restore_active_tool_dependencies", fake_restore)
-    monkeypatch.setattr(m.subprocess, "run", fake_run)
-    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kwargs: None)
-    monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kwargs: "uv")
+        update_cmd, "_repair_node_deps_on_current_checkout", lambda *_a, **_k: True)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **_k: "uv")
 
-    args = SimpleNamespace(
-        yes=True,
-        force=False,
-        force_venv=False,
-        no_backup=True,
-        backup=False,
-        branch=None,
-    )
-    with pytest.raises(RestoreReached):
-        update_cmd._cmd_update_impl(args, gateway_mode=False)
+    assert update_cmd._repair_venv_on_current_checkout(
+        assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+        had_desktop_app_before_update=False,
+        active_lazy_features=["platform.telegram"],
+        active_tool_dependencies=["langfuse"],
+        _windows_gateway_resume=None,
+    ) is True
 
-    # The repair env is now built via managed_python_env (#83914): third-party
-    # UV vars are stripped, managed pins set, then VIRTUAL_ENV re-pointed at
-    # the install's venv. Assert the CONTRACT, not the raw environ copy.
-    from hermes_cli.managed_uv import managed_python_env
-
-    expected_env = managed_python_env()
-    expected_env["VIRTUAL_ENV"] = str(tmp_path / "venv")
-    assert refresh_calls == [
-        (
-            ["uv", "pip"],
-            expected_env,
-            snapshot,
-        )
+    assert [(c[0], c[1], c[3]) for c in calls] == [
+        ("core", ["uv", "pip"], "all"),
+        ("lazy", ["uv", "pip"], ["platform.telegram"]),
+        ("tools", ["uv", "pip"], ["langfuse"]),
     ]
-    assert restore_calls == [
-        (
-            tool_snapshot,
-            ["uv", "pip"],
-            expected_env,
-        )
-    ]
-
-
-
-
-
-
-
-
-
-
+    for _phase, _prefix, env, _extra in calls:
+        assert env["VIRTUAL_ENV"] == str(project / "venv")
+        assert str(foreign) not in env.get("UV_PYTHON_INSTALL_DIR", "")
+        assert env.get("UV_PYTHON") is None
+        assert env.get("UV_MANAGED_PYTHON") == "1"

@@ -197,15 +197,32 @@ export function CapabilityScopeSelector({
   }
 
   return (
-    <div className={cn('flex min-w-0 items-center gap-2', compact ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2')}>
-      {!compact && <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>}
+    <div
+      className={cn(
+        'flex min-w-0 items-center gap-2',
+        compact ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
+      )}
+    >
+      {!compact && (
+        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+      )}
       <Select onValueChange={scope.onChange} value={scope.value}>
-        <SelectTrigger className={cn('text-xs', compact ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
-          <SelectValue />
+        <SelectTrigger className={cn('text-xs', compact ? 'h-6 min-w-0 w-full px-2 truncate' : 'h-7 w-56')}>
+          {compact ? (
+            <span className="min-w-0 truncate" data-slot="compact-select-value">
+              <SelectValue />
+            </span>
+          ) : (
+            <SelectValue />
+          )}
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className={compact ? 'max-w-(--radix-select-content-available-width)' : undefined}>
           {scope.options.map(option => (
-            <SelectItem key={option.key} value={option.value}>
+            <SelectItem
+              className={compact ? '[&>span:last-child]:min-w-0 [&>span:last-child]:truncate' : undefined}
+              key={option.key}
+              value={option.value}
+            >
               {option.label}
             </SelectItem>
           ))}

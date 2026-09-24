@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { buildAppEnv, createSandbox, launchDesktop, waitForAppReady, writeEnvFile, writeMockProviderConfig, type MockBackendFixture } from './fixtures'
 import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
@@ -7,7 +8,7 @@ import { expect, test } from './test'
 
 const repo = path.resolve(import.meta.dirname, '../../..')
 const python = path.join(process.env.VIRTUAL_ENV || path.join(repo, '.venv'), 'bin', 'python')
-const evidence = process.env.BOT_DM_EVIDENCE || '/tmp/botmode-cron-root/native'
+const evidence = process.env.BOT_DM_EVIDENCE || path.join(os.tmpdir(), 'botmode-cron-root/native')
 let fixture: MockBackendFixture
 let env: Record<string, string>
 

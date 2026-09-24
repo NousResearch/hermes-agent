@@ -134,6 +134,61 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
                        spilled=decision.spilled, keys=keys)
 
 
+def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
+    """Estimated resident bytes for one staged model at the window this policy grants it, or None
+    when it cannot be priced: an unreadable header, or a model the physics check refuses outright
+    (it never loads, so it must not shrink the residency cap)."""
+    from hermes_cli.local_runtime.catalog import entry_for_model
+    from hermes_cli.local_runtime.growth import load_window_overrides
+
+    model_id = model_id_from_stem(gguf.stem)
+    try:
+        profile = profile_from_gguf(read_gguf_header(gguf))
+    except (ValueError, OSError) as exc:
+        logger.debug("footprint skip %s: %s", gguf.name, exc)
+        return None
+    entry = entry_for_model(model_id)
+    is_mtp = entry.mtp if entry is not None else False
+    mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    plan = plan_launch(profile, budget, mtp_capable=is_mtp,
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj,
+                       requested_window=load_window_overrides().get(model_id))
+    if isinstance(plan.decision, PhysicsRefusal):
+        return None
+    # Priced whole even when the plan spills: a spilled model still holds part of its weights on
+    # the device, and over-counting errs toward the side that cannot thrash.
+    return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
+
+
+def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
+    """How many models the card may hold resident at once: priced against the budget, not a count.
+
+    Residency used to be bounded by a count alone, so a second model was admitted against an
+    already-full card. On Windows/WDDM that over-commit is not refused — the allocation is paged
+    to host memory, and that child decodes at a third of its speed for the rest of its life: no
+    error, no UI hint, and ejecting the incumbent afterwards does not repair it (only a clean
+    reload does). Capping the count instead has llama.cpp evict its LRU *before* the incoming
+    child allocates, which is the only placement that fits.
+
+    The cap rises above one only while the LARGEST staged model still fits TWICE — any pair of
+    staged models then fits by construction. ``configured`` stays a ceiling (a user's smaller
+    number is honoured), and an unpriceable input (no usable device memory, no readable model)
+    keeps today's behaviour.
+    """
+    from hermes_cli.local_runtime.bootstrap import staged_in
+
+    if configured <= 1 or budget.usable_vram_bytes <= 0:
+        return configured
+    largest = 0
+    for gguf in staged_in(models_dir):
+        need = _launch_footprint(gguf, budget)
+        if need:
+            largest = max(largest, need)
+    if largest <= 0:
+        return configured
+    return max(1, min(configured, budget.usable_vram_bytes // largest))
+
+
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
                      mtp_capable: set[str] | None = None) -> list[PresetEntry]:
     """Walk the staged models, run the launch decision per model, and write one INI. Refused

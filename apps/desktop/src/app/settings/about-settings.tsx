@@ -19,7 +19,9 @@ import {
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { UninstallSection } from './uninstall-section'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
@@ -46,7 +48,25 @@ function relativeTime(ms: number | undefined, a: Translations['settings']['about
   return a.daysAgo(Math.round(diff / 86_400_000))
 }
 
-export function AboutSettings() {
+interface AboutSettingsProps {
+  subpage?: string
+}
+
+export function AboutSettings({ subpage }: AboutSettingsProps = {}) {
+  useSettingDeepLink('about', page => subpage === undefined || page === subpage)
+
+  if (subpage === 'uninstall') {
+    return (
+      <SettingsContent>
+        <UninstallSection />
+      </SettingsContent>
+    )
+  }
+
+  return <AppUpdatesSettings includeUninstall={subpage === undefined} />
+}
+
+function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean }) {
   const { t } = useI18n()
   const a = t.settings.about
   const version = useStore($desktopVersion)
@@ -227,10 +247,11 @@ export function AboutSettings() {
         <ListRow
           description={a.automaticUpdatesDesc}
           hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          id={settingElementId(SETTING_IDS.about.automaticUpdates)}
           title={a.automaticUpdates}
         />
 
-        <UninstallSection />
+        {includeUninstall && <UninstallSection />}
       </div>
     </SettingsContent>
   )

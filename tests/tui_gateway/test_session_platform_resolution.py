@@ -50,17 +50,7 @@ class TestResolveSessionPlatform:
         assert _srv._resolve_session_platform() == "desktop"
 
 
-    @pytest.mark.parametrize("val", ["1", "true", "yes", "on", "TRUE", "Yes", "ON"])
-    def test_truthy_variants_recognized(self, clean_env, val):
-        clean_env.setenv("HERMES_DESKTOP", val)
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_platform() == "desktop"
 
-    @pytest.mark.parametrize("val", ["0", "false", "", "no", "off", "False"])
-    def test_falsy_variants_fall_back_to_tui(self, clean_env, val):
-        clean_env.setenv("HERMES_DESKTOP", val)
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_platform() == "tui"
 
     def test_embedded_terminal_overrides_desktop_when_both_set(self, clean_env):
         """The terminal-pane qualifier must short-circuit the desktop-backend

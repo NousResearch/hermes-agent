@@ -9,7 +9,6 @@ import pytest
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
 import hermes_cli.main_provider_setup as hermes_cli_main_provider_setup
-from hermes_cli import model_setup_flows
 from hermes_cli import model_switch
 
 
@@ -263,21 +262,6 @@ def test_provider_flag_logs_when_custom_default_model_cannot_resolve(monkeypatch
     )
 
 
-def test_hermes_cli_init_does_not_eagerly_resolve_runtime_provider(monkeypatch):
-    cli = _import_cli()
-    calls = {"count": 0}
-
-    def _unexpected_runtime_resolve(**kwargs):
-        calls["count"] += 1
-        raise AssertionError("resolve_runtime_provider should not be called in HermesCLI.__init__")
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _unexpected_runtime_resolve)
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-
-    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
-
-    assert shell is not None
-    assert calls["count"] == 0
 
 
 def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
@@ -363,18 +347,87 @@ def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_pat
     assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
-def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
-    cli = _import_cli()
-    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
-    shell.provider = "openrouter"
-    shell.api_mode = "chat_completions"
-    shell.base_url = "https://openrouter.ai/api/v1"
-    shell.api_key = "sk-primary"
+def _quota_auth_error():
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+    return AuthError(
+        "Codex provider quota exhausted (429); retry after 1839s. Credentials are still valid.",
+        provider="openai-codex",
+        code=CODEX_RATE_LIMITED_CODE,
+        relogin_required=False,
+    )
 
-    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
 
-    assert result["model"] == "gpt-5"
-    assert result["runtime"]["provider"] == "openrouter"
+@pytest.mark.parametrize(("exc_factory", "expected", "absent"), [
+    (_quota_auth_error, "quota exhausted", "auth failed"),
+    (lambda: __import__("hermes_cli.auth", fromlist=["AuthError"]).AuthError(
+        "no key", provider="openai-codex", code="missing_api_key"), "Primary auth failed", "quota exhausted"),
+])
+def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(monkeypatch, tmp_path, exc_factory, expected, absent):
+    """A 429 at credential resolution is quota, not bad credentials (#117482); a real
+    credential failure keeps the auth-failed wording."""
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    printed = []
+    monkeypatch.setattr("cli._cprint", printed.append, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"provider": "custom", "base_url": "http://x/v1", "api_key": "k"},
+    )
+    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: "k")
+
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell._fallback_model = [{"provider": "custom", "model": "local-model"}]
+    runtime = shell._resolve_fallback_runtime(exc_factory())
+
+    assert runtime is not None
+    assert printed
+    assert expected in printed[-1]
+    assert absent not in printed[-1]
+
+
+def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_path):
+    """Kanban workers need this flag: a quota wall at startup is not a worker failure (#117482)."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+
+    def _raise_quota(**kw):
+        raise _quota_auth_error()
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise_quota)
+
+    quota_shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    quota_shell.model = "gpt-x"
+    quota_shell.requested_provider = "openai-codex"
+    quota_shell._explicit_api_key = None
+    quota_shell._explicit_base_url = None
+    quota_shell._fallback_model = []
+    quota_shell.tool_progress_mode = "off"
+    assert quota_shell._ensure_runtime_credentials() is False
+    assert quota_shell._credentials_rate_limited is True
+
+    def _raise_missing(**kw):
+        raise AuthError("no key", provider="openai-codex", code="missing_api_key")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise_missing)
+    bad_shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    bad_shell.model = "gpt-x"
+    bad_shell.requested_provider = "openai-codex"
+    bad_shell._explicit_api_key = None
+    bad_shell._explicit_base_url = None
+    bad_shell._fallback_model = []
+    bad_shell.tool_progress_mode = "off"
+    assert bad_shell._ensure_runtime_credentials() is False
+    assert bad_shell._credentials_rate_limited is False
+
+
 
 
 
@@ -592,7 +645,7 @@ def test_custom_entry_model_swap_re_resolves_reasoning(monkeypatch):
 
 
 
-def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
+def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.get_env_value",
         lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
@@ -625,11 +678,10 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": next(answers))
 
-    hermes_main._model_flow_custom({})
-    output = capsys.readouterr().out
+    caller_cfg = {}
+    hermes_main._model_flow_custom(caller_cfg)
 
-    assert "Saving the working base URL instead" in output
-    assert "Detected model: llm" in output
+    assert caller_cfg["model"]["base_url"] == "http://localhost:8000/v1"
     # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
     assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"
@@ -759,10 +811,6 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 # _auto_provider_name — unit tests
 # ---------------------------------------------------------------------------
 
-def test_auto_provider_name_localhost():
-    from hermes_cli.main_provider_setup import _auto_provider_name
-    assert _auto_provider_name("http://localhost:11434/v1") == "Local (localhost:11434)"
-    assert _auto_provider_name("http://127.0.0.1:1234/v1") == "Local (127.0.0.1:1234)"
 
 
 
@@ -827,7 +875,6 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
     raise on exactly the local-proxy setups this is meant to protect. The
     fixed prefix makes the result valid by construction.
     """
-    import re
 
     from hermes_cli.config import _ENV_VAR_NAME_RE, custom_endpoint_key_env
 

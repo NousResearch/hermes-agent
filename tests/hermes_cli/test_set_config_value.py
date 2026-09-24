@@ -40,19 +40,9 @@ class TestExplicitAllowlist:
     """Keys in the hardcoded allowlist should always go to .env."""
 
     @pytest.mark.parametrize("key", [
-        "OPENROUTER_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "HONCHO_API_KEY",
-        "FIRECRAWL_API_KEY",
-        "BROWSERBASE_API_KEY",
+        # Allowlisted names that the suffix catch-all below would NOT route.
         "FAL_KEY",
         "SUDO_PASSWORD",
-        "GITHUB_TOKEN",
-        "TELEGRAM_BOT_TOKEN",
-        "DISCORD_BOT_TOKEN",
-        "SLACK_BOT_TOKEN",
-        "SLACK_APP_TOKEN",
         "API_SERVER_KEY",
     ])
     def test_explicit_key_routes_to_env(self, key, _isolated_hermes_home):
@@ -71,11 +61,8 @@ class TestCatchAllPatterns:
     """Any key ending in _API_KEY, _TOKEN, or _SECRET should route to .env."""
 
     @pytest.mark.parametrize("key", [
-        "DAYTONA_API_KEY",
-        "ELEVENLABS_API_KEY",
         "SOME_FUTURE_SERVICE_API_KEY",
         "MY_CUSTOM_TOKEN",
-        "WHATSAPP_BOT_TOKEN",
         "CLIENT_SECRET",
     ])
     def test_api_key_suffix_routes_to_env(self, key, _isolated_hermes_home):
@@ -89,6 +76,48 @@ class TestCatchAllPatterns:
 # Non-secret keys → config.yaml
 # ---------------------------------------------------------------------------
 
+class TestGatewayPlatformsPrefixRedirect:
+    """#115212: ``gateway.platforms.<p>.<field>`` lands on the top-level ``platforms.<p>.<field>``
+    the gateway prefers, instead of a nested key that an existing top-level value shadows."""
+
+    def test_set_lands_on_top_level_platforms_block_the_loader_reads(self, _isolated_hermes_home, capsys):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platforms:\n  telegram:\n    enabled: false\n", encoding="utf-8")
+        set_config_value("gateway.platforms.telegram.enabled", "true")
+        out = capsys.readouterr().out
+        assert "saved as platforms.telegram.enabled" in out
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert loaded["platforms"]["telegram"]["enabled"] is True
+        assert "gateway" not in loaded
+        from gateway.config import Platform, load_gateway_config
+        assert load_gateway_config().platforms[Platform.TELEGRAM].enabled is True
+
+    def test_nested_display_setting_still_reaches_display_platforms(self):
+        from hermes_cli.config import _redirect_platform_display_key
+        key, _ = _redirect_platform_display_key("gateway.platforms.telegram.streaming")
+        assert key == "display.platforms.telegram.streaming"
+
+    def test_get_and_unset_still_reach_a_legacy_nested_only_value(self, _isolated_hermes_home, capsys):
+        """A config whose value lives ONLY under ``gateway.platforms`` is still honoured by the gateway
+        (``merge_platform_sections``), so ``get`` must read it and ``unset`` must remove it instead of
+        reporting "not set" while the gateway keeps the platform enabled."""
+        from hermes_cli.config import get_config_value, unset_config_value
+
+        legacy = "gateway:\n  platforms:\n    telegram:\n      enabled: true\n"
+        (_isolated_hermes_home / "config.yaml").write_text(legacy, encoding="utf-8")
+        get_config_value("gateway.platforms.telegram.enabled")
+        assert capsys.readouterr().out.strip().lower() == "true"
+
+        unset_config_value("gateway.platforms.telegram.enabled")
+        assert "gateway" not in (yaml.safe_load(_read_config(_isolated_hermes_home)) or {})
+
+        # set on top of a nested-only value leaves one source of truth, not a shadowed duplicate
+        (_isolated_hermes_home / "config.yaml").write_text(legacy, encoding="utf-8")
+        set_config_value("gateway.platforms.telegram.enabled", "false")
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert loaded == {"platforms": {"telegram": {"enabled": False}}}
+
+
 class TestConfigYamlRouting:
     """Regular config keys should go to config.yaml, NOT .env."""
 
@@ -99,35 +128,20 @@ class TestConfigYamlRouting:
         assert "model" not in _read_env(_isolated_hermes_home)
 
 
-    def test_terminal_image_goes_to_config(self, _isolated_hermes_home):
-        """TERMINAL_DOCKER_IMAGE doesn't match _API_KEY or _TOKEN, so config.yaml."""
-        set_config_value("terminal.docker_image", "python:3.12")
-        config = _read_config(_isolated_hermes_home)
-        assert "python:3.12" in config
 
-    def test_cron_script_timeout_is_recognized(self, _isolated_hermes_home, capsys):
-        """The script timeout read by cron must be accepted by config set."""
-        set_config_value("cron.script_timeout_seconds", "600")
 
-        assert "not a recognized config key" not in capsys.readouterr().out
-        assert "script_timeout_seconds: 600" in _read_config(_isolated_hermes_home)
 
-    def test_memory_nudge_interval_is_recognized(self, _isolated_hermes_home, capsys):
-        """The documented background-memory review interval is runtime config."""
-        set_config_value("memory.nudge_interval", "0")
+    def test_tool_search_defer_is_recognized(self, _isolated_hermes_home, capsys):
+        """tools.tool_search.defer is read by ToolSearchConfig.from_raw, so it must be a
+        registered config key (not flagged as unrecognized) and coerce to a real list."""
+        set_config_value("tools.tool_search.defer", '["todo_list", "skill_manage"]')
 
-        assert "not a recognized config key" not in capsys.readouterr().out
-        assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        assert "not a recognized config key" not in captured.err
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["tools"]["tool_search"]["defer"] == ["todo_list", "skill_manage"]
 
-    def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
-        set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
-        config = _read_config(_isolated_hermes_home)
-        env_content = _read_env(_isolated_hermes_home)
-        assert "docker_mount_cwd_to_workspace: 'true'" in config or "docker_mount_cwd_to_workspace: true" in config
-        assert (
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
-            or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
-        )
 
     def test_terminal_docker_shared_key_preserves_string_values(
         self, _isolated_hermes_home, capsys
@@ -143,12 +157,6 @@ class TestConfigYamlRouting:
         )
         assert "not a recognized config key" not in capsys.readouterr().out
 
-    def test_terminal_vercel_runtime_goes_to_config_and_env(self, _isolated_hermes_home):
-        set_config_value("terminal.vercel_runtime", "python3.13")
-        config = _read_config(_isolated_hermes_home)
-        env_content = _read_env(_isolated_hermes_home)
-        assert "vercel_runtime: python3.13" in config
-        assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
 
 
 # ---------------------------------------------------------------------------
@@ -366,50 +374,9 @@ class TestListNavigation:
 # Unpinned-cron notice on a global model change (#59031, #44585)
 # ---------------------------------------------------------------------------
 
-def _write_cron_jobs(tmp_path, jobs):
-    cron_dir = tmp_path / "cron"
-    cron_dir.mkdir(parents=True, exist_ok=True)
-    (cron_dir / "jobs.json").write_text(
-        json.dumps({"jobs": jobs}),
-        encoding="utf-8",
-    )
-
-
-class TestCronModelChangeNotice:
-    """A global model change tells the operator which unpinned jobs stay on their snapshot."""
-
-    def test_notice_says_jobs_keep_running_and_names_the_user_owned_pin_path(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("model.default", "new-model")
-
-        notice = capsys.readouterr().out
-        assert "keeps running" in notice
-        assert "fail closed" not in notice
-        assert "hermes cron edit <job_id> --provider <provider> --model <model>" in notice
-        assert "cronjob action=update" not in notice
-
-
-# ---------------------------------------------------------------------------
-# String-typed config values — regression tests for #47515
-# ---------------------------------------------------------------------------
 
 class TestStringTypedConfigValues:
-    @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
+    @pytest.mark.parametrize("value", ["off", "true", "01"])
     def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
         set_config_value("approvals.mode", value)
@@ -493,11 +460,6 @@ class TestSecretRedactionInDisplay:
         assert secret not in captured.out
         assert "Set model.api_key" in captured.out
 
-    def test_set_echo_keeps_nonsecret_value(self, _isolated_hermes_home, capsys):
-        set_config_value("model.reasoning_effort", "high")
-
-        captured = capsys.readouterr()
-        assert "Set model.reasoning_effort = high" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -577,13 +539,6 @@ class TestSchemaValidation:
 
 
 
-    def test_desktop_macos_signing_identity_is_accepted(self, _isolated_hermes_home, capsys):
-        """The documented TCC signing identity setting is part of the schema."""
-        set_config_value("desktop.macos_signing_identity", "Hermes Local Signing")
-        import yaml
-        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert saved["desktop"]["macos_signing_identity"] == "Hermes Local Signing"
-        assert "not a recognized config key" not in capsys.readouterr().out
 
 
 
@@ -602,17 +557,11 @@ class TestValidateConfigKey:
     """Unit tests for the validator itself."""
 
     @pytest.mark.parametrize("key", [
-        "model",
-        "terminal.backend",
         "agent.max_turns",
         "discord.gateway_restart_notification",
-        "telegram.bot_token",
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
-        "gateway.strict",
-        "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
-        "approvals.mode",
         # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).

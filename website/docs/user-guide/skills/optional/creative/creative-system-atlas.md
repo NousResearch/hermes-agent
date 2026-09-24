@@ -21,7 +21,7 @@ Build explorable isometric architecture atlases as HTML.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `architecture`, `diagrams`, `isometric`, `documentation` |
-| Related skills | [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md), [`excalidraw`](./creative-excalidraw.md) |
+| Related skills | [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md) |
 
 ## Reference: full SKILL.md
 

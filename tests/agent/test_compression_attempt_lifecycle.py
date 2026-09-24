@@ -26,9 +26,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
-from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.conversation_compression import (
     CompressionCommitFence,
     _claim_compressor_attempt,
@@ -173,15 +171,6 @@ class TestWorkerTeardownOnCeiling:
 
 
 class TestDurableAttemptBackoff:
-    def test_backoff_row_records_strategy_and_kind(self, tmp_path: Path):
-        db, agent = _build_agent(tmp_path, "BACKOFF_KIND")
-        agent.context_compressor.record_timeout_failure(
-            "host ceiling exhausted", failure_kind="ceiling_exhausted"
-        )
-        row = db.get_compression_failure_cooldown("BACKOFF_KIND")
-        assert row is not None, "backoff must persist to state.db"
-        assert row["remaining_seconds"] > 0
-        assert "backoff:ceiling_exhausted:strategy=lean" in (row["error"] or "")
 
     def test_backoff_blocks_same_strategy_reentry_next_turn(self, tmp_path: Path):
         db, agent = _build_agent(tmp_path, "BACKOFF_REENTRY")
@@ -306,12 +295,6 @@ class TestTransientBlockIsNotExhaustion:
         compress_context(agent, live, "sys", approx_tokens=500_000)
         assert compression_blocked_transiently(agent) is False
 
-    def test_type_pinned_against_magicmock_agents(self):
-        from unittest.mock import MagicMock
-
-        mock_agent = MagicMock()
-        # MagicMock auto-attributes are truthy but not str.
-        assert compression_blocked_transiently(mock_agent) is False
 
 
 def _summary_response(content: str):

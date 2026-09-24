@@ -15,6 +15,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
+import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
@@ -26,9 +27,11 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import {
+  $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  setCurrentCwd,
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
@@ -172,6 +175,23 @@ export function resolveNewSessionCwd(): string {
   }
 
   return workspaceCwdForNewSession()
+}
+
+// Entering a project moves the live workspace only when main holds a fresh
+// draft: the draft has no folder of its own yet, and the project root is where
+// its first message should run. A stored conversation keeps its cwd — entering
+// is a scope switch, and moving the workspace under the selected chat re-pointed
+// Files/Review and the composer's Git context at the project while the
+// transcript stayed on the old session (#72772). The next new chat still lands
+// in the project through resolveNewSessionCwd.
+export function followEnteredProjectCwd(cwd: string): void {
+  const target = cwd.trim()
+
+  if (!target || $selectedStoredSessionId.get() || target === $currentCwd.get()) {
+    return
+  }
+
+  setCurrentCwd(target)
 }
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
@@ -1392,9 +1412,11 @@ export async function removeWorktreePath(
 }
 
 // Reveal a project/worktree path in the OS file manager (git-GUI standard).
+// Routes through `revealFile` so a path that is not on this computer toasts
+// instead of silently showing nothing.
 export async function revealPath(path: null | string): Promise<void> {
   if (path) {
-    await window.hermesDesktop?.revealPath?.(path)
+    await revealFile(path)
   }
 }
 

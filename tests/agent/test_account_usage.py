@@ -118,11 +118,64 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     assert snapshot.windows[1].label == "Weekly"
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer pooled-token"
-    # Pool creds have no account_id concept — the ChatGPT-Account-Id header must
+    # Pool creds have no account_id concept — the ChatGPT-Account-ID header must
     # be omitted rather than sent stale/wrong.
-    assert "ChatGPT-Account-Id" not in calls[0]["headers"]
+    assert "ChatGPT-Account-ID" not in calls[0]["headers"]
 
 
+
+
+def _explicit_creds_snapshot(monkeypatch, payload):
+    calls = []
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: _FakeClient(calls, payload))
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex", base_url="https://chatgpt.com/backend-api/codex", api_key="live-agent-token",
+    )
+    return snapshot, calls
+
+
+def test_codex_weekly_only_primary_window_is_labeled_weekly(monkeypatch):
+    """#65387: a lone 604800s primary_window is the weekly limit, not the session one."""
+    payload = {"plan_type": "pro", "rate_limit": {
+        "primary_window": {"used_percent": 1, "limit_window_seconds": 604800},
+        "secondary_window": None,
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [("Weekly", 1.0)]
+
+
+def test_codex_window_labels_follow_duration_with_positional_fallback(monkeypatch):
+    # Swapped positions: labels must follow limit_window_seconds.
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 4, "limit_window_seconds": 604800},
+        "secondary_window": {"used_percent": 21, "limit_window_seconds": 18000},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [w.label for w in snapshot.windows] == ["Weekly", "Session"]
+    # Missing / unrecognized durations keep the legacy positional labels.
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 4},
+        "secondary_window": {"used_percent": 21, "limit_window_seconds": 12345},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
+
+
+def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, codex_usage_payload):
+    """#79695: the decoded body rides along untouched (unknown fields included), from the single GET."""
+    codex_usage_payload["future_field"] = {"nested": [1, 2]}
+    snapshot, calls = _explicit_creds_snapshot(monkeypatch, codex_usage_payload)
+    assert snapshot.raw == codex_usage_payload
+    assert snapshot.raw["future_field"] == {"nested": [1, 2]}
+    assert len(calls) == 1
+    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]  # normalized limits unchanged
+    # Additive: existing constructor calls stay valid and default to no raw body.
+    assert account_usage.AccountUsageSnapshot(provider="anthropic", source="x", fetched_at=snapshot.fetched_at).raw is None
+
+
+def test_codex_invalid_payload_fails_closed(monkeypatch):
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, ["not", "a", "dict"])
+    assert snapshot is None
 
 
 def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, codex_usage_payload):
@@ -164,7 +217,7 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert snapshot is not None
     assert calls[0]["headers"]["Authorization"] == "Bearer singleton-token"
     # account_id read failed → header omitted, but the singleton token is kept.
-    assert "ChatGPT-Account-Id" not in calls[0]["headers"]
+    assert "ChatGPT-Account-ID" not in calls[0]["headers"]
 
 
 def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_payload):

@@ -17,11 +17,56 @@ export interface FlattenSessionsOptions {
 
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
+// Profile-qualified compression lineage, same key as mergeSessionPage (store/session.ts). The
+// backend's `_lineage_root_id` follows compression edges only; /branch and /new children get
+// their own root, so rows sharing a key are one conversation, never a fork.
+const lineageKey = (session: SessionInfo): string =>
+  `${(session.profile ?? '').trim() || 'default'}::${session._lineage_root_id?.trim() || session.id}`
+
+/**
+ * One row per compression lineage. A stale tip can outlive its rotation in the store (#82290);
+ * keep the row nothing in its lineage continues from, then the freshest by mergeSessionPage's
+ * recency rule (first in input on a tie).
+ */
+function collapseCompressionLineages(sessions: readonly SessionInfo[]): readonly SessionInfo[] {
+  const groups = new Map<string, SessionInfo[]>()
+
+  for (const session of sessions) {
+    const key = lineageKey(session)
+    const group = groups.get(key)
+
+    if (group) {
+      group.push(session)
+    } else {
+      groups.set(key, [session])
+    }
+  }
+
+  if (groups.size === sessions.length) {
+    return sessions
+  }
+
+  const winners = new Set<SessionInfo>()
+
+  for (const group of groups.values()) {
+    const continuedIds = new Set(group.map(session => session.parent_session_id?.trim()))
+
+    const score = (session: SessionInfo) =>
+      continuedIds.has(session.id) ? -Infinity : Math.max(session.last_active || 0, session.started_at || 0)
+
+    winners.add(group.reduce((best, session) => (score(session) > score(best) ? session : best)))
+  }
+
+  return sessions.filter(session => winners.has(session))
+}
+
 /** Flat list with branch/fork sessions nested visually under their parent. */
 export function flattenSessionsWithBranches(
-  sessions: readonly SessionInfo[],
+  input: readonly SessionInfo[],
   options: FlattenSessionsOptions = {}
 ): SidebarSessionEntry[] {
+  const sessions = collapseCompressionLineages(input)
+
   if (sessions.length < 2) {
     return sessions.map(session => ({ session }))
   }
@@ -49,7 +94,8 @@ export function flattenSessionsWithBranches(
 
     const parent = byVisibleId.get(parentId)
 
-    if (!parent || parent.id === session.id) {
+    // Compression ancestry is not a branch: never nest a row under its own lineage.
+    if (!parent || lineageKey(parent) === lineageKey(session)) {
       continue
     }
 
@@ -90,7 +136,7 @@ export function flattenSessionsWithBranches(
 
   // Depth-first so a branch-of-a-branch still renders under its own parent. The
   // `seen` set guards against pathological parent cycles, and the trailing sweep
-  // emits anything the walk somehow missed — nothing in the input is ever dropped.
+  // emits anything the walk somehow missed — nothing past the lineage collapse is dropped.
   const out: SidebarSessionEntry[] = []
   const seen = new Set<string>()
 

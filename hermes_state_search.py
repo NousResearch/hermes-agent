@@ -1254,9 +1254,11 @@ class SessionSearchMixin:
         handle never issues ``'optimize'``: it rewrites index segments in place and would compound
         structural damage (or a split WAL generation) instead of leaving it diagnosable."""
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
+            self._raise_if_db_replaced()
+            if self._conn is None:
+                self._reopen_after_close_locked(context="write")
             for tbl in self._present_fts_tables():
                 try:
                     self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('optimize')")
@@ -1285,7 +1287,6 @@ class SessionSearchMixin:
         and at next startup.
         """
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:
@@ -1293,6 +1294,9 @@ class SessionSearchMixin:
                     "Deferred in-place FTS rebuild: another process holds the rebuild authority for this state.db.")
                 return 0
             with self._lock:
+                self._raise_if_db_replaced()
+                if self._conn is None:
+                    self._reopen_after_close_locked(context="write")
                 for tbl in self._present_fts_tables():
                     try:
                         self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")

@@ -467,7 +467,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return strip_markdown(content)
+        return strip_markdown(content, keep_link_targets=True)  # iMessage auto-links bare URLs only
 
     # --- Inbound attachment downloading ---
 

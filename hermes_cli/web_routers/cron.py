@@ -34,6 +34,7 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
@@ -66,9 +67,30 @@ def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Pat
     return normalized
 
 
+def _job_owner_profile(job_id: str, profile: Optional[str]) -> Optional[str]:
+    """Profile that holds ``job_id`` (its jobs.json and the state.db with its run sessions).
+
+    ``profile`` is a caller *hint*, not proof of ownership: the Desktop lists
+    jobs cross-profile (``?profile=all``) while its per-item calls carry the
+    ambient active profile. Trusting that hint opened a profile that does not
+    hold the job, so the ``cron_{job_id}_*`` id-range scan matched nothing and
+    answered ``200 {"runs": []}`` — the UI rendered "No runs yet" for a job
+    that had run many times (#115345). A hint that does hold the job still
+    wins, so deliberately scoped lookups (the same job id in two profiles,
+    e.g. a copied jobs.json) keep reading the named profile.
+    """
+    if profile:
+        jobs = _call_cron_for_profile(profile, "list_jobs", True)
+        if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
+            return profile
+    return _find_cron_job_profile(job_id)
+
+
 def _job_profile(job_id: str, profile: Optional[str]) -> str:
-    """Profile owning ``job_id`` (explicit or discovered); 404 when none."""
-    selected = profile or _find_cron_job_profile(job_id)
+    """Owning profile for the get/update/pause/resume/trigger/delete family; 404 when no profile
+    holds the job. Same hint validation as the run lookup, so a wrong-profile hint from the
+    cross-profile list cannot 404 (or act on the wrong store for) a job the server can locate."""
+    selected = _job_owner_profile(job_id, profile)
     if not selected:
         raise _job_not_found()
     return selected
@@ -110,7 +132,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     SessionInfo. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
     scan, so cost scales with the requested window, not total cron history.
     """
-    selected = profile or _find_cron_job_profile(job_id)
+    selected = _job_owner_profile(job_id, profile)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
     if selected:
@@ -229,15 +251,24 @@ async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
 
 
 @router.get("/api/cron/delivery-targets")
-async def get_cron_delivery_targets():
+async def get_cron_delivery_targets(profile: Optional[str] = None):
     """Delivery targets for the cron dropdown: implicit ``local`` plus the
     configured gateway platforms (a platform without a cron home channel is
-    still listed with ``home_target_set: false`` so the UI can say so)."""
+    still listed with ``home_target_set: false`` so the UI can say so).
+
+    ``cron_delivery_targets()`` reads each platform's home channel through
+    ``get_secret``, which fails closed once this process hosts more than one
+    profile home (the dashboard/desktop ``serve`` backend flips multi-profile
+    hosting on the first ``?profile=`` request). The read must therefore run
+    inside the profile scope, exactly like the sibling cron routes — otherwise
+    the poll raises ``UnscopedSecretError`` on every tick and the dropdown
+    silently loses every configured platform."""
     targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
     try:
         from cron.scheduler_delivery import cron_delivery_targets
 
-        targets.extend(cron_delivery_targets())
+        with _config_profile_scope(profile):
+            targets.extend(cron_delivery_targets())
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
     return {"targets": targets}
@@ -360,7 +391,7 @@ async def cron_fire_webhook(request: Request):
 
 
 @router.get("/api/cron/blueprints")
-async def list_cron_blueprints():
+async def list_cron_blueprints(profile: Optional[str] = None):
     """Blueprint catalog as form schemas; the ``deliver`` slot's options are
     rewritten from the actually configured gateway platforms."""
     try:
@@ -370,7 +401,8 @@ async def list_cron_blueprints():
         try:
             from cron.scheduler_delivery import cron_delivery_targets
 
-            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            with _config_profile_scope(profile):
+                platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
         except Exception:
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)

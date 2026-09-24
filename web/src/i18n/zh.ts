@@ -163,6 +163,10 @@ export const zh: Translations = {
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",
+    workspace: "工作区",
+    workspaceDefault: "默认",
+    workspaceRescan: "重新扫描仓库",
+    workspaceCustom: "其他路径…",
     previousPage: "上一页",
     nextPage: "下一页",
     roles: {
@@ -320,6 +324,8 @@ export const zh: Translations = {
     disableRuntime: "禁用",
     enableAfterInstall: "安装后启用",
     enableRuntime: "启用",
+    toggleTakesEffectAfterRestart:
+      "已保存 — 重启网关以应用更改。",
     forceReinstall: "强制重装（先删除已有目录）",
     headline: "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
     identifierLabel: "Git 地址或 owner/repo",

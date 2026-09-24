@@ -144,7 +144,7 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     Invariant: the durable tail after a failed turn is a Hermes-authored assistant row (never
     provider text), and the next prompt reaches the provider as its own user row.
     """
-    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
 
     provider, prompt, conversation_rows, db, sid, conn, server = acp
 
@@ -155,6 +155,12 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     assert [r[0] for r in rows] == ["user", "assistant"], rows
     assert rows[1][1] == FAILED_TURN_NOTICE  # no tool ran: no hedging, no provider detail
     assert db.latest_conversation_role(sid) == "assistant"
+    # Typed, so a renderer or room poller never has to match the English copy to tell the
+    # boundary from a model reply.
+    with sqlite3.connect(db.db_path) as c:
+        kinds = [r[0] for r in c.execute(
+            "SELECT display_kind FROM messages WHERE session_id = ? AND role = 'assistant'", (sid,))]
+    assert kinds == [FAILED_TURN_DISPLAY_KIND]
     # The refusal reaches the ACP client, but never becomes canonical assistant history.
     texts = [getattr(getattr(u, "content", None), "text", None) or getattr(u, "text", None) for u in conn.updates]
     assert any(_REFUSAL_DETAIL in (t or "") for t in texts)
@@ -165,6 +171,7 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     sent = [m for m in provider.requests[-1]["messages"] if m["role"] != "system"]
     assert [m["role"] for m in sent] == ["user", "assistant", "user"], sent
     assert [m["content"] for m in sent if m["role"] == "user"] == [_REFUSED, _NEW_REQUEST]
+    assert sent[1] == {"role": "assistant", "content": FAILED_TURN_NOTICE}  # the type never reaches the wire
 
     # Turn 3: cancelled mid-turn. The interrupt envelope carries ``final_response=None``
     # (no assistant text yet); ``_finish_turn`` must still report ``cancelled`` — never crash

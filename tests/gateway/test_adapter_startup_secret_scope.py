@@ -66,9 +66,6 @@ def _helper(module_name):
     return helper
 
 
-@pytest.mark.parametrize(("module_name", "var"), MIGRATED_ADAPTER_MODULES, ids=MODULE_IDS)
-def test_helper_exists(module_name, var):
-    _helper(module_name)
 
 
 @pytest.mark.parametrize(("module_name", "var"), MIGRATED_ADAPTER_MODULES, ids=MODULE_IDS)

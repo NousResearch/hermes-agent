@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
-    ProviderDef, custom_provider_aliases, determine_api_mode, get_label, host_mandated_api_mode,
-    is_aggregator, resolve_provider_full)
+    LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
+    host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -670,8 +670,9 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
 
     # Suffix quality: pro/max/plus/turbo (0) > no suffix / omni / flash / mini (1). "sol" is the
     # flagship tier of the GPT-5.6 series (sol > terra > luna); without it `/model gpt` would
-    # tiebreak alphabetically onto luna, the cheapest. Revisit if a vendor ships a non-flagship "-sol".
-    suffix_rank = 0 if suffix in ("pro", "max", "plus", "turbo", "sol") else 1
+    # tiebreak alphabetically onto luna, the cheapest. GPT-6 put "astra" above "sol": both rank 0 and
+    # the alphabetical tiebreak lands on astra, so `/model gpt` still resolves to the flagship.
+    suffix_rank = 0 if suffix in ("pro", "max", "plus", "turbo", "sol", "astra") else 1
     return version_key + (suffix_rank, suffix) + date_key
 
 
@@ -736,7 +737,16 @@ def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
         f"Pick one with /model <exact-model-name>.")
 
 
-def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, str, str]]:
+def _provider_identity(name: str, user_providers: Optional[dict] = None,
+                       custom_providers: Optional[list] = None) -> str:
+    """Id a provider name routes to, e.g. ``custom:<name>`` for a legacy ``custom_providers``
+    entry, so an alias naming it by its bare name compares equal to the resolved provider."""
+    pdef = resolve_provider_full(name, user_providers, custom_providers) if name else None
+    return pdef.id if pdef is not None else normalize_provider(name or "")
+
+
+def resolve_alias(raw_input: str, current_provider: str, user_providers: Optional[dict] = None,
+                  custom_providers: Optional[list] = None) -> Optional[tuple[str, str, str]]:
     """Resolve a short alias against the current provider's catalog.
 
     Direct aliases (and reverse lookup by exact model id) win; then :data:`MODEL_ALIASES` is
@@ -751,16 +761,38 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
         return (direct.provider, direct.model, key)
 
     # Reverse lookup so full names ("kimi-k2.5") route through direct aliases instead of
-    # falling through to the catalog/OpenRouter.
+    # falling through to the catalog/OpenRouter. Several aliases may expose one model id on
+    # different providers: prefer the one served by current_provider, since insertion order is
+    # not a routing decision and the wrong alias hands back another provider's base_url.
+    reverse_fallback: Optional[tuple[str, str, str]] = None
+    current_id = _provider_identity(current_provider, user_providers, custom_providers)
     for alias_name, da in DIRECT_ALIASES.items():
-        if da.model.lower() == key:
+        if da.model.lower() != key:
+            continue
+        if _provider_identity(da.provider, user_providers, custom_providers) == current_id:
             return (da.provider, da.model, alias_name)
+        if reverse_fallback is None:
+            reverse_fallback = (da.provider, da.model, alias_name)
+    if reverse_fallback is not None:
+        return reverse_fallback
+
+    process_catalog, process_aliases = _external_process_catalog(current_provider)
+    if process_catalog:
+        # Process providers own their model IDs and aliases (models.dev knows nothing about
+        # them); a typed id or family alias that they declare must not leave the provider.
+        declared = _external_process_match(process_catalog, process_aliases, key, provider=current_provider)
+        if declared is not None:
+            return (current_provider, declared, key)
 
     identity = MODEL_ALIASES.get(key)
     if identity is None:
         return None
 
     vendor, family = identity
+
+    if process_catalog:
+        declared = _external_process_match(process_catalog, process_aliases, family, provider=current_provider)
+        return (current_provider, declared, key) if declared else None
 
     # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
     catalog = list_provider_models(current_provider)
@@ -785,25 +817,52 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
     return (current_provider, matches[0], key)
 
 
+def _external_process_catalog(provider: str) -> tuple[list[str], dict[str, str]]:
+    """``(declared model ids, own aliases)`` of an ``external_process`` profile, else empty."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    if profile is None or profile.auth_type != "external_process":
+        return [], {}
+    return list(profile.fallback_models), {k.lower(): v for k, v in profile.model_aliases.items()}
+
+
+def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: str, *, provider: str) -> str | None:
+    """Provider alias, exact id, else the single declared id that extends it (``claude-opus-5``
+    -> ``claude-opus-5[1m]``); several candidates raise so nothing is picked silently."""
+    wanted = typed.strip().lower()
+    if wanted in aliases:
+        return aliases[wanted]
+    exact = next((m for m in catalog if m.lower() == wanted), None)
+    if exact is not None:
+        return exact
+    matches = [m for m in catalog if m.lower().startswith(wanted)]
+    if len(matches) > 1:
+        raise AmbiguousAliasError(wanted, provider, matches)
+    return matches[0] if matches else None
+
+
 def get_authenticated_provider_slugs(
     current_provider: str = "", user_providers: dict = None, custom_providers: list | None = None
 ) -> list[str]:
-    """Slugs of providers that have credentials (models.dev in-memory cache; no extra network cost)."""
+    """Slugs of providers that have credentials (models.dev in-memory cache + disk catalog cache;
+    stale catalogs warm in the background, never in this call)."""
     try:
         return [p["slug"] for p in list_authenticated_providers(
             current_provider=current_provider, user_providers=user_providers,
-            custom_providers=custom_providers, max_models=0)]
+            custom_providers=custom_providers, max_models=0, non_blocking_catalogs=True)]
     except Exception:
         return []
 
 
 def _resolve_alias_fallback(
-    raw_input: str, authenticated_providers: list[str] = ()) -> Optional[tuple[str, str, str]]:
+    raw_input: str, authenticated_providers: list[str] = (), user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None) -> Optional[tuple[str, str, str]]:
     """Resolve an alias on the user's authenticated providers (``("openrouter", "nous")`` when none given).
 
     AmbiguousAliasError propagates: the alias exists on this provider, the user just has to
     choose — trying the next provider would silently switch them somewhere they didn't ask for."""
-    results = (resolve_alias(raw_input, p) for p in authenticated_providers or ("openrouter", "nous"))
+    results = (resolve_alias(raw_input, p, user_providers, custom_providers)
+               for p in authenticated_providers or ("openrouter", "nous"))
     return next((r for r in results if r is not None), None)
 
 
@@ -1190,11 +1249,17 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
                 f"Specify the model explicitly: /model <model-name> --provider {st.explicit_provider}")
 
     try:
-        alias_result = resolve_alias(st.new_model, st.target_provider)
+        alias_result = resolve_alias(st.new_model, st.target_provider, st.user_providers, st.custom_providers)
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err), target_provider=st.target_provider)
     if alias_result is not None:
-        _, st.new_model, st.resolved_alias = alias_result
+        alias_provider, st.new_model, alias_name = alias_result
+        # Adopt the alias (and with it its base_url and key) only when it belongs to the provider
+        # the user named: a reverse model-id match may land on another provider's alias, and
+        # honouring it would send the turn to that provider's endpoint under this one's identity.
+        if (_provider_identity(alias_provider, st.user_providers, st.custom_providers)
+                == _provider_identity(st.target_provider, st.user_providers, st.custom_providers)):
+            st.resolved_alias = alias_name
     return None
 
 
@@ -1204,7 +1269,7 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
         current_provider=st.current_provider, user_providers=st.user_providers, custom_providers=st.custom_providers,
     )
     try:
-        fallback_result = _resolve_alias_fallback(st.raw_input, authed)
+        fallback_result = _resolve_alias_fallback(st.raw_input, authed, st.user_providers, st.custom_providers)
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err))
     if fallback_result is None:
@@ -1296,7 +1361,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
         st.target_provider, st.new_model, st.resolved_alias = "moa", moa_match, ""
     else:
         try:
-            alias_result = resolve_alias(raw_input, current_provider)
+            alias_result = resolve_alias(raw_input, current_provider, st.user_providers, st.custom_providers)
         except AmbiguousAliasError as err:
             return st.fail(_ambiguous_alias_message(err))
         if alias_result is not None:
@@ -1383,7 +1448,8 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured
         # endpoint wins, or the new model is paired with the old provider's host and key (#73680).
         # With nothing configured the resolver either raises (st.* keep the session values) or
-        # lands on OpenRouter's default (#74143) — the session endpoint is kept in both cases.
+        # lands on OpenRouter's default or the ``OPENROUTER_BASE_URL`` mirror (#74143, #10622) —
+        # the session endpoint is kept in all three cases.
         key, url = st.current_api_key, st.current_base_url
         if st.current_provider != "custom":
             with suppress(Exception):
@@ -1405,6 +1471,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         try:
             st.resolve_runtime(requested=st.target_provider, explicit_base_url=alias_url or None)
         except Exception as e:
+            if st.target_provider.strip().lower() in LLAMACPP_ALIASES:
+                # A local-runtime alias has no credential to add: the seam's own message ("server
+                # isn't running" / "turned off") is the actionable one, the auth hint below is noise.
+                return st.fail_on_target(str(e))
             return st.fail_on_target(
                 f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "
                 f"`hermes auth add {st.target_provider}`, or pick a connected provider in /model.\n"
@@ -1457,10 +1527,48 @@ def _creds_for_current_provider(st: _Switch) -> None:
 
 
 def _fell_back_to_openrouter_default(st: _Switch) -> bool:
-    """The bare-``custom`` resolver ended on OpenRouter's default host while the session was
-    elsewhere: no trusted ``model.base_url`` existed, so the URL is one the user never picked."""
+    """The bare-``custom`` resolver ended on an OpenRouter endpoint that is not a custom endpoint
+    the user configured: the built-in default host, or the ``OPENROUTER_BASE_URL`` mirror — the
+    credential ladder's last rung (#10622), which ``provider: custom`` reaches only when no
+    ``CUSTOM_BASE_URL`` / trusted ``model.base_url`` exists."""
+    mirror = _openrouter_mirror_base_url()
+    if mirror and st.base_url.rstrip("/") == mirror and not _custom_endpoint_source():
+        return True
     return (base_url_host_matches(st.base_url, "openrouter.ai")
             and not base_url_host_matches(st.current_base_url, "openrouter.ai"))
+
+
+def _custom_endpoint_source() -> str:
+    """The endpoint the credential ladder prefers over its OpenRouter rung for bare ``custom``:
+    ``CUSTOM_BASE_URL``, else the config's ``model.base_url`` when that config backs bare custom.
+    Non-empty means a resolved URL matching the mirror came from a configured custom endpoint (two
+    env vars pointed at one proxy), so the mirror guard must not call it a fallback."""
+    from agent.secret_scope import get_secret_str
+    try:
+        env_url = (get_secret_str("CUSTOM_BASE_URL", "") or "").strip()
+        if env_url:
+            return env_url
+        from hermes_cli.runtime_provider import (
+            _config_base_url_trustworthy_for_bare_custom, _get_model_config)
+        model_cfg = _get_model_config() or {}
+        base = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
+        provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
+        base = (base or "").strip()
+        return base if base and _config_base_url_trustworthy_for_bare_custom(base, provider) else ""
+    except Exception:
+        return ""
+
+
+def _openrouter_mirror_base_url() -> str:
+    """``OPENROUTER_BASE_URL``, read the way the resolver reads it (env, or the profile's secret
+    scope). A guard read, not a credential fetch: a read that fails — unscoped under multiplexing —
+    must leave the mirror undetected so its caller keeps the session endpoint, rather than raising
+    out of ``switch_model`` where the resolver's own read of the same name is suppressed."""
+    from agent.secret_scope import get_secret_str
+    try:
+        return (get_secret_str("OPENROUTER_BASE_URL", "") or "").strip().rstrip("/")
+    except Exception:
+        return ""
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
@@ -1484,10 +1592,11 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
-    # would otherwise 400 on tools+reasoning).
+    # would otherwise 400 on tools+reasoning). ``codex_app_server`` is the resolver's
+    # ``model.openai_runtime`` opt-in, not a wire protocol the host can mandate: keep it.
     from hermes_cli.providers import is_actual_route
     mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
-    if mandated_mode is not None:
+    if mandated_mode is not None and st.api_mode != "codex_app_server":
         st.api_mode = mandated_mode
     st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url)
     return None
@@ -1569,11 +1678,22 @@ _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
+def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
+    """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
+    provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
+    is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
+    from hermes_cli.models import opencode_provider_family
+    key = str(provider or "").strip().lower()
+    override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
+    return override(key, model, api_key) if override is not None else None
+
+
 def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     """COMMON PATH part 3: final api_mode / base_url shaping, metadata, warnings."""
-    override = _PROVIDER_API_MODE_OVERRIDES.get(st.target_provider)
-    if override is not None:
-        st.api_mode = override(st.target_provider, st.new_model, st.api_key)
+    derived = model_derived_api_mode(st.target_provider, st.new_model, st.api_key)
+    if derived is not None:
+        st.api_mode = derived
     if not st.api_mode:
         st.api_mode = determine_api_mode(st.target_provider, st.base_url, model=st.new_model)
 
@@ -1703,13 +1823,11 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
     cold-start disk I/O — async callers run this on a worker thread."""
     from pathlib import Path
-    from hermes_cli.config import get_config_path, read_user_config_raw, warn_unpinned_cron_jobs_after_model_config_change
+    from hermes_cli.config import get_config_path, read_user_config_raw
     from utils import atomic_roundtrip_yaml_update
     path = Path(config_path) if config_path else get_config_path()
     for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
         atomic_roundtrip_yaml_update(path, f"model.{key}", value)
-        # Same unpinned-cron notice as `hermes config set` for every model switch.
-        warn_unpinned_cron_jobs_after_model_config_change(f"model.{key}", value)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

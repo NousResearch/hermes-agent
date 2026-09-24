@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -110,3 +111,100 @@ def _coro(value):
     async def _inner(*_a, **_k):
         return value
     return _inner
+
+
+@pytest.fixture
+def session_db(tmp_path):
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=tmp_path / "state.db")
+    yield db
+    db.close()
+
+
+def _exchanges(n, *, unanswered=()):
+    history = []
+    for i in range(n):
+        history.append({"role": "user", "content": f"question {i} about fruit{i} " + " ".join(["filler"] * 40)})
+        if i not in unanswered:
+            history.append({"role": "assistant", "content": f"answer {i} " + " ".join(["lorem"] * 400)})
+    return history
+
+
+def _stored_agent(db, history):
+    """A real AIAgent (default in-place mode) over ``history`` as stored rows, loaded back like the gateway does."""
+    db.create_session("sid", "telegram", model="test/model")
+    for message in history:
+        db.append_message("sid", message["role"], message["content"])
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
+        agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
+                        quiet_mode=True, session_db=db, session_id="sid", skip_context_files=True, skip_memory=True)
+    agent._compression_feasibility_checked = True
+    return agent, db.get_messages_as_conversation("sid")
+
+
+def _compress_here(agent, history, keep):
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
+    with patch("agent.context_compressor.call_llm", lambda **_kw: response):
+        return compress_now(agent, history, parse_compress_args(f"here {keep}"), system_message="",
+                            skip_without_window=True)
+
+
+def _flags(db, content):
+    """``(active, compacted)`` of every stored row with this exact content."""
+    rows = db._conn.execute("SELECT active, compacted FROM messages WHERE session_id = 'sid' AND content = ?",
+                            (content,)).fetchall()
+    return sorted(tuple(row) for row in rows)
+
+
+def _live(messages):
+    return [(m.get("role"), m.get("content")) for m in messages]
+
+
+def test_in_place_here_n_stores_the_kept_exchanges(session_db):
+    """The in-place commit archives every row under the lease watermark, the kept tail's included, so it must
+    store the tail again after the head: otherwise a resume (and the gateway's next turn) loses exactly the
+    exchanges the user asked to keep."""
+    history = _exchanges(10)
+    agent, loaded = _stored_agent(session_db, history)
+    frozen = copy.deepcopy(loaded)
+    assert agent.compression_in_place is True
+    result = _compress_here(agent, loaded, 2)
+    assert result.status == "compressed" and agent.session_id == "sid"
+    assert loaded == frozen
+
+    durable = session_db.get_messages_as_conversation("sid")
+    assert _live(durable) == _live(result.after_messages)
+    assert _live(durable[-4:]) == _live(history[-4:])
+    model_history, display_history = session_db.get_resume_conversations("sid")
+    for kept in history[-4:]:
+        assert [m["content"] for m in model_history].count(kept["content"]) == 1
+    # compress() carries its own recent rows after the summary, then comes the kept tail: each has one live
+    # row, and its original is a superseded duplicate, not a turn summarized away that resume shows again.
+    summary_at = next(i for i, m in enumerate(durable) if "Numbered fruit questions" in m["content"])
+    carried = [m["content"] for m in durable[summary_at + 1:]]
+    assert len(carried) > 4
+    for content in carried:
+        assert [m["content"] for m in display_history].count(content) == 1
+        assert _flags(session_db, content) == [(0, 0), (1, 0)]
+
+    # The kept rows are stamped as stored, so the next persist appends only the new turn.
+    next_turn = [*result.after_messages, {"role": "user", "content": "question 10 about fruit10"}]
+    agent._flush_messages_to_session_db(next_turn, None)
+    assert _live(session_db.get_messages_as_conversation("sid")) == _live(next_turn)
+
+
+def test_in_place_here_n_folds_the_seam_once(session_db):
+    """A head ending on a user turn folds the tail's first message into it; the stored transcript carries the
+    same fold, and the tail is not rejoined a second time."""
+    history = _exchanges(10, unanswered={7})
+    agent, loaded = _stored_agent(session_db, history)
+    result = _compress_here(agent, loaded, 2)
+    assert result.status == "compressed"
+
+    durable = session_db.get_messages_as_conversation("sid")
+    assert _live(durable) == _live(result.after_messages)
+    assert f"{history[-5]['content']}\n\n{history[-4]['content']}" in [m["content"] for m in durable]
+    assert _live(durable[-3:]) == _live(history[-3:])

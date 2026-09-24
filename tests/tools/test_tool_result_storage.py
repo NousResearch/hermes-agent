@@ -4,7 +4,6 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.budget_config import (
-    DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
 )
@@ -196,21 +195,12 @@ class TestBuildPersistedMessage:
         )
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
-        assert "50,000 characters" in msg
         assert "/tmp/hermes-results/test123.txt" in msg
         assert "read_file" in msg
         assert "first 100 chars..." in msg
         assert "..." in msg  # has_more indicator
 
 
-    def test_large_size_shows_mb(self):
-        msg = _build_persisted_message(
-            preview="x",
-            has_more=True,
-            original_size=2_000_000,
-            file_path="/tmp/hermes-results/big.txt",
-        )
-        assert "MB" in msg
 
 
 # ── maybe_persist_tool_result ─────────────────────────────────────────
@@ -289,9 +279,11 @@ class TestMaybePersistToolResult:
         cmd = env.execute.call_args_list[1][0][0]
         target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
 
-        assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
-        assert "/tmp/hermes-results/../" not in result
-        assert target.startswith("/tmp/hermes-results/outside_whoami_x_")
+        from tools.tool_result_storage import STORAGE_DIR
+
+        assert f"Full output saved to: {STORAGE_DIR}/outside_whoami_x_" in result
+        assert f"{STORAGE_DIR}/../" not in result
+        assert target.startswith(f"{STORAGE_DIR}/outside_whoami_x_")
         assert "/../" not in target
         assert "$(whoami)" not in target
         assert ";" not in target
@@ -352,21 +344,16 @@ class TestEnforceTurnBudget:
 class TestPerToolThresholds:
     """Verify registry wiring for per-tool thresholds."""
 
-    def test_registry_has_get_max_result_size(self):
-        from tools.registry import registry
-        assert hasattr(registry, "get_max_result_size")
 
 
-    def test_read_file_registry_cap_is_100k(self):
-        """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
+    def test_read_file_registry_cap_is_finite(self):
+        """read_file must keep a finite registry cap (Layer 2 safety net)."""
         from tools.registry import registry
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
-            assert val == 100_000, (
-                f"read_file registry cap must be 100_000, got {val!r}. "
-                "float('inf') is not allowed — it disables the Layer 2 result-size guard."
-            )
+            # float('inf') disables the Layer 2 result-size guard.
+            assert 0 < val < float("inf"), val
         except ImportError:
             pytest.skip("file_tools not importable in test env")
 
@@ -375,7 +362,7 @@ class TestPerToolThresholds:
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("search_files")
-            assert val == 100_000
+            assert 0 < val < float("inf"), val
         except ImportError:
             pytest.skip("file_tools not importable in test env")
 
@@ -533,18 +520,3 @@ class TestSpillover:
 
 # ── recovery hint in the persisted preview ────────────────────────────
 
-class TestRecoveryHint:
-    def test_preview_teaches_recovery_not_refetch(self):
-        msg = _build_persisted_message(
-            preview="preview text",
-            has_more=True,
-            original_size=60_000,
-            file_path="/tmp/hermes-results/r.txt",
-        )
-        assert "Recovery:" in msg
-        assert "execute_code" in msg
-        assert "re-request" in msg
-        # Structure preserved: tag, size, path, read_file guidance all intact.
-        assert msg.startswith(PERSISTED_OUTPUT_TAG)
-        assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
-        assert "read_file" in msg

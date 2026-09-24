@@ -92,6 +92,25 @@ def _seed_file(client, root, name="out/hello.txt"):
 
 
 
+@pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
+def test_mkdir_creates_a_folder_the_picker_can_list_and_enter(client_fixture, request):
+    """The desktop remote folder picker's New folder: mkdir an absolute child of
+    the folder it is browsing, then list the parent and navigate into the result."""
+    client, root = request.getfixturevalue(client_fixture)
+    root.mkdir(exist_ok=True)
+    listed = client.get("/api/fs/list", params={"path": str(root)}).json()
+    assert "error" not in listed
+
+    created = client.post("/api/files/mkdir", json={"path": str(root / "fresh project")})
+
+    assert created.status_code == 200
+    new_dir = created.json()["path"]
+    assert (root / "fresh project").is_dir()
+    after = client.get("/api/fs/list", params={"path": str(root)}).json()["entries"]
+    assert {"name": "fresh project", "path": new_dir, "isDirectory": True} in after
+    assert client.get("/api/fs/list", params={"path": new_dir}).json() == {"entries": []}
+
+
 def test_download_authenticates_via_query_token(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root, name="out/demo.mp4")
@@ -226,7 +245,6 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         file_path = _seed_file(client, root, name=name)
         response = client.get("/api/files/stream", params={"path": str(file_path)})
         assert response.status_code == 415
-        assert response.json()["detail"] == "Unsupported media type"
 
 
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
@@ -420,3 +438,23 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+
+
+def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
+    """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
+    subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised
+    UnicodeDecodeError in communicate()'s reader threads on every poll. The branch must round-trip."""
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git not installed")
+    branch = "功能/✅-修复"  # UTF-8 bytes that are illegal multibyte sequences in GBK
+    subprocess.run([git, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([git, "-C", str(tmp_path), "symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=True)
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding()
+    # (cp936 on zh-CN Windows); patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits locale.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert _rt_files._fs_git_branch(str(tmp_path)) == branch

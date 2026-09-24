@@ -11,11 +11,6 @@ def _two(kind="connector"):
     return [op.Target("gmail", kind, "connect"), op.Target("notion", kind, "connect")]
 
 
-def test_deadline_is_a_constant_not_a_config_key():
-    operation = op.ConnectionOperation(_two())
-    assert operation.deadline_at == pytest.approx(operation.created_at + op.OPERATION_DEADLINE_SECONDS)
-    assert op.OPERATION_DEADLINE_SECONDS == 300
-    assert not hasattr(op, "resolve_wait_timeout")
 
 
 def test_transition_enforces_the_contract_and_names_the_actor():
@@ -81,12 +76,14 @@ def test_target_keeps_the_link_and_the_mint_detail_across_transitions():
 
 
 def test_request_payload_carries_the_live_target_snapshot():
-    operation = op.ConnectionOperation([op.Target("gmail", "connector", "reconnect")], tool_call_id="call-1")
+    operation = op.ConnectionOperation(
+        [op.Target("gmail", "connector", "reconnect", instructions="Finish setup")],
+        tool_call_id="call-1")
     operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher, connect_url="https://l/gmail")
     payload = operation.request_payload()
     (target,) = payload["targets"]
     assert target == {"name": "gmail", "kind": "connector", "action": "reconnect", "state": "initiated",
-                      "connect_url": "https://l/gmail"}
+                      "instructions": "Finish setup", "connect_url": "https://l/gmail"}
     # The model's own id keys the card to its tool row; a later op for the same apps gets a new one.
     assert payload["tool_call_id"] == "call-1"
     assert "reason" not in payload

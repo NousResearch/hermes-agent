@@ -15,8 +15,16 @@
  * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
-import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, PALETTE_AREA, translateNow } from '@hermes/plugin-sdk'
-import type { ChatEmptyProps, PluginContext } from '@hermes/plugin-sdk'
+import {
+  CHAT_EMPTY_AREA,
+  COMPOSER_AREAS,
+  host,
+  LocalizedTabTitle,
+  PALETTE_AREA,
+  SIDEBAR_PROFILE_GROUP_HEADER_AREA,
+  translateNow
+} from '@hermes/plugin-sdk'
+import type { ChatEmptyProps, PluginContext, ProfileGroupRoute } from '@hermes/plugin-sdk'
 
 import { startFaceClock, stopFaceClock } from './avatar'
 import {
@@ -41,6 +49,7 @@ import {
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
+  primeRoster,
   resolveRosterMentions
 } from './data'
 import {
@@ -48,6 +57,7 @@ import {
   $groupChatWorkspace,
   assignLegacyThreads,
   handleSessionsGatewayTransition,
+  hydrateGroupChatTombstones,
   pullGroupChatServerState,
   scheduleGroupChatServerSync,
   setGroupChatSyncDisposed,
@@ -69,6 +79,8 @@ import {
   sessionOwnsWorkspace
 } from './roster-pane'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { startScreenAutoRaise } from './screen-autoraise'
+import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
@@ -92,7 +104,7 @@ interface ComposerDraftPayload {
 
 export default {
   id: ID,
-  name: 'Bots',
+  name: translateNow('common.bots'),
   description:
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
@@ -106,6 +118,8 @@ export default {
     // The cross-connection relay rides every gateway socket this Desktop
     // holds: roster sync + envelope drain/deliver/reply loops.
     startBotRelay()
+    // Opt-in per bot: raise a bot's Screen tab on its first live screen tool call.
+    const stopScreenAutoRaise = startScreenAutoRaise()
 
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
@@ -113,6 +127,7 @@ export default {
       ctx.onDispose(disposeLocales)
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
+      ctx.onDispose(stopScreenAutoRaise)
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
@@ -142,11 +157,18 @@ export default {
             connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
           }
 
-          for (const profile of profiles) {
-            if (!profile?.name || isActiveRosterBot(profile, live)) {
-              continue
-            }
+          const offered = profiles.filter(profile => profile?.name && !isActiveRosterBot(profile, live))
+          // Two rows tagging alike (two remote defaults both titled "CoS Bot")
+          // cannot share a bare tag — it would resolve to neither. Pin the
+          // ambiguous ones to their connection (#103731).
+          const tagCounts = new Map<string, number>()
 
+          for (const profile of offered) {
+            const tag = botMentionTag(profile).toLowerCase()
+            tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1)
+          }
+
+          for (const profile of offered) {
             const handle = botHandle(profile.name, profile)
             const display = displayName(profile, $botMeta.get()[profile.name])
             // Renamed bots complete on their friendly name — the tag is the
@@ -162,10 +184,12 @@ export default {
               continue
             }
 
+            const qualified = (tagCounts.get(tag.toLowerCase()) || 0) > 1 && profile.connectionId
+            const insert = qualified ? `@${tag}@${profile.connectionId}` : `@${tag}`
             const source = profile.connectionLabel ? ` · ${profile.connectionLabel}` : ''
             items.push({
-              insert: `@${tag}`,
-              display: `@${tag}`,
+              insert,
+              display: insert,
               meta: `Bot · ${display}${source}`
             })
           }
@@ -222,6 +246,21 @@ export default {
 
     // Hydrate persisted group-chat room logs (epoch/running are runtime-only
     // and always reset — a loop can't survive a window reload anyway).
+    // Disband memory must be in place before the first gateway pull merges
+    // a mirror that may still project a disbanded room (#105275) — the pull
+    // below awaits this, otherwise the first pull resurrects the room until
+    // the next one re-tombstones it.
+    let tombstonesHydrated: Promise<void> = Promise.resolve()
+
+    try {
+      // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
+      tombstonesHydrated = Promise.resolve(ctx.storage?.get?.('group-chat-tombstones'))
+        .then(value => hydrateGroupChatTombstones(value))
+        .catch(() => undefined)
+    } catch {
+      /* no storage — no remembered disbands this window */
+    }
+
     try {
       // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
       Promise.resolve(ctx.storage?.get?.('group-chats'))
@@ -243,6 +282,8 @@ export default {
                   // guard as the other maps — a held bot stays held across
                   // window restarts until explicitly released.
                   holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
+                  externalCursors:
+                    room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
@@ -298,6 +339,7 @@ export default {
           // Receive before publish. A fresh Desktop with no local room cache
           // must hydrate the gateway projection instead of merely avoiding an
           // empty overwrite and then rendering an empty conversation.
+          await tombstonesHydrated
           await pullGroupChatServerState().catch(() => false)
           scheduleGroupChatServerSync($groupChats.get())
         })
@@ -316,6 +358,18 @@ export default {
     // clock before its onDispose hook — these kept firing until app restart).
     const unbindProfileListener = bindProfileSync($focusedBotOwner)
     const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
+
+    // The composer's @ picker reads the roster cache synchronously; fill it on
+    // the first gateway open so cross-connection bots complete before the Bots
+    // pane has ever mounted (#94018). The pane owns the refresh once open.
+    const primeOnGatewayOpen = (state: unknown) => {
+      if (String(state) === 'open') {
+        void primeRoster()
+      }
+    }
+
+    primeOnGatewayOpen(host.state.gateway.get())
+    const unbindRosterPrime = host.state.gateway.listen(primeOnGatewayOpen)
 
     // #93492 root fix: the registry pushes a lifecycle event when a
     // connection is removed. The gateway store already disposes the dead
@@ -352,6 +406,10 @@ export default {
           unbindGatewayListener()
         }
 
+        if (typeof unbindRosterPrime === 'function') {
+          unbindRosterPrime()
+        }
+
         if (typeof unbindConnectionsChanged === 'function') {
           unbindConnectionsChanged()
         }
@@ -364,10 +422,19 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
+    // Sessions sidebar: each gateway/profile group gets the profile's Screen portal
+    // above its sessions, so the bot's computer is reachable from either mode.
+    ctx.register({
+      id: 'screen-portal',
+      area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
+      data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
+    })
     ctx.register({
       id: 'pane',
       area: 'panes',
-      title: 'Bots',
+      // `title` is sampled at register (module import, before the locale has
+      // loaded) — the tab renders `tabTitle` below so BOTS follows the locale.
+      title: translateNow('common.bots'),
       // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
       // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
       // two cramped panes down the column. Center is safe now: insertAtGroup
@@ -395,6 +462,8 @@ export default {
         width: '260px',
         collapsible: true,
         hideOnly: true,
+        tabTitle: () => <LocalizedTabTitle select={t => t.common.bots} />,
+        tabTitleText: () => translateNow('common.bots'),
         dock: {
           pane: 'sessions',
           pos: 'center',
@@ -425,6 +494,8 @@ export default {
         // a pane title is read at registration, outside React.
         title: translateNow('cron.title'),
         data: {
+          tabTitle: () => <LocalizedTabTitle select={t => t.cron.title} />,
+          tabTitleText: () => translateNow('cron.title'),
           placement: 'main',
           // Repair persisted layouts that stranded Cronjobs in the Bots tab strip.
           dock: {
@@ -723,7 +794,16 @@ export default {
             connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
           }
 
-          const cached = cachedUnionRoster()
+          let cached = cachedUnionRoster()
+
+          if (!Array.isArray(cached?.profiles)) {
+            // Cold cache (the Bots pane never ran this launch): fill it the way
+            // the pane does. The profiles.list fallback below only knows the
+            // ACTIVE gateway and drops every cross-connection target (#94018).
+            await primeRoster()
+            cached = cachedUnionRoster()
+          }
+
           const roster = Array.isArray(cached?.profiles) ? cached.profiles : null
           let mentionedBots = roster ? resolveRosterMentions(text, roster, live) : []
 

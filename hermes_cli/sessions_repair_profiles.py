@@ -368,16 +368,25 @@ class _MoveBatch:
     (parents before children, so a moved child keeps its moved parent), then delete from the source.
     Row by row, deleting a parent would detach the children still waiting in the source. Copy
     precedes delete, so a crash between the two leaves a duplicate the next run settles
-    (``present`` on import, then the delete)."""
+    (``present`` on import, then the delete). A row that fails is that row's failure alone: the
+    rest of the batch still moves, and only its lineage (descendants, and the parent it still
+    points at in the source) waits with it for the next run."""
 
     def __init__(self, src: Store, dst: Store) -> None:
         self.src, self.dst = src, dst
         self.ids: List[str] = []
         self._result: Optional[Dict[str, Dict[str, int]]] = None
+        self._errors: Dict[str, Exception] = {}
 
     def fix_for(self, sid: str) -> Callable[[_Session], Dict[str, int]]:
         self.ids.append(sid)
-        return lambda session: self.run(session).get(sid, {"missing": 1})
+        return lambda session: self._outcome(session, sid)
+
+    def _outcome(self, session: _Session, sid: str) -> Dict[str, int]:
+        result = self.run(session)
+        if sid in self._errors:
+            raise self._errors[sid]
+        return result.get(sid, {"missing": 1})
 
     def run(self, session: _Session) -> Dict[str, Dict[str, int]]:
         if self._result is not None:
@@ -387,18 +396,35 @@ class _MoveBatch:
         ordered = _parents_first([p for p in payloads.values() if p is not None])
         result: Dict[str, Dict[str, int]] = {sid: {"missing": 1} for sid, p in payloads.items() if p is None}
         for payload in ordered:
-            sid = payload["session"]["id"]
-            outcome = dst_db.import_moved_session(payload, profile_name=self.dst.profile)
+            sid, parent = payload["session"]["id"], payload["session"].get("parent_session_id")
+            if parent in self._errors:
+                # Imported now, it would land without the parent and never regain the link.
+                self._errors[sid] = RuntimeError(
+                    f"its parent {parent} did not move; kept in the {self.src.profile} store with it")
+                continue
+            try:
+                outcome = dst_db.import_moved_session(payload, profile_name=self.dst.profile)
+            except Exception as exc:
+                self._errors[sid] = exc
+                continue
             if dst_db.count_messages_all(sid) < len(payload["messages"]):
                 logger.warning("repair-profiles: %s copied into %s with fewer messages than the source; "
                                "source row kept", sid, self.dst.profile)
                 result[sid] = {"copied_incomplete": 1}
                 continue
             result[sid] = {outcome: 1}
+        # Deleting a row detaches its children still in the source; a child that did not move
+        # must find its parent there on the next run.
+        awaited = {p["session"].get("parent_session_id") for p in ordered if p["session"]["id"] in self._errors}
         for payload in ordered:
             sid = payload["session"]["id"]
-            if "copied_incomplete" not in result[sid] and src_db.delete_moved_session(sid):
-                result[sid]["moved"] = 1
+            if sid not in result or sid in awaited or "copied_incomplete" in result[sid]:
+                continue
+            try:
+                if src_db.delete_moved_session(sid):
+                    result[sid]["moved"] = 1
+            except Exception as exc:
+                self._errors[sid] = exc
         self._result = result
         return result
 

@@ -20,7 +20,7 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 | | Tool | What you get |
 |---|---|---|
 | 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
-| 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
+| 🎨 | **Image generation** | One **Nous Subscription** row spanning the FAL catalog, the native Krea 2 models, and Nous Portal image models: **FLUX 2**, **GPT Image**, **Nano Banana**, **Seedream**, **Ideogram**, **Recraft**, **Qwen**, **Krea 2**, and more. Pick the model once in `hermes tools`, which shows the live list. |
 | 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
 | 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
 
@@ -111,23 +111,13 @@ Select the tool, pick **Nous Subscription** as the provider (or any direct provi
 
 ## Using individual image models
 
-Image generation defaults to FLUX 2 Klein 9B for speed. Override per-call by passing the model ID to the `image_generate` tool:
+The model is chosen once, in `hermes tools` → Image Generation, and stored in `config.yaml` as `image_gen.model`. Every `image_generate` call uses that stored model — the tool has no model parameter, so there is no per-call override. Leave it unset and Hermes uses FLUX 2 Klein 9B.
 
-| Model | ID | Best for |
-|---|---|---|
-| FLUX 2 Klein 9B | `fal-ai/flux-2/klein/9b` | Fast, good default |
-| FLUX 2 Pro | `fal-ai/flux-2-pro` | Higher fidelity FLUX |
-| Z-Image Turbo | `fal-ai/z-image/turbo` | Stylized, fast |
-| Nano Banana Pro | `fal-ai/nano-banana-pro` | Google Gemini 3 Pro Image |
-| GPT Image 1.5 | `fal-ai/gpt-image-1.5` | OpenAI image gen, text+image |
-| GPT Image 2 | `fal-ai/gpt-image-2` | OpenAI latest |
-| Ideogram V3 | `fal-ai/ideogram/v3` | Strong prompt adherence + typography |
-| Recraft V4 Pro | `fal-ai/recraft/v4/pro/text-to-image` | Vector-style, graphic design |
-| Qwen Image | `fal-ai/qwen-image` | Alibaba multimodal |
+The **Nous Subscription** row has one model picker that lists every model once. The stored id decides which gateway serves the request: a native Krea id (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) goes to the Krea gateway, a FAL catalog id goes to FAL, and any other id goes to Nous Portal. The selection is still just `image_gen.provider: nous` plus the model id.
 
-The set evolves — `hermes tools` → Image Generation shows the current live list.
+**Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and the Nous Portal image models sit in that same picker rather than behind rows of their own. They need a paid subscription — the free tool pool funds the FAL models only. The Krea-via-FAL ids (`fal-ai/krea/v2/...`) stay on the direct FAL.ai row.
 
-**Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and any Nous Portal image models sit in the same **Nous Subscription** model picker rather than behind rows of their own. Every model appears once; picking a Krea id (`krea-2-medium`, …) sends the request to the Krea gateway instead of FAL, and the selection is still just `image_gen.provider: nous` plus the model id. Krea and Portal models need a paid subscription — the free tool pool funds the FAL models only.
+Model ids, speeds, and prices live on the [Image Generation](./image-generation.md#supported-models) page. The set evolves — `hermes tools` → Image Generation shows the current live list.
 
 ---
 

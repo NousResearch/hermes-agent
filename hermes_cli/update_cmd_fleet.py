@@ -753,6 +753,27 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
+def _externally_supervised_live_gateways() -> list[tuple[int, str]]:
+    """Live gateway pids whose captured argv carries ``--external-supervisor`` (#118643).
+
+    A deferred fleet restart (``--no-gateway-restart``) never reaches these: their supervisor
+    (launchd/systemd) keeps the old process running against the post-update checkout, so newly
+    imported symbols land on stale ``sys.modules`` and sessions die with ImportError until an
+    operator kicks the unit."""
+    found: list[tuple[int, str]] = []
+    try:
+        from hermes_cli.gateway import _capture_gateway_argv, find_gateway_pids
+        for pid in list(find_gateway_pids(all_profiles=True)):
+            argv = None
+            with suppress(Exception):
+                argv = _capture_gateway_argv(pid)
+            if argv and "--external-supervisor" in argv:
+                found.append((int(pid), " ".join(str(part) for part in list(argv)[:6])))
+    except Exception:
+        return found
+    return found
+
+
 def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplete: bool = False) -> None:
     """Record a deliberately deferred fleet restart and return/exit on outcome.
 
@@ -781,6 +802,26 @@ def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplet
     with suppress(Exception):
         from hermes_cli.update_receipt import record_skip
         record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+    supervised = _externally_supervised_live_gateways()
+    if supervised:
+        # Option 3 of #118643: a green update with a broken session is worse than a loud,
+        # explicit post-update step. The deferred marker never restarts these — their own
+        # supervisor keeps serving the OLD modules until someone kicks the unit.
+        print()
+        print("  ⚠ EXTERNALLY SUPERVISED GATEWAY(S) STILL SERVE PRE-UPDATE CODE:")
+        for pid, argv_snip in supervised:
+            print(f"    pid {pid}: {argv_snip}")
+        print("    The deferred marker never restarts them — their supervisor keeps the old")
+        print("    process alive, so sessions later fail on ImportErrors. Restart them NOW:")
+        print("      launchctl kickstart -k gui/$(id -u)/<label>   (macOS launchd)")
+        print("      systemctl --user restart <unit>               (systemd)")
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_skip
+            record_skip(
+                "external_supervisor_gateway",
+                f"--no-gateway-restart: {len(supervised)} externally supervised gateway(s) "
+                "still serve pre-update code; kickstart them now",
+            )
     partial = (not update_complete) or resume_incomplete
     with suppress(Exception):
         from hermes_cli.update_receipt import finalize_update_receipt

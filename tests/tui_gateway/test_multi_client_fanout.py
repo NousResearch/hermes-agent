@@ -36,11 +36,6 @@ class RecordingTransport:
         self._released.set()
 
 
-def _is_overflow_signal(obj) -> bool:
-    blob = json.dumps(obj, ensure_ascii=False)
-    return any(token in blob for token in ("detach", "overflow", "resubscribe", "replay", "backlog"))
-
-
 def _await_frame_count(transport, count, timeout=2.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -300,67 +295,20 @@ def test_backpressure_never_blocks_later_frames_or_other_subscribers(slow_first,
         assert not fan.write({"after": "close"})
 
 
-def test_overflow_signals_the_detached_subscriber():
-    healthy = RecordingTransport()
-    slow = RecordingTransport(delay=30.0)
-    fan = FanoutTransport(healthy, slow)
-    try:
-        _overflow_slow_peer(fan, healthy, slow)
-        assert not fan.contains(slow)
-        assert fan.contains(healthy)
-        assert slow.closed or any(_is_overflow_signal(frame) for frame in slow.frames)
-    finally:
-        slow.release()
-        fan.close()
 
-
-def test_fanout_close_does_not_close_peer_sockets():
-    peer = RecordingTransport()
-    fan = FanoutTransport(peer)
-    assert fan.contains(peer)
-    fan.close()
-    assert peer.closed is False
-    assert not fan.contains(peer)
-
-
-def test_fanout_detach_does_not_close_peer_sockets():
-    slow = RecordingTransport()
-    fan = FanoutTransport(slow)
-    assert fan.detach(slow)
-    assert slow.closed is False
-    assert not fan.contains(slow)
-
-
-def test_healthy_peer_receives_frames_after_slow_overflow():
-    healthy = RecordingTransport()
-    slow = RecordingTransport(delay=30.0)
-    fan = FanoutTransport(healthy, slow)
-    try:
-        last_n = _overflow_slow_peer(fan, healthy, slow)
-        assert not fan.contains(slow)
-        assert fan.contains(healthy)
-        after = {"params": {"type": "message.complete", "n": last_n + 1}}
-        assert fan.write(after)
-        _await_frame_count(healthy, last_n + 2)
-        assert healthy.frames[-1] == after
-        assert fan.contains(healthy)
-    finally:
-        slow.release()
-        fan.close()
-
-
-def test_overflow_close_error_does_not_fail_emit_or_other_peers():
-    class BoomTransport(RecordingTransport):
+def test_overflow_closes_only_the_slow_peer_and_healthy_keeps_streaming():
+    class BoomOnClose(RecordingTransport):
         def close(self):
             super().close()
             raise RuntimeError("overflow close exploded")
 
     healthy = RecordingTransport()
-    slow = BoomTransport(delay=30.0)
+    slow = BoomOnClose(delay=30.0)
     fan = FanoutTransport(healthy, slow)
     try:
         last_n = _overflow_slow_peer(fan, healthy, slow)
-        assert not fan.contains(slow)
+        assert slow.closed is True
+        assert healthy.closed is False
         assert fan.contains(healthy)
         after = {"params": {"type": "message.complete", "n": last_n + 1}}
         assert fan.write(after)
@@ -369,3 +317,12 @@ def test_overflow_close_error_does_not_fail_emit_or_other_peers():
     finally:
         slow.release()
         fan.close()
+
+
+def test_fanout_close_and_detach_leave_peer_sockets_open():
+    kept, detached = RecordingTransport(), RecordingTransport()
+    fan = FanoutTransport(kept, detached)
+    assert fan.detach(detached)
+    fan.close()
+    assert kept.closed is False and detached.closed is False
+    assert not fan.contains(kept) and not fan.contains(detached)

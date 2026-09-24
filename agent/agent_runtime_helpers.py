@@ -3155,6 +3155,38 @@ _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
 )
 
 
+# Chinese (and CJK-mixed) plan tails. Chinese reasoning never writes "let me"/"I'll" — it writes
+# "让me"/"我来"/"执行。"/"回复。" — so every branch above misses it, and a stalled zh model's
+# monologue reaches the user as the answer while the turn reports "complete" (#114082: 39/39
+# promoted reasoning-only stops in one real session went undetected). Anchored the same way (only
+# the tail decides), but the trailer after the marker admits markdown bold, whitespace and a few
+# filler characters, because these monologues end on "**执行。**\n\n**好。**" rather than a bare
+# sentence. Anything longer than the filler cap after the marker is a real statement, not an
+# announced next action.
+_CN_PROMOTED_REASONING_PLAN_RE = re.compile(
+    r"(?:让我|我来|我这就|我先|我马上|我准备|我需要|我打算|我接下来|我去"
+    r"|下一步|接下来"
+    r"|先(?:试|查|跑|看|做|执行|确认|测试|检查|验证|搜|读|写|改|修|装|下载)"
+    r"|现在(?:就|先)?(?:执行|做|去|试|查|跑|看|开始|动手)"
+    r"|执行|开干|动手|开始执行"
+    r"|回复|回答|告诉用户|去(?:查|试|跑|看))"
+)
+# Visible (non-punctuation, non-markdown) characters allowed AFTER the last plan marker. Kept
+# small so a marker followed by a real sentence ("执行完成后结果会写入日志") stays a stated answer.
+_CN_PLAN_TRAILER_MAX_VISIBLE = 8
+_CN_PLAN_TRAILER_STRIP_RE = re.compile(r"[\W_]+")
+
+
+def _cn_promoted_plan_tail(t: str) -> bool:
+    """Whether a CJK reasoning tail ends on a plan marker with only filler left after it."""
+    tail = t[-240:]
+    matches = list(_CN_PROMOTED_REASONING_PLAN_RE.finditer(tail))
+    if not matches:
+        return False
+    trailer = _CN_PLAN_TRAILER_STRIP_RE.sub("", tail[matches[-1].end():])
+    return len(trailer) <= _CN_PLAN_TRAILER_MAX_VISIBLE
+
+
 def promoted_reasoning_announces_action(text: str) -> bool:
     """Whether promoted reasoning ENDS on a first-person plan to act (stall, not an answer).
 
@@ -3164,7 +3196,7 @@ def promoted_reasoning_announces_action(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:]))
+    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:])) or _cn_promoted_plan_tail(t)
 
 
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}

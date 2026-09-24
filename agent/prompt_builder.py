@@ -1620,7 +1620,11 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
             if not _exists_or_denied(candidate):
                 continue
             content = _read_context_file(candidate)
-            label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
+            # The label is prompt display text only — never a path anything opens. Normalize
+            # to forward slashes so the chain reads `../AGENTS.md` on every platform instead
+            # of `..\AGENTS.md` on Windows, matching the hardcoded `.cursor/rules/...`
+            # sibling labels and the spellings the /context manifest tests assert.
+            label = name if directory == cwd_resolved else Path(os.path.relpath(candidate, cwd_resolved)).as_posix()
             found.append((label, candidate, content))
             if content:
                 break  # first name match wins per directory

@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+import type { DesktopProfileRoute } from './desktop-profile'
+import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
+import { customWindowControlsEnabled } from './window-controls'
+
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
@@ -30,7 +34,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
-  touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
+  touchBackend: (profile, options) => ipcRenderer.invoke('hermes:backend:touch', profile, options),
   getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
   setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
@@ -41,7 +45,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getAgentRoster: () => ipcRenderer.invoke('hermes:agents:roster'),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
-  openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
+  openWindow: (options?: DesktopProfileRoute) => ipcRenderer.invoke('hermes:window:openInstance', options),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
   onBrowserPopoutClosed: callback => {
     const listener = (_event, tabId) => callback(tabId)
@@ -50,6 +54,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  windowControls: {
+    custom: customWindowControlsEnabled(),
+    minimize: () => ipcRenderer.send('hermes:window-control', 'minimize'),
+    toggleMaximize: () => ipcRenderer.send('hermes:window-control', 'toggle-maximize'),
+    close: () => ipcRenderer.send('hermes:window-control', 'close')
+  },
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),
     setState: state => ipcRenderer.send('hermes:wake-indicator:set', state),
@@ -172,6 +182,51 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
     }
   },
+  hudModifier: {
+    getSettings: () => ipcRenderer.invoke('hermes:hud-modifier:settings:get'),
+    setEnabled: enabled => ipcRenderer.invoke('hermes:hud-modifier:settings:set', enabled),
+    openPermissionSettings: () => ipcRenderer.invoke('hermes:hud-modifier:permission'),
+    onStatus: callback => {
+      const listener = (_event: Electron.IpcRendererEvent, status: HudModifierStatus) => callback(status)
+      ipcRenderer.on('hermes:hud-modifier:status', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud-modifier:status', listener)
+    }
+  } satisfies HudModifierApi,
+  // macOS native screenshot gesture; captures require a main-issued request.
+  screenshot:
+    process.platform === 'darwin'
+      ? {
+          getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
+          setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
+          openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
+          capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
+          onStatus: callback => {
+            const listener = (_event, status) => callback(status)
+            ipcRenderer.on('hermes:screenshot:status', listener)
+
+            return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
+          },
+          onRequest: callback => {
+            const channel = 'hermes:screenshot:request'
+            const listener = (_event, requestId) => callback(requestId)
+
+            if (ipcRenderer.listenerCount(channel) === 0) {
+              ipcRenderer.send('hermes:screenshot:subscribe', true)
+            }
+
+            ipcRenderer.on(channel, listener)
+
+            return () => {
+              ipcRenderer.removeListener(channel, listener)
+
+              if (ipcRenderer.listenerCount(channel) === 0) {
+                ipcRenderer.send('hermes:screenshot:subscribe', false)
+              }
+            }
+          }
+        }
+      : undefined,
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal
@@ -254,6 +309,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     agentSignIn: dashboardUrl => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl)
   },
   profile: {
+    getDefault: () => ipcRenderer.invoke('hermes:profile:default:get'),
+    setDefault: (route: DesktopProfileRoute) => ipcRenderer.invoke('hermes:profile:default:set', route),
+    onDefaultChanged: (callback: (route: DesktopProfileRoute | null) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, route: DesktopProfileRoute | null) => callback(route)
+      ipcRenderer.on('hermes:profile:default:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:profile:default:changed', listener)
+    },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
@@ -306,7 +369,24 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
+  minimizeToTray: {
+    get: () => ipcRenderer.invoke('hermes:minimize-to-tray:get'),
+    set: on => ipcRenderer.invoke('hermes:minimize-to-tray:set', on),
+    onChanged: callback => {
+      const listener = (_event, status) => callback(status)
+      ipcRenderer.on('hermes:minimize-to-tray:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:minimize-to-tray:changed', listener)
+    }
+  },
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
+  setF12ShortcutActive: active => ipcRenderer.send('hermes:f12ShortcutActive', Boolean(active)),
+  onF12Shortcut: callback => {
+    const listener = (_event, input) => callback(input)
+    ipcRenderer.on('hermes:f12-shortcut', listener)
+
+    return () => ipcRenderer.removeListener('hermes:f12-shortcut', listener)
+  },
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   mcpOauth: {
@@ -384,7 +464,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       shipInfo: repoPath => ipcRenderer.invoke('hermes:git:review:shipInfo', repoPath),
       prList: (repoPath, branches, numbers) =>
         ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers),
-      fetchPrComment: (repoPath, url) => ipcRenderer.invoke('hermes:git:review:fetchPrComment', repoPath, url),
       createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
     }
   },
@@ -443,6 +522,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
   probePluginRepo: payload => ipcRenderer.invoke('hermes:plugin:probe', payload),
   installDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:installDesktop', payload),
+  removeDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:removeDesktop', payload),
   onWindowStateChanged: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:window-state-changed', listener)
@@ -478,6 +558,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:backend-exit', listener)
 
     return () => ipcRenderer.removeListener('hermes:backend-exit', listener)
+  },
+  // Cooperative pool retirement (main → renderer): the pooled backend under
+  // `poolKey` is being stopped for a foreground open. Park that scope; do not
+  // redial into the slot it vacated.
+  onPoolBackendRetiring: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:pool:retiring', listener)
+
+    return () => ipcRenderer.removeListener('hermes:pool:retiring', listener)
   },
   // Soft gateway-mode apply finished tearing down the primary backend. Renderer
   // should wipe session lists + re-dial without a window reload.

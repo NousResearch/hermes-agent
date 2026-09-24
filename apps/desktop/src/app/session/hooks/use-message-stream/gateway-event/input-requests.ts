@@ -1,9 +1,15 @@
+import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
+
+import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
-import { settlePendingClarifyToolCall } from '@/lib/chat-messages'
+import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
+import { translateNow } from '@/i18n'
+import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
-import { $mcpSetupRequests, clearMcpSetupRequest } from '@/store/mcp-setup'
+import { normalizeConnectionRequest, setConnectionRequest, updateConnectionRequest } from '@/store/connection-request'
+import { dispatchNativeNotification } from '@/store/native-notifications'
+import { notify } from '@/store/notifications'
 import {
-  $approvalRequests,
   $secretRequests,
   $sudoRequests,
   $vaultCodeRequests,
@@ -14,11 +20,25 @@ import {
   clearSudoRequest,
   clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
-  clearVaultUnlockRequest
+  clearVaultUnlockRequest,
+  sessionApprovalRequests
 } from '@/store/prompts'
+import { requestRoute } from '@/store/recovery-requests'
 import { forgetServerRequest } from '@/store/server-requests'
 
 import type { GatewayEventContext } from './types'
+
+/** Settings → Safety, where `approvals.timeout` lives (settings/constants.ts). */
+const SAFETY_SETTINGS_ROUTE = '/settings?tab=config:safety'
+
+type ConnectionRequestEvent = GatewayEvent<'connection.request'> & { payload: ConnectionRequestPayload }
+type ConnectionUpdateEvent = GatewayEvent<'connection.update'> & { payload: ConnectionUpdatePayload }
+
+const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionRequestEvent =>
+  event.type === 'connection.request' && event.payload !== undefined
+
+const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
+  event.type === 'connection.update' && event.payload !== undefined
 
 /** The blocking-input family arrives as server→client REQUESTS (see
  *  `server-requests.ts`); the one EVENT in the family is `request.cancel`, the
@@ -28,6 +48,45 @@ import type { GatewayEventContext } from './types'
  *  session raised. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
+
+  if (isConnectionRequestEvent(event)) {
+    // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
+    const request = normalizeConnectionRequest(event.payload, sessionId ?? null)
+
+    if (request) {
+      setConnectionRequest(request)
+
+      if (sessionId) {
+        deps.upsertToolCall(sessionId, connectionRequestToolPayload(request), 'running')
+        deps.updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: request.targets.map(target => target.name).join(', '),
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (isConnectionUpdateEvent(event)) {
+    if (event.payload.owner.type === 'account') {
+      applyAccountConnectionUpdate(event.payload)
+
+      return true
+    }
+
+    updateConnectionRequest(sessionId ?? null, event.payload)
+
+    if (event.payload.settled && sessionId) {
+      deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+    }
+
+    return true
+  }
 
   if (event.type !== 'request.cancel') {
     return false
@@ -69,10 +128,40 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if ($approvalRequests.get()[key]?.serverRequestId === id) {
-    clearApprovalRequest(sessionId, $approvalRequests.get()[key]?.requestId)
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === id)
+
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
+
+    // The Run/Reject bar vanishing is the only thing the user would otherwise
+    // see; the tool row then shows a model-facing "BLOCKED" result. Say what
+    // happened in human terms and point at the setting that controls the wait.
+    if (payload?.reason === 'timeout' && sessionId) {
+      const line = translateNow('assistant.approval.timedOutSystemLine')
+
+      deps.flushQueuedDeltas(sessionId)
+      deps.updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `approval-timeout-${id}`, role: 'system', parts: [textPart(line, occurredAt)], timestamp: occurredAt }
+        ]
+      }))
+      notify({
+        kind: 'warning',
+        message: line,
+        action: {
+          label: translateNow('assistant.approval.openSafetySettings'),
+          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
+        }
+      })
+    }
   } else if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
+  } else if ($sudoRequests.get()['']?.requestId === id) {
+    clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
   } else if ($secretRequests.get()[key]?.requestId === id) {
     clearSecretRequest(sessionId, id)
   } else if ($vaultCodeRequests.get()[key]?.requestId === id) {
@@ -81,8 +170,6 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     clearVaultSaveLoginRequest(sessionId, id)
   } else if ($vaultUnlockRequests.get()[key]?.requestId === id) {
     clearVaultUnlockRequest(sessionId, id)
-  } else if ($mcpSetupRequests.get()[key]?.requestId === id) {
-    clearMcpSetupRequest(id, sessionId)
   }
 
   return true

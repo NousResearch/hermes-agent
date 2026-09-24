@@ -212,10 +212,13 @@ test('cancelAndWait keeps the drain up through afterCancel teardown', async () =
   const coordinator = createBootstrapCoordinator()
   const events: string[] = []
   let releaseAfter: (() => void) | undefined
+
   const afterGate = new Promise<void>(resolve => {
     releaseAfter = resolve
   })
+
   let teardownStarted: (() => void) | undefined
+
   const started = new Promise<void>(resolve => {
     teardownStarted = resolve
   })
@@ -228,6 +231,7 @@ test('cancelAndWait keeps the drain up through afterCancel teardown', async () =
   })
 
   await started
+
   const next = coordinator.start('scope', 'new', async () => {
     events.push('new-start')
 
@@ -269,4 +273,41 @@ test('a generation started during cancelAndWait cannot run before the drain comp
   await assert.rejects(old, (error: any) => error.kind === 'superseded')
   assert.equal(await next, 'new')
   assert.deepEqual(events, ['old-start', 'new-start'])
+})
+
+test('a second cancelAndWait on the same scope composes with the teardown still in flight', async () => {
+  // Pool stop is blocked in SSH teardown; a connection apply cancels the same
+  // scope with no bootstrap left to drain. The apply's drain must not replace
+  // and clear the barrier, or start() runs before the first teardown finishes.
+  const coordinator = createBootstrapCoordinator()
+  const events: string[] = []
+  const teardownGate = deferred()
+  const teardownStarted = deferred()
+
+  const poolStop = coordinator.cancelAndWait('scope', async () => {
+    events.push('teardown-start')
+    teardownStarted.resolve()
+    await teardownGate.promise
+    events.push('teardown-done')
+  })
+
+  await teardownStarted.promise
+  const apply = coordinator.cancelAndWait('scope').then(() => events.push('apply-drained'))
+
+  const next = coordinator.start('scope', 'new', async () => {
+    events.push('new-start')
+
+    return 'new'
+  })
+
+  // A macrotask, not a microtask tick: nothing may run before the first teardown finishes.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(events, ['teardown-start'])
+  teardownGate.resolve()
+  await Promise.all([poolStop, apply])
+  assert.equal(await next, 'new')
+  // Both the apply and the new bootstrap wake on the same drained barrier; only
+  // their position after teardown-done is the contract.
+  assert.deepEqual(events.slice(0, 2), ['teardown-start', 'teardown-done'])
+  assert.deepEqual(events.slice(2).sort(), ['apply-drained', 'new-start'])
 })

@@ -8,6 +8,7 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -218,6 +219,11 @@ export function useSessionTileDelegate({
           }
         }
       },
+      dropRuntimeBindings: storedSessionIds => {
+        for (const storedSessionId of storedSessionIds) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        }
+      },
       // Reconnect reconcile (#93059): retire an orphaned runtime's busy claim
       // through updateSessionState so the cache, focused view, busyRef and
       // tile mirrors settle together. A runtime this cache never held reports
@@ -396,13 +402,19 @@ export function useSessionTileDelegate({
         updateSessionState(
           runtimeId,
           state => ({
-            ...state,
+            // The deferred build reports the session's own effort later (#79807).
+            ...markReasoningEffortPending(state),
             busy: Boolean(info?.running),
             // Persist the session's own model/provider from resume so the tile
             // pill does not wait on a chrome-scoped catalog read (#93892).
             ...(typeof info?.model === 'string' ? { model: info.model } : {}),
             ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+            ...(typeof info?.reasoning_effort === 'string'
+              ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+              : {}),
+            ...(typeof info?.reasoning_effort_wire === 'string'
+              ? { reasoningEffortWire: info.reasoning_effort_wire }
+              : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
             messages:
               state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])

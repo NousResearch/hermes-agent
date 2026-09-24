@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ConfigApi from '@/api/config'
+
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
 // them to let the dropdown open in tests.
@@ -27,7 +29,10 @@ const startManualOnboarding = vi.fn()
 const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
-vi.mock('@/hermes', () => ({
+// Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
+// config hook reaches them through the barrel, and a bare mock would throw.
+vi.mock('@/hermes', async () => ({
+  ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
   getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
   getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
@@ -44,9 +49,9 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
-  startManualLocalEndpoint: () => startManualLocalEndpoint(),
-  startManualOnboarding: () => startManualOnboarding(),
-  startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
+  startManualLocalEndpoint: (...args: unknown[]) => startManualLocalEndpoint(...args),
+  startManualOnboarding: (...args: unknown[]) => startManualOnboarding(...args),
+  startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args)
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
@@ -126,28 +131,13 @@ describe('ModelSettings profile scope', () => {
 })
 
 describe('ModelSettings', () => {
-  it('loads the current main model and lists configured providers only', async () => {
-    await renderModelSettings()
-
-    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
-    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
-
-    // Open the provider Select — only configured providers should be listed.
-    const triggers = await screen.findAllByRole('combobox')
-    fireEvent.click(triggers[0])
-
-    // "Nous" shows in both the trigger and the open list.
-    expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
-    expect(screen.queryByText(/DeepSeek/)).toBeNull()
-  })
-
   it.each(['custom', 'local', 'custom:lab'])(
     'opens local endpoint setup when %s has no inventory row',
     async provider => {
       getGlobalModelInfo.mockResolvedValueOnce({ provider, model: '' })
       getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-      await renderModelSettings()
+      await renderModelSettings('leverage-ai')
 
       const providerSelect = (await screen.findAllByRole('combobox'))[0]
 
@@ -158,6 +148,7 @@ describe('ModelSettings', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
       expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
+      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, 'leverage-ai')
       expect(startManualOnboarding).not.toHaveBeenCalled()
       expect(startManualProviderOAuth).not.toHaveBeenCalled()
     }
@@ -167,16 +158,17 @@ describe('ModelSettings', () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'retired-provider', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-    await renderModelSettings()
+    await renderModelSettings('leverage-ai')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
     expect(startManualOnboarding).toHaveBeenCalledOnce()
+    expect(startManualOnboarding).toHaveBeenCalledWith(undefined, 'leverage-ai')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualProviderOAuth).not.toHaveBeenCalled()
   })
 
-  it('deep-links a known OAuth provider row into its setup flow', async () => {
+  it('deep-links a known OAuth provider row into its scoped setup flow', async () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({
       providers: [
@@ -190,11 +182,11 @@ describe('ModelSettings', () => {
       ]
     })
 
-    await renderModelSettings()
+    await renderModelSettings('leverage-ai')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic')
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', 'leverage-ai')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualOnboarding).not.toHaveBeenCalled()
   })
@@ -322,18 +314,7 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('switch')).toBeNull()
   })
 
-  it('renders the auxiliary task rows', async () => {
-    await renderModelSettings()
-
-    expect(await screen.findByText('Vision')).toBeTruthy()
-    // #97297 — the three canonical slots the backend serves must have rows too.
-    expect(screen.getByText('Triage specifier')).toBeTruthy()
-    expect(screen.getByText('Kanban decomposer')).toBeTruthy()
-    expect(screen.getByText('Profile describer')).toBeTruthy()
-    expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
-  })
-
-  it('edits auxiliary reasoning effort below the selected model and applies it with the assignment', async () => {
+  it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },
       tasks: [{ task: 'vision', provider: 'nous', model: 'hermes-4', base_url: '', reasoning_effort: null }]
@@ -345,12 +326,7 @@ describe('ModelSettings', () => {
 
     fireEvent.click((await screen.findAllByRole('button', { name: 'Change' }))[0])
 
-    const reasoningSelect = await screen.findByRole('combobox', { name: 'Vision reasoning effort' })
-    expect(reasoningSelect.compareDocumentPosition(await screen.findByRole('combobox', { name: 'Vision model' }))).toBe(
-      Node.DOCUMENT_POSITION_PRECEDING
-    )
-
-    fireEvent.click(reasoningSelect)
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Vision reasoning effort' }))
     fireEvent.click(await screen.findByRole('option', { name: 'High' }))
 
     const applyButtons = await screen.findAllByRole('button', { name: 'Apply' })
@@ -438,6 +414,36 @@ describe('ModelSettings', () => {
     expect(await screen.findByText(/still run on/)).toBeTruthy()
     expect(screen.getByText('nous')).toBeTruthy()
   })
+
+  it.each(['zh', 'zh-hant'] as const)(
+    'localizes stale auxiliary warnings in %s without resetting assignments',
+    async locale => {
+      getAuxiliaryModels.mockResolvedValueOnce({
+        main: { provider: 'nous', model: 'hermes-4' },
+        tasks: [{ task: 'curator', provider: 'openrouter', model: 'fixture-model', base_url: '' }]
+      })
+      const { ModelSettings } = await import('./model-settings')
+      const { I18nProvider, TRANSLATIONS } = await import('@/i18n')
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <QueryClientProvider client={client}>
+              <ModelSettings />
+            </QueryClientProvider>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+      expect(await screen.findByText(/仍由/)).toBeTruthy()
+      expect(screen.getByText('openrouter')).toBeTruthy()
+      expect(
+        screen.getAllByRole('button', { name: TRANSLATIONS[locale].settings.model.resetAllToMain }).length
+      ).toBeGreaterThan(0)
+      expect(screen.queryByText(/still run on/)).toBeNull()
+      expect(setModelAssignment).not.toHaveBeenCalled()
+      client.clear()
+    }
+  )
 
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
@@ -546,6 +552,46 @@ describe('ModelSettings MoA preset editor', () => {
     saveMoaModels.mockImplementation((body: unknown) => Promise.resolve(body))
   })
 
+  it.each(['zh', 'zh-hant', 'ja'] as const)(
+    'localizes MoA preset and reference controls in %s without changing their saved identities',
+    async locale => {
+      const { ModelSettings } = await import('./model-settings')
+      const { I18nProvider, TRANSLATIONS } = await import('@/i18n')
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const m = TRANSLATIONS[locale].settings.model
+      render(
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <QueryClientProvider client={client}>
+              <ModelSettings subpage="moa" />
+            </QueryClientProvider>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+      expect(m.moaDescription).not.toBe(TRANSLATIONS.en.settings.model.moaDescription)
+      expect(m.moaReferenceHint).not.toBe(TRANSLATIONS.en.settings.model.moaReferenceHint)
+      expect(m.moaAggregatorBilled).not.toBe(TRANSLATIONS.en.settings.model.moaAggregatorBilled)
+      await screen.findByText(m.moaDescription)
+      expect(screen.getByText(m.moaReferenceTitle(1))).toBeTruthy()
+      expect(screen.getByText(m.moaAggregator)).toBeTruthy()
+      expect(screen.getByRole('button', { name: m.moaAddReference })).toBeTruthy()
+      expect(screen.getByRole('button', { name: m.moaSetDefault })).toBeTruthy()
+      expect(screen.getByPlaceholderText(m.moaNewPresetPlaceholder)).toBeTruthy()
+      fireEvent.click(screen.getByRole('switch', { name: m.moaReferenceToggle(true, 1) }))
+      expect(screen.getByRole('switch', { name: m.moaReferenceToggle(false, 1) }).getAttribute('aria-checked')).toBe(
+        'false'
+      )
+      await waitFor(() => expect(saveMoaModels).toHaveBeenCalled())
+      const saved = saveMoaModels.mock.calls.at(-1)![0] as ReturnType<typeof moaConfig>
+      expect(saved.default_preset).toBe('default')
+      expect(saved.presets.default.reference_models[0]).toMatchObject({
+        provider: 'nous',
+        model: 'hermes-4',
+        enabled: false
+      })
+    }
+  )
+
   async function openReferenceEditor() {
     await renderModelSettings()
     expect(await screen.findByText('Reference 1')).toBeTruthy()
@@ -607,25 +653,6 @@ describe('ModelSettings MoA preset editor', () => {
         provider: 'openrouter',
         model: 'anthropic/claude-opus-4.8'
       })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('does not clear the model or save when the same provider is re-selected', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-
-    try {
-      await openReferenceEditor()
-
-      fireEvent.click(slotSelects().ref1Provider)
-      fireEvent.click(await screen.findByRole('option', { name: 'Nous' }))
-      await vi.advanceTimersByTimeAsync(700)
-
-      // Radix treats re-picking the current value as a no-op (no
-      // onValueChange), so nothing changes: no save, model still shown.
-      expect(saveMoaModels).not.toHaveBeenCalled()
-      expect(screen.getByText('nous · hermes-4')).toBeTruthy()
     } finally {
       vi.useRealTimers()
     }

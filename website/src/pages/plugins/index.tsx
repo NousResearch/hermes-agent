@@ -1,85 +1,60 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
+import { useHistory } from "@docusaurus/router";
+import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
 
-interface PluginCapabilities {
-  providesTools?: string[];
-  providesHooks?: string[];
-  providesMiddleware?: string[];
-  requiresEnv?: string[];
-}
-
-interface CatalogPlugin {
-  name: string;
-  description: string;
-  repo: string;
-  sha: string;
-  shaShort: string;
-  tier: string;
-  maintainer: string;
-  subdir?: string;
-  requiresHermes?: string;
-  platforms?: string[];
-  capabilities?: PluginCapabilities;
-  docsUrl?: string;
-  installCommand: string;
-  /** Lowercase pre-joined haystack for the search filter (built at load). */
-  _search?: string;
-}
-
-interface CatalogMeta {
-  generatedAt?: string;
-  total?: number;
-  byTier?: Record<string, number>;
-  removedCount?: number;
-}
+import {
+  type CatalogPlugin,
+  type CatalogMeta,
+  CATEGORY_CONFIG,
+  CATEGORY_ORDER,
+  SUBMIT_PLUGIN_URL,
+  TIER_CONFIG,
+  authorPagePath,
+  categoryOf,
+  desktopInstallLink,
+  formatDate,
+  formatRelativeTime,
+  formatStars,
+  pinUrl,
+  pluginPagePath,
+  repoUrl,
+  tierOf,
+} from "../../components/PluginCatalog/catalog";
+import CopyButton from "../../components/PluginCatalog/CopyButton";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
-
-const CATALOG_README_URL =
-  "https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog";
-
-const TIER_CONFIG: Record<
-  string,
-  { label: string; color: string; bg: string; border: string; icon: string }
-> = {
-  official: {
-    label: "Official",
-    color: "#ffd700",
-    bg: "rgba(255, 215, 0, 0.08)",
-    border: "rgba(255, 215, 0, 0.25)",
-    icon: "\u{2713}",
-  },
-  community: {
-    label: "Community",
-    color: "#94a3b8",
-    bg: "rgba(148, 163, 184, 0.08)",
-    border: "rgba(148, 163, 184, 0.2)",
-    icon: "\u{2756}",
-  },
-};
+/** Mirrors the `max-width: 600px` blocks in styles.module.css. */
+const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
 const TIER_ORDER = ["all", "official", "community"];
 
-function formatRelativeTime(iso?: string): string | null {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return null;
-  const diffMs = Date.now() - then;
-  if (diffMs < 0) return "just now";
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
-  const months = Math.floor(days / 30);
-  return `${months} month${months === 1 ? "" : "s"} ago`;
+// Sort orders. "stars" is the extractor's own order (stars desc, name), so it
+// needs no client-side work; the two date sorts read the git-derived
+// addedAt/updatedAt fields and push undated entries last.
+type SortKey = "stars" | "newest" | "updated";
+const SORT_OPTIONS: { key: SortKey; label: string; title: string }[] = [
+  { key: "stars", label: "Most starred", title: "GitHub stars, most first" },
+  { key: "newest", label: "Newest", title: "Most recently added to the catalog first" },
+  { key: "updated", label: "Recently updated", title: "Most recently re-pinned or edited first" },
+];
+
+function dateMs(iso?: string | null): number {
+  const t = iso ? new Date(iso).getTime() : NaN;
+  return Number.isFinite(t) ? t : -Infinity;
+}
+
+function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
+  if (sort === "stars") return list;
+  const field = sort === "newest" ? "addedAt" : "updatedAt";
+  return [...list].sort(
+    (a, b) => dateMs(b[field]) - dateMs(a[field]) || a.name.localeCompare(b.name),
+  );
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -95,83 +70,70 @@ function highlightMatch(text: string, query: string): React.ReactNode {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const onCopy = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      navigator.clipboard?.writeText(text).then(
-        () => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        },
-        () => {},
-      );
-    },
-    [text],
-  );
-  return (
-    <button
-      className={styles.copyBtn}
-      onClick={onCopy}
-      title="Copy install command"
-      aria-label="Copy install command"
-    >
-      {copied ? (
-        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
-          <path
-            fillRule="evenodd"
-            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
-            clipRule="evenodd"
-          />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
-          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
-          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
-        </svg>
-      )}
-      <span className={styles.copyBtnLabel}>{copied ? "Copied" : "Copy"}</span>
-    </button>
-  );
-}
-
 function PluginCard({
   plugin,
   query,
-  expanded,
-  onToggle,
   onPick,
+  onCategoryClick,
   style,
 }: {
   plugin: CatalogPlugin;
   query: string;
-  expanded: boolean;
-  onToggle: () => void;
   /** Picker embed mode: render "+ Add to this Agent" and call this. */
   onPick?: (plugin: CatalogPlugin) => void;
+  onCategoryClick?: (category: string) => void;
   style?: React.CSSProperties;
 }) {
-  const tier = TIER_CONFIG[plugin.tier] || TIER_CONFIG.community;
+  const tier = tierOf(plugin);
+  const category = categoryOf(plugin);
   const caps = plugin.capabilities || {};
   const toolCount = caps.providesTools?.length || 0;
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
-  const pinUrl = `${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/tree/${plugin.sha}`;
+  const pagePath = pluginPagePath(plugin.name);
+  const history = useHistory();
+  const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
+  // A card IS the link to the plugin's own page: nothing expands or collapses in place. Inside
+  // the Desktop picker iframe an in-frame navigation would leave the host's embed, so the page
+  // opens in a new tab there instead.
+  const onCardClick = onPick
+    ? () => window.open(new URL(pageHref, window.location.href).toString(), "_blank", "noopener,noreferrer")
+    : () => history.push(pageHref);
 
   return (
     <div
-      className={`${styles.card} ${expanded ? styles.cardExpanded : ""}`}
-      onClick={onToggle}
+      className={styles.card}
+      role="link"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onCardClick();
+      }}
+      onClick={onCardClick}
       style={style}
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
 
+      {plugin.image && (
+        <img
+          className={styles.cardImage}
+          src={plugin.image}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
+        />
+      )}
+
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
-          <span className={styles.cardIcon}>{"\u{1F50C}"}</span>
+          <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle}>{highlightMatch(plugin.name, query)}</h3>
+            <h3 className={styles.cardTitle}>
+              <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+                {highlightMatch(plugin.name, query)}
+              </Link>
+            </h3>
             <span
               className={styles.tierPill}
               style={{
@@ -182,14 +144,41 @@ function PluginCard({
             >
               {tier.icon} {tier.label}
             </span>
+            {plugin.version && (
+              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+                v{plugin.version.replace(/^v/i, "")}
+              </span>
+            )}
+            {typeof plugin.stars === "number" && (
+              <a
+                className={styles.starPill}
+                href={`${repoUrl(plugin)}/stargazers`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                title={`${plugin.stars.toLocaleString()} GitHub stars`}
+              >
+                {"\u2605"} {formatStars(plugin.stars)}
+              </a>
+            )}
           </div>
         </div>
 
-        <p className={`${styles.cardDesc} ${expanded ? styles.cardDescFull : ""}`}>
+        <p className={styles.cardDesc}>
           {highlightMatch(plugin.description || "No description available.", query)}
         </p>
 
         <div className={styles.cardMeta}>
+          <button
+            className={styles.categoryChip}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCategoryClick?.(plugin.category);
+            }}
+            title={`Filter by ${category.label}`}
+          >
+            {category.label}
+          </button>
           {toolCount > 0 && (
             <span className={styles.capChip}>
               {toolCount} tool{toolCount === 1 ? "" : "s"}
@@ -217,7 +206,24 @@ function PluginCard({
           ))}
         </div>
 
-        {onPick && (
+        {/* Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
+        {plugin.addedAt && (
+          <div className={styles.cardDates}>
+            <span title={`Added to the catalog ${formatDate(plugin.addedAt)}`}>
+              Added {formatRelativeTime(plugin.addedAt) ?? formatDate(plugin.addedAt)}
+            </span>
+            {plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
+              <>
+                <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
+                <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
+                  Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+
+        {onPick ? (
           <button
             className={styles.pickBtn}
             onClick={(e) => {
@@ -227,14 +233,31 @@ function PluginCard({
           >
             + Add to this Agent
           </button>
+        ) : (
+          <a
+            className={styles.pickBtn}
+            href={desktopInstallLink(plugin.name)}
+            title="Opens the Install Plugin dialog in Hermes Desktop at the reviewed version. No app? Use the install command below."
+            onClick={(e) => e.stopPropagation()}
+          >
+            Open in Hermes Desktop
+          </a>
         )}
 
-        {expanded && (
+        {
           <div className={styles.cardDetail}>
             {plugin.maintainer && (
               <div className={styles.metaRow}>
                 <span className={styles.metaLabel}>Maintainer</span>
-                <span className={styles.metaValue}>{plugin.maintainer}</span>
+                <span className={styles.metaValue}>
+                  {plugin.maintainerSlug ? (
+                    <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
+                      {plugin.maintainer}
+                    </Link>
+                  ) : (
+                    plugin.maintainer
+                  )}
+                </span>
               </div>
             )}
             {plugin.requiresHermes && (
@@ -249,14 +272,14 @@ function PluginCard({
               <span className={styles.metaLabel}>Pinned</span>
               <span className={styles.metaValue}>
                 <a
-                  href={pinUrl}
+                  href={pinUrl(plugin)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={styles.shaLink}
                   title={plugin.sha}
                 >
-                  <code>{plugin.shaShort}</code> ↗
+                  <code>{plugin.version ? `${plugin.version} @ ${plugin.shaShort}` : plugin.shaShort}</code> ↗
                 </a>
               </span>
             </div>
@@ -277,6 +300,9 @@ function PluginCard({
               <CopyButton text={plugin.installCommand} />
             </div>
             <div className={styles.cardLinks}>
+              <Link className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+                Plugin page →
+              </Link>
               <a
                 className={styles.docsLink}
                 href={plugin.repo}
@@ -299,19 +325,8 @@ function PluginCard({
               ) : null}
             </div>
           </div>
-        )}
+        }
       </div>
-    </div>
-  );
-}
-
-function StatCard({ value, label, color }: { value: number; label: string; color: string }) {
-  return (
-    <div className={styles.stat}>
-      <span className={styles.statValue} style={{ color }}>
-        {value}
-      </span>
-      <span className={styles.statLabel}>{label}</span>
     </div>
   );
 }
@@ -322,6 +337,8 @@ function buildSearchHaystack(p: CatalogPlugin): string {
     p.description,
     p.maintainer,
     p.tier,
+    p.category,
+    CATEGORY_CONFIG[p.category]?.label,
     ...(p.capabilities?.providesTools || []),
     ...(p.capabilities?.providesHooks || []),
     ...(p.capabilities?.requiresEnv || []),
@@ -368,8 +385,11 @@ export default function PluginCatalogPage() {
 
   const [search, setSearch] = useState("");
   const [tierFilter, setTierFilter] = useState("all");
-  const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sort, setSort] = useState<SortKey>("stars");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const filterPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -398,17 +418,44 @@ export default function PluginCatalogPage() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const isEditable =
+        target?.matches("input, textarea, select") ||
+        target?.isContentEditable ||
+        Boolean(target?.closest("[contenteditable='true']"));
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
+        e.stopImmediatePropagation();
         searchRef.current?.focus();
       }
       if (e.key === "Escape") {
         searchRef.current?.blur();
-        setExpandedCard(null);
+        setFiltersOpen(false);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Reveal the panel once it opens. `block: "nearest"` leaves the page alone
+  // when the panel is already in view; `start` scrolled the hero off-screen.
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const frame = requestAnimationFrame(() => {
+      filterPanelRef.current?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [filtersOpen]);
+
+  // The panel only exists in the mobile band, so leaving it should drop the
+  // state too — otherwise `aria-expanded` stays "true" on a hidden toggle.
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_PANEL_QUERY);
+    const sync = () => {
+      if (!media.matches) setFiltersOpen(false);
+    };
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
   }, []);
 
   const allPlugins: CatalogPlugin[] = data?.plugins ?? [];
@@ -416,28 +463,70 @@ export default function PluginCatalogPage() {
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
-    return allPlugins.filter((p) => {
+    const matching = allPlugins.filter((p) => {
       if (tierFilter !== "all" && p.tier !== tierFilter) return false;
+      if (categoryFilter !== "all" && p.category !== categoryFilter) return false;
       if (q) return (p._search || "").includes(q);
       return true;
     });
-  }, [search, tierFilter, allPlugins]);
+    return sortPlugins(matching, sort);
+  }, [search, tierFilter, categoryFilter, sort, allPlugins]);
 
-  useEffect(() => {
-    setExpandedCard(null);
-  }, [search, tierFilter]);
+  // Browse mode (no search, no category picked): render one section per
+  // category so Memory, Desktop, Platforms… read as distinct shelves rather
+  // than one undifferentiated wall. Filtering or searching flattens to a grid.
+  const grouped = useMemo(() => {
+    if (search.trim() || categoryFilter !== "all") return null;
+    const buckets = new Map<string, CatalogPlugin[]>();
+    for (const p of filtered) {
+      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
+      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
+    }
+    return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
+  }, [filtered, search, categoryFilter]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of allPlugins) {
+      if (tierFilter !== "all" && p.tier !== tierFilter) continue;
+      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [allPlugins, tierFilter]);
 
   const clearAll = useCallback(() => {
     setSearch("");
     setTierFilter("all");
+    setCategoryFilter("all");
+    setFiltersOpen(false);
+  }, []);
+
+  const pickCategory = useCallback((c: string) => {
+    setCategoryFilter((cur) => (cur === c ? "all" : c));
+    setSearch("");
   }, []);
 
   const catalogEmpty = data !== null && allPlugins.length === 0;
 
+  const renderCard = (plugin: CatalogPlugin, i: number) => {
+    const key = `${plugin.tier}-${plugin.name}`;
+    return (
+      <PluginCard
+        key={key}
+        plugin={plugin}
+        query={search}
+        onPick={pickerMode ? pickPlugin : undefined}
+        onCategoryClick={pickCategory}
+        style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
+      />
+    );
+  };
+
   return (
     <Layout
       title="Plugin Catalog"
-      description="Browse reviewed, SHA-pinned plugins for Hermes Agent"
+      description="Give Hermes new powers: reviewed plugins you can install in one click"
     >
       <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
@@ -454,42 +543,43 @@ export default function PluginCatalogPage() {
               </span>
             </nav>
             <p className={styles.heroSub}>
-              Reviewed, SHA-pinned plugins you can install with one command.
+              Give Hermes new powers. Memory, voice, messaging, browsing, Desktop panes and more,
+              built by the community.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})
                 </span>
               )}
             </p>
+            {!catalogEmpty && (
+              <p className={styles.heroSub} style={{ fontSize: "0.9rem" }}>
+                Built a plugin?{" "}
+                <Link className={styles.heroLink} to={SUBMIT_PLUGIN_URL}>
+                  Submit it to the catalog →
+                </Link>
+              </p>
+            )}
             {meta.generatedAt && !catalogEmpty && (
-              <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
-                Catalog refreshed{" "}
-                <span title={meta.generatedAt}>
+              <p className={styles.heroMeta}>
+                {allPlugins.length} plugins across {Object.keys(categoryCounts).length} categories
+                {" · "}updated{" "}
+                <span
+                  title={
+                    meta.starsFetchedAt
+                      ? `Catalog ${meta.generatedAt}; popularity ranking as of ${meta.starsFetchedAt}`
+                      : meta.generatedAt
+                  }
+                >
                   {formatRelativeTime(meta.generatedAt) || "recently"}
                 </span>
               </p>
-            )}
-
-            {!catalogEmpty && (
-              <div className={styles.statsRow}>
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "official").length}
-                  label="Official"
-                  color="#ffd700"
-                />
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "community").length}
-                  label="Community"
-                  color="#94a3b8"
-                />
-                <StatCard value={meta.removedCount ?? 0} label="Removed" color="#f87171" />
-              </div>
             )}
           </div>
         </header>
 
         {!catalogEmpty && (
           <div className={styles.controlsBar}>
+            <div className={styles.controlsTopRow}>
             <div className={styles.searchWrap}>
               <svg
                 className={styles.searchIcon}
@@ -507,7 +597,8 @@ export default function PluginCatalogPage() {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder='Search plugins... (press "/" to focus)'
+                placeholder="Search plugins"
+                title='Tip: press "/" to jump here'
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className={styles.searchInput}
@@ -525,6 +616,50 @@ export default function PluginCatalogPage() {
               )}
             </div>
 
+            <button
+              type="button"
+              className={styles.filterToggle}
+              aria-expanded={filtersOpen}
+              aria-controls="plugin-directory-filters"
+              onClick={() => setFiltersOpen((open) => !open)}
+            >
+              Filters
+              {(tierFilter !== "all" || categoryFilter !== "all") && (
+                <span className={styles.activeFilterCount}>
+                  {Number(tierFilter !== "all") + Number(categoryFilter !== "all")}
+                </span>
+              )}
+            </button>
+            <label className={styles.compactSelect}>
+              <span>Source</span>
+              <select value={tierFilter} onChange={(e) => setTierFilter(e.target.value)}>
+                {TIER_ORDER.map((tier) => (
+                  <option key={tier} value={tier}>{tier === "all" ? "All sources" : TIER_CONFIG[tier]?.label || tier}</option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.compactSelect}>
+              <span>Category</span>
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                <option value="all">All categories</option>
+                {CATEGORY_ORDER.filter((c) => categoryCounts[c]).map((c) => (
+                  <option key={c} value={c}>{CATEGORY_CONFIG[c].label}</option>
+                ))}
+              </select>
+            </label>
+            <label className={`${styles.compactSelect} ${styles.compactSort}`}>
+              <span>Sort</span>
+              <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+                {SORT_OPTIONS.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+              </select>
+            </label>
+            </div>
+
+            <div
+              id="plugin-directory-filters"
+              ref={filterPanelRef}
+              className={`${styles.filterPanel} ${filtersOpen ? styles.filterPanelOpen : ""}`}
+            >
             <div className={styles.tierPills}>
               {TIER_ORDER.map((tier) => {
                 const active = tierFilter === tier;
@@ -554,6 +689,54 @@ export default function PluginCatalogPage() {
                 );
               })}
             </div>
+
+            <div className={styles.sortPills} role="radiogroup" aria-label="Sort plugins">
+              <span className={styles.sortLabel}>Sort</span>
+              {SORT_OPTIONS.map((opt) => {
+                const active = sort === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    className={`${styles.tierBtn} ${active ? styles.sortBtnActive : ""}`}
+                    onClick={() => setSort(opt.key)}
+                    role="radio"
+                    aria-checked={active}
+                    title={opt.title}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className={styles.categoryPills} role="tablist" aria-label="Plugin categories">
+              <button
+                className={`${styles.categoryBtn} ${categoryFilter === "all" ? styles.categoryBtnActive : ""}`}
+                onClick={() => setCategoryFilter("all")}
+                role="tab"
+                aria-selected={categoryFilter === "all"}
+              >
+                All categories
+              </button>
+              {CATEGORY_ORDER.filter((c) => categoryCounts[c]).map((c) => {
+                const conf = CATEGORY_CONFIG[c];
+                const active = categoryFilter === c;
+                return (
+                  <button
+                    key={c}
+                    className={`${styles.categoryBtn} ${active ? styles.categoryBtnActive : ""}`}
+                    onClick={() => pickCategory(c)}
+                    role="tab"
+                    aria-selected={active}
+                    title={conf.blurb}
+                  >
+                    <span aria-hidden="true">{conf.icon}</span> {conf.label}
+                    <span className={styles.tierCount}>{categoryCounts[c]}</span>
+                  </button>
+                );
+              })}
+            </div>
+            </div>
           </div>
         )}
 
@@ -573,36 +756,59 @@ export default function PluginCatalogPage() {
                 Submissions are open.
               </p>
               <div className={styles.emptyActions}>
-                <a
-                  className={styles.emptyCta}
-                  href={CATALOG_README_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  How to submit a plugin ↗
-                </a>
+                <Link className={styles.emptyCta} to={SUBMIT_PLUGIN_URL}>
+                  How to submit a plugin
+                </Link>
                 <Link className={styles.emptyCtaSecondary} to="/user-guide/features/plugin-catalog">
                   Read the catalog docs
                 </Link>
               </div>
             </div>
+          ) : filtered.length > 0 && grouped ? (
+            grouped.map(([cat, plugins]) => {
+              const conf = CATEGORY_CONFIG[cat];
+              return (
+                <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
+                  <header className={styles.categoryHeader}>
+                    <h2 id={`cat-${cat}`} className={styles.categoryTitle}>
+                      <span aria-hidden="true">{conf.icon}</span> {conf.label}
+                      <span className={styles.tierCount}>{plugins.length}</span>
+                    </h2>
+                    <p className={styles.categoryBlurb}>{conf.blurb}</p>
+                    <button className={styles.categoryViewAll} onClick={() => pickCategory(cat)}>
+                      View only {conf.label} →
+                    </button>
+                  </header>
+                  <div className={styles.grid}>
+                    {plugins.map((plugin, i) => renderCard(plugin, i))}
+                  </div>
+                </section>
+              );
+            })
           ) : filtered.length > 0 ? (
-            <div className={styles.grid}>
-              {filtered.map((plugin, i) => {
-                const key = `${plugin.tier}-${plugin.name}`;
-                return (
-                  <PluginCard
-                    key={key}
-                    plugin={plugin}
-                    query={search}
-                    expanded={expandedCard === key}
-                    onToggle={() => setExpandedCard(expandedCard === key ? null : key)}
-                    onPick={pickerMode ? pickPlugin : undefined}
-                    style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
-                  />
-                );
-              })}
-            </div>
+            <>
+              <div className={styles.resultsBar} role="status">
+                {categoryFilter !== "all" && CATEGORY_CONFIG[categoryFilter] && (
+                  <span>
+                    <span aria-hidden="true">{CATEGORY_CONFIG[categoryFilter].icon}</span>{" "}
+                    <strong>{CATEGORY_CONFIG[categoryFilter].label}</strong>
+                    <span style={{ opacity: 0.7 }}> · {CATEGORY_CONFIG[categoryFilter].blurb}</span>
+                  </span>
+                )}
+                {search.trim() && (
+                  <span>
+                    Results for <strong>“{search.trim()}”</strong>
+                  </span>
+                )}
+                <span>
+                  {filtered.length} plugin{filtered.length === 1 ? "" : "s"}
+                </span>
+                <button className={styles.resultsClear} onClick={clearAll}>
+                  Clear filters
+                </button>
+              </div>
+              <div className={styles.grid}>{filtered.map((plugin, i) => renderCard(plugin, i))}</div>
+            </>
           ) : (
             <div className={styles.empty}>
               <div className={styles.emptyIcon}>{"\u{1F50D}"}</div>

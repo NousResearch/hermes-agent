@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+
 
 def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
     root = Path(__file__).resolve().parents[2]
@@ -103,12 +105,12 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             # leaves an open user tail on the live route — never anything else.
             assert db.message_count() == before + (not owned) + ((not owned) or open_tail), location
             assert store.has_input_owner(sid, owner), location
-            assert runner._PARTIAL_FAILED_TURN_NOTICE in reply
+            assert PARTIAL_FAILED_TURN_NOTICE in reply
             live_messages = db.get_messages(child)
             assert not live_messages or live_messages[-1]["role"] != "user", location
             assert sum(m["role"] == "assistant" for m in live_messages) <= 1, location
             if not owned:
-                assert live_messages[-1]["content"] == runner._PARTIAL_FAILED_TURN_NOTICE
+                assert live_messages[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE
                 persisted_user = live_messages[-2]
                 assert persisted_user["content"] == prepared.persist_user_message
                 assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
@@ -155,14 +157,14 @@ def test_context_overflow_exception_persists_nothing(tmp_path):
             err, MessageEvent(text="x", source=source, message_id="m-overflow"), source, entry, entry.session_key, prepared,
         )
         assert db.message_count() == before
-        assert reply.startswith("⚠️ Session too large for the model's context window.")
+        assert "/compress" in reply and "/new" in reply
         db.close()
 
     asyncio.run(check())
 
 
 def test_context_overflow_error_reply_carries_no_partial_effect_notice():
-    """Overflow is a deterministic rejection (#107567); the reply must stay the /compact
+    """Overflow is a deterministic rejection (#107567); the reply must stay the /compress
     guidance alone rather than inherit the indeterminate "actions may have run" warning."""
     import asyncio
     from gateway.config import Platform
@@ -185,9 +187,9 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
         err, MessageEvent(text="x", source=source), source, None, "k", prepared,
     ))
 
-    assert reply.startswith("⚠️ Session too large for the model's context window.")
-    assert reply.endswith("or /reset to start fresh.")
-    assert runner._PARTIAL_FAILED_TURN_NOTICE not in reply
+    from gateway.run import _CONTEXT_OVERFLOW_REPLY
+    assert reply == _CONTEXT_OVERFLOW_REPLY
+    assert PARTIAL_FAILED_TURN_NOTICE not in reply
 
 
 def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
@@ -226,8 +228,10 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
                 response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
                 is_context_overflow_failure=False,
             )
-        roles = [m["role"] for m in db.get_messages(sid) if m["role"] != "session_meta"]
-        assert roles == ["user", "assistant"]
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [m["role"] for m in rows] == ["user", "assistant"]
+        # Typed like the core closer's row, or Desktop reads the boundary as the model's reply.
+        assert rows[-1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
         assert store.transcript_tail_role(sid) == "assistant"
         db.close()
 

@@ -10,6 +10,7 @@ from pydantic import Field
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
                      Usage)
+from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
 
@@ -32,6 +33,8 @@ class InflightTurn(Result):
     assistant: str = ""
     streaming: bool = False
     user: str = ""
+    display_kind: str | None = None
+    display_metadata: dict[str, JsonValue] | None = None
     corrections: list[str] | None = None
     correction_offsets: list[int] | None = None
     error: str | None = None
@@ -88,6 +91,9 @@ class LiveSessionSnapshot(Result):
     queued: QueuedPrompt | None = None
     pending_approval: PendingApproval | None = None
     open_requests: list[OpenRequestEntry] | None = None
+    # The open connection operation (``tools/connectors/live.current``) as its ``connection.request``
+    # payload: the card restores with the server's deadline after a reconnect or restart.
+    pending_connection: ConnectionRequestPayload | None = None
     todo_state: TodoState | None = None
     auto_continue: AutoContinue | None = None
 
@@ -136,6 +142,27 @@ class SessionCreateResult(Result):
 
 method("session.create", params=SessionCreateParams, result=SessionCreateResult,
        doc="Mint a live session (agent builds after the reply); a DB row appears on the first prompt unless seeded.")
+
+
+class SessionBranchStoredParams(ProfileParams):
+    parent_session_id: str = Field(min_length=1)
+    cols: int | None = None
+    source: str | None = None
+    cwd: str | None = None
+
+
+class SessionBranchStoredResult(Result):
+    session_id: str
+    stored_session_id: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_stored", params=SessionBranchStoredParams, result=SessionBranchStoredResult,
+       doc="Whole-session branch of a stored parent: the owning backend reads and copies the transcript, "
+           "which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty "
+           "branch).")
 
 
 # ── session.resume / activate ─────────────────────────────────────────────────────────────────
@@ -353,6 +380,24 @@ method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
        doc="Fork a live session into a new stored child that shares the parent's history so far.")
 
 
+class SessionBranchWholeParams(SessionParams):
+    name: str | None = None
+
+
+class SessionBranchWholeResult(Result):
+    session_id: str
+    stored_session_id: str
+    title: str
+    parent: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_whole", params=SessionBranchWholeParams, result=SessionBranchWholeResult,
+       doc="session.branch of the whole history without echoing the copied transcript back.")
+
+
 class SessionUndoParams(SessionParams):
     pass
 
@@ -428,8 +473,20 @@ class ContextCategory(Result):
     tokens: int
 
 
+class ContextFileSource(Result):
+    """One row of ``agent.context_file_sources.list_context_file_sources``."""
+
+    label: str
+    path: str
+    chars: int
+    est_tokens: int
+    loaded: bool
+    status: str
+
+
 class SessionContextBreakdownResult(Result):
-    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)."""
+    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
+    plus the per-file context manifest (empty until the agent exists)."""
 
     categories: list[ContextCategory]
     context_max: int
@@ -439,6 +496,7 @@ class SessionContextBreakdownResult(Result):
     context_estimated: bool
     context_source: str
     model: str
+    context_files: list[ContextFileSource] = []
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

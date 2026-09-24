@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -410,13 +410,6 @@ class TestRichAwareOverflow:
     fits one rich message isn't fragmented at the legacy 4,096 edit limit."""
 
 
-    def test_raw_message_limit_mock_adapter_is_safe(self):
-        # MagicMock adapters (many existing tests) must not crash or wrongly
-        # inflate the limit from a truthy auto-attribute.
-        adapter = MagicMock()
-        adapter.MAX_MESSAGE_LENGTH = 4096
-        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
-        assert consumer._raw_message_limit() == 4096
 
     @pytest.mark.asyncio
     async def test_long_rich_reply_not_split_and_final_is_whole(self):

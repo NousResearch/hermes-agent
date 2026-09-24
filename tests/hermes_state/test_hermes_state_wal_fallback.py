@@ -20,7 +20,7 @@ import pytest
 
 import hermes_state
 import hermes_state_wal
-from hermes_state import SessionDB, format_session_db_unavailable, get_last_init_error
+from hermes_state import SessionDB, get_last_init_error
 from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 
 
@@ -585,26 +585,6 @@ class TestGetLastInitError:
         assert "read-only filesystem" in cause
 
 
-class TestFormatSessionDbUnavailable:
-    def test_bare_message_when_no_cause(self):
-        """No init error recorded → generic message."""
-        hermes_state._set_last_init_error(None)
-        assert format_session_db_unavailable() == "Session database not available."
-
-
-    def test_adds_nfs_hint_for_locking_protocol(self):
-        """Locking-protocol cause gets an NFS/SMB pointer for the user."""
-        hermes_state._set_last_init_error("OperationalError: locking protocol")
-        msg = format_session_db_unavailable()
-        assert "locking protocol" in msg
-        assert "NFS/SMB" in msg
-        assert "sqlite.org/wal.html" in msg
-
-    def test_custom_prefix(self):
-        """Callers can customize the prefix for context-specific messages."""
-        hermes_state._set_last_init_error("OperationalError: locking protocol")
-        msg = format_session_db_unavailable(prefix="Cannot /resume")
-        assert msg.startswith("Cannot /resume:")
 
 
 class TestSessionDbUsesWalFallback:

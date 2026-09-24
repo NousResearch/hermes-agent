@@ -17,7 +17,7 @@
 import { getHermesConfigRecord, type McpTestResult, setMcpServerEnabled, testMcpServer } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { classifyProbe, freshProbe, probeCache, probeKey } from '@/lib/mcp-probe-cache'
-import { getServers } from '@/lib/mcp-servers'
+import { getServers, serverEnabled } from '@/lib/mcp-servers'
 import { persistString, storedString } from '@/lib/storage'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -33,8 +33,9 @@ export type McpHealthStatus = 'error' | 'needs-auth' | 'ok'
 /**
  * The notify decision, as a pure state machine: nudge on a TRANSITION into a
  * bad state — never for ok. An unknown previous state (first sweep of the
- * session) counts as a transition: an expired token discovered at launch is
- * exactly the case this exists for.
+ * session) notifies only when its persisted cooldown is absent or elapsed,
+ * so an expired token discovered at launch is still surfaced without
+ * re-notifying after a renderer restart.
  *
  * A server that STAYS broken is nudged again once the daily snooze lapses:
  * a dead OAuth token is a standing problem the user has to act on (sign in
@@ -51,6 +52,13 @@ export function shouldNotify(
 ): boolean {
   if (next !== 'error' && next !== 'needs-auth') {
     return false
+  }
+
+  // A renderer restart clears transition memory but not the per-server
+  // cooldown. Treat that first sweep as a recheck: an active persisted snooze
+  // must still suppress the toast, while an unset or elapsed snooze may nudge.
+  if (previous === null) {
+    return now >= snoozedUntil
   }
 
   return previous !== next || now >= snoozedUntil
@@ -89,12 +97,8 @@ let sweepQueued = false
 let offGatewayState: (() => void) | null = null
 let offProfile: (() => void) | null = null
 
-// Navigation only — never auto-launch an OAuth flow from the background. The
-// server query param routes through useDeepLinkHighlight on the MCP tab, which
-// scrolls to and focuses the server so its ServerConfig pane (with the
-// Authenticate button) is one click away.
 function openMcpServerPage(name: string): void {
-  window.location.hash = `#/skills?tab=mcp&server=${encodeURIComponent(name)}`
+  window.location.hash = `#/capabilities?tab=connectors&server=${encodeURIComponent(name)}`
 }
 
 // "Disable" from the toast: `enabled: false` in config.yaml (the server stays
@@ -144,7 +148,7 @@ function recordResult(profileKey: string, name: string, status: McpHealthStatus)
 }
 
 const isUrlServer = (server: Record<string, unknown>): boolean =>
-  typeof server.url === 'string' && server.enabled !== false
+  typeof server.url === 'string' && serverEnabled(server)
 
 async function sweep(): Promise<void> {
   const epoch = sweepEpoch

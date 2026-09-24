@@ -41,6 +41,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -427,6 +428,19 @@ def _first_truthy(mapping: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
     return None
 
 
+def _slack_error_is(exc: BaseException, code: str) -> bool:
+    """True when a Slack API exception carries ``code`` as its structured ``error`` field.
+
+    Reads ``exc.response["error"]`` (slack_sdk's SlackApiError shape); never matches on the
+    message text, which embeds the whole response body and would match on unrelated codes.
+    """
+    response = getattr(exc, "response", None)
+    try:
+        return bool(response) and response.get("error") == code
+    except Exception:  # noqa: BLE001 - response is a foreign object
+        return False
+
+
 def _slack_str_field(el: dict, name: str) -> str:
     """Read a string field of a Block Kit element; non-strings (text objects) would break ``str.join``."""
     value = el.get(name)
@@ -527,6 +541,11 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
 #: with whatever was pasted. 20k chars comfortably covers real tables while
 #: staying well under Slack's own 40k message ceiling.
 _SLACK_TABLE_MAX_CHARS = 20_000
+#: One ceiling for every ``attachments[].blocks[]`` projection in a message. Slack allows 20
+#: attachments each with its own blocks, so a per-attachment cap alone still grows 20x; the
+#: top-level ``blocks`` path is capped once (``_serialize_slack_blocks_for_agent``) and this
+#: keeps the unfurl path in the same order of magnitude.
+_SLACK_UNFURL_BLOCKS_MAX_CHARS = 6000
 
 
 def _collect_slack_table_cell_text(value: Any) -> str:
@@ -998,6 +1017,7 @@ class SlackAdapter(BasePlatformAdapter):
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
+    _CLARIFY_MESSAGE_MAX = 1000
     # Tighter cap than the approval/clarify dicts: each entry holds the
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
@@ -1046,6 +1066,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
+        # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
+        # card whose clarify ended without a click (timeout, reset, superseding prose).
+        self._clarify_messages: Dict[str, Tuple[str, str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
         # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
@@ -1667,13 +1690,19 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _register_plugin_action_handlers(self) -> None:
         """Wire ``ctx.register_slack_action_handler`` callbacks; each is wrapped so a plugin
-        exception is logged and slack_bolt still sees a clean ack."""
+        exception is logged and slack_bolt still sees a clean ack. Idempotent per ``AsyncApp``:
+        a ``(action_id, plugin)`` already registered on the live app is skipped, so the late
+        re-wire (#87770) never stacks a second listener that would run the callback twice."""
         try:
             from hermes_cli.plugins import get_plugin_manager
             _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[Slack] Could not load plugin action handlers: %s", e)
             _plugin_handlers = []
+        if self._plugin_actions_app is not self._app:
+            self._plugin_actions_app, self._plugin_actions_wired = self._app, set()
+        _plugin_handlers = [(a, cb, n) for a, cb, n in _plugin_handlers
+                            if (repr(a), n) not in self._plugin_actions_wired]
         # Closure factory: slack_bolt passes ``None`` for unrecognised listener params, so loop
         # vars captured as default args (``_cb=_cb``) would be silently clobbered at dispatch.
         def _make_wrapper(cb, plugin_name):
@@ -1694,10 +1723,22 @@ class SlackAdapter(BasePlatformAdapter):
 
         for _action_id, _cb, _plugin_name in _plugin_handlers:
             self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
+            self._plugin_actions_wired.add((repr(_action_id), _plugin_name))
             logger.debug(
                 "[Slack] Registered plugin action handler %s (from %s)", _action_id, _plugin_name)
         if _plugin_handlers:
             logger.info("[Slack] Wired %d plugin action handler(s)", len(_plugin_handlers))
+
+    # ``(repr(action_id), plugin)`` pairs registered on ``_plugin_actions_app``; reset per AsyncApp.
+    _plugin_actions_app: Any = None
+    _plugin_actions_wired: set = frozenset()
+
+    def rewire_plugin_handlers(self) -> None:
+        """Late plugin loads carry both registries: action handlers and ``register_platform_handler``
+        factories (base). Both are per-app idempotent."""
+        if self._app is not None and self._plugin_actions_app is self._app:
+            self._register_plugin_action_handlers()
+        super().rewire_plugin_handlers()
 
     @staticmethod
     def _new_web_client(token: str, proxy_url: Optional[str]) -> Any:
@@ -1904,8 +1945,14 @@ class SlackAdapter(BasePlatformAdapter):
     def scope_id_for_chat(self, chat_id: str) -> Optional[str]:
         """Return the workspace id owning ``chat_id``.
         ``None`` for unknown channels and for channels claimed by several workspaces (dropped from
-        the map) — no scope beats a wrong one."""
+        the map) — no scope beats a wrong one. A channel unseen since boot (the map only fills from
+        inbound events) still resolves when exactly one workspace is authenticated: every inbound
+        reply will carry that team_id, so a caller keying a session on it must match (#111896)."""
         team_id = chat_id and (getattr(self, "_channel_team", None) or {}).get(str(chat_id))
+        if not team_id and chat_id and str(chat_id) not in (getattr(self, "_channel_teams", None) or {}):
+            team_clients = getattr(self, "_team_clients", None) or {}
+            if len(team_clients) == 1:
+                team_id = next(iter(team_clients))
         return str(team_id) if team_id else None
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
@@ -2009,6 +2056,13 @@ class SlackAdapter(BasePlatformAdapter):
         return self._workspace_thread_key(
             self._metadata_team_id(metadata), chat_id, str(thread_ts))
 
+    def native_task_card_destination_supported(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Placement eligibility independent of connection/stream availability."""
+        return self._native_task_card_key(chat_id, reply_to, metadata) is not None
+
     async def send_native_task_card_progress(
         self, chat_id: str, tasks: List[Dict[str, str]], *, title: str = "Hermes is working",
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
@@ -2032,34 +2086,58 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 client = self._get_client(chat_id, team_id=stream.team_id)
                 if not stream.stream_ts:
-                    start_payload: Dict[str, Any] = {
-                        "channel": chat_id, "thread_ts": stream.thread_ts,
-                        "task_display_mode": "plan"}
-                    md = metadata or {}
-                    recipients = (
-                        ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
-                        ("recipient_user_id", ("recipient_user_id", "user_id")))
-                    for key, sources in recipients:
-                        value = _first_truthy(md, sources)
-                        if value:
-                            start_payload[key] = value
-                    result = await client.api_call("chat.startStream", json=start_payload)
-                    if hasattr(result, "get"):
-                        stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
-                    if not stream.stream_ts:
-                        raise RuntimeError("Slack startStream returned no stream timestamp")
+                    await self._start_native_task_card_stream(client, stream, metadata)
                 chunks: List[Dict[str, Any]] = [{"type": "plan_update", "title": str(title)[:256]}]
                 chunks.extend(self._task_update_chunk(task) for task in tasks)
-                append_payload: Dict[str, Any] = {
-                    "channel": chat_id, "ts": stream.stream_ts, "chunks": chunks}
                 # chunks-only: Slack rejects markdown_text alongside chunks
                 # (cannot_provide_both_markdown_text_and_chunks, #87743); the gateway owns
                 # the editable-text fallback rail that fallback_text feeds when this call fails.
-                await client.api_call("chat.appendStream", json=append_payload)
+                try:
+                    await client.api_call(
+                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
+                except Exception as exc:
+                    if not _slack_error_is(exc, "message_not_in_streaming_state"):
+                        raise
+                    # Slack seals a native stream server-side after a few minutes of a long
+                    # turn (live-observed at ~5m20s, 2026-09-16; the lifetime is not
+                    # documented). The sealed message is a regular message now, so reopen a
+                    # fresh card in the same thread. Every frame already carries the FULL
+                    # visible projection, so nothing is lost; the user sees the card
+                    # continue instead of degrading to text bubbles. One reopen per update:
+                    # a second rejection is a real failure.
+                    logger.info(
+                        "[Slack] Native task-card stream %s expired (message_not_in_streaming_state); "
+                        "reopening a fresh card in thread %s", stream.stream_ts, stream.thread_ts)
+                    stream.stream_ts = ""
+                    await self._start_native_task_card_stream(client, stream, metadata)
+                    await client.api_call(
+                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error("[Slack] Native task-card progress error: %s", exc, exc_info=True)
                 return SendResult(success=False, error=str(exc), retryable=True)
+
+    @staticmethod
+    async def _start_native_task_card_stream(
+        client, stream: "_NativeTaskCardStream", metadata: Optional[Dict[str, Any]]
+    ) -> None:
+        """chat.startStream a plan-mode card in ``stream``'s thread; sets ``stream.stream_ts``."""
+        start_payload: Dict[str, Any] = {
+            "channel": stream.channel, "thread_ts": stream.thread_ts,
+            "task_display_mode": "plan"}
+        md = metadata or {}
+        recipients = (
+            ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
+            ("recipient_user_id", ("recipient_user_id", "user_id")))
+        for key, sources in recipients:
+            value = _first_truthy(md, sources)
+            if value:
+                start_payload[key] = value
+        result = await client.api_call("chat.startStream", json=start_payload)
+        if hasattr(result, "get"):
+            stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
+        if not stream.stream_ts:
+            raise RuntimeError("Slack startStream returned no stream timestamp")
 
     @staticmethod
     def _task_update_chunk(task: Dict[str, str]) -> Dict[str, Any]:
@@ -2284,7 +2362,8 @@ class SlackAdapter(BasePlatformAdapter):
             result = await self.edit_message(
                 chat_id, cached_id, content, finalize=False, metadata=metadata)
             if result.success:
-                if result.message_id:
+                # Only write back if nobody evicted/replaced this key during the await.
+                if result.message_id and self._status_message_ids.get(key) == cached_id:
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             # Edit failed: drop cached ts, fall through to a fresh send.
@@ -2335,9 +2414,12 @@ class SlackAdapter(BasePlatformAdapter):
                     message_id, chat_id, e, exc_info=True)
                 return SendResult(
                     success=False, error=str(e), retryable=True, error_kind="transient")
+            # An HTTP 200 + ``ok=false`` reply raises too; its ``str()`` reads like a transport
+            # failure ("status: 200") while the real cause is the body's error code.
+            api_error = _slack_response_payload(getattr(e, "response", None)).get("error")
             logger.error(
-                "[Slack] Failed to edit message %s in channel %s: %s", message_id, chat_id, e,
-                exc_info=True)
+                "[Slack] Failed to edit message %s in channel %s: api_error=%s: %s",
+                message_id, chat_id, api_error or "none", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
@@ -3255,8 +3337,8 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]]) -> SendResult:
         """Post ``notice`` (prefixed by the caption) in place of a failed media delivery; the
         host-local path is never echoed into chat."""
-        text = f"{caption}\n{notice}" if caption else notice
-        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, notice, caption=caption,
+                                             reply_to=reply_to, metadata=metadata, shown_metadata=metadata)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
@@ -4045,6 +4127,7 @@ class SlackAdapter(BasePlatformAdapter):
         own content and is skipped. Dedup matches the rendered section, not the bare URL (which is
         usually already in the user's text while the preview body is not)."""
         att_parts: list[str] = []
+        blocks_budget = _SLACK_UNFURL_BLOCKS_MAX_CHARS
         for att in slack_attachments:
             att_title = att.get("title", "")
             att_url = att.get("title_link", "") or att.get("from_url", "")
@@ -4062,8 +4145,15 @@ class SlackAdapter(BasePlatformAdapter):
                 body = body[:497] + "..."
             # Pasted tables arrive as ``table`` blocks in ``attachments[].blocks[]``, absent from
             # ``text``/``fallback``/files; without this the agent sees only the sentence before them.
-            nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+            # The budget is shared across the whole array: a 20-attachment alert must not project
+            # 20x what a single one does, and a spent budget still leaves the header visible.
+            nested_text = ""
+            if blocks_budget > 0:
+                nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+                if len(nested_text) > blocks_budget:
+                    nested_text = nested_text[:blocks_budget].rstrip() + "\n... [truncated]"
             if nested_text and nested_text not in body:
+                blocks_budget -= len(nested_text)
                 body = f"{body}\n{nested_text}".strip() if body else nested_text
             if header:
                 section = f"{header}\n   {body}" if body else header
@@ -4289,8 +4379,28 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         if await self._drop_bot_sender(event):
             return None
-        # Edits were normalized above so an @mention added by edit can wake the bot once.
-        if event.get("subtype") == "message_deleted":
+        # Edits were normalized above so an @mention added by edit can wake the bot once;
+        # the normalized event retains the edited message's own subtype.
+        # Housekeeping subtypes (joins/leaves, topic/name/purpose changes, convert_to_private/
+        # public, pins, deletions, file comments...) are not a person speaking, so they must
+        # not start a turn in free-response channels (#110778). Allowlist rather than denylist
+        # so subtypes Slack adds later are dropped instead of silently readmitted.
+        # ``file_share`` passes: a human attaching a file is a person speaking, and the
+        # ``file_shared`` fallback synthesizes exactly this subtype. ``thread_broadcast``
+        # passes: a human sharing a threaded reply into the channel carries user/text.
+        # ``me_message`` passes: ``/me`` is a person speaking.
+        # ``bot_message`` already passed allow_bots above; document_mention is an
+        # explicit app mention from a Slack canvas, not a lifecycle notification.
+        # ``file_comment`` stays in the drop set deliberately (triage decision on
+        # #110778): a comment left on a file is not the owner talking to the bot.
+        subtype = event.get("subtype")
+        if subtype not in (
+            None, "", "file_share", "thread_broadcast", "me_message",
+            "bot_message", "document_mention",
+        ):
+            logger.debug(
+                "[Slack] Dropping non-conversational message subtype=%s in channel %s",
+                subtype, channel_id)
             return None
         return event, dedup_team_id, channel_id
 
@@ -4428,13 +4538,13 @@ class SlackAdapter(BasePlatformAdapter):
             team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
             is_dm=is_dm)
         # Thread-root media is delivered ahead of the trigger message's own files.
-        media_urls, media_types, text = await self._collect_inbound_media(
+        media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
-            media_types=media_types, channel_context=channel_context)
+            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context)
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -4454,7 +4564,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        channel_context: Optional[str]) -> MessageEvent:
+        media_text_inlined: List[bool], channel_context: Optional[str]) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -4491,6 +4601,7 @@ class SlackAdapter(BasePlatformAdapter):
             message_id=ts,
             media_urls=media_urls,
             media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
@@ -4612,12 +4723,14 @@ class SlackAdapter(BasePlatformAdapter):
     async def _collect_inbound_media(
         self, event: dict, channel_id: str, team_id: str, text: str,
         thread_root_media_urls: List[str], thread_root_media_types: List[str],
-    ) -> Tuple[List[str], List[str], str]:
-        """Download/cache ``event["files"]`` → ``(media_urls, media_types, text)``; root images
-        lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind UTF-8
-        decode — PDF/zip headers decode). Failures are prepended as an attachment notice."""
+    ) -> Tuple[List[str], List[str], List[bool], str]:
+        """Download/cache ``event["files"]`` → ``(media_urls, media_types, media_text_inlined, text)``;
+        root images lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind
+        UTF-8 decode — PDF/zip headers decode) and flagged True in ``media_text_inlined``. Failures are
+        prepended as an attachment notice."""
         media_urls = list(thread_root_media_urls)
         media_types = list(thread_root_media_types)
+        media_text_inlined: List[bool] = [False] * len(media_urls)
         notices: List[str] = []
         for f in event.get("files", []):
             if f.get("file_access") == "check_file_info":
@@ -4636,6 +4749,7 @@ class SlackAdapter(BasePlatformAdapter):
                 cached_path, media_type, injection = cached
                 media_urls.append(cached_path)
                 media_types.append(media_type)
+                media_text_inlined.append(bool(injection))
                 if injection:
                     text = f"{injection}\n\n{text}" if text else injection
             except Exception as e:  # pragma: no cover - defensive logging
@@ -4645,7 +4759,7 @@ class SlackAdapter(BasePlatformAdapter):
         if notices:
             notice_block = "[Slack attachment notice]\n" + "\n".join(f"- {n}" for n in notices)
             text = f"{notice_block}\n\n{text}" if text else notice_block
-        return media_urls, media_types, text
+        return media_urls, media_types, media_text_inlined, text
 
     # ----- Approval button support (Block Kit) -----
 
@@ -4703,7 +4817,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    _EA_HEADER = ":warning: *Command Approval Required*\n"
+    _EA_HEADER = f":warning: *{EA_HEADER_TEXT}*\n"
     _EA_CODE_OPEN = "```"
     _EA_CODE_CLOSE = "```\n"
     _EA_SMART_DENY_LINE = "\n*Smart DENY:* owner override applies to this one operation only."
@@ -4715,7 +4829,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # execute_code approvals embed the whole script, so budget the preview against the cap.
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
         return max(0, self._EA_SECTION_CAP - fixed)
 
@@ -5193,10 +5307,16 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Bare-ts key (not workspace-scoped) so the action handler's atomic-pop guard
         # can reject double-clicks (mirrors _approval_resolved).
-        return await self._send_interactive_prompt(
+        result = await self._send_interactive_prompt(
             chat_id, metadata, _build, "send_clarify",
             resolved=self._clarify_resolved, resolved_max=self._CLARIFY_RESOLVED_MAX,
             team_scoped_key=False, sanitize=False)
+        if result.success and result.message_id:
+            question_text, _blocks = _build()
+            response_channel = str((result.raw_response or {}).get("channel") or chat_id)
+            self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text)
+            self._trim_oldest_dict_entries(self._clarify_messages, self._CLARIFY_MESSAGE_MAX)
+        return result
 
     def _is_interactive_user_authorized(
         self, user_id: str, *, channel_id: str = "", user_name: Optional[str] = None,
@@ -5398,6 +5518,22 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id, msg_ts, question_text, decision_text, "Clarification", "clarify", sanitize=False
         )
 
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Rewrite a still-live clarify card into a terminal, button-less state.
+
+        The gateway calls this whenever it ends a clarify without a button click — the wait
+        timed out, the session was reset, or unmatched free prose superseded the prompt — so
+        the card stops advertising an answer path the released clarify can no longer accept.
+        Keyed by clarify_id, so a late call cannot touch a newer prompt; no-op once resolved.
+        """
+        target = self._clarify_messages.pop(clarify_id, None)
+        if target is None:
+            return
+        channel_id, msg_ts, question_text = target
+        # A late action handler must be a no-op while the best-effort chat.update is in flight.
+        self._clarify_resolved[msg_ts] = True
+        await self._update_clarify_message(channel_id, msg_ts, question_text, notice)
+
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
@@ -5419,8 +5555,11 @@ class SlackAdapter(BasePlatformAdapter):
         if action_id == "hermes_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
                 # Entry evicted/gateway restarted — a typed answer would go nowhere.
+                self._clarify_messages.pop(clarify_id, None)
                 await self._update_clarify_message(channel_id, msg_ts, original_text, expired_text)
                 return
+            # Not terminal: the clarify stays pending for typed text, so keep the card entry —
+            # the gateway still has to retire it on timeout / reset / typed answer.
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text, f"✏️ Awaiting typed answer from {user_name}…")
             return
@@ -5429,6 +5568,8 @@ class SlackAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             logger.warning("[Slack] Invalid clarify choice token: %s", token)
             return
+        # A choice click is terminal either way (✅ or expired): the card no longer needs retiring.
+        self._clarify_messages.pop(clarify_id, None)
         # Canonical choice text from the entry; positional fallback on timeout/reset race.
         resolved_text: Optional[str] = None
         try:
@@ -5852,30 +5993,24 @@ class SlackAdapter(BasePlatformAdapter):
     def _build_thread_session_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,
         chat_type: str = "group") -> Optional[str]:
-        """Thread session key via ``build_session_key()`` (honours per-user isolation).
-        ``chat_type`` must come from the event's ``channel_type``, not the ID prefix (MPIM ids
-        start with ``G``)."""
-        session_store = getattr(self, "_session_store", None)
-        if not session_store:
+        """Thread session key through the adapter seam (``_source_session_key``: per-user isolation
+        from the adapter config the runner seeded, owner-profile namespace). ``chat_type`` must come
+        from the event's ``channel_type``, not the ID prefix (MPIM ids start with ``G``)."""
+        if not getattr(self, "_session_store", None):
             return None
         try:
-            from gateway.session import build_session_key
             source = self._thread_session_source(channel_id, thread_ts, user_id, team_id, chat_type)
-            store_cfg = getattr(session_store, "config", None)
-            return build_session_key(
-                source, group_sessions_per_user=getattr(store_cfg, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(store_cfg, "thread_sessions_per_user", False),
-                profile=self._session_key_profile(source))
+            return self._source_session_key(source)
         except Exception:
             return None
 
-    @staticmethod
     def _thread_session_source(
-        channel_id: str, thread_ts: str, user_id: str, team_id: str, chat_type: str) -> Any:
-        from gateway.session import SessionSource
-        return SessionSource(
-            platform=Platform.SLACK, chat_id=channel_id, chat_type=chat_type, user_id=user_id,
-            thread_id=thread_ts, scope_id=team_id or None)
+        self, channel_id: str, thread_ts: str, user_id: str, team_id: str, chat_type: str) -> Any:
+        # ``build_source``: transport provenance + profile route, so the thread key canonicalizes
+        # like the message that started the thread.
+        return self.build_source(
+            chat_id=channel_id, chat_type=chat_type, user_id=user_id, thread_id=thread_ts,
+            scope_id=team_id or None)
 
     def _thread_rehydration_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
@@ -5993,7 +6128,9 @@ class SlackAdapter(BasePlatformAdapter):
         ``is_safe_url`` AND the Slack-CDN allowlist (token exfiltration); redirects are
         re-validated; an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
         import httpx
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+        from tools.url_safety import (
+            create_ssrf_safe_async_client, is_safe_url, redirect_target_from_response,
+        )
         if not is_safe_url(url):
             raise ValueError(
                 f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}")
@@ -6003,18 +6140,41 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}")
         bot_token = self._resolve_download_token(url, team_id)
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=False, event_hooks={"response": [_ssrf_redirect_guard]}
         ) as client:
             for attempt in range(3):
                 try:
-                    response = await client.get(
-                        url, headers={"Authorization": f"Bearer {bot_token}"})
+                    download_url = url
+                    redirect_count = 0
+                    while True:
+                        # httpx drops Authorization across origins. Enterprise Grid
+                        # needs it on files-origin, but never send it off Slack's CDN.
+                        response = await client.get(
+                            download_url, headers={"Authorization": f"Bearer {bot_token}"})
+                        if response.status_code not in (301, 302, 303, 307, 308):
+                            break
+                        target = redirect_target_from_response(response)
+                        if not target:
+                            break  # raise_for_status reports the malformed redirect.
+                        if not is_safe_url(target):
+                            raise ValueError(
+                                "Blocked unsafe Slack file redirect (SSRF protection): "
+                                f"{safe_url_for_log(target)}")
+                        if not self._is_slack_cdn_url(target):
+                            raise ValueError(
+                                "Blocked non-Slack-CDN file redirect (token-exfiltration protection): "
+                                f"{safe_url_for_log(target)}")
+                        if redirect_count == 3:
+                            raise ValueError("Too many Slack file redirects (maximum 3)")
+                        download_url = target
+                        redirect_count += 1
                     response.raise_for_status()
                     ct = response.headers.get("content-type", "")
                     if "text/html" in ct:
                         raise ValueError(
                             f"Slack returned HTML instead of {html_label} (content-type: {ct}); "
-                            "check bot token scopes and file permissions")
+                            "check bot token scopes and file permissions, or a cross-origin "
+                            "redirect dropped the token (Enterprise Grid files-origin)")
                     return response.content
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:

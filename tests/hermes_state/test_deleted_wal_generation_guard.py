@@ -7,6 +7,7 @@ fail closed on both the open and write paths instead of creating the second
 generation.
 """
 
+import errno
 import gc
 import os
 import sqlite3
@@ -15,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
 import hermes_state_dbfile
 import hermes_state_readpool
 import hermes_state_wal
@@ -48,9 +48,6 @@ def test_classify_deleted_wal_separately_from_main_file_replacement():
     assert classify_persistence_error(str(replaced)) == "replaced"
 
 
-def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
-    monkeypatch.setattr(hermes_state.sys, "platform", "win32")
-    assert iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db") == []
 
 
 def test_clean_open_and_second_open_still_work(tmp_path, force_wal):
@@ -111,6 +108,56 @@ def test_iter_finds_self_after_wal_unlink(tmp_path, force_wal):
         db.close()
 
 
+@pytest.mark.linux_only
+def test_second_sessiondb_open_refuses_through_symlinked_home(tmp_path, force_wal):
+    """Regression for #116450. End to end through the real open path: SessionDB stores the
+    alias verbatim and calls the guard with it before connect, so the refusal must fire via the
+    alias — /proc reports the kernel-resolved dentry while the caller holds only the symlink."""
+    real_home = tmp_path / "hermes-real"
+    real_home.mkdir()
+    link_home = tmp_path / "hermes-link"
+    link_home.symlink_to(real_home)
+    alias_db = link_home / "state.db"
+
+    writer = make_db(alias_db, "s", "held")
+    require_wal(writer)
+    lose_sidecars(alias_db, rename=False)
+    try:
+        with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
+            SessionDB(db_path=alias_db)
+        assert not Path(os.fspath(alias_db) + "-wal").exists()
+    finally:
+        writer.close()
+
+
+@pytest.mark.linux_only
+def test_iter_finds_holder_when_db_file_itself_is_symlink(tmp_path):
+    """SQLite canonicalizes the db filename before naming sidecars, so a symlinked
+    state.db puts the WAL under the target's name. The scan must still match."""
+    db_dir = tmp_path / "dbdir"
+    db_dir.mkdir()
+    target_dir = tmp_path / "targetdir"
+    target_dir.mkdir()
+    link_db = db_dir / "state.db"
+    link_db.symlink_to(target_dir / "x.db")
+
+    conn = sqlite3.connect(os.fspath(link_db))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t(x)")
+    conn.execute("INSERT INTO t VALUES (1)")
+    conn.commit()
+    target_wal = target_dir / "x.db-wal"
+    if not target_wal.exists():
+        conn.close()
+        pytest.skip("this SQLite did not canonicalize the symlinked db path")
+    target_wal.unlink()
+    try:
+        holders = iter_deleted_sqlite_sidecar_holders(link_db)
+        assert holders, "deleted WAL under the resolved target name must be found"
+    finally:
+        conn.close()
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="deleted-WAL /proc scan is Linux-only",
@@ -158,6 +205,32 @@ def test_iter_holders_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypa
         assert wal.exists()
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("vanish_errno", [errno.ENOENT, errno.ESRCH])
+def test_iter_holders_ignores_descriptor_closed_during_scan(tmp_path, monkeypatch, vanish_errno):
+    """A descriptor (ENOENT) or its whole process (ESRCH) gone after ``readlink``
+    cannot hold a retired generation."""
+    path = tmp_path / "state.db"
+    wal = Path(str(path) + "-wal")
+    wal.write_bytes(b"current generation")
+    vanished_fd = tmp_path / "closed-writable-opener-fd"
+    monkeypatch.setattr(hermes_state_dbfile.sys, "platform", "linux")
+    monkeypatch.setattr(
+        hermes_state_dbfile,
+        "_iter_proc_fd_targets",
+        lambda: iter([(os.getpid(), str(wal) + " (deleted)", str(vanished_fd))]),
+    )
+    real_stat = os.stat
+
+    def stat_vanished(target, *args, **kwargs):
+        if str(target) == str(vanished_fd):
+            raise OSError(vanish_errno, os.strerror(vanish_errno), str(target))
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_state_dbfile.os, "stat", stat_vanished)
+
+    assert iter_deleted_sqlite_sidecar_holders(path) == []
 
 
 @pytest.mark.skipif(

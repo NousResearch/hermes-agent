@@ -7,11 +7,13 @@ Token values are synthetic placeholders.
 """
 
 import json
+import threading
 from pathlib import Path
 
+import httpx
 import pytest
 
-from hermes_cli import auth
+from hermes_cli import auth, auth_codex
 
 
 def _pair(prefix: str) -> dict:
@@ -81,3 +83,65 @@ def test_profile_owned_grant_stays_local(profile_env):
     auth._save_codex_tokens(_pair("login"))
     assert _read(profile_path)["providers"]["openai-codex"]["tokens"] == _pair("login")
     assert _read(root_path)["providers"]["openai-codex"]["tokens"] == _pair("root")
+
+
+class _RotatingEndpoint:
+    """Token endpoint that rotates ``old-rt`` once and rejects any replay of a consumed token."""
+
+    def __init__(self, hold_seconds: float):
+        self.hold_seconds = hold_seconds
+        self.seen: list = []
+        self._guard = threading.Lock()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def post(self, url, *, headers=None, data=None):
+        import time
+        with self._guard:
+            replay = data["refresh_token"] in self.seen
+            self.seen.append(data["refresh_token"])
+        time.sleep(self.hold_seconds)  # a concurrent refresher must wait on the lock, not overlap
+        if replay:
+            return httpx.Response(400, json={"error": "refresh_token_reused"})
+        return httpx.Response(200, json={"access_token": "new-at", "refresh_token": "new-rt"})
+
+
+def test_concurrent_refreshes_of_shared_root_grant_submit_old_token_once(profile_env, monkeypatch):
+    """Two refreshers holding the same stale pre-read pair: the second re-reads ROOT under its lock,
+    sees the peer's rotated pair and adopts it instead of replaying the single-use token."""
+    profile_path, root_path = profile_env
+    _write(root_path, {
+        "version": 1,
+        "providers": {"openai-codex": {"auth_mode": "chatgpt", "tokens": _pair("old")}},
+    })
+    _write(profile_path, {"version": 1, "providers": {}})
+    endpoint = _RotatingEndpoint(hold_seconds=1.5)  # longer than the lock floor (1 s)
+    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: endpoint)
+    # The waiter must outlive the peer's endpoint call on BOTH locks: with the default lock
+    # timeout shorter than the POST, the second profile would raise TimeoutError instead of adopt.
+    monkeypatch.setattr(auth._auth_store_lock.__wrapped__, "__defaults__", (1.0,))
+    monkeypatch.setattr(auth_codex, "AUTH_LOCK_TIMEOUT_SECONDS", 1.0)
+
+    results, errors = {}, {}
+
+    def _refresh(name):
+        try:
+            results[name] = auth._refresh_codex_auth_tokens(_pair("old"), timeout_seconds=1.0)
+        except Exception as exc:  # pragma: no cover - surfaced via the assertion below
+            errors[name] = exc
+
+    workers = [threading.Thread(target=_refresh, args=(n,)) for n in ("a", "b")]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=10)
+
+    assert errors == {}
+    assert endpoint.seen == ["old-rt"]
+    assert results == {"a": _pair("new"), "b": _pair("new")}
+    assert _read(root_path)["providers"]["openai-codex"]["tokens"] == _pair("new")
+    assert "openai-codex" not in _read(profile_path).get("providers", {})

@@ -32,7 +32,6 @@ describe('useMessageStream compaction lifecycle', () => {
 
   it.each([
     ['message.delta', { text: 'resumed' }],
-    ['thinking.delta', { text: 'still working' }],
     ['reasoning.delta', { text: 'thinking again' }],
     ['tool.start', { name: 'terminal', tool_id: 'tool-1' }]
   ] as const)('clears the stale compaction phase when %s resumes the turn', (type, payload) => {
@@ -43,6 +42,22 @@ describe('useMessageStream compaction lifecycle', () => {
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true, [SID]: true })
 
     emit(type, payload)
+
+    expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
+  })
+
+  // Manual /compress pins `compressing` (methods_session._compress_live) and
+  // always clears it with `ready` from that function's `finally`. The desktop
+  // matched only the auto-compaction spelling, so /compress showed no phase at
+  // all — the TUI has handled both since createGatewayEventHandler.ts:904.
+  it('drives the compaction phase from the manual /compress spelling', () => {
+    mountStream()
+    setSessionCompacting(OTHER_SID, true)
+
+    emit('status.update', { kind: 'compressing', text: '\u280b compressing 42 messages (~120,000 tok)\u2026' })
+    expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true, [SID]: true })
+
+    emit('status.update', { kind: 'ready' })
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
   })

@@ -263,13 +263,66 @@ class StreamingContextScrubber:
             self._at_block_boundary = self._ends_at_block_boundary(text)
 
 
+# A markdown bullet: a marker, whitespace, then content. The whitespace matters — it is what keeps
+# ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
+_RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
+
+
+def _drop_repeated_recall_lines(text: str) -> str:
+    """Drop a recalled bullet that an EARLIER line of this same block already states.
+
+    Providers merge several stores (and this merges several providers), so one prefetch routinely
+    surfaces the same fact two or three times. A byte-identical repeat inside one block tells the
+    model nothing the block has not already said, and it is not free: the composed block is stamped
+    into the user row's ``api_content`` sidecar and replayed verbatim on every later request for as
+    long as that row is in context, so each duplicate is paid once per turn, forever.
+
+    The ``seen`` set is scoped per section — every non-bullet line at column 0 (a heading of any
+    style, a ``---`` rule, prose) starts a new one — so a repeat is only dropped when the SAME
+    section already states it.
+
+    Only a SELF-CONTAINED bullet is considered — a marker, whitespace, content, and no continuation
+    line indented beneath it. A bullet that carries continuation lines is never dropped and never
+    suppresses a later one, because two entries can share a headline and differ underneath it
+    (``- prefers draft PRs`` / ``  (logged 12 Jan, builtin)`` vs the same headline logged elsewhere):
+    dropping one would re-parent its provenance under the other and invent a record neither provider
+    reported. Headings — including ``**bold**`` ones — prose, blank lines, separators and numbered
+    items are left exactly as written.
+    """
+    lines = text.split("\n")
+    seen: set[str] = set()
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        # An indented line is a continuation of the bullet above it (nested child, provenance,
+        # wrapped prose). It never participates in dedupe and is never dropped.
+        if stripped and line[0].isspace():
+            kept.append(line)
+            continue
+        is_bullet = bool(_RECALL_BULLET_RE.match(stripped))
+        # Any column-0 non-bullet line (heading, rule, paragraph) opens a fresh dedupe scope.
+        if stripped and not is_bullet:
+            seen.clear()
+        if is_bullet:
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            carries_continuation = bool(following.strip()) and following[0].isspace()
+            if not carries_continuation:
+                if stripped in seen:
+                    continue
+                seen.add(stripped)
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
-    clean = sanitize_context(raw_context)
-    if clean != raw_context:
+    sanitized = sanitize_context(raw_context)
+    if sanitized != raw_context:
+        # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    clean = _drop_repeated_recall_lines(sanitized)
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
@@ -753,22 +806,35 @@ class MemoryManager:
         """Mirror a built-in memory tool call to external providers.
 
         Gates on a committed write, expands single-op and batched ``operations`` shapes, keeps only
-        mutating actions, and forwards ``old_text`` plus provenance from ``build_metadata`` (the loop
-        knows session/task/tool-call identity; we do not).
+        mutating actions, and forwards ``old_text`` plus provenance from ``build_metadata``.
+        ``previous_content`` comes only from the committed store result, never the search
+        argument: a partial provider registry cannot safely resolve that argument itself.
         """
         if not self._memory_tool_result_succeeded(tool_result):
             return
+        result = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
         target = str(tool_args.get("target") or "memory")
         operations = tool_args.get("operations")
-        for op in operations if isinstance(operations, list) and operations else [tool_args]:
+        batched = isinstance(operations, list) and bool(operations)
+        for index, op in enumerate(operations if batched else [tool_args], start=1):
             action = str(op.get("action") or "") if isinstance(op, dict) else ""
             if action not in self._MIRRORED_MEMORY_ACTIONS:
                 continue
             try:
                 metadata = dict(build_metadata() if build_metadata else {})
+                metadata.pop("previous_content", None)
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
+                field = {"replace": "replaced", "remove": "removed"}.get(action)
+                if field:
+                    if batched:
+                        entries = result.get(f"{field}_entries", {})
+                        previous = entries.get(str(index), entries.get(index)) if isinstance(entries, dict) else None
+                    else:
+                        previous = result.get(f"{field}_entry")
+                    if isinstance(previous, str) and previous:
+                        metadata["previous_content"] = previous
                 self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)

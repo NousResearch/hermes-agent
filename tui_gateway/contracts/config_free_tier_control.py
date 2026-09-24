@@ -280,59 +280,6 @@ method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,
        doc="Provider/model inventory for the picker, layered over the session's live provider when given.")
 
 
-# ── connectors ────────────────────────────────────────────────────────────────────────────────
-
-
-class ConnectorsListParams(ProfileParams):
-    session_id: str
-
-
-class ConnectorRow(OpenModel):
-    """One ``manage_connections`` status entry after ``connector_ui_payload`` redaction; the
-    connector service owns the closed key set, so unknown metadata passes through."""
-
-    connector: str = ""
-    connected: bool | None = None
-    enabled: bool | None = None
-    connectionStatus: str | None = None
-    name: str | None = None
-    description: str | None = None
-
-
-class ConnectorsListResult(Result):
-    available: bool
-    connectors: list[ConnectorRow]
-
-
-method("connectors.list", params=ConnectorsListParams, result=ConnectorsListResult,
-       doc="Connector catalog + connection state for one owned session (``available=False`` when the toolset is off).")
-
-
-class ConnectorsConnectParams(ProfileParams):
-    session_id: str
-    connectors: list[str]
-    reconnect: bool = False
-
-
-class ConnectorConnectEntry(OpenModel):
-    """``tools/connections_tool.py`` per-connector authorization outcome."""
-
-    connector: str = ""
-    status: str | None = None
-    connect_url: str | None = None
-    note: str | None = None
-    instruction: str | None = None
-
-
-class ConnectorsConnectResult(Result):
-    results: list[ConnectorConnectEntry]
-    summary: dict[str, JsonValue]
-
-
-method("connectors.connect", params=ConnectorsConnectParams, result=ConnectorsConnectResult,
-       doc="Start (or re-initiate) authorization for named connectors; returns per-connector links/status.")
-
-
 # ── image.generate ────────────────────────────────────────────────────────────────────────────
 
 

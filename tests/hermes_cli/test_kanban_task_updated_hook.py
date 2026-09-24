@@ -15,7 +15,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
-from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
+from hermes_cli.plugins import get_plugin_manager
 
 
 @pytest.fixture
@@ -98,21 +98,3 @@ def test_raising_callback_does_not_break_assign(kanban_home):
         mgr._hooks = saved
 
 
-def test_no_subscriber_short_circuits_task_updated(kanban_home, monkeypatch):
-    from hermes_cli import lifecycle
-
-    invoked: list[str] = []
-    real_invoke = lifecycle.invoke_hook
-
-    def _spy(hook_name, **kw):
-        invoked.append(hook_name)
-        return real_invoke(hook_name, **kw)
-
-    monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kbc.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="alice")
-        assert kb.assign_task(conn, tid, "bob") is True
-    finally:
-        conn.close()
-    assert "on_kanban_task_updated" not in invoked

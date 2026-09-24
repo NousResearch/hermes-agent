@@ -606,15 +606,3 @@ class TestResolveVisionCustomProvider:
 # ── Constant cleanup ────────────────────────────────────────────────────────
 
 
-def test_aggregator_providers_constant_removed():
-    """The dead _AGGREGATOR_PROVIDERS constant should no longer live in the module.
-
-    Removed when the main-first policy made the aggregator-skip guard obsolete.
-    """
-    import agent.auxiliary_client as aux_mod
-
-    assert not hasattr(aux_mod, "_AGGREGATOR_PROVIDERS"), (
-        "_AGGREGATOR_PROVIDERS was removed when _resolve_auto_route stopped "
-        "treating aggregators specially. If you re-added it, the main-first "
-        "policy may have regressed."
-    )

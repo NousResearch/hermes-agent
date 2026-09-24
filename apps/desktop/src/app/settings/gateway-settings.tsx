@@ -6,7 +6,13 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopAuthProvider,
+  DesktopCloudAgent,
+  DesktopCloudOrg,
+  DesktopConnectionProbeResult,
+  DesktopRegistryConnection
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -31,13 +37,17 @@ import {
   refreshConnectionsRegistry,
   selectConnection
 } from '@/store/connections'
+import { managedUpdatesSupported } from '@/store/managed-updates'
 import { notify, notifyError, readableError } from '@/store/notifications'
 
+import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
 type AuthMode = 'oauth' | 'token'
@@ -154,11 +164,92 @@ function ModeCard({
   )
 }
 
+interface GatewaySettingsProps {
+  embedded?: boolean
+  subpage?: string
+}
+
+export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
+  useSettingDeepLink('gateway', page => subpage === undefined || page === subpage)
+
+  // Recovery always keeps the complete connection form, regardless of a
+  // settings destination. Other tasks never mount that form or its probes.
+  if (!embedded && subpage === 'devices') {
+    return (
+      <SettingsContent>
+        <ConnectionsRegistrySection />
+      </SettingsContent>
+    )
+  }
+
+  if (!embedded && subpage === 'managed-updates') {
+    return <GatewayManagedUpdates />
+  }
+
+  return <GatewayConnectionSettings embedded={embedded} standalone={subpage !== undefined} />
+}
+
+function GatewayManagedUpdates() {
+  const { t } = useI18n()
+  const registry = useStore($connectionsRegistry)
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const supported = managedUpdatesSupported()
+
+  useEffect(() => {
+    if (!supported) {
+      return
+    }
+
+    let active = true
+    void refreshConnectionsRegistry()
+      .catch(() => {
+        if (active) {
+          setFailed(true)
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [supported])
+
+  if (supported && loading) {
+    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
+  }
+
+  const hasSsh = registry?.connections.some(connection => connection.kind === 'ssh')
+
+  return (
+    <SettingsContent>
+      {supported && !failed && hasSsh ? (
+        <ManagedUpdatesSection />
+      ) : (
+        <EmptyState
+          description={
+            !supported
+              ? t.settings.subpages.gatewayManagedUpdatesUnavailable
+              : failed
+                ? t.settings.gateway.failedLoad
+                : t.settings.subpages.gatewayManagedUpdatesEmpty
+          }
+          title={t.settings.managedUpdates.title}
+        />
+      )}
+    </SettingsContent>
+  )
+}
+
 // `embedded` trims the page chrome for reuse inside the boot-failure recovery
 // card: the outer title/intro, the "Save for next restart" action, and the
 // Diagnostics row are redundant there (the card owns its header + a single
 // reconnect action), so only the connection controls render.
-export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
+function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean; standalone: boolean }) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
@@ -306,17 +397,25 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // prefers a fresh probe result over the saved value.
   const trimmedUrl = coerceRemoteUrlScheme(state.remoteUrl)
 
-  const savedAgent = (agent: DesktopCloudAgent) =>
-    registry?.connections.find(
-      connection =>
-        (connection.kind === 'cloud' || connection.kind === 'remote') &&
-        connection.url &&
-        agent.dashboardUrl &&
-        savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: connection.url }) ===
-          savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: agent.dashboardUrl })
-    )
+  const savedAgent = (agent: DesktopCloudAgent) => {
+    const dashboardUrl = agent.dashboardUrl
 
-  const isConnectedAgent = (agent: DesktopCloudAgent) => savedAgent(agent)?.id === activeConnectionId
+    if (!dashboardUrl) {
+      return undefined
+    }
+
+    const target = savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: dashboardUrl })
+
+    return registry?.connections.find(
+      (connection): connection is DesktopRegistryConnection & { url: string } =>
+        (connection.kind === 'cloud' || connection.kind === 'remote') &&
+        typeof connection.url === 'string' &&
+        savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: connection.url }) === target
+    )
+  }
+
+  const isConnectedAgent = (agent: DesktopCloudAgent) =>
+    savedAgent(agent)?.id === activeConnectionId && !cloudTeamChanged(savedAgent(agent), cloudOrg)
 
   const activateSavedCloud = async (id: string) => {
     setCloudConnectingId(id)
@@ -714,6 +813,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         // Multi-org user with no org chosen yet: show the picker. Don't clear a
         // previously-chosen org list on a refresh.
         setCloudOrgs(result.orgs)
+        setCloudOrg(null)
         setCloudAgents([])
         setCloudDiscover('done')
 
@@ -908,12 +1008,37 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
     setCloudConnectingId(agent.id)
 
+    const warnSignInIncomplete = () =>
+      notify({
+        kind: 'warning',
+        title: t.boot.failure.signInIncompleteTitle,
+        message: t.boot.failure.signInIncompleteMessage
+      })
+
     try {
       // Saved sources keep their identity, credentials and default gateway.
       // The activation path reuses healthy sockets and validates auth on a new dial.
       const saved = savedAgent(agent)
 
       if (saved) {
+        const org = cloudOrgRef.current
+
+        if (org && cloudTeamChanged(saved, org)) {
+          const reconnected = await reconnectMovedCloudAgent(desktop, saved, org, () => seq === contextSeq.current)
+
+          if (seq !== contextSeq.current) {
+            return
+          }
+
+          if (!reconnected) {
+            warnSignInIncomplete()
+
+            return
+          }
+
+          await refreshConnectionsRegistry()
+        }
+
         await selectConnection(saved.id)
 
         return
@@ -926,11 +1051,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       }
 
       if (!result.connected) {
-        notify({
-          kind: 'warning',
-          title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
-        })
+        warnSignInIncomplete()
 
         return
       }
@@ -1111,7 +1232,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
   return (
     <SettingsContent bare={embedded}>
-      {embedded ? null : (
+      {embedded || standalone ? null : (
         <div className="mb-5">
           <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
             <Globe className="size-4 text-muted-foreground" />
@@ -1134,7 +1255,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       ) : null}
 
-      <div className="mb-5 grid gap-2">
+      <div className="mb-5 grid gap-2" id={settingElementId(SETTING_IDS.gateway.connectionMode)}>
         <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
           {g.modeTitle}
         </div>
@@ -1357,7 +1478,14 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       ) : null}
 
-      {state.mode === 'remote' && !state.envOverride ? (
+      {/* An env-pinned remote (HERMES_DESKTOP_REMOTE_URL) still renders this
+          block: the override pins the URL/mode, but the browser SESSION is not
+          env-owned — docs promise "you still sign in from the Gateway settings
+          panel" (user-guide/desktop.md). Hiding it left a lapsed session with
+          no sign-in anywhere in Settings, and the boot-recovery card routes
+          every remote failure here, so "Use local gateway" became the only way
+          back in (#114856). The URL input and Save/Test stay env-gated above. */}
+      {state.mode === 'remote' ? (
         <div className="mt-5 grid gap-1">
           <ListRow
             action={
@@ -1396,13 +1524,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                     <Pill tone="primary">
                       <Check className="size-3" /> {g.signedIn}
                     </Pill>
-                    <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
+                    {/* Sign-in/out are session actions, not connection edits: an
+                        env-pinned URL must still be able to refresh its lapsed
+                        session from here (#114856). */}
+                    <Button disabled={signingIn} onClick={() => void signOut()} variant="outline">
                       {signingIn ? <Loader2 className="animate-spin" /> : null}
                       {g.signOut}
                     </Button>
                   </div>
                 ) : (
-                  <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
+                  <Button disabled={signingIn || !trimmedUrl} onClick={() => void signIn()}>
                     {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                     {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                   </Button>
@@ -1616,6 +1747,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             checked={keychainEncryption}
             description={g.keychainEncryptionDesc}
             disabled={keychainEncryptionBusy}
+            id={settingElementId(SETTING_IDS.gateway.keychainEncryption)}
             label={g.keychainEncryptionTitle}
             onChange={on => void setKeychainEncryption(on)}
           />
@@ -1627,15 +1759,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
               </Button>
             }
             description={g.diagnosticsDesc}
+            id={settingElementId(SETTING_IDS.gateway.diagnostics)}
             title={g.diagnostics}
           />
         </div>
       )}
 
-      {/* Unified Gateways page: the full connections registry (add/edit/delete
-          named agent sources) lives on this page now, below the window
-          connection controls. Hidden in the embedded (boot-recovery) form. */}
-      {embedded ? null : (
+      {/* Preserve the full legacy page outside subpage navigation, without
+          mounting registry editors in connection-only or recovery views. */}
+      {embedded || standalone ? null : (
         <>
           <ConnectionsRegistrySection />
           {/* Per-connection driver for the transactional managed SSH update

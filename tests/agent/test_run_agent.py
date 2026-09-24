@@ -4353,11 +4353,15 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            agent.run_conversation("write the report")
+            result = agent.run_conversation("write the report")
 
         text = " ".join(printed)
         assert "server ended the stream without ever sending finish_reason" in text
         assert "stream ended before completion" not in text
+        # Retries exhausted: the final copy/reason must not blame the network either.
+        assert "Check your network" not in result["final_response"]
+        assert "kept closing the stream" in result["final_response"]
+        assert result["failure_reason"] == "truncated"
 
     def test_transport_drop_stub_keeps_original_truncation_message(self, agent):
         """Companion to the clean-EOF test above: a stub NOT tagged

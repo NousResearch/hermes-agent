@@ -50,6 +50,7 @@ import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
+import { ProjectTreePreviewSetting } from './project-tree-preview-setting'
 import { QuickEntrySettings } from './quick-entry-settings'
 
 export function ConfigSettings({
@@ -448,6 +449,7 @@ function ConfigSettingsInner({
             onChange={setDisableF12}
           />
           <PoolLimitsSetting />
+          <ProjectTreePreviewSetting />
           <QuickEntrySettings />
         </>
       )}

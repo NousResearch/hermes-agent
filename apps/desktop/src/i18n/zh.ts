@@ -1194,6 +1194,10 @@ export const zh = defineLocale({
       backendIdleTimeoutAria: '后端空闲超时（毫秒）',
       backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
     },
+    projectTreePreview: {
+      aria: '每个项目预览的会话数',
+      title: '项目会话预览'
+    },
     customEndpoints: {
       active: '已启用',
       apiKeySet: '已设置 API 密钥',

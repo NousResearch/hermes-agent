@@ -36,6 +36,25 @@ def test_ssh_keeps_a_real_remote_directory(monkeypatch):
     assert str(resolved) == "/home/ubuntu/COMPRESS/cwd_probe.txt"
 
 
+def test_ssh_command_cwd_drops_container_home(monkeypatch):
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {"sess": "/opt/data/home"})
+    with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/home"):
+        cwd = terminal_tool._resolve_command_cwd(
+            workdir=None, default_cwd="~", session_key="sess", env_type="ssh")
+        explicit = terminal_tool._resolve_command_cwd(
+            workdir="/opt/data/home", default_cwd="~", session_key="sess", env_type="ssh")
+    assert cwd == "~"
+    assert explicit == "~"
+
+
+def test_ssh_command_cwd_keeps_remote_directory(monkeypatch):
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {"sess": "/home/ubuntu"})
+    with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/home"):
+        cwd = terminal_tool._resolve_command_cwd(
+            workdir=None, default_cwd="~", session_key="sess", env_type="ssh")
+    assert cwd == "/home/ubuntu"
+
+
 def test_local_tilde_still_uses_subprocess_home(monkeypatch, tmp_path):
     home = tmp_path / "profile_home"
     home.mkdir()

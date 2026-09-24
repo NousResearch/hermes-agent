@@ -941,6 +941,43 @@ def _default_live_venv(root: Path) -> Path:
     return fallback if use_fallback else primary
 
 
+def _live_venv_references_backup(live: Path, backup: Path) -> bool:
+    """Whether a top-level live ``site-packages`` link resolves inside *backup*.
+
+    A parked venv can remain a path target for a locally modified live venv. Keep the
+    whole backup in that case: deleting it turns the live venv's links into dangling
+    entries that the lightweight health probe may not import.
+    """
+    try:
+        backup_root = backup.resolve()
+        site_packages_dirs = [live / "Lib" / "site-packages", *live.glob("lib/python*/site-packages")]
+    except OSError:
+        logger.warning("keeping stale runtime backup %s: could not inspect live venv links", backup)
+        return True
+    for site_packages in site_packages_dirs:
+        try:
+            entries = list(site_packages.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_symlink():
+                continue
+            try:
+                entry.resolve().relative_to(backup_root)
+            except ValueError:
+                continue
+            except (OSError, RuntimeError):
+                logger.warning("keeping stale runtime backup %s: could not resolve %s", backup, entry)
+                return True
+            logger.warning(
+                "keeping stale runtime backup %s: live site-packages link %s references it",
+                backup,
+                entry,
+            )
+            return True
+    return False
+
+
 def _sweep_stale_runtime_backups(
     live: Path, *, root: Path, keep: Path | None = None, min_age_seconds: float = 3600.0) -> None:
     """Remove leftover ``venv.stale.runtime-*`` backups next to *live*. Best-effort: never raises.
@@ -965,6 +1002,8 @@ def _sweep_stale_runtime_backups(
             if now - candidate.stat().st_mtime < min_age_seconds:
                 continue
         except OSError:
+            continue
+        if _live_venv_references_backup(live, candidate):
             continue
         _remove_tree(candidate, boundary=root)
 
@@ -1032,7 +1071,7 @@ def _repair_under_lock(
     print(
         "  ✓ Managed Python runtime repaired "
         f"(SQLite {current.sqlite_version_string} → {final_version})")
-    if backup is not None and backup.exists():
+    if backup is not None and backup.exists() and not _live_venv_references_backup(live, backup):
         _remove_tree(backup, boundary=root)
     elif backup is None:
         # Windows: the live venv now points at the generation; the staging venv is spent.

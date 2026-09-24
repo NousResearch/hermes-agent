@@ -430,6 +430,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/web_routers/audio.py",
+    "symbol": "_ffmpeg_s16le_mono",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/web_routers/git.py",
     "symbol": "_probe_gh_auth",
     "kind": "bare_which"

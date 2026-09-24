@@ -330,7 +330,8 @@ def install_never_free_environ() -> None:
     # A fork while another thread holds the lock would leave it held forever in the child.
     os.register_at_fork(before=lock.acquire, after_in_parent=lock.release, after_in_child=lock.release)
     lines: dict[bytes, ctypes.Array] = {}  # b"NAME=value" -> its C string (glibc's known_values)
-    arrays: list[ctypes.Array] = []  # every array we published; only the last one grows
+    arrays: list[tuple[ctypes.Array, int]] = []  # every array we published + its address; only the last grows
+    gen = [0]  # bumped by every publish, so a nested write inside an audited call forces a redo
 
     def _putenv(key, value) -> None:
         name, val = os.fsencode(key), os.fsencode(value)
@@ -343,32 +344,45 @@ def install_never_free_environ() -> None:
             if (line := lines.get(prefix + val)) is None:
                 line = lines[prefix + val] = ctypes.create_string_buffer(prefix + val)
             entry = ctypes.addressof(line)
-            live = ctypes.cast(environ.value, ctypes.POINTER(ctypes.c_void_p)) if environ.value else None
-            # getenv returns a pointer just past "NAME=" inside the matching entry, so the
-            # walk compares pointers instead of reading every string.
-            found = getenv(name)
-            target = found - len(prefix) if found else None
-            n = 0
-            while live and (current := live[n]):
-                if current == target:
-                    live[n] = entry  # replace in place, as glibc does
-                    return
-                n += 1
-            # Plain aligned stores: a concurrent walker sees them in order on x86-64 (TSO).
-            # aarch64 may reorder them, which is theoretical there and matches glibc < 2.41's
-            # own plain-store publish; Python has no cheap portable fence to add.
-            own = arrays[-1] if arrays else None
-            if own is not None and environ.value == ctypes.addressof(own) and n + 2 <= len(own):
+            # Every ctypes call is audited and a hook may write os.environ re-entrantly (RLock):
+            # redo the read if any write was published between reading the array and ours.
+            while True:
+                start = gen[0]
+                # getenv returns a pointer just past "NAME=" inside the matching entry, so the
+                # walk compares pointers instead of reading every string.
+                found = getenv(name)
+                target = found - len(prefix) if found else None
+                live = ctypes.cast(environ.value, ctypes.POINTER(ctypes.c_void_p)) if environ.value else None
+                n, hit = 0, False
+                while live and (current := live[n]):
+                    if current == target:
+                        hit = True
+                        break
+                    n += 1
+                own, own_addr = arrays[-1] if arrays else (None, None)
+                grow = not hit and not (own is not None and environ.value == own_addr and n + 2 <= len(own))
+                if grow:
+                    fresh = (ctypes.c_void_p * max(2 * (n + 2), 64))(*(live[:n] if live else ()), entry)
+                    fresh_addr = ctypes.addressof(fresh)
+                if gen[0] == start:
+                    break
+            # No audited call from here on. Plain aligned stores: a concurrent walker sees them in
+            # order on x86-64 (TSO). aarch64 may reorder them, which is theoretical there and
+            # matches glibc < 2.41's own plain-store publish; Python has no cheap portable fence.
+            gen[0] += 1
+            if hit:
+                live[n] = entry  # replace in place, as glibc does
+            elif not grow:
                 own[n + 1] = None  # terminator first, so a walker never runs past the new entry
                 own[n] = entry
-                return
-            fresh = (ctypes.c_void_p * max(2 * (n + 2), 64))(*(live[:n] if live else ()), entry)
-            arrays.append(fresh)
-            environ.value = ctypes.addressof(fresh)
+            else:
+                arrays.append((fresh, fresh_addr))
+                environ.value = fresh_addr
 
     def _unsetenv(key) -> None:
         with lock:  # glibc shifts the entries of the live array (ours included) in place
             real_unsetenv(key)
+            gen[0] += 1
 
     _putenv._hermes_never_free_environ = True  # type: ignore[attr-defined]
     _unsetenv._hermes_never_free_environ = True  # type: ignore[attr-defined]

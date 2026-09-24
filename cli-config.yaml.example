@@ -41,7 +41,8 @@ runtime:
 # Plugin Installation
 # =============================================================================
 plugins:
-  # Deadline for each Git clone or pinned-commit fetch. Default: 300 seconds.
+  # Deadline for each Git clone, fetch or checkout during plugin install. Default: 300
+  # seconds. Subdirectory installs download only that folder.
   # Raise this for large repositories or slow connections. Maximum: 3600.
   clone_timeout_seconds: 300
 

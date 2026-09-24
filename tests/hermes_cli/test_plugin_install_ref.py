@@ -169,7 +169,7 @@ def test_subdir_pin_records_source_identity_and_installs_requested_tree(
     }
 
 
-def test_clone_timeout_applies_to_real_pinned_subdir_install(monkeypatch, tmp_path):
+def test_clone_timeout_applies_to_every_network_step_of_a_pinned_install(monkeypatch, tmp_path):
     from hermes_cli import plugins_cmd
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
@@ -192,7 +192,41 @@ def test_clone_timeout_applies_to_real_pinned_subdir_install(monkeypatch, tmp_pa
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert ("clone", 137) in calls
     assert ("fetch", 137) in calls
-    assert ("checkout", 60) in calls
+    assert ("checkout", 137) in calls
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_subdir_install_downloads_only_that_subdirectory(monkeypatch, tmp_path, pinned):
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo = tmp_path / "monorepo"
+    plugin = repo / "integrations" / "hermes"
+    plugin.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "fixture@example.com")
+    _git(repo, "config", "user.name", "Fixture")
+    _git(repo, "config", "uploadpack.allowFilter", "true")
+    (plugin / "plugin.yaml").write_text("name: nested-demo\n", encoding="utf-8")
+    (repo / "unrelated.bin").write_bytes(b"x" * 4096)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "init")
+    sha = _git(repo, "rev-parse", "HEAD")
+    unrelated_blob = _git(repo, "rev-parse", "HEAD:unrelated.bin")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    seen = {}
+
+    def inspect_clone(_manifest, tree):
+        clone = tree.parents[1]
+        seen["worktree"] = sorted(p.name for p in clone.iterdir() if p.name != ".git")
+        seen["missing"] = _git(clone, "rev-list", "--objects", "--missing=print", "HEAD")
+
+    target, _manifest, _name = _install_plugin_core(
+        f"{repo.as_uri()}#integrations/hermes", force=False,
+        ref=sha if pinned else None, before_swap=inspect_clone)
+
+    assert (target / "plugin.yaml").is_file()
+    assert seen["worktree"] == ["integrations"]
+    assert f"?{unrelated_blob}" in seen["missing"].splitlines()
 
 
 def test_clone_timeout_uses_active_profile_and_bounds_invalid_values(monkeypatch, tmp_path):

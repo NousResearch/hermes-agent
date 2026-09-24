@@ -1684,7 +1684,7 @@ DEFAULT_CONFIG = {
     # Plugin system. `enabled`/`disabled` lists are written by `hermes plugins enable|disable` and
     # deliberately omitted here so an empty default never clobbers a user allow-list.
     "plugins": {
-        # Deadline (seconds) for one plugin Git clone or pinned-commit fetch. Slow repositories may
+        # Deadline (seconds) for one plugin Git clone, fetch or checkout. Slow repositories may
         # need more time; each network operation is capped at one hour.
         "clone_timeout_seconds": 300,
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep

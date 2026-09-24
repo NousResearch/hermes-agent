@@ -70,6 +70,11 @@ const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+// Raw web citations use private-use delimiters. They are transport metadata,
+// not visible markdown, and unsupported fonts render the delimiters as bars.
+// Match the whole marker (including every source) so prose and table cells do
+// not leak it while malformed private-use text remains visible for diagnosis.
+const RAW_WEB_CITATION_MARKER_RE = /\uE200cite(?:\uE202turn[^\uE200-\uE203\s]+)+\uE201/g
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -245,7 +250,11 @@ function rewriteProseSegment(segment: string): string {
   return linkifySessionRefs(
     autoLinkRawUrls(
       routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        segment
+          .replace(/`{3,}/g, '')
+          .replace(LOCAL_PREVIEW_URL_RE, '$1')
+          .replace(CITATION_MARKER_RE, '')
+          .replace(RAW_WEB_CITATION_MARKER_RE, '')
       )
     )
   )

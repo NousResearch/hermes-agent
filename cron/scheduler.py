@@ -1807,9 +1807,13 @@ def _load_credential_pool(runtime: dict, job_id: str):
     return None
 
 
-def _init_cron_mcp_tools(job_id: str) -> None:
+def _init_cron_mcp_tools(job_id: str, allowed_mcp_names: list[str] | None = None) -> None:
     """Register MCP servers for the agent's tool registry. Idempotent across ticks; non-fatal so a
-    broken MCP server never kills a working job."""
+    broken MCP server never kills a working job.
+
+    ``allowed_mcp_names`` is the job's resolved toolset list: only the MCP servers named in it are
+    spawned (built-in toolset names simply don't match; a ``no_mcp`` job resolves to a list without
+    any server name, so nothing spawns). ``None`` keeps the legacy spawn-all. #121536."""
     try:
         # Initialize MCP servers so configured mcp_servers are available to the agent's tool registry before
         # AIAgent is constructed. Without this, cron jobs never saw any MCP tools — only the gateway / CLI
@@ -1817,7 +1821,7 @@ def _init_cron_mcp_tools(job_id: str) -> None:
         # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
         from tools.mcp_tool_discovery import discover_mcp_tools
-        _mcp_tools = discover_mcp_tools()
+        _mcp_tools = discover_mcp_tools(allowed_mcp_names=allowed_mcp_names)
         if _mcp_tools:
             logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
     except Exception as _mcp_exc:
@@ -2394,8 +2398,16 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     # onto the global chain by a 5xx/429 either.
     setup.fallback_model = _job_fallback_chain(job, _cfg)
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
-    # MCP servers must be registered before AIAgent is constructed.
-    _init_cron_mcp_tools(job_id)
+    # MCP servers must be registered before AIAgent is constructed — but only the ones this job's
+    # resolved toolsets can ever see: a ``no_mcp`` or allowlisted job otherwise cold-starts and
+    # carries every configured server's process for the whole run (~hundreds of MiB of RSS per
+    # worker, #121536). Resolution here stays non-fatal (falls back to spawn-all) because the
+    # fail-closed raise at agent construction below still reports the config error.
+    try:
+        _allowed_mcp = _resolve_cron_enabled_toolsets(job, _cfg)
+    except Exception:
+        _allowed_mcp = None
+    _init_cron_mcp_tools(job_id, _allowed_mcp)
     # Only now can a requested MCP toolset be judged: its alias is process-global but its tools live
     # in this profile's registry overlay, and quiet_mode hides the empty resolution (#109050).
     if _cron_preflight_enabled(_cfg):

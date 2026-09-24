@@ -148,6 +148,75 @@ class TestPerJobToolsetMcpMerge:
         ) == ["nonexistent_ts"]
 
 
+class TestCronMcpSpawnFilter:
+    """The MCP spawn filter follows the job's resolved toolsets, so a ``no_mcp`` or allowlisted
+    job never cold-starts and carries every configured server's process (#121536)."""
+
+    def _stub_setup_deps(self, monkeypatch):
+        import cron.scheduler as sched
+
+        captured = {}
+        monkeypatch.setattr(sched, "_preflight_or_block", lambda *a, **k: None)
+        monkeypatch.setattr(
+            sched, "_resolve_job_runtime",
+            lambda job, job_id, jc: ({"provider": "test"}, "m"),
+        )
+        monkeypatch.setattr(sched, "_load_credential_pool", lambda runtime, job_id: None)
+        monkeypatch.setattr(sched, "_cron_preflight_enabled", lambda cfg: False)
+        monkeypatch.setattr(
+            sched, "_init_cron_mcp_tools",
+            lambda job_id, allowed_mcp_names=None: captured.update(
+                {"job_id": job_id, "allowed": allowed_mcp_names}),
+        )
+        return sched, captured
+
+    def test_setup_passes_resolved_toolsets_to_mcp_spawn_filter(self, monkeypatch):
+        """A no_mcp job resolves to built-in names only — none match a server, so nothing spawns."""
+        from types import SimpleNamespace
+
+        sched, captured = self._stub_setup_deps(monkeypatch)
+        monkeypatch.setattr(
+            sched, "_resolve_cron_enabled_toolsets",
+            lambda job, cfg: ["terminal", "file", "skills"],
+        )
+        sched._resolve_cron_agent_setup(
+            {"id": "j1"}, "j1", "jobname", SimpleNamespace(cfg={}, model="m")
+        )
+        assert captured["allowed"] == ["terminal", "file", "skills"]
+
+    def test_setup_toolset_resolution_failure_keeps_spawn_all(self, monkeypatch):
+        """Resolution is fail-closed at agent construction; the spawn side stays non-fatal
+        (legacy spawn-all) so a broken config still surfaces via the run's failure path."""
+        from types import SimpleNamespace
+
+        sched, captured = self._stub_setup_deps(monkeypatch)
+
+        def _boom(job, cfg):
+            raise RuntimeError("toolset resolution failed")
+
+        monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", _boom)
+        sched._resolve_cron_agent_setup(
+            {"id": "j1"}, "j1", "jobname", SimpleNamespace(cfg={}, model="m")
+        )
+        assert captured["allowed"] is None
+
+    def test_init_cron_mcp_tools_forwards_filter_to_discovery(self, monkeypatch):
+        """The filter reaches discover_mcp_tools verbatim; None keeps the legacy spawn-all."""
+        import cron.scheduler as sched
+        import tools.mcp_tool_discovery as disc
+
+        seen = []
+
+        def _fake_discover(allowed_mcp_names=None):
+            seen.append(allowed_mcp_names)
+            return []
+
+        monkeypatch.setattr(disc, "discover_mcp_tools", _fake_discover)
+        sched._init_cron_mcp_tools("j1", ["web"])
+        sched._init_cron_mcp_tools("j1")
+        assert seen == [["web"], None]
+
+
 class TestResolveOrigin:
 
 

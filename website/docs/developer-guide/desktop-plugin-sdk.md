@@ -629,41 +629,6 @@ host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
-### Desktop appearance settings
-
-`host.settings` is the supported door for the small set of Desktop-local
-appearance preferences plugins may share with the native Settings page. Writes
-take effect immediately and persist through the preference's existing storage
-schema; `subscribe` immediately emits the current value, follows later native
-or plugin writes, and returns a disposer.
-
-```ts
-host.settings.get('sessionListDensity')
-host.settings.set('sessionListDensity', 'detailed')
-
-const dispose = host.settings.subscribe('backdrop.v1', enabled => {
-  // Runs now with the current boolean, then after each change.
-})
-```
-
-The allowlist and value types are:
-
-| Key | Value |
-|-----|-------|
-| `sessionListDensity` | `'compact' \| 'comfortable' \| 'detailed'` |
-| `tabStripDefault` | `'auto' \| 'always' \| 'never'` |
-| `backdrop.v1` | `boolean` |
-| `intro-splash.v1` | `boolean` |
-| `reasoning.collapsedByDefault` | `boolean` |
-| `composerPopout.gesturesEnabled` | `boolean` |
-
-Unsupported keys and values throw synchronously instead of writing arbitrary
-app storage. Keybinds are contributed through `KEYBINDS_AREA`; theme definitions
-use `THEMES_AREA`. Their maps and the active theme/mode record are intentionally
-not settings-gateway keys because they have separate late-contribution and
-profile/window ownership semantics. Feature-detect `host.settings` when
-supporting older Desktop builds.
-
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from
 `host.profileRoutes()` and routes that RPC through its exact registry source and
@@ -781,6 +746,81 @@ happens on user click — never from a background event alone.
 The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
+
+### Desktop appearance settings — `host.settings`
+
+`host.settings` is the supported door for the small set of Desktop-local
+appearance preferences plugins may share with the native Settings page. Every
+key is bound to the store atom + setter the Settings page itself uses, so a
+plugin write is exactly a user click on that control: it takes effect at once,
+persists through the preference's existing storage schema, and the last write
+wins (no plugin "owns" the value afterwards, nothing to tear down for `set`).
+
+```ts
+type DesktopSettingValues = {
+  'backdrop.v1': boolean
+  'composerPopout.gesturesEnabled': boolean
+  'intro-splash.v1': boolean
+  'reasoning.collapsedByDefault': boolean
+  sessionListDensity: 'compact' | 'comfortable' | 'detailed'
+  tabStripDefault: 'auto' | 'always' | 'never'
+}
+host.settings.get<K extends DesktopSettingKey>(key: K): DesktopSettingValues[K]
+host.settings.set<K extends DesktopSettingKey>(key: K, value: DesktopSettingValues[K]): void
+host.settings.subscribe<K extends DesktopSettingKey>(key: K, fn: (value: DesktopSettingValues[K]) => void): () => void
+```
+
+```ts
+register(ctx) {
+  host.settings.set('sessionListDensity', 'detailed')
+
+  // subscribe emits the current value now, then after every native or plugin write.
+  const dispose = host.settings.subscribe('backdrop.v1', enabled => { /* … */ })
+  // Teardown rule: `host` is a module singleton and cannot tell which plugin
+  // subscribed, so YOU retire the listener — otherwise it outlives a disable/reload.
+  ctx.onDispose(dispose)
+}
+```
+
+Arbitration: the allowlist above is closed. An unknown key or a value outside
+the key's type throws **synchronously** (`Unsupported desktop setting: …` /
+`Invalid value for desktop setting: …`) and nothing is written — `host.settings`
+never touches `localStorage` directly, so it cannot bypass a store's schema or
+migration. Feature-detect `host.settings` when supporting older Desktop builds.
+
+Deliberately **not** keys, and why:
+
+| Wanted | Use instead | Why not a raw key |
+|--------|-------------|-------------------|
+| keybind map (`hermes.desktop.keybinds`) | `KEYBINDS_AREA` contribution | a raw map write rebinds every other plugin's shortcuts; the area merges per plugin and is torn down with it |
+| active theme / mode record | `THEMES_AREA` (register a theme; the user selects it) | theme selection is per window/profile and arbitrated by the app, not a flat preference |
+| `pluginDecisions` (desktop plugin on/off) | the app's Plugins tab (a read-only view is a separate SDK hook) | a plugin toggling another plugin's enable state is plugins interfering with each other |
+| `toolView.technical`, `embed-mode`, `titlebarAppActions`, `translucency.v2`, `user-bubble-transparency.v1`, `hermesDesktop.zoom.*` | follow-up keys after each store is audited | some drive the main process or window chrome; each needs its own guard and ownership review before it becomes plugin-writable |
+
+Migration — `hermes-appearance-hub`, which today does
+`localStorage.setItem('hermes.desktop.sessionListDensity', id)` followed by
+`window.dispatchEvent(new StorageEvent('storage', …))` to wake the app's store
+(`readSimpleKey`/`writeSimpleKey`, `readBoolKey`/`writeBoolKey`):
+
+```ts
+// before
+localStorage.setItem('hermes.desktop.backdrop.v1', String(on))
+window.dispatchEvent(new StorageEvent('storage', { key: 'hermes.desktop.backdrop.v1', newValue: String(on) }))
+// after — the store notifies its own subscribers; no synthetic StorageEvent
+host.settings.set('backdrop.v1', on)
+host.settings.set('sessionListDensity', id)          // was hermes.desktop.sessionListDensity
+host.settings.set('tabStripDefault', id)             // was hermes.desktop.tabStripDefault
+host.settings.set('reasoning.collapsedByDefault', on) // was hermes.desktop.reasoning.collapsedByDefault
+host.settings.set('composerPopout.gesturesEnabled', on)
+host.settings.set('intro-splash.v1', mode !== 'off') // replaces clicking #setting-field-appearance.intro-splash
+```
+
+Reads become `host.settings.get(key)`; its `MutationObserver` on the Settings
+page's intro-splash switch becomes `host.settings.subscribe('intro-splash.v1', fn)`
+(disposer → `ctx.onDispose`). `prompt-snippets` reads
+`localStorage.getItem('hermes.desktop.keybinds')` to back up its shortcut — that
+is the keybind-map row above: contribute the default through `KEYBINDS_AREA` and
+keep the user's override in `ctx.storage`, not in the app's map.
 
 ## Data layer — React Query + nanostores
 

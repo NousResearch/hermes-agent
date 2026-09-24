@@ -171,6 +171,14 @@ model:
 #     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
 #     # (the bundled meta-ai provider covers this — a named custom provider is
 #     # only needed for a non-default Meta-compatible endpoint)
+# Narrow a built-in provider's picker row. A `models:` list alone is added in FRONT of
+# the live catalog (it reorders, it does not shorten); `discover_models: false` pins the
+# row to exactly the ids you declare. An empty list is ignored rather than blanking the
+# row. To hide a provider entirely, use model_catalog.excluded_providers instead.
+# providers:
+#   anthropic:
+#     models: ["claude-opus-5-5", "claude-sonnet-5"]
+#     discover_models: false
 # Fast/priority tier behind an OpenAI-compatible gateway or proxy: agent.service_tier
 # (`/fast`) only reaches first-party endpoints; ask a gateway for its own tier via
 # extra_body, which is merged into every request routed to that provider.

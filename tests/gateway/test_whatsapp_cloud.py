@@ -720,6 +720,58 @@ class TestDeliveryFailureStatuses:
         assert len(warnings) == 2
 
     @pytest.mark.asyncio
+    async def test_failed_status_many_errors_stays_bounded(self, caplog):
+        import logging
+
+        adapter = _make_adapter()
+        payload = self._status_payload(
+            [
+                {
+                    "id": "wamid.MANY",
+                    "status": "failed",
+                    "recipient_id": "15551234567",
+                    "errors": [
+                        {"code": i, "title": f"err-{i}", "message": f"detail-{i}"}
+                        for i in range(500)
+                    ],
+                }
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            await adapter._dispatch_payload(payload)
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        text = warnings[0].getMessage()
+        assert "\n" not in text and "\r" not in text
+        assert "err-0" in text
+        assert "(+495 more)" in text
+        assert len(text) < 2000
+
+    @pytest.mark.asyncio
+    async def test_failed_status_through_signed_webhook(self, caplog):
+        import logging
+
+        adapter = _make_adapter(app_secret="key")
+        payload = self._status_payload(
+            [
+                {
+                    "id": "wamid.VIAHOOK",
+                    "status": "failed",
+                    "recipient_id": "15551234567",
+                    "errors": [{"code": 131047, "title": "Re-engagement message"}],
+                }
+            ]
+        )
+        body = json.dumps(payload).encode("utf-8")
+        request = _post_request(body, {"X-Hub-Signature-256": _sign("key", body)})
+        with caplog.at_level(logging.WARNING):
+            response = await adapter._handle_webhook(request)
+        assert response.status == 200
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "wamid.VIAHOOK" in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
     async def test_message_still_dispatched_alongside_failed_status(self, caplog):
         import copy
         import logging

@@ -52,6 +52,8 @@ from hermes_constants import get_hermes_dir
 logger = logging.getLogger(__name__)
 
 _LOG_VALUE_LIMIT = 300
+_MAX_ERRORS_SHOWN = 5
+_CAUSE_LIMIT = 1000
 
 
 def _one_line(value: Any, limit: int = _LOG_VALUE_LIMIT) -> str:
@@ -749,8 +751,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Walk ``entry[].changes[].value.{messages, contacts, statuses}`` and dispatch each message.
-        Delivery receipts never reach the agent: sent/delivered/read stay at debug, while
-        failed is a WARNING so a Graph-accepted send that later fails delivery is visible."""
+        Delivery receipts are not dispatched to the agent; failed receipts are surfaced to
+        operators at WARNING, while sent/delivered/read stay at debug."""
         if payload.get("object") != "whatsapp_business_account":
             logger.debug("[whatsapp_cloud] ignoring non-WABA payload (object=%r)", payload.get("object"))
             return
@@ -777,7 +779,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             state = str(status.get("status") or "").strip().lower()
             if state != "failed":
-                logger.debug("[whatsapp_cloud] status %s for %s", status.get("status"), status.get("id"))
+                logger.debug(
+                    "[whatsapp_cloud] status %s for %s",
+                    _one_line(status.get("status")), _one_line(status.get("id")))
                 return
             wamid = _one_line(status.get("id") or "<unknown>")
             recipient = _one_line(redact_phone(str(status.get("recipient_id") or "")))
@@ -801,8 +805,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "[whatsapp_cloud] delivery failed for wamid %s to %s: no error details in status payload",
                     wamid, recipient)
                 return
+            cause = "; ".join(parts[:_MAX_ERRORS_SHOWN])
+            if len(parts) > _MAX_ERRORS_SHOWN:
+                cause += f" (+{len(parts) - _MAX_ERRORS_SHOWN} more)"
             logger.warning(
-                "[whatsapp_cloud] delivery failed for wamid %s to %s: %s", wamid, recipient, "; ".join(parts))
+                "[whatsapp_cloud] delivery failed for wamid %s to %s: %s",
+                wamid, recipient, _one_line(cause, _CAUSE_LIMIT))
         except Exception:
             logger.warning("[whatsapp_cloud] delivery failed for an unparseable status payload")
             logger.debug("[whatsapp_cloud] unparseable status payload", exc_info=True)

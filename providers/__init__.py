@@ -178,6 +178,14 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     # explicitly registered that route. Other names retain exact lookup.
     if profile is None and is_custom_route:
         profile = lookup("custom")
+    # Bare named custom providers (not ``custom:<name>``) that are configured in
+    # ``providers:`` / ``custom_providers:`` but lack an explicit profile entry
+    # also share the generic wire policy. Check via the runtime helper so this
+    # module never imports ``hermes_cli`` at module level.
+    if profile is None and isinstance(name, str) and not is_custom_route:
+        from hermes_cli.runtime_provider_custom import has_named_custom_provider
+        if has_named_custom_provider(name):
+            profile = lookup("custom")
     return profile
 
 

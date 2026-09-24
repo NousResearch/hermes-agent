@@ -311,6 +311,7 @@ export const ar = defineLocale({
       'composer.focus': 'التركيز على المحرّر',
       'composer.modelPicker': 'فتح منتقي النموذج',
       'composer.voice': 'بدء / إيقاف المحادثة الصوتية',
+      'composer.dictate': 'بدء / إيقاف الإملاء',
       'view.toggleSidebar': 'تبديل الشريط الجانبي للجلسات',
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
@@ -437,6 +438,7 @@ export const ar = defineLocale({
       keysSettings: 'الإعدادات',
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
+      sessions: 'الجلسات',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -642,6 +644,10 @@ export const ar = defineLocale({
       backdropDesc: 'اختيار مقدار مزج خلفية سطح المكتب مع سطح Hermes.',
       userBubbleTitle: 'فقاعة الرسالة',
       userBubbleDesc: 'مدى شفافية رسائلك. معتمة عند 0؛ يبقى الإطار فقط عند 100.',
+      textDirectionTitle: 'اتجاه النص',
+      textDirectionDesc:
+        'كيف تحدد رسائل المحادثة وحقل الكتابة اتجاهها. «تلقائي» يتبع أول حرف في كل فقرة؛ اختر اتجاهًا عندما يظهر النص المختلط بترتيب خاطئ. تبقى الشيفرة دائمًا من اليسار إلى اليمين.',
+      textDirection: { auto: 'تلقائي', rtl: 'من اليمين إلى اليسار', ltr: 'من اليسار إلى اليمين' },
       introSplashTitle: 'شاشة المقدمة',
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
       reactionsTitle: 'تفاعلات الرسائل',
@@ -688,8 +694,6 @@ export const ar = defineLocale({
           'تبنَّ تعويذة petdex متحركة تطفو فوق التطبيق وتتفاعل مع ما يفعله Hermes — تجري أثناء تنفيذ الأدوات، وتحتفل عند النجاح، وتعبس عند الأخطاء.',
         restartHint:
           'تحتاج الحيوانات الأليفة إلى إعادة تشغيل سريعة — بدأ التطبيق العامل قبل إضافة هذه الميزة. أغلق Hermes وأعد فتحه، ثم ارجع إلى هنا.',
-        on: 'تشغيل',
-        off: 'إيقاف',
         scaleTitle: 'الحجم',
         scaleDesc: 'غيّر حجم التعويذة الطافية. يُطبّق في كل مكان فورا.',
         chooseTitle: 'اختر حيوانا أليفا',
@@ -758,7 +762,6 @@ export const ar = defineLocale({
       'browser.autoLocalForPrivateUrls': 'متصفح محلي للروابط الخاصة',
       'checkpoints.enabled': 'نقاط حفظ الملفات',
       'checkpoints.maxSnapshots': 'حد نقاط الحفظ',
-      'voice.recordKey': 'اختصار الصوت',
       'voice.maxRecordingSeconds': 'أقصى مدة للتسجيل',
       'voice.autoTts': 'قراءة الردود صوتياً',
       'stt.enabled': 'تحويل الكلام إلى نص',
@@ -904,7 +907,10 @@ export const ar = defineLocale({
       failedLoad: 'فشل تحميل الإعدادات',
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
-      invalidJson: 'JSON غير صالح'
+      invalidJson: 'JSON غير صالح',
+      voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
+      voiceShortcutHintDesc:
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -1086,6 +1092,9 @@ export const ar = defineLocale({
       moaSetDefault: 'تعيين الافتراضي',
       moaNewPresetPlaceholder: 'إعداد جديد',
       moaAddPreset: 'إضافة إعداد',
+      customModel: 'نموذج مخصص…',
+      customModelPlaceholder: 'معرّف النموذج',
+      chooseFromList: 'اختر من القائمة',
       moaDefault: 'الافتراضي:',
       moaReferenceToggle: (enabled, index) => `${enabled ? 'تعطيل' : 'تفعيل'} المرجع ${index}`,
       moaReferenceTitle: index => `المرجع ${index}`,
@@ -2739,13 +2748,18 @@ export const ar = defineLocale({
     proNeedsSubscription: 'يتطلب اشتراكا',
     free: 'مجاني',
     freeTier: 'طبقة مجانية',
-    priceTitle: 'السعر'
+    priceTitle: 'السعر',
+    customModel: 'نموذج مخصص',
+    addCustomModelAction: 'إضافة نموذج مخصص…',
+    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5'
   },
   modelVisibility: {
     title: 'النماذج',
     search: 'بحث في النماذج',
     noAuthenticatedProviders: 'لا يوجد مزوّدون مصادق عليهم.',
-    addProvider: 'إضافة مزوّد…'
+    addProvider: 'إضافة مزوّد…',
+    addCustomModel: 'إضافة نموذج مخصص',
+    removeCustomModel: 'إزالة النموذج المخصص'
   },
   shell: {
     windowControls: 'تحكم النافذة',
@@ -2846,6 +2860,11 @@ export const ar = defineLocale({
     remotePickerTitle: 'اختر مجلدا بعيدا',
     remotePickerDescription: 'استعرض المجلدات على الخادم الخلفي المتصل.',
     remotePickerSelect: 'تحديد المجلد',
+    remotePickerNewFolder: 'مجلد جديد',
+    remotePickerFolderName: 'اسم المجلد',
+    remotePickerCreateFolder: 'إنشاء المجلد',
+    remotePickerInvalidFolderName: 'أدخل اسم مجلد واحد بدون شرطات مائلة.',
+    remotePickerCreateFolderFailed: error => `تعذر إنشاء المجلد: ${error}`,
     folderTip: cwd => cwd,
     openFolder: 'فتح مجلد',
     refreshTree: 'تحديث الشجرة',

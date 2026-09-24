@@ -725,11 +725,13 @@ waiting out openers (a holder that appears mid-way makes SQLite refuse instead
 of racing it), and verifies the file header reports the new mode. It reminds
 you to set `database.journal_mode` to the same value when the config disagrees,
 because the next open re-applies the configured mode. The holder scan is local
-and POSIX-only, so it cannot see a process in another container or VM sharing
-the volume, and on Windows there is no scan at all — the command refuses there
-outright unless you pass `--force` after stopping every Hermes process
-yourself. Enabling WAL is also refused when the store sits on a cross-VM
-filesystem (virtiofs/9p), where WAL shared memory corrupts silently.
+(open-file tables on Linux/macOS, the Restart Manager on Windows), so it
+cannot see a process in another container or VM sharing the volume. If the
+scan itself fails the command refuses because it cannot prove the store is
+quiet; `--force` waives only that case after you have stopped every Hermes
+process yourself — a process the scan does find is always refused. Enabling
+WAL is also refused when the store sits on a cross-VM filesystem (virtiofs/9p),
+where WAL shared memory corrupts silently.
 
 
 ## Importing Sessions from Claude Code and Codex CLI

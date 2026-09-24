@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from agent.errors import EmptyStreamError
+
 logger = logging.getLogger(__name__)
 
 # boto3 is not in the [all] extras; lazy_deps installs it on demand.
@@ -925,7 +927,8 @@ def stream_converse_with_callbacks(
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
     has_tool_use = False
-    stop_reason = "end_turn"
+    stop_reason = None
+    interrupted = False
     usage_data: Dict[str, int] = {}
 
     def block_index(payload: Dict[str, Any], *, new_block: bool = False) -> int:
@@ -946,6 +949,7 @@ def stream_converse_with_callbacks(
             with suppress(Exception):
                 on_event()
         if on_interrupt_check and on_interrupt_check():
+            interrupted = True
             break
         if "contentBlockStart" in event:
             start_event = event["contentBlockStart"]
@@ -992,8 +996,10 @@ def stream_converse_with_callbacks(
         elif "metadata" in event:
             meta_usage = event["metadata"].get("usage", {})
             usage_data = {key: meta_usage.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")}
+    if stop_reason is None and not interrupted:
+        raise EmptyStreamError("Bedrock Converse stream ended before messageStop; response is incomplete")
     flush_text()
-    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason, "")
+    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason or "end_turn", "")
 
 
 # --- High-level API: call Bedrock Converse ---

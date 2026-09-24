@@ -126,14 +126,20 @@ class FakeLLMServer:
         *,
         default_text: str = "ok",
         aux: Responder | None = None,
-        api_key: str | None = None,
+        api_key: str | list[str] | tuple[str, ...] | frozenset[str] | None = None,
+        record_get: bool = False,
         prompt_tokens_fn: Callable[[dict[str, Any]], int] | None = None,
     ) -> None:
         self._script: list[Response] = list(script) if isinstance(script, list) else []
         self._responder: Responder | None = script if callable(script) else None
         self.default_text = default_text
         self._aux = aux or (lambda _req: Text("Fake summary of the earlier conversation."))
-        self.expected_api_key = api_key
+        # ``api_key`` may name several accepted keys (a credential pool on one host).
+        self.expected_api_key = api_key if isinstance(api_key, str) or api_key is None else None
+        self.accepted_api_keys: frozenset[str] | None = (
+            None if api_key is None else frozenset([api_key] if isinstance(api_key, str) else api_key))
+        # Opt-in so existing ``requests`` counts stay main/aux POSTs only.
+        self.record_get = record_get
         # Optional: derive reported ``usage.prompt_tokens`` from each request body (so token-driven
         # logic such as compaction triggers sees a realistic, growing count instead of a constant).
         self.prompt_tokens_fn = prompt_tokens_fn
@@ -226,6 +232,12 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
+            if server.record_get:
+                with server._lock:
+                    server.requests.append({
+                        "path": self.path, "kind": "get", "auth": self.headers.get("Authorization", ""),
+                        "headers": {k.lower(): v for k, v in self.headers.items()}, "body": None, "t": time.time(),
+                    })
             if self.path.rstrip("/").endswith("/models"):
                 self._send_json(200, {"object": "list", "data": [
                     {"id": MODEL_ID, "object": "model", "context_length": 128000},
@@ -252,7 +264,8 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
             }
             with server._lock:
                 server.requests.append(record)
-            if server.expected_api_key is not None and auth != f"Bearer {server.expected_api_key}":
+            accepted = server.accepted_api_keys
+            if accepted is not None and auth not in {f"Bearer {k}" for k in accepted}:
                 self._send_json(401, {"error": {"message": "invalid api key", "type": "authentication_error"}})
                 return
             if not self.path.rstrip("/").endswith("/chat/completions"):

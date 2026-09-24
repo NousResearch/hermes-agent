@@ -178,11 +178,88 @@ def test_handle_approve_surfaces_overwritten_entry(hermes_home):
     entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
     store.add("memory", entry)
     wa.stage_write("memory", {"action": "batch", "target": "memory", "operations": [
-        {"action": "replace", "old_text": "RULE B: ci per HEAD.", "content": "RULE B: CI is per-head."}]},
+        {"action": "replace", "old_text": "RULE B: ci per HEAD.", "content": "RULE B: CI is per-head.",
+         "matched_entry": entry}]},
         summary="batch", origin="background_review")
     out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
     assert "Approved 1" in out and entry in out
     assert store.memory_entries == ["RULE B: CI is per-head."]
+
+
+_KEPT = "Repo lives in ~/src/app; tests via make test"
+_REVIEWED = "Staging DB: pg-staging-2 (old cluster, retiring)"
+
+
+def _review_stages_remove(shape):
+    """Seed memory, then stage a remove the way the unattended background review does."""
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools.skill_provenance import (reset_current_write_origin, reset_review_attended,
+                                        set_current_write_origin, set_review_attended)
+    store = MemoryStore(); store.load_from_disk()
+    for entry in (_KEPT, _REVIEWED):
+        assert store.add("memory", entry)["success"]
+    op = {"action": "remove", "old_text": "Staging DB"}
+    kwargs = op if shape == "single" else {"operations": [op, {"action": "add", "content": "Deploys via make ship"}]}
+    origin, attended = set_current_write_origin("background_review"), set_review_attended(False)
+    try:
+        staged = json.loads(memory_tool(target="memory", store=store, **kwargs))
+    finally:
+        reset_review_attended(attended)
+        reset_current_write_origin(origin)
+    assert staged["staged"] is True, staged
+    return store, staged["pending_id"]
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
+    """Approval re-ran the staged old_text search against the file as it is THEN, so it
+    deleted the newer entry the live agent had written in place, which the approver never saw."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import load_on_disk_store, memory_tool
+    from tools import write_approval as wa
+    store, pid = _review_stages_remove(shape)
+    newer = "Staging DB: pg-staging-3 (migrated 2026-09-20, creds in vault 'stg')"
+    assert json.loads(memory_tool(action="replace", old_text="pg-staging-2", content=newer, store=store))["success"]
+
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
+
+    assert load_on_disk_store().memory_entries == [_KEPT, newer], out
+    assert "changed since it was staged" in out
+    assert wa.get_pending(wa.MEMORY, pid) is not None
+    # The pending list shows the whole entry the write targets, not just its search string.
+    assert _REVIEWED in handle_pending_subcommand(wa.MEMORY, ["pending"])
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape):
+    """Approve listed what a replace overwrote but was silent about what a remove deleted."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import load_on_disk_store
+    from tools import write_approval as wa
+    _store, pid = _review_stages_remove(shape)
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
+    assert _REVIEWED not in load_on_disk_store().memory_entries, out
+    assert _REVIEWED in out
+
+
+def test_approve_refuses_unpinned_legacy_remove(hermes_home):
+    """A record staged before removes were pinned to their full entry has no verifiable target,
+    so approve refuses it (keeping the record) instead of replaying its old_text search."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import load_on_disk_store
+    from tools import write_approval as wa
+    _store, pid = _review_stages_remove("single")
+    path = wa._pending_path(wa.MEMORY, pid)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"].pop("matched_entry", None)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert "unpinned legacy target" in handle_pending_subcommand(wa.MEMORY, ["pending"])
+
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
+
+    assert "Approved 0" in out and "predates entry pinning" in out, out
+    assert _REVIEWED in load_on_disk_store().memory_entries
+    assert wa.get_pending(wa.MEMORY, pid) is not None
 
 
 def test_handle_approval_on(hermes_home):

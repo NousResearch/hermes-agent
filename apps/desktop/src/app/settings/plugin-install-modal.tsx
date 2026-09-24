@@ -266,14 +266,21 @@ export function PluginInstallModal() {
       }
 
       if (installDesktop && probe.desktop) {
-        if (agentInstalled && desktopHalfFromPackage) {
+        if (desktopHalfFromPackage) {
           // Unified package into a LOCAL backend: the desktop half ships inside
-          // the package folder Electron just watched land. Materialise it from
-          // there (one source of truth, follows updates/uninstall) instead of
-          // cloning a second, standalone copy under another folder name.
+          // the package folder. Materialise it from there (one source of truth,
+          // follows updates/uninstall) instead of cloning a second, standalone
+          // copy under another folder name. This holds whether or not the agent
+          // install above succeeded: a package already on disk answers "already
+          // exists" without Force, and falling through to the clone would land
+          // desktop-plugins/<git-name>/ beside the package copy (#100412). When
+          // there is nothing to materialise, nothing was installed. The agent
+          // error already says so.
           const touched = (await window.hermesDesktop?.reconcileDesktopPlugins?.()) ?? []
 
-          successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
+          if (agentInstalled || touched.length > 0) {
+            successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
+          }
 
           if (touched.length > 0) {
             await discoverRuntimePlugins()

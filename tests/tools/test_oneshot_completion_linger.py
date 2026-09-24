@@ -148,8 +148,12 @@ def test_timeout_zero_disables_linger(registry):
 
 
 def test_task_id_filter_scopes_the_wait(registry):
-    mine = _make_session(sid="proc_mine", task_id="task_a")
-    other = _make_session(sid="proc_other", task_id="task_b")
+    # The terminal tool stores the container key in task_id and the spawning turn in
+    # owner_task_id; the filter must match ownership, not the shared container key.
+    mine = _make_session(sid="proc_mine", task_id="session:shared")
+    mine.owner_task_id = "task_a"
+    other = _make_session(sid="proc_other", task_id="session:shared")
+    other.owner_task_id = "task_b"
     with registry._lock:
         registry._running[mine.id] = mine
         registry._running[other.id] = other

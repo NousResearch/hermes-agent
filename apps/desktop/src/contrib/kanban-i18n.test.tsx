@@ -17,7 +17,10 @@ import { KANBAN_LOCALES } from '../plugins/kanban/i18n'
 import plugin from '../plugins/kanban/plugin'
 
 // Keep the real registration and UI path without opening a board socket.
-vi.mock('../plugins/kanban/api', async () => ({ ...(await vi.importActual('../plugins/kanban/api')), bindApi: () => () => {} }))
+vi.mock('../plugins/kanban/api', async () => ({
+  ...(await vi.importActual('../plugins/kanban/api')),
+  bindApi: () => () => {}
+}))
 let i18n: I18nContextValue
 const disposers: Array<() => void> = []
 
@@ -80,6 +83,7 @@ it('relabels Kanban after delayed config load and locale switches without replac
     if (locale !== 'zh') {
       await act(() => i18n.setLocale(locale))
     }
+
     const messages = KANBAN_LOCALES[locale]!
     expect(screen.getByText(messages.nav as string)).toBeTruthy()
     expect(screen.getByRole('button', { name: messages.openBoard as string })).toBeTruthy()

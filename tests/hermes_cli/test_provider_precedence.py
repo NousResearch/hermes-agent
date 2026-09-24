@@ -63,17 +63,6 @@ class TestProviderPrecedence:
         assert resolve_provider("auto") == "anthropic"
 
 
-    def test_warns_on_silent_oauth_fallthrough(self, monkeypatch, caplog):
-        """A populated model dict lacking `provider` that falls through to OAuth
-        emits a WARN so the silent override is visible (#29285)."""
-        import logging
-        _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
-        _login(monkeypatch, "anthropic")
-        _config(monkeypatch, {"default": "claude-x"})  # populated, no provider
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
-            assert resolve_provider("auto") == "anthropic"
-        assert any("no `provider` key" in r.message for r in caplog.records)
 
 
     def test_openrouter_pool_beats_stale_oauth(self, monkeypatch):

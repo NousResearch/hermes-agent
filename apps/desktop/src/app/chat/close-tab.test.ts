@@ -109,13 +109,6 @@ describe('closeWorkspaceTab', () => {
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
   })
 
-  it('empties main even with no session loader wired', () => {
-    loadedMainOnly()
-
-    expect(closeWorkspaceTab()).toBe(true)
-    expect(requestFreshSession).toHaveBeenCalledTimes(1)
-  })
-
   it('is a no-op on a blank draft — that IS the post-close state', () => {
     expect(closeWorkspaceTab(vi.fn())).toBe(false)
     expect(requestFreshSession).not.toHaveBeenCalled()

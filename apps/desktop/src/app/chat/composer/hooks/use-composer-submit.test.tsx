@@ -12,6 +12,7 @@ import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { $gateway } from '@/store/gateway'
 import { $parkedQueueSessions, $queuedPromptsBySession, enqueueQueuedPrompt } from '@/store/composer-queue'
+import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -19,6 +20,7 @@ import {
   setSecretRequest,
   setSudoRequest
 } from '@/store/prompts'
+import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -63,7 +65,10 @@ function renderSubmitHook({
   const editorRef = { current: editor }
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
+  const onSteerHidden = vi.fn(async () => true)
   const onSubmit = vi.fn(submit ?? (async () => true))
+  const loadIntoComposer = vi.fn()
+  const stashAt = vi.fn()
   const queueCurrentDraft = vi.fn(() => true)
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
@@ -115,16 +120,17 @@ function renderSubmitHook({
         exitQueuedEdit: vi.fn(() => false),
         focusInput: vi.fn(),
         inputDisabled,
-        loadIntoComposer: vi.fn(),
+        loadIntoComposer,
         onCancel,
         onSteer,
+        onSteerHidden,
         onSubmit,
         queueCurrentDraft,
         queueEdit: null,
         queuedPrompts: [],
         sessionId: 'runtime-session',
         setComposerText: vi.fn(),
-        stashAt: vi.fn()
+        stashAt
       }),
     { wrapper: Wrapper }
   )
@@ -134,7 +140,10 @@ function renderSubmitHook({
     hook,
     onCancel,
     onSteer,
+    onSteerHidden,
     onSubmit,
+    loadIntoComposer,
+    stashAt,
     queueCurrentDraft,
     composerSurfaceId: resolvedSurfaceId,
     setPaneVisible(nextVisible: boolean) {
@@ -150,6 +159,7 @@ function renderSubmitHook({
 function renderWireSubmit() {
   const requestGateway = vi.fn<GatewayRequest>().mockResolvedValue({})
   let state = createClientSessionState('stored-session')
+  const updatedSessions: string[] = []
   const wire = renderHook(() =>
     useSubmitPrompt({
       activeSessionIdRef: { current: 'runtime-session' },
@@ -165,7 +175,11 @@ function renderWireSubmit() {
       resumeStoredSession: vi.fn(),
       selectedStoredSessionIdRef: { current: 'stored-session' },
       syncAttachmentsForSubmit: async (sessionId, attachments) => ({ sessionId, attachments }),
-      updateSessionState: (_id, updater) => (state = updater(state)),
+      updateSessionState: (id, updater) => {
+        updatedSessions.push(id)
+        state = updater(state)
+        return state
+      },
       scope: {
         readAttachments: () => [],
         removeAttachments: vi.fn(),
@@ -175,7 +189,7 @@ function renderWireSubmit() {
       }
     })
   )
-  return { requestGateway, submit: wire.result.current }
+  return { requestGateway, submit: wire.result.current, state: () => state, updatedSessions }
 }
 
 describe('composer producer to prompt.submit provenance', () => {
@@ -203,6 +217,37 @@ describe('composer producer to prompt.submit provenance', () => {
     const params = wire.requestGateway.mock.calls.find(([method]) => method === 'prompt.submit')![1]!
     expect(params.text).toContain('@file:context.md')
     expect(params.text).not.toBe(raw)
+  })
+
+  it.each([false, true])('binds an evidence-bearing submit ack to its own occurrence after recovery=%s', async recovered => {
+    const wire = renderWireSubmit()
+    const rowId = 71
+    const sameText = 'human text'
+    if (recovered) {
+      registerRecoveredRuntime('stored-session', 'recovered-runtime')
+      wire.requestGateway.mockRejectedValueOnce(new Error('session not found'))
+    }
+    wire.requestGateway.mockImplementation(async (method, params) => {
+      if (method === 'prompt.submit') {
+        const first = wire.state().messages.find(message => message.role === 'user')!
+        // An equal-text, later occurrence must not steal the delayed ack.
+        wire.state().messages.push({ ...first, id: 'later-equal-user', rowId: undefined })
+        return { status: 'started', user_row_id: rowId }
+      }
+      return {}
+    })
+    const composer = renderSubmitHook({ text: sameText, submit: wire.submit })
+    act(() => composer.hook.result.current.submitDraft())
+    await waitFor(() => expect(wire.state().messages[0]?.rowId).toBe(rowId))
+    const calls = wire.requestGateway.mock.calls.filter(([method]) => method === 'prompt.submit')
+    expect(calls[0][1]).toHaveProperty('input_provenance.raw_text', sameText)
+    if (recovered) {
+      expect(calls[1][1]).toMatchObject({ session_id: 'recovered-runtime' })
+      expect(calls[1][1]).not.toHaveProperty('input_provenance')
+      expect(wire.updatedSessions).toContain('recovered-runtime')
+    }
+    expect(wire.state().messages[1]).toMatchObject({ id: 'later-equal-user', rowId: undefined })
+    expect(wire.state().messages[0].id).not.toBe('later-equal-user')
   })
 
   it('does not promote generated external composer requests', async () => {
@@ -315,7 +360,70 @@ describe('composer producer to prompt.submit provenance', () => {
 describe('useComposerSubmit external request routing', () => {
   afterEach(() => {
     cleanup()
+    clearQueuedPrompts('stored-session')
     vi.restoreAllMocks()
+  })
+
+  it.each([true, false])('steers a busy external visible submit and queues only on rejection (%s)', async accepted => {
+    const { onSteer, onSubmit, clearDraft } = renderSubmitHook({ busy: true, text: 'unsent draft' })
+    onSteer.mockResolvedValue(accepted)
+
+    await act(async () => {
+      expect(requestComposerSubmit('Start without connections.', { target: 'main' })).toBe(true)
+    })
+
+    expect(onSteer).toHaveBeenCalledExactlyOnceWith('Start without connections.')
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session').map(({ text, attachments }) => ({ text, attachments }))).toEqual(
+      accepted ? [] : [{ text: 'Start without connections.', attachments: [] }]
+    )
+
+    await act(async () => {
+      requestComposerSubmit('/status', { target: 'main' })
+    })
+    expect(getQueuedPrompts('stored-session').at(-1)?.text).toBe('/status')
+    expect(onSteer).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])(
+    'delivers a busy hidden request as a steer with no user turn and queues it hidden on refusal (%s)',
+    async accepted => {
+      const { onSteer, onSteerHidden, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: true })
+      onSteerHidden.mockResolvedValue(accepted)
+
+      await act(async () => {
+        requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
+      })
+
+      expect(onSteerHidden).toHaveBeenCalledExactlyOnceWith('[setup] links opened')
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts('stored-session').map(({ text, displayKind }) => ({ text, displayKind }))).toEqual(
+        accepted ? [] : [{ text: '[setup] links opened', displayKind: 'hidden' }]
+      )
+      expect(loadIntoComposer).not.toHaveBeenCalled()
+      expect(stashAt).not.toHaveBeenCalled()
+    }
+  )
+
+  it('drops an idle hidden request the gateway rejects instead of restoring it into the draft', async () => {
+    const { onSteer, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: false })
+    onSubmit.mockResolvedValue(false)
+
+    await act(async () => {
+      requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
+    })
+
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith('[setup] links opened', {
+      composerScope: 'stored-session',
+      displayKind: 'hidden'
+    })
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session')).toEqual([])
+    expect(loadIntoComposer).not.toHaveBeenCalled()
+    expect(stashAt).not.toHaveBeenCalled()
   })
 
   it('does not fan out a main ship across keep-alives or other projects', async () => {
@@ -559,41 +667,33 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
-
-  it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {
-    const { hook, onSubmit } = renderSubmitHook({ text: 'hello' })
-
-    act(() => {
-      hook.result.current.submitDraft()
-    })
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
-    )
-  })
 })
 
 describe('useComposerSubmit with a clarify parked on the session', () => {
-  const gatewayRequest = vi.fn(async () => ({ ok: true }))
+  // The clarify is a live server→client request: skipping it answers that
+  // request frame (`{ answer: '' }`), not a `clarify.respond` RPC.
+  const respond = vi.fn()
 
   const parkClarify = (sessionId: string) => {
+    const requestId = `req-${sessionId}`
+
+    rememberServerRequest({ fail: vi.fn(), id: requestId, method: 'clarify', params: {}, respond })
     $clarifyRequests.set({
       [sessionId]: {
-        requestId: `req-${sessionId}`,
+        requestId,
         question: 'which one?',
         choices: ['a', 'b'],
         multiSelect: false,
         sessionId
       }
     })
-    $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
   }
 
   afterEach(() => {
     cleanup()
-    gatewayRequest.mockClear()
+    respond.mockClear()
+    resetServerRequestsForTests()
     $clarifyRequests.set({})
-    $gateway.set(null)
     vi.restoreAllMocks()
   })
 
@@ -605,16 +705,12 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() =>
-      expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', {
-        request_id: 'req-runtime-session',
-        answer: ''
-      })
-    )
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answer: '' }))
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
     )
     expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
   it('skips the question before steering a busy turn', async () => {
@@ -626,7 +722,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
-    expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', { request_id: 'req-runtime-session', answer: '' })
+    expect(respond).toHaveBeenCalledWith({ answer: '' })
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
@@ -637,7 +733,8 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    expect(gatewayRequest).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(true)
     expect($clarifyRequests.get()['runtime-session']).toBeDefined()
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
@@ -651,7 +748,8 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
-    expect(gatewayRequest).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
+    expect(hasOpenServerRequest('req-other-session')).toBe(true)
     expect($clarifyRequests.get()['other-session']).toBeDefined()
   })
 })

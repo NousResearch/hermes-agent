@@ -1,10 +1,8 @@
 /**
- * The guided setup's escape hatch. Rides the composer's floating strip — the
- * same band the action badges and suggestion pills use — so it shares the
- * composer's edges instead of floating at an arbitrary offset. Skip assembles
- * the default layout, marks onboarding done, and drops the user in the full
- * app; the guided chat stays in the transcript. Visible from guide kickoff
- * until the layout pick assembles ($chatOnboardingSolo).
+ * Skips the guided setup. Rendered in the composer's floating strip, the same row as the action badges and the
+ * suggestion pills, so it aligns with the composer's edges. Skipping assembles the basic layout, sets the onboarding
+ * phase to skipped, and leaves the user in the full app; the guided chat stays in the transcript. Shown from guide
+ * kickoff until the layout pick assembles the app ($chatOnboardingSolo).
  */
 
 import { useStore } from '@nanostores/react'

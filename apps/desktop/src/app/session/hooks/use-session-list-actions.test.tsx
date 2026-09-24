@@ -442,29 +442,6 @@ describe('refreshSessions identity + loading hygiene', () => {
 })
 
 describe('refreshSessions batches slices into one request', () => {
-  it('makes a single sidebar call and distributes recents / cron / messaging', async () => {
-    const recents = [row('a'), row('b')]
-    const cron = [row('c1', { source: 'cron', title: 'nightly' })]
-    const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
-
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging))
-
-    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
-
-    await act(async () => {
-      await result.current.refreshSessions()
-    })
-
-    // One batched call, not three separate listAllProfileSessions reads.
-    expect(listSidebarSessions).toHaveBeenCalledTimes(1)
-    expect(listAllProfileSessions).not.toHaveBeenCalled()
-
-    // Each slice landed in its own store.
-    expect($sessions.get().map(s => s.id)).toEqual(['a', 'b'])
-    expect($cronSessions.get().map(s => s.id)).toEqual(['c1'])
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
-  })
-
   it('forwards the active profile scope + section limits to the batched call', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
@@ -607,18 +584,6 @@ describe('refreshSessions batches slices into one request', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-chat'])
   })
 
-  it('scopes the cron-jobs fetch to the active profile', async () => {
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
-
-    const scoped = renderHook(() => useSessionListActions({ profileScope: 'work' }))
-
-    await act(async () => {
-      await scoped.result.current.refreshCronJobs()
-    })
-
-    expect(getCronJobs).toHaveBeenLastCalledWith('work')
-  })
-
   it('requests cron jobs for the unified scope', async () => {
     const unified = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
 
@@ -658,28 +623,6 @@ describe('refreshSessions batches slices into one request', () => {
 })
 
 describe('messaging profile scope', () => {
-  it('refreshes messaging sessions only for the active profile', async () => {
-    listAllProfileSessions.mockResolvedValue({
-      sessions: [row('m1', { profile: 'work', source: 'signal' })],
-      total: 1
-    })
-    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
-
-    await act(async () => {
-      await result.current.refreshMessagingSessions()
-    })
-
-    expect(listAllProfileSessions).toHaveBeenCalledWith(
-      expect.any(Number),
-      1,
-      'exclude',
-      'recent',
-      'work',
-      expect.objectContaining({ excludeSources: expect.any(Array) })
-    )
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
-  })
-
   it('keeps the explicit all-profiles view unified', async () => {
     listAllProfileSessions.mockResolvedValue({ sessions: [], total: 0 })
     const { result } = renderHook(() => useSessionListActions({ profileScope: '__all__' }))

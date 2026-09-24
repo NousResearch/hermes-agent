@@ -1,10 +1,10 @@
 import { atom, computed } from 'nanostores'
 
-import { persistentAtom } from '@/lib/persisted'
-import { readKey } from '@/lib/storage'
+import { readJson, readKey, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
 /**
@@ -118,8 +118,10 @@ function isPdfFileTarget(target: PreviewTarget): boolean {
  * Without this restore-time migration, an already-open PDF keeps taking the
  * obsolete raw-binary path after Desktop itself has been upgraded. */
 export function decodePreviewTabs(raw: string): PreviewTab[] {
-  const parsed = JSON.parse(raw) as unknown
+  return parseTabList(JSON.parse(raw) as unknown)
+}
 
+function parseTabList(parsed: unknown): PreviewTab[] {
   return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
     isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
       ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
@@ -127,21 +129,159 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
   )
 }
 
-export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
-  decode: decodePreviewTabs,
-  // Inline bytes are not restorable. Strip them from images, and skip remote
-  // HTML and artifact tabs that cannot render without their in-memory payload.
-  encode: tabs =>
-    JSON.stringify(
-      tabs.filter(
-        tab =>
-          tab.target.kind !== 'artifact' &&
-          !tab.target.transient &&
-          !(tab.target.previewKind === 'html' && tab.target.dataUrl)
-      ),
-      (key, value) => (key === 'dataUrl' ? undefined : value)
-    )
+/** The tabs a profile's rail is showing, keyed by profile. */
+type TabsByProfile = Record<string, PreviewTab[]>
+
+/** Read every profile's bucket. A value written by a build that stored ONE
+ *  global array is held back and adopted by the first scope to arrive rather
+ *  than dropped — tabs the user can see are the tabs that must survive. */
+let pendingLegacyTabs: PreviewTab[] | null = null
+
+function loadTabsByProfile(): TabsByProfile {
+  const stored = readJson<unknown>(TABS_STORAGE_KEY)
+
+  if (Array.isArray(stored)) {
+    pendingLegacyTabs = parseTabList(stored)
+
+    return {}
+  }
+
+  if (!stored || typeof stored !== 'object') {
+    return {}
+  }
+
+  const byProfile: TabsByProfile = {}
+
+  for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+    byProfile[normalizeProfileKey(key)] = parseTabList(value)
+  }
+
+  return byProfile
+}
+
+const tabsByProfile = loadTabsByProfile()
+
+/** Inline bytes are not restorable. Strip them from images, and skip remote
+ *  HTML and artifact tabs that cannot render without their in-memory payload. */
+function persistableTabs(tabs: PreviewTab[]): PreviewTab[] {
+  return tabs.filter(
+    tab =>
+      tab.target.kind !== 'artifact' &&
+      !tab.target.transient &&
+      !(tab.target.previewKind === 'html' && tab.target.dataUrl)
+  )
+}
+
+function persistTabs() {
+  const buckets: TabsByProfile = {}
+
+  for (const [key, tabs] of Object.entries(tabsByProfile)) {
+    const persistable = persistableTabs(tabs)
+
+    if (persistable.length > 0) {
+      buckets[key] = persistable
+    }
+  }
+
+  // `dataUrl` holds inline bytes that cannot be restored; drop the key wherever
+  // it survives the filter above (an image tab). An empty map removes the key
+  // rather than storing `{}`, matching the tiles store.
+  writeKey(
+    TABS_STORAGE_KEY,
+    Object.keys(buckets).length === 0
+      ? null
+      : JSON.stringify(buckets, (key, value) => (key === 'dataUrl' ? undefined : value))
+  )
+}
+
+// Tabs are scoped to THE CHAT ON SCREEN, not to the window's gateway socket.
+// `session-states.ts` resolves the focused session's owner and pushes it here
+// via `setPreviewScope`; the two must not be conflated, because a focused tab
+// does not swap the socket — every bot chat is served by one pooled backend, so
+// a socket-keyed rail showed one agent's preview in every agent's chat. That is
+// the same trap `bot-row.tsx` documents for the roster highlight. (It also owns
+// the resolver, so it pushes rather than having this module reach for it — this
+// file is already imported by session-states.ts.)
+//
+// Which bucket the atom mirrors. A RENAME moves the view without the scope
+// changing, so this has to follow the rename or the persist subscriber below
+// would resurrect the bucket the rename just deleted.
+let viewKey = 'default'
+
+export const $previewTabs = atom<PreviewTab[]>([])
+
+$previewTabs.subscribe(tabs => {
+  // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
+  tabsByProfile[viewKey] = [...tabs]
+  persistTabs()
 })
+
+/** Re-home the rail onto the profile that owns the chat on screen. Called by
+ *  `session-states.ts` whenever the focused session (or its resolved owner)
+ *  changes; the previous agent's tabs must not leak into the next one. */
+export function setPreviewScope(scope: string) {
+  const next = normalizeProfileKey(scope) || 'default'
+
+  if (next === viewKey) {
+    return
+  }
+
+  if (pendingLegacyTabs) {
+    tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
+    pendingLegacyTabs = null
+    persistTabs()
+  }
+
+  viewKey = next
+  $previewTabs.set(tabsByProfile[next] ?? [])
+}
+
+/** Drop one profile's rail. Delete counterpart of the tiles store's
+ *  `dropTilesForProfile`, which profile deletion calls. */
+export function dropPreviewTabsForProfile(profile: string) {
+  const key = normalizeProfileKey(profile)
+
+  delete tabsByProfile[key]
+  persistTabs()
+
+  if (key === viewKey) {
+    $previewTabs.set([])
+  }
+}
+
+/** Move one profile's rail to another. Rename counterpart of the tiles store's
+ *  `migrateTilesForProfile`: without it a rename strands the tabs under a
+ *  profile that no longer exists. */
+export function migratePreviewTabsForProfile(oldProfile: string, newProfile: string) {
+  const from = normalizeProfileKey(oldProfile)
+  const to = normalizeProfileKey(newProfile)
+
+  if (from === to) {
+    return
+  }
+
+  const moved = tabsByProfile[from]
+
+  if (moved) {
+    delete tabsByProfile[from]
+    tabsByProfile[to] = [...(tabsByProfile[to] ?? []), ...moved]
+  }
+
+  // The view belongs to the renamed profile; only its NAME changed. Re-point it
+  // BEFORE the atom is set, so the persist subscriber writes the new bucket
+  // rather than resurrecting the one just deleted.
+  const wasInView = from === viewKey
+
+  if (wasInView) {
+    viewKey = to
+  }
+
+  persistTabs()
+
+  if (wasInView) {
+    $previewTabs.set(tabsByProfile[to] ?? [])
+  }
+}
 
 if (typeof window !== 'undefined') {
   try {

@@ -31,6 +31,7 @@ class _EditScope:
     path: str
     task_id: str
     deferred: bool = False
+    alias: str | None = None
     target: str | None = None
     preimage: str | None = None
 
@@ -76,9 +77,15 @@ def defer_protected_gate(paths, task_id):
         return False
     try:
         from tools.file_tools import _get_file_ops, _resolve_path_for_task
+        from tools.file_tools_paths import _host_text, _resolve_base_dir
         from tools.environments.local import LocalEnvironment
         if not isinstance(_get_file_ops(task_id).env, LocalEnvironment):
             return False
+        # Preserve the lexical task-anchored path: resolution dereferences POSIX aliases.
+        alias = Path(_host_text(scope.path, False))
+        if not alias.is_absolute():
+            alias = Path(_resolve_base_dir(task_id)) / alias
+        scope.alias = str(alias)
         scope.target = str(Path(_resolve_path_for_task(scope.path, task_id)).resolve())
         scope.deferred = True
         return True
@@ -138,24 +145,35 @@ def review_atomic_write(file_ops, path, content):
     record = current_task()
     try:
         before_bytes = _snapshot(canonical)
+    except (OSError, ValueError) as exc:
+        raise PermissionError("Protected target cannot be verified; read it again and prepare a new edit") from exc
+    try:
         before = before_bytes.decode("utf-8") if before_bytes is not None else None
         # A replace operation must not overwrite a preimage changed since matching.
-        preimage_matches = scope.preimage is None or before == scope.preimage
+        if scope.preimage is not None and before != scope.preimage:
+            raise PermissionError("Protected target changed; read it again and prepare a new edit")
+        if canonical != scope.target or str(Path(scope.alias).resolve()) != canonical:
+            raise PermissionError("Protected target changed; read it again and prepare a new edit")
         payload = json.dumps({"target": canonical, "before": before, "after": content}, ensure_ascii=False)
         # Full canonical target must be explicit in this experimental slice. A
         # basename alone is insufficient. This substring filter is NOT authorization:
         # prefix matches and negated references still require independent intent review.
-        if (record is not None and canonical == scope.target and preimage_matches
+        if (record is not None
                 and canonical.replace("\\", "/") in record.raw_text.replace("\\", "/")
                 and not _HIGH_RISK.search(content) and not _HIGH_RISK.search(before or "")
                 and len(payload) <= _MAX_BYTES):
             verdict = _smart_approve("protected file edit", "Complete proposed instruction edit", proposed_edit=payload)
-            approved = (verdict == "approve" and current_task() == record and not task_revoked()
-                        and str(Path(path).resolve()) == canonical and _snapshot(canonical) == before_bytes)
+            approved = verdict == "approve" and current_task() == record and not task_revoked()
+    except PermissionError:
+        # A stale preimage or retargeted operation is invalid, not human-reviewable.
+        raise
     except (OSError, ValueError, UnicodeError):
         approved = False
     if task_revoked():
         raise PermissionError("Task ended or was cancelled before the protected write")
+    if (str(Path(path).resolve()) != canonical or str(Path(scope.alias).resolve()) != canonical
+            or _snapshot(canonical) != before_bytes):
+        raise PermissionError("Protected target changed; read it again and prepare a new edit")
     if not approved:
         error = _human(scope, canonical)
         if error:
@@ -164,4 +182,7 @@ def review_atomic_write(file_ops, path, content):
     # before handing the pinned path to the atomic writer.
     if task_revoked():
         raise PermissionError("Task ended or was cancelled before the protected write")
+    if (str(Path(path).resolve()) != canonical or str(Path(scope.alias).resolve()) != canonical
+            or _snapshot(canonical) != before_bytes):
+        raise PermissionError("Protected target changed; read it again and prepare a new edit")
     yield canonical

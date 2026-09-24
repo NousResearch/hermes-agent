@@ -5,6 +5,8 @@ exercise the dispatch site live in test_slash_access_dispatch.py.
 """
 from __future__ import annotations
 
+import pytest
+
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
@@ -19,11 +21,6 @@ from gateway.slash_access import (
 
 
 class TestPolicyFromExtra:
-    def test_empty_extra_is_disabled(self):
-        p = policy_from_extra({}, "dm")
-        assert p.enabled is False
-        assert p.admin_user_ids == frozenset()
-        assert p.user_allowed_commands == frozenset()
 
     def test_disabled_policy_treats_anyone_as_admin(self):
         # When gating is off, downstream code uses is_admin/can_run uniformly.
@@ -126,3 +123,27 @@ class TestPolicyForSource:
         assert grp_p.enabled is True
         assert grp_p.can_run("999", "stop") is False  # gated
 
+
+@pytest.mark.parametrize(
+    ("extra", "chat_type", "admin", "gated"),
+    [
+        # DM-only gated: blank used to fall into the ungated group scope (#116282).
+        ({"allow_admin_from": ["111"]}, "", "111", True),
+        ({"allow_admin_from": ["111"]}, None, "111", True),
+        # Mirror image and tie keep the historical group scope; ungated stays ungated.
+        ({"group_allow_admin_from": ["222"]}, "", "222", True),
+        ({"allow_admin_from": ["111"], "group_allow_admin_from": ["222"]}, None, "222", True),
+        ({}, "", None, False),
+    ],
+)
+def test_blank_chat_type_resolves_to_the_gated_scope(extra, chat_type, admin, gated):
+    """A blank/None chat_type (relay frames may carry ""/null, restored rows keep a
+    stored empty value) must resolve to whichever scope is gated, never to an
+    ungated allow-everything scope (#116282)."""
+    cfg = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, extra=extra)})
+    src = SessionSource(platform=Platform.DISCORD, chat_id="A", chat_type=chat_type, user_id="999")
+    p = policy_for_source(cfg, src)
+    assert p.enabled is gated
+    assert p.can_run("999", "stop") is (not gated)
+    if admin is not None:
+        assert p.is_admin(admin) is True

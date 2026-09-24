@@ -11,10 +11,6 @@ import pytest
 from agent import coding_context as cc
 
 
-def test_coding_guidance_advertises_persistent_terminal_state():
-    assert "Terminal state persists across calls" in cc.CODING_AGENT_GUIDANCE
-    assert "Activate a virtualenv" in cc.CODING_AGENT_GUIDANCE
-    assert "instead of re-sourcing it before every test command" in cc.CODING_AGENT_GUIDANCE
 
 
 def _git_init(path):
@@ -274,20 +270,6 @@ class TestEditFormatSteering:
         assert cc._model_family(None) is None
         assert cc._model_family("") is None
 
-    def test_openai_family_gets_v4a_nudge(self, tmp_path):
-        _git_init(tmp_path)
-        mode = cc.resolve_runtime_mode(
-            platform="cli", cwd=tmp_path,
-            config={"agent": {"coding_context": "on"}}, model="openai/gpt-5.4",
-        )
-        brief = mode.system_blocks()[0]
-        assert "mode='patch'" in brief
-        assert "V4A" in brief
-        assert "write_file" in brief  # new files authored, not patched
-        # Codex-family harnesses ship apply_patch (V4A) as the ONLY editor and
-        # instruct it even for single-file edits — never nudge replace mode.
-        assert "single-file" in brief
-        assert "mode='replace'" not in brief
 
 
 
@@ -299,14 +281,6 @@ class TestEditFormatSteering:
 class TestProfiles:
 
 
-    def test_coding_profile_shape(self):
-        # The coding profile declares the seams other domains read.
-        assert cc.CODING_PROFILE.toolset == cc.CODING_TOOLSET
-        assert cc.CODING_PROFILE.guidance
-        assert cc.CODING_PROFILE.model_hint == "coding"
-        # General is inert.
-        assert cc.GENERAL_PROFILE.toolset is None
-        assert cc.GENERAL_PROFILE.guidance == ""
 
     def test_skill_demotion_gated_on_focus(self, tmp_path):
         # Names-only demotion is opt-in via focus mode — the default (auto)

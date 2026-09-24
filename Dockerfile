@@ -247,12 +247,10 @@ RUN cd plugins/platforms/photon/sidecar && \
 # Health export is enabled. Collector and observability-backend dependencies
 # remain external and are not part of the Hermes production image.
 #
-# The hindsight memory provider's client (hindsight-client) is baked in
-# for the same reason: it lazy-installs into /opt/hermes/.venv at first
-# use, which lives inside the (immutable) image layer rather than the
-# mounted /opt/data volume, so it is lost on every container recreate /
-# image update and recall/retain then fails with
-# `ModuleNotFoundError: No module named 'hindsight_client'` (#38128).
+# Catalog memory plugins (e.g. hindsight, since it left the tree) are not
+# baked in: their pip dependencies install at plugin-install time through
+# tools/lazy_deps.py into HERMES_LAZY_INSTALL_TARGET (the durable /opt/data
+# volume, see below), so they survive container recreates (#38128).
 #
 # The Matrix gateway's deps ([matrix] extra) are baked in because
 # python-olm (transitive via mautrix[encryption]) builds from source on
@@ -261,10 +259,15 @@ RUN cd plugins/platforms/photon/sidecar && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# Google Chat's [google-chat] extra (google-cloud-pubsub + Chat API clients)
+# is baked so hosted/immutable images can enable the adapter without writing
+# the sealed venv. Runtime --install-deps still routes through lazy_deps into
+# HERMES_LAZY_INSTALL_TARGET when the extra is not present.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra matrix --extra google-chat
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

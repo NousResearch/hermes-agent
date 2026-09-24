@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS, SUBCOMMAND_DESCRIPTIONS
+from hermes_cli.commands import COMMANDS, SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -25,19 +25,20 @@ _personalities_memo: Optional[
 
 
 def _personalities_from_cli_config() -> Dict[str, Any]:
-    """``available_personalities(load_cli_config())`` memoised on config path+mtime+size:
+    """``available_personalities(load_cli_config())`` memoised on config path+signature:
     load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
     Falls back to a fresh load when the file cannot be stat'ed."""
     global _personalities_memo
     from cli import load_cli_config
+    from utils import file_signature
     from hermes_cli.personality import available_personalities
     try:
         from hermes_cli.config import get_config_path
         cfg_path = get_config_path()
         st = cfg_path.stat()
-        sig = (str(cfg_path), st.st_mtime_ns, st.st_size)
+        sig = (str(cfg_path), *file_signature(st))
     except Exception:
-        sig = (None, None, None)
+        sig = (None, None, None, None, None)
     if _personalities_memo is None or _personalities_memo[0] != sig:
         _personalities_memo = (sig, available_personalities(load_cli_config()))
     return _personalities_memo[1]
@@ -281,11 +282,6 @@ class SlashCommandCompleter(Completer):
         self._file_cache_cwd: str = ""
 
     def _command_allowed(self, slash_command: str) -> bool:
-        from hermes_cli.commands import command_available, resolve_command
-
-        command = resolve_command(slash_command)
-        if command is not None and not command_available(command):
-            return False
         try:
             return self._command_filter is None or bool(self._command_filter(slash_command))
         except Exception:
@@ -440,8 +436,7 @@ class SlashCommandCompleter(Completer):
                 yield from handler(sub_text, sub_text.lower())
             elif first_arg and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 yield from _prefix_completions(
-                    ((s, SUBCOMMAND_DESCRIPTIONS.get(base_cmd, {}).get(s))
-                     for s in SUBCOMMANDS[base_cmd]), sub_text)
+                    ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
             return
         word = text[1:]
 

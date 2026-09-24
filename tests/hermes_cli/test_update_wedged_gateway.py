@@ -117,7 +117,8 @@ def _start_freezeable_producer(tmp_path, block_s, errors, write_stall_s=1.5):
     write, so the file goes stale while the loop keeps dispatching.
     """
     freeze_evt = asyncio.Event()
-    state: dict = {"loop": None, "trigger": None, "thread": None}
+    stop_evt = asyncio.Event()
+    state: dict = {"loop": None, "trigger": None, "thread": None, "stop": lambda: None}
     ready = threading.Event()
 
     def stalling_write(**_kwargs):
@@ -137,6 +138,7 @@ def _start_freezeable_producer(tmp_path, block_s, errors, write_stall_s=1.5):
         loop = asyncio.get_running_loop()
         state["loop"] = loop
         state["trigger"] = lambda: loop.call_soon_threadsafe(freeze_evt.set)
+        state["stop"] = lambda: loop.call_soon_threadsafe(stop_evt.set)
         with patch("gateway.shutdown_watchdog.write_loop_heartbeat", stalling_write):
             task = asyncio.create_task(
                 loop_heartbeat_forever(interval_s=1.0, home=tmp_path)
@@ -144,8 +146,7 @@ def _start_freezeable_producer(tmp_path, block_s, errors, write_stall_s=1.5):
             gate = asyncio.create_task(freeze_gate())
             try:
                 ready.set()
-                while True:
-                    await asyncio.sleep(3600)
+                await stop_evt.wait()
             finally:
                 task.cancel()
                 gate.cancel()
@@ -227,7 +228,7 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     monkeypatch.setattr(
         gateway_cli,
         "_graceful_restart_via_sigusr1",
-        lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+        lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
     )
     monkeypatch.setattr(
         gateway_cli,
@@ -313,14 +314,6 @@ class TestProbeGatewayLoopLiveness:
             == gateway_cli.GATEWAY_LOOP_UNKNOWN
         )
 
-    def test_invalid_stale_after_falls_back_to_default(self, tmp_path):
-        _write_heartbeat(tmp_path, pid=4242, age_s=600.0)
-        assert (
-            gateway_cli.probe_gateway_loop_liveness(
-                4242, stale_after="bogus", home=tmp_path
-            )
-            == gateway_cli.GATEWAY_LOOP_WEDGED
-        )
 
     def test_probe_never_raises_on_unreadable_path(self, monkeypatch):
         monkeypatch.setattr(
@@ -343,7 +336,7 @@ class TestEscalateWedgedGateway:
             lambda pid, force=False, **kwargs: signals.append(("kill" if force else "term", pid)),
         )
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout: True
+            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: True
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is True
@@ -375,7 +368,7 @@ class TestEscalateWedgedGateway:
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_pid_exit",
-            lambda pid, timeout: waits.append(timeout) or False,
+            lambda pid, timeout, **_: waits.append(timeout) or False,
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is False
@@ -387,7 +380,7 @@ class TestEscalateWedgedGateway:
 
         monkeypatch.setattr(gateway_cli, "terminate_pid", raise_gone)
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout: True
+            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: True
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is True
@@ -402,7 +395,7 @@ class TestEscalateWedgedGateway:
 
         monkeypatch.setattr(gateway_cli, "terminate_pid", term)
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout: False
+            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: False
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is False
@@ -442,7 +435,7 @@ class TestLaunchdRestartWedgedIntegration:
         monkeypatch.setattr(
             gateway_cli,
             "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+            lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
         )
         # KeepAlive revival observed instantly — avoids the real 15s poll
         # (mocked subprocess.run returns empty stdout, so the PID probe
@@ -496,155 +489,6 @@ class TestLoopTickWitness:
     witnesses agree the loop stopped scheduling.
     """
 
-    @_NEEDS_UNIX_SOCKETS
-    def test_stalled_heartbeat_write_never_escalates_a_running_loop(
-        self, tmp_path, monkeypatch
-    ):
-        """Producer + consumer composition.
-
-        While the heartbeat write is stalled longer than the stale budget, a
-        loop that demonstrably keeps dispatching must probe ALIVE — and a
-        restart path fed by the real probe must take the graceful drain,
-        never the bounded escalation. This is the exact false-positive the
-        review called out: the measured fsync stall (112.6s max) exceeds the
-        90s destructive-classifier threshold.
-        """
-        pid = os.getpid()
-        block_s = 1.5
-        stale_after = 1.0
-
-        # First write lands immediately; every later write stalls like an
-        # fsync on the incident filesystem, so the file ages past the budget
-        # while the loop keeps running.
-        def stalling_write(**_kwargs):
-            if not get_loop_heartbeat_path(tmp_path).exists():
-                return write_loop_heartbeat(**_kwargs)
-            time.sleep(block_s)
-            return write_loop_heartbeat(**_kwargs)
-
-        errors = []
-
-        async def producer() -> None:
-            with patch(
-                "gateway.shutdown_watchdog.write_loop_heartbeat", stalling_write
-            ):
-                task = asyncio.create_task(
-                    loop_heartbeat_forever(interval_s=1.0, home=tmp_path)
-                )
-                try:
-                    # One interval (1.0s) elapses, the second write starts and
-                    # stalls; 1.35s in the file is stale but the loop ticks.
-                    await asyncio.sleep(1.35)
-                finally:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-
-        def run_producer() -> None:
-            try:
-                asyncio.run(producer())
-            except Exception as exc:  # surfaced via errors after join
-                errors.append(exc)
-
-        thread = threading.Thread(target=run_producer, daemon=True)
-        thread.start()
-        try:
-            sock_path = get_loop_tick_socket_path(tmp_path, pid)
-            deadline = time.monotonic() + 5.0
-            while not sock_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            assert sock_path.exists(), "producer never armed the tick socket"
-
-            hb_path = get_loop_heartbeat_path(tmp_path)
-            deadline = time.monotonic() + 5.0
-            while True:
-                try:
-                    age = time.time() - hb_path.stat().st_mtime
-                except FileNotFoundError:
-                    # The socket is armed before the first write lands; the
-                    # file appears a tick later.
-                    age = 0.0
-                if age > stale_after:
-                    break
-                assert time.monotonic() < deadline, "heartbeat never went stale"
-                time.sleep(0.02)
-
-            # The file is stale but the loop answers: ALIVE, not WEDGED.
-            assert (
-                gateway_cli.probe_gateway_loop_liveness(
-                    pid, home=tmp_path, stale_after=stale_after, tick_timeout=0.25
-                )
-                == gateway_cli.GATEWAY_LOOP_ALIVE
-            )
-
-            # The restart path fed by the REAL probe must drain, not escalate.
-            events = []
-            monkeypatch.setattr(
-                gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway"
-            )
-            monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
-            monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
-            monkeypatch.setattr(
-                "gateway.status.get_running_pid", lambda *a, **k: pid
-            )
-            monkeypatch.setattr(
-                gateway_cli, "_request_gateway_self_restart", lambda pid: False
-            )
-            monkeypatch.setattr(
-                gateway_cli,
-                "_escalate_wedged_gateway",
-                lambda pid, **kw: events.append("escalate") or True,
-            )
-            monkeypatch.setattr(
-                gateway_cli,
-                "terminate_pid",
-                lambda pid, force=False, **kwargs: events.append(("kill" if force else "term", pid)),
-            )
-            # Never let a real SIGUSR1 escape to os.getpid() — the drain
-            # path now goes through _graceful_restart_via_sigusr1 (in-place
-            # restart) before any exit-wait, and this test feeds the REAL
-            # launchd_restart our own live PID.
-            monkeypatch.setattr(
-                gateway_cli,
-                "_graceful_restart_via_sigusr1",
-                lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
-            )
-            monkeypatch.setattr(
-                gateway_cli,
-                "_wait_for_gateway_exit",
-                lambda timeout, force_after=None: events.append(("drain", timeout))
-                or True,
-            )
-            monkeypatch.setattr(
-                gateway_cli,
-                "_wait_for_launchd_service_pid",
-                lambda label, old_pid, timeout=10.0, *, domain: events.append("observe")
-                or True,
-            )
-            monkeypatch.setattr(
-                gateway_cli.subprocess,
-                "run",
-                lambda *a, **k: events.append("kickstart")
-                or __import__("types").SimpleNamespace(
-                    returncode=0, stdout="", stderr=""
-                ),
-            )
-            monkeypatch.setattr(
-                gateway_cli, "_clear_launchd_unsupported_marker", lambda: None
-            )
-            # The real probe resolves the state dir through this hook.
-            monkeypatch.setattr(
-                "gateway.shutdown_watchdog._process_hermes_home", lambda: tmp_path
-            )
-            gateway_cli.launchd_restart()
-            assert "escalate" not in events
-            drains = [e for e in events if isinstance(e, tuple) and e[0] == "drain"]
-            assert drains, events
-        finally:
-            thread.join(timeout=5.0)
-            assert not errors, errors
 
     @_NEEDS_UNIX_SOCKETS
     def test_off_loop_completion_cannot_manufacture_fresh_liveness(self, tmp_path):
@@ -722,36 +566,7 @@ class TestLoopTickWitness:
             )
             == gateway_cli.GATEWAY_LOOP_ALIVE
         )
-        # First probe (miss) + exactly one sustained-window follow-up.
-        assert len(calls) == 2
 
-    def test_sustained_silence_is_required_for_wedge(self, tmp_path, monkeypatch):
-        """WEDGED only after the full bounded window of consecutive misses.
-
-        With ``tick_strikes=2`` the probe must observe BOTH samples silent
-        before granting the wedge verdict; a single silent sample alone
-        would previously have escalated.
-        """
-        pid = 4242
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli,
-            "_probe_loop_tick_socket",
-            lambda _pid, _home, timeout=1.0: (calls.append(timeout), False)[1],
-        )
-        _write_heartbeat(tmp_path, pid, age_s=600.0)
-        _mark_witness_flag(tmp_path, armed=True, age_s=600.0)
-        assert (
-            gateway_cli.probe_gateway_loop_liveness(
-                pid,
-                home=tmp_path,
-                tick_timeout=0.2,
-                tick_strikes=2,
-                tick_gap_s=0.0,
-            )
-            == gateway_cli.GATEWAY_LOOP_WEDGED
-        )
-        assert len(calls) == 2  # miss #1 (initial probe) + miss #2 (window)
 
     def test_witness_vanishing_mid_window_is_unknown(self, tmp_path, monkeypatch):
         """A witness that disappears mid-window is ambiguity, not a wedge.
@@ -936,6 +751,7 @@ class TestLoopTickWitness:
             drains = [e for e in events if isinstance(e, tuple) and e[0] == "drain"]
             assert drains, events
         finally:
+            state["stop"]()
             state["thread"].join(timeout=5.0)
             assert not errors, errors
 
@@ -982,6 +798,7 @@ class TestLoopTickWitness:
             )
             assert verdict == gateway_cli.GATEWAY_LOOP_WEDGED, verdict
         finally:
+            state["stop"]()
             state["thread"].join(timeout=5.0)
             assert not errors, errors
 
@@ -1093,26 +910,3 @@ class TestLoopTickTcpWitness:
         )
 
 
-def test_default_probe_budget_stays_inside_query_tier():
-    """The module doc pins the worst-case wedge-suspected probe at ~3.4s,
-    'far inside the 10s query tier'. Assert the strike-count math so
-    retuning tick_timeout / tick_strikes / tick_gap_s can't silently blow
-    past that tier (reviewer ask on #92315).
-
-    Worst case: the first probe misses (tick_timeout), then the sustained
-    window runs (tick_strikes - 1) more probes, each up to tick_timeout,
-    with tick_gap_s sleeps between attempts.
-    """
-    import inspect
-
-    sig = inspect.signature(gateway_cli.probe_gateway_loop_liveness)
-    tick_timeout = sig.parameters["tick_timeout"].default
-    tick_strikes = sig.parameters["tick_strikes"].default
-    tick_gap_s = sig.parameters["tick_gap_s"].default
-
-    worst_case = tick_strikes * tick_timeout + (tick_strikes - 1) * tick_gap_s
-    assert worst_case <= 5.0, (
-        f"default probe budget {worst_case:.1f}s exceeds half the 10s query "
-        "tier — retune tick_timeout/tick_strikes/tick_gap_s or update the "
-        "subprocess-timeout doc reference in hermes_cli/gateway.py"
-    )

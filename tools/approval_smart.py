@@ -124,6 +124,16 @@ def _smart_approve(command: str, description: str, *, proposed_edit: str | None 
         answer = (response.choices[0].message.content or "").strip().upper()
         if task_revoked() or (task_record is not None and current_task() != task_record):
             return "escalate"
+        if not answer:
+            # WARNING, not DEBUG: an empty-but-200 body is an infrastructure failure, not a
+            # verdict — typically finish_reason=="length" after a reasoning model spent the
+            # whole max_tokens budget on hidden reasoning (#117428). It escalates like any
+            # uncertain outcome, but is indistinguishable from a genuine ESCALATE in the logs
+            # unless this fires above DEBUG.
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            logger.warning("Smart approvals: guardian returned an empty answer "
+                           "(finish_reason=%s), escalating", finish_reason)
+            return "escalate"
         return _VERDICTS.get(answer, "escalate")
     except Exception as e:
         # WARNING, not DEBUG: a failed/blocked guardian call is a real event

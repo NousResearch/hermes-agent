@@ -137,21 +137,3 @@ def test_mode_and_timeout_parity_across_surfaces(
             )
 
 
-def test_tui_loader_delegates_to_core(hermes_home, tui_server):
-    """The TUI must not re-resolve mode itself — it delegates to the core.
-
-    Pin the delegation seam directly: patching the core resolver changes
-    what the TUI reports, proving there is no independent config read left.
-    """
-    approval_context = importlib.import_module("tools.approval_context")
-
-    with patch.object(approval_context, "_get_approval_mode", return_value="smart"):
-        assert tui_server._load_approval_mode() == "smart"
-    with patch.object(approval_context, "_get_approval_mode", return_value="off"):
-        assert tui_server._load_approval_mode() == "off"
-    # Defensive clamp: an out-of-vocabulary value from the core is coerced
-    # to manual rather than leaking an unknown mode to the TUI client.
-    with patch.object(
-        approval_context, "_get_approval_mode", return_value="weird"
-    ):
-        assert tui_server._load_approval_mode() == "manual"

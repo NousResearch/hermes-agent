@@ -69,7 +69,7 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 ## Memory Providers: Ship as a Standalone Plugin
 
-**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
+**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
 
 Standalone memory plugins:
 
@@ -341,7 +341,12 @@ User message → AIAgent._run_agent_loop()
 - **PEP 8** with practical exceptions (we don't enforce strict line length)
 - **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does — `# increment counter` adds nothing
 - **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` — use `exc_info=True` for unexpected errors so stack traces appear in logs
+- **Error messages**: every user-facing error message names the actual cause and the remediation step — never the proximate symptom. A missing API key is "no OpenRouter API key configured — set `OPENROUTER_API_KEY`", never "payment/credit error"; a failed request logs the exception class and message (secret-redacted) rather than an empty reason; a timed-out long job reports the timeout and where the job went, not a fallback-routing noise string. If you know the cause, say it; if you don't, say what you do know plus what to check — never a placeholder that points somewhere else.
 - **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
+
+### Fail loud at integration boundaries
+
+**Fail loud at integration boundaries.** When a configuration value, credential, or user-supplied input is unusable — a placeholder token, an empty required field, an out-of-range number like `TERMINAL_TIMEOUT=0` — reject it where it is read and name the problem: a clear error at startup or at the write path, never a silent no-op that turns the confusion into a debugging session later. Each boundary validates its own values in place; there is intentionally no shared `fail_loud` helper, because one call-site shape does not fit all — the rule is about the behavior the user sees, not the function you call. A silent default is acceptable only where the default is a deliberate product choice documented in the config reference; everything else should tell the user what broke, where, and what to set.
 
 ---
 
@@ -451,8 +456,6 @@ prerequisites:                     # Optional legacy runtime requirements
   commands: [curl, jq]             #   Advisory only; does not hide the skill
 metadata:
   hermes:
-    editorial_name: My Skill          # Optional human-readable UI title
-    editorial_description: What this skill helps a person accomplish.
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
     fallback_for_toolsets: [web]       # Optional — show only when toolset is unavailable
@@ -484,12 +487,6 @@ Known failure modes and how to handle them.
 ## Verification
 How the agent confirms it worked.
 ```
-
-`metadata.hermes.editorial_name` and `editorial_description` are optional,
-human-facing presentation copy. They may use natural titles and fuller prose
-than the routing-focused top-level fields. Hermes continues to identify and
-route skills with `name` and `description`; UIs fall back to that canonical
-pair when editorial copy is absent.
 
 ### Platform-specific skills
 
@@ -610,7 +607,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
 
    If the skill depends on an MCP server, name the MCP server and document its setup in `## Prerequisites`. Third-party CLIs (e.g. `ffmpeg`, `gh`, a specific SDK) are fine to invoke from inside script files, but the prose should frame the interaction as "invoke through the `terminal` tool", not as a manual shell session.
 
-3. **`platforms:` gating audited against actual script imports.** Skills that use POSIX-only primitives (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, hardcoded `/tmp` paths, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`, `systemctl`) must declare their supported platforms via the `platforms:` frontmatter. Default posture is to fix it cross-platform first — `tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists()`, Python-level filtering instead of `grep`. Gate to a narrower set only when the dependency is genuinely platform-bound (e.g. `osascript` is macOS-only, `/proc` is Linux-only).
+3. **`platforms:` gating audited against actual script imports.** Skills that use POSIX-only primitives (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, hardcoded `/tmp` paths, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`, `systemctl`) must declare their supported platforms via the `platforms:` frontmatter. Default posture is to fix it cross-platform first — `tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists()`, Python-level filtering instead of `grep`. Gate to a narrower set only when the dependency is genuinely platform-bound (e.g. `osascript` is macOS-only, `/proc` is Linux-only). <!-- no-tmp: ok — names the POSIX-only anti-pattern reviewers look for -->
 
 4. **`author` credits the human contributor first.** For external contributions, the contributor's real name + GitHub handle goes first (`Jane Doe (jane-doe)`); "Hermes Agent" is the secondary collaborator. If the contributor's commit shows "Hermes Agent" as author because they used Hermes to draft the skill, replace it with their actual name — credit the human, not the tool.
 

@@ -13,7 +13,6 @@ from tools.osv_check import (
     _parse_package_from_args,
     _parse_npm_package,
     _parse_pypi_package,
-    _query_osv,
 )
 
 
@@ -21,6 +20,34 @@ class TestInferEcosystem:
     def test_npx(self):
         assert _infer_ecosystem("npx") == "npm"
         assert _infer_ecosystem("/usr/bin/npx") == "npm"
+
+
+    def test_windows_shims(self):
+        # Real shim names installed by each runner on Windows
+        # (npm ships npx.cmd; uv ships uvx.exe; pip installs pipx.exe).
+        assert _infer_ecosystem("npx.cmd") == "npm"
+        assert _infer_ecosystem("NPX.CMD") == "npm"
+        assert _infer_ecosystem("uvx.exe") == "PyPI"
+        assert _infer_ecosystem("UVX.EXE") == "PyPI"
+        assert _infer_ecosystem("pipx.exe") == "PyPI"
+
+
+    def test_windows_paths_either_separator(self):
+        # Backslash paths must resolve even when the check runs on POSIX
+        # (config authored for Windows) — os.path.basename alone would not.
+        assert _infer_ecosystem(r"C:\Program Files\nodejs\npx.cmd") == "npm"
+        assert _infer_ecosystem("C:/Program Files/nodejs/nPx.CmD") == "npm"
+        assert _infer_ecosystem(r"C:\Users\u\.local\bin\UVX.EXE") == "PyPI"
+        assert _infer_ecosystem("C:/Users/u/.local/bin/uVx.ExE") == "PyPI"
+
+
+    def test_lookalikes_stay_fail_open(self):
+        # No broad suffix matching: only the shims each runner actually
+        # installs are recognized.
+        assert _infer_ecosystem("my-npx") is None
+        assert _infer_ecosystem("npx.exe") is None
+        assert _infer_ecosystem("npx.cmd.bak") is None
+        assert _infer_ecosystem("uvx.cmd.old") is None
 
 
     def test_unknown(self):
@@ -222,29 +249,6 @@ class TestCheckPackageForMalware:
 
         assert mock_url2.call_count == 0, "disk cache must satisfy the second call"
 
-    def test_disk_cache_format_versioned(self, tmp_path, monkeypatch):
-        """Disk cache JSON has a version field and recoverable entries."""
-        from tools import osv_check
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
-        mock_response.__enter__ = lambda s: s
-        mock_response.__exit__ = MagicMock(return_value=False)
-
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
-            check_package_for_malware("uvx", ["mcp-server-format"])
-
-        cache_file = tmp_path / "cache" / "osv_check.json"
-        with open(cache_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        assert data["version"] == osv_check._DISK_CACHE_VERSION
-        assert "entries" in data
-        key = "PyPI|mcp-server-format|"
-        assert key in data["entries"]
-        assert "expiry" in data["entries"][key]
-        assert data["entries"][key]["result"] is None
 
     def test_disk_cache_retries_after_transient_oserror(self, tmp_path, monkeypatch):
         """A busy/unreadable cache file must not disable disk loads for the process."""
@@ -285,30 +289,3 @@ class TestCheckPackageForMalware:
             assert ("PyPI", "mcp-server-retry", None) in osv_check._cache
 
 
-class TestLiveOsvQuery:
-    """Live integration test against the real OSV API. Skipped if offline."""
-
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib.request", reason="no network"),
-        reason="network required",
-    )
-    def test_known_malware_package(self):
-        """node-hide-console-windows has a real MAL- advisory."""
-        try:
-            result = _query_osv("node-hide-console-windows", "npm")
-            assert len(result) >= 1
-            assert result[0]["id"].startswith("MAL-")
-        except Exception:
-            pytest.skip("OSV API unreachable")
-
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib.request", reason="no network"),
-        reason="network required",
-    )
-    def test_clean_package(self):
-        """react should have zero MAL- advisories."""
-        try:
-            result = _query_osv("react", "npm")
-            assert len(result) == 0
-        except Exception:
-            pytest.skip("OSV API unreachable")

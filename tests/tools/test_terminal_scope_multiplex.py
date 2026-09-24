@@ -240,3 +240,39 @@ def test_dotenv_json_strings_stay_json_strings(tmp_path):
     scope = build_profile_terminal_scope(home)
     assert json.loads(scope["TERMINAL_DOCKER_FORWARD_ENV"]) == ["EMAIL_HOME_ADDRESS"]
     assert json.loads(scope["TERMINAL_DOCKER_VOLUMES"]) == ["/tmp/a:/data"]
+
+
+def test_launch_turn_binds_terminal_scope_once_multiplexing_is_active(
+    tmp_path, monkeypatch
+):
+    """#107422: after multiplexing starts, launch turns bind the launch home's
+    own terminal policy (mirrors ``prompt_turn._prepare_turn_input``'s
+    ``elif _served_profile_homes`` branch) so poisoned ambient os.environ is
+    never the authority."""
+    from tools.terminal_scope import (
+        get_terminal_scope,
+        install_profile_terminal_scope,
+        reset_terminal_scope,
+    )
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    (launch_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    # Poison ambient the way the pre-fix latch did — launch scope must win.
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "bee/img:1")
+
+    token = install_profile_terminal_scope(launch_home)
+    try:
+        assert get_terminal_scope() is not None
+        assert terminal_env("TERMINAL_ENV") == "local"
+        # DEFAULT_CONFIG may backfill docker_image; the poisoned bee image must not win.
+        assert terminal_env("TERMINAL_DOCKER_IMAGE", "") != "bee/img:1"
+        assert os.environ["TERMINAL_ENV"] == "docker"
+        assert os.environ["TERMINAL_DOCKER_IMAGE"] == "bee/img:1"
+    finally:
+        reset_terminal_scope(token)
+    assert get_terminal_scope() is None

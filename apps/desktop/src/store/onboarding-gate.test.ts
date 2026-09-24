@@ -35,3 +35,40 @@ it('restores every persisted onboarding phase and rejects unknown phases', async
 
   expect($onboardingGate.get().phase).toBe('idle')
 })
+
+it('a skipped intro still queues the guided flow, and never replays the film', async () => {
+  const { beginOnboardingFlowWithoutIntro } = await import('./onboarding-gate')
+  const { hasSeenIntroReveal } = await import('./intro-reveal')
+
+  storage.clear()
+  beginOnboardingFlowWithoutIntro(false)
+  const { $onboardingGate } = await import('./onboarding-gate')
+
+  expect($onboardingGate.get()).toEqual({ phase: 'cinematic', guideQueued: true })
+  // The film is recorded as watched: a later launch without HERMES_SKIP_INTRO
+  // must adopt the persisted guide, not play the film over it.
+  expect(hasSeenIntroReveal()).toBe(true)
+
+  // A relaunch boots loadGate() over the same persisted state and re-queues the guide.
+  vi.resetModules()
+  const { $onboardingGate: relaunched } = await import('./onboarding-gate')
+
+  expect(relaunched.get().guideQueued).toBe(true)
+  expect(relaunched.get().phase).toBe('cinematic')
+})
+
+it('a skipped intro does nothing when onboarding is off or the first run was skipped', async () => {
+  vi.doMock('@/lib/onboarding-enabled', () => ({ isOnboardingEnabled: () => false }))
+  vi.resetModules()
+  const off = await import('./onboarding-gate')
+
+  off.beginOnboardingFlowWithoutIntro(false)
+  expect(off.$onboardingGate.get().phase).toBe('idle')
+
+  vi.doUnmock('@/lib/onboarding-enabled')
+  vi.resetModules()
+  const on = await import('./onboarding-gate')
+
+  on.beginOnboardingFlowWithoutIntro(true)
+  expect(on.$onboardingGate.get().phase).toBe('idle')
+})

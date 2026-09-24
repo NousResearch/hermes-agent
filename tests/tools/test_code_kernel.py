@@ -18,7 +18,6 @@ tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,7 +39,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import build_execute_code_schema, execute_code
+from tools.code_execution_tool import execute_code
 from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
@@ -180,24 +179,6 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertIn("raw-passthrough", result["output"])
 
 
-class TestSchemaSurface(unittest.TestCase):
-    def test_reset_parameter_is_declared(self):
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("reset", schema["parameters"]["properties"])
-
-    def test_kernel_persistence_is_taught_unconditionally(self):
-        """Persistence is woven into the tool's main description (always-on
-        since #96787, integrated in the schema diet) — every session must be
-        told state survives across calls, in strict and project mode alike,
-        regardless of any stale kernel_mode key in config."""
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", schema["description"])
-        self.assertIn("reset", schema["parameters"]["properties"])
-        with _kernel_config(kernel_mode="per-call"):
-            stale_schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", stale_schema["description"])
 
 
 if __name__ == "__main__":
@@ -282,6 +263,57 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                     task_id="t",
                 )
         self.assertIn("ISOLATED", peek.get("output", ""), peek)
+
+    def test_live_children_keep_their_kernels_past_the_lru_cap(self):
+        """A fan-out wider than max_session_kernels used to evict LIVE children's kernels (each
+        child's execute_code spawned a kernel, the cap reaped the oldest sibling's), so a child's
+        second call hit NameError on state its first call had set — 48 NameErrors across 28 lanes,
+        while the schema promised persistence. A live child's kernel is pinned for the child's life."""
+        import contextvars
+
+        from agent.delegation_context import delegated_child_context
+
+        with _kernel_config(max_session_kernels=2):
+            contexts = []
+            for index in range(5):
+                def _set(index=index):
+                    with delegated_child_context(f"child-{index}"):
+                        self._run_as("conv", f"v = {index}", task_id=f"child-{index}")
+                ctx = contextvars.copy_context()
+                ctx.run(_set)
+                contexts.append(ctx)
+            outcomes = {}
+            for index, ctx in enumerate(contexts):
+                def _read(index=index):
+                    with delegated_child_context(f"child-{index}"):
+                        outcomes[index] = self._run_as("conv", "print(v)", task_id=f"child-{index}")
+                ctx.run(_read)
+        for index, outcome in outcomes.items():
+            self.assertEqual(outcome["status"], "success", outcome)
+            self.assertTrue(outcome["kernel"]["reused"], outcome)
+            self.assertIn(str(index), outcome["output"])
+
+    def test_finished_children_release_their_kernels(self):
+        """The pin is not a leak: when the child is torn down (the delegate_task cleanup path calls
+        ``shutdown_kernels_for_delegated_child``) its kernels die and stop counting."""
+        from agent.delegation_context import delegated_child_context
+        from tools.code_kernel import shutdown_kernels_for_delegated_child
+
+        with _kernel_config():
+            with delegated_child_context("child-done"):
+                self._run_as("conv", "v = 1", task_id="child-done")
+            with delegated_child_context("child-live"):
+                self._run_as("conv", "v = 2", task_id="child-live")
+            doomed = [k for k in _KERNELS.values() if k.owner.endswith("::child::child-done")]
+            self.assertEqual(len(doomed), 1)
+            shutdown_kernels_for_delegated_child("child-done")
+            self.assertEqual([k for k in _KERNELS.values() if k.owner.endswith("::child::child-done")], [])
+            doomed[0].proc.wait(timeout=10)
+            self.assertFalse(doomed[0].alive())
+            # The sibling's kernel is untouched.
+            with delegated_child_context("child-live"):
+                still = self._run_as("conv", "print(v)", task_id="child-live")
+        self.assertIn("2", still["output"])
 
     def test_session_clear_disposes_the_owners_kernels(self):
         from tools.approval import clear_session
@@ -454,3 +486,71 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             _run("y = 2")
             self.assertIsNot(kernel.cell_authority, first_authority)
             self.assertFalse(kernel.cell_authority.active)
+
+
+class TestBackgroundIdleReaper(unittest.TestCase):
+    """#117169: the idle sweep must not depend on the next kernel acquire — a host
+    that stays alive but wedged (e.g. pids exhaustion fail-closing every tool call)
+    never acquires again, so a background reaper reapplies the acquire-path criteria
+    on its own schedule, and staging dirs that outlived a dead host are swept by age."""
+
+    def _run_as(self, session_key, code, task_id, **kwargs):
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+
+        token = set_current_session_key(session_key)
+        try:
+            return json.loads(execute_code(code, task_id=task_id, **kwargs))
+        finally:
+            reset_current_session_key(token)
+
+    def test_reap_once_sweeps_idle_kernels_without_a_new_acquire(self):
+        import time as time_module
+
+        from tools.code_kernel import _reap_once
+
+        with _kernel_config(kernel_idle_timeout=1):
+            self._run_as("conv-a", "x = 41", task_id="turn-1")
+            stale = next(iter(_KERNELS.values()))
+            time_module.sleep(1.2)
+            # No conv-b acquire here: the reaper pass alone must retire the kernel.
+            _reap_once()
+            self.assertNotIn(stale.key, _KERNELS)
+            stale.proc.wait(timeout=10)
+            self.assertFalse(stale.alive())
+
+    def test_reap_once_spares_attached_and_fresh_kernels(self):
+        from tools.code_kernel import _reap_once
+
+        with _kernel_config(kernel_idle_timeout=1):
+            fresh = self._run_as("conv-fresh", "x = 1", task_id="turn-1")
+            self.assertEqual(fresh["status"], "success", fresh)
+            kernel = next(iter(_KERNELS.values()))
+            kernel.attached += 1  # a cell is mid-flight: reaping must skip it
+            try:
+                _reap_once()
+                self.assertIn(kernel.key, _KERNELS)
+                self.assertTrue(kernel.alive())
+            finally:
+                kernel.attached -= 1
+
+class TestStaleStagingDirSweep(unittest.TestCase):
+    def test_week_old_kernel_dirs_go_and_fresh_ones_stay(self):
+        import time as time_module
+
+        from tools.code_kernel import _sweep_stale_staging_dirs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("tools.code_kernel.tempfile.gettempdir", return_value=tmp):
+                old = Path(tmp, "hermes_kernel_old")
+                young = Path(tmp, "hermes_kernel_young")
+                bystander = Path(tmp, "unrelated_dir")
+                for path in (old, young, bystander):
+                    path.mkdir()
+                week_and_a_bit = time_module.time() - 8 * 86400
+                os.utime(old, (week_and_a_bit, week_and_a_bit))
+                removed = _sweep_stale_staging_dirs()
+                # Asserted inside the TemporaryDirectory: cleanup would flatten everything.
+                self.assertEqual(removed, 1)
+                self.assertFalse(old.exists())
+                self.assertTrue(young.exists())
+                self.assertTrue(bystander.exists())

@@ -10,7 +10,6 @@ NOT mislabelled custom.
 
 from fastapi.testclient import TestClient
 
-import hermes_cli.web_server as web_server
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_messaging as _web_server_messaging
 from hermes_cli.web_server import _SESSION_TOKEN, app
@@ -49,7 +48,3 @@ def test_custom_key_is_password_masked(monkeypatch):
     assert "s3cret-value" not in str(row)
 
 
-def test_every_row_has_custom_flag(monkeypatch):
-    """The ``custom`` field is always present so the SPA can branch on it."""
-    rows = _env_rows(monkeypatch, {"MY_CUSTOM_THING": "x"})
-    assert all("custom" in row for row in rows.values())

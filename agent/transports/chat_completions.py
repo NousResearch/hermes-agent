@@ -11,8 +11,9 @@ from urllib.parse import urlparse
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
-    kimi_supported_efforts, requested_effort,
+    clamp_reasoning_config, kimi_supported_efforts, requested_effort,
 )
+from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -109,6 +110,45 @@ def _add_prompt_cache_key(
         api_kwargs["prompt_cache_key"] = cache_key
 
 
+_ROUTER_TIMEOUT_SHIM = "Connect timeout, please try again later."
+
+
+def _has_positive_completion_tokens(usage: Any) -> bool:
+    """Return whether a response usage object proves text was generated."""
+    for field in ("completion_tokens", "output_tokens"):
+        value = usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return True
+    return False
+
+
+def router_timeout_shim_may_follow(text: str) -> bool:
+    """True while streamed text is still a prefix of the shim sentinel (hold it back until judged)."""
+    return bool(text) and _ROUTER_TIMEOUT_SHIM.startswith(text.lstrip())
+
+
+def is_router_timeout_shim(response: Any) -> bool:
+    """Recognize a router failure encoded as a successful ChatCompletion (#68396).
+
+    Some OpenAI-compatible routers answer an upstream connect timeout with HTTP 200 and the
+    sentinel as the sole assistant message. Only the exact sentinel, with no tool calls and no
+    positive ``completion_tokens``/``output_tokens`` proof of generation, is a shim — a model
+    that really produced those words keeps its usage evidence. Shared by every consumer of an
+    OpenAI-compatible response: ``validate_response``, the stream assembler, the
+    iteration-limit summary and the auxiliary ``_validate_llm_response``.
+    """
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or content.strip() != _ROUTER_TIMEOUT_SHIM:
+        return False
+    if getattr(message, "tool_calls", None):
+        return False
+    return not _has_positive_completion_tokens(getattr(response, "usage", None))
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
@@ -118,11 +158,7 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     the declared wire vocabulary via the shared policy in ``agent.reasoning_effort``; provider profiles with
     narrower sets clamp again downstream.
     """
-    if not isinstance(reasoning_config, dict):
-        return reasoning_config
-    effort = str(reasoning_config.get("effort") or "").strip().lower()
-    clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS) if effort else effort
-    return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
+    return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -139,7 +175,17 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return None
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if reasoning_config.get("enabled") is False or effort == "none":
-        return {"includeThoughts": False}
+        # ``includeThoughts: False`` only omits thought parts from the returned
+        # response; the model may still reason internally and bill thought
+        # tokens against maxOutputTokens, starving small budgets (title
+        # generation's 64 tokens). Set thinkingBudget to 0 to actually disable
+        # thinking on families that document it: Gemini 2.5 and 3+ (plus the
+        # ``gemini-flash-latest`` alias); future majors are added only when the
+        # API documents thinkingBudget for them. (#91927)
+        config: dict[str, Any] = {"includeThoughts": False}
+        if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
+            config["thinkingBudget"] = 0
+        return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
     # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
     if normalized_model.startswith("gemini-2.5-"):
@@ -207,6 +253,39 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     """
     m = str(model or "").lower()
     return "gemini" in m or "gemma" in m
+
+
+def _route_replays_reasoning_details(base_url: Any) -> bool:
+    """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
+    reasoning array, also consumed by the Nous Portal).
+
+    Every other chat-completions endpoint either ignores the field or, when its schema is
+    strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
+    unsupported`` / ``Extra inputs are not permitted`` / ``no such field``), rejects the whole
+    request with HTTP 400/422 — so a reasoning turn produced earlier in the session wedges every
+    later turn once the model is switched (#70233). The stored history keeps the field; only the
+    wire copy drops it.
+    """
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+
+
+def _has_replayable_thought_signature(extra_content: Any) -> bool:
+    """Whether OpenRouter's Gemini sidecar contains a usable thought signature.
+
+    Gemini accepts the signature either directly or under its ``google``
+    namespace.  Replaying an empty or non-string value makes a multimodal
+    request fail with ``Corrupted thought signature``; omit that sidecar while
+    leaving the stored history untouched.
+    """
+    if not isinstance(extra_content, dict):
+        return False
+    candidate = extra_content.get("thought_signature")
+    google = extra_content.get("google")
+    if candidate is None and isinstance(google, dict):
+        candidate = google.get("thought_signature")
+    return isinstance(candidate, str) and bool(candidate.strip())
 
 
 def _attr_or_model_extra(obj: Any, name: str) -> Any:
@@ -293,24 +372,44 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     return api_kwargs
 
 
-def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
+def _sanitize_message(
+    msg: Any, strip_extra_content: bool, strip_reasoning_details: bool = False,
+    native_reasoning_details_type: str | None = None,
+) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
     Drops persistence sidecars, ``_``-prefixed scaffolding markers, tool-call ``call_id`` /
     ``response_item_id`` (and ``extra_content`` unless Gemini), an assistant
-    ``tool_calls: []`` / ``null`` (strict providers reject both), and ``name``
+    ``tool_calls: []`` / ``null`` (strict providers reject both), ``name``
     on tool results (schema-valid only on user/assistant messages; strict
-    providers reject it with ``contains item with unknown key name``).
+    providers reject it with ``contains item with unknown key name``), and
+    ``reasoning_details`` unless the route replays it (``_route_replays_reasoning_details``).
+    On a replaying route, private ``<provider>.native_assistant`` carriers still go only to the
+    profile that declared that exact type: another provider's signed replay is meaningless (or
+    rejected) elsewhere, and stored history keeps it for a return to the original provider.
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    kept_details = None
+    if strip_reasoning_details and "reasoning_details" in msg:
+        strip_keys.append("reasoning_details")
+    elif isinstance(msg.get("reasoning_details"), list):
+        details = msg["reasoning_details"]
+        kept = [d for d in details if not (
+            isinstance(d, dict) and isinstance(d.get("type"), str)
+            and d["type"].endswith(".native_assistant") and d["type"] != native_reasoning_details_type)]
+        if len(kept) != len(details):
+            strip_keys.append("reasoning_details")
+            kept_details = kept
     # ``name`` is schema-valid on user/assistant messages, so the removal is
     # role-qualified: only tool results carry it illegally (strict providers
     # reject with "contains item with unknown key name").
     if msg.get("role") == "tool" and "name" in msg:
         strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
+    if kept_details:
+        out_msg["reasoning_details"] = kept_details
     tool_calls = msg.get("tool_calls")
     copied_tool_calls = None
     if msg.get("role") == "assistant" and "tool_calls" in msg and (tool_calls is None or (isinstance(tool_calls, list) and not tool_calls)):
@@ -321,7 +420,9 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
             if not isinstance(tc, dict):
                 continue
             keys = [k for k in _STRIP_TC_KEYS if k in tc]
-            if strip_extra_content and "extra_content" in tc:
+            if "extra_content" in tc and (
+                strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
+            ):
                 keys.append("extra_content")
             if keys:
                 if copied_tool_calls is None:
@@ -349,7 +450,11 @@ class ChatCompletionsTransport(ProviderTransport):
         Returns the input list unchanged when nothing needs sanitizing.
         """
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content)) for m in messages]
+        # A profile declaring a native carrier type consumes replayed details by contract.
+        native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None) or None
+        strip_reasoning_details = not (native_type or _route_replays_reasoning_details(kwargs.get("base_url")))
+        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details, native_type))
+                           for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]
@@ -366,8 +471,8 @@ class ChatCompletionsTransport(ProviderTransport):
         With ``provider_profile`` every quirk comes from the profile; the legacy flag
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
-        sanitized = self.convert_messages(messages, model=model)
         _profile = params.get("provider_profile")
+        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 
@@ -502,7 +607,9 @@ class ChatCompletionsTransport(ProviderTransport):
         choice = response.choices[0]
         msg = getattr(choice, "message", None)
         _fr = getattr(choice, "finish_reason", None)
-        finish_reason = (str(_fr) if isinstance(_fr, int) else _fr) or "stop"  # Poolside returns int finish_reason
+        # Poolside returns int finish_reason; Gemini-fronting gateways return
+        # uppercase STOP / MAX_TOKENS — fold to the OpenAI contract here.
+        finish_reason = _normalize_finish_reason(str(_fr) if isinstance(_fr, int) else _fr) or "stop"
 
         tool_calls = None
         if getattr(msg, "tool_calls", None):
@@ -555,8 +662,10 @@ class ChatCompletionsTransport(ProviderTransport):
         )
 
     def validate_response(self, response: Any) -> bool:
-        """Check that response has valid choices."""
-        return bool(response is not None and getattr(response, "choices", None))
+        """Check that response has valid choices and is not a router failure shim."""
+        if response is None or not getattr(response, "choices", None):
+            return False
+        return not is_router_timeout_shim(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
         """Cache stats from prompt_tokens_details (OpenRouter/OpenAI) or DeepSeek's top-level prompt_cache_hit_tokens."""

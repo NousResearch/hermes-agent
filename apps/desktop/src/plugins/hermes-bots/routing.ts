@@ -9,7 +9,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
-import type { BotMeta, ProfileRoute, RosterRow } from './types'
+import type { BotMeta, GroupMessageAuthor, ProfileRoute, RosterRow } from './types'
 
 export function botRouteKey(route: ProfileRoute): string {
   return `${route.connectionId}::${route.profile}`
@@ -197,10 +197,21 @@ export function botBackendProfileScope(route: null | ProfileRoute | undefined, f
 
 /** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
  * explicit descriptor, including a registered local source. */
+export interface BotRequestOptions {
+  /** 'foreground' for an explicit user gesture (roster click, Create Bot) so
+   *  a cold backend spawn takes the pool's reserved slot; leave unset for
+   *  passive roster warming. Only source-scoped routes can carry it. */
+  spawnPriority?: 'background' | 'foreground'
+  /** Per-request wait for RPCs that legitimately outlive the socket's 30 s
+   *  default (session.compress runs an LLM summary); unset keeps the default. */
+  timeoutMs?: number
+}
+
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  options?: BotRequestOptions
 ): Promise<T> {
   const route = botConnectionRoute(bot)
 
@@ -210,7 +221,15 @@ export async function requestForBot<T = unknown>(
     }
 
     try {
-      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+      const routedParams = scopedBotParams(route, method, params)
+
+      // Keep the three-argument shape when no options were given so older
+      // desktop shells (and the arity-pinning tests) see the same call.
+      return await (options?.spawnPriority
+        ? host.requestProfile(route, method, routedParams, options.timeoutMs, { spawnPriority: options.spawnPriority })
+        : options?.timeoutMs === undefined
+          ? host.requestProfile(route, method, routedParams)
+          : host.requestProfile(route, method, routedParams, options.timeoutMs))
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,
@@ -220,7 +239,9 @@ export async function requestForBot<T = unknown>(
   }
 
   try {
-    return await host.request(method, params)
+    return await (options?.timeoutMs === undefined
+      ? host.request(method, params)
+      : host.request(method, params, options.timeoutMs))
   } catch (error) {
     throw asRpcError(error, `Gateway request ${method} failed`)
   }
@@ -421,4 +442,34 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
   }
 
   return own
+}
+
+/** Group Chat transcript speaker meta (#96432). Owner-aware: a source-qualified
+ *  line looks up the matched member via botRosterMeta, never `allMeta[name]`
+ *  and never `null` just because `entry.from.source` is set. */
+export function groupTranscriptSpeakerMeta(
+  entry: { from?: GroupMessageAuthor } | null | undefined,
+  members: RosterRow[],
+  allMeta: Record<string, BotMeta>
+): BotMeta | null | undefined {
+  if (!entry?.from || entry.from.kind === 'user') {
+    return null
+  }
+
+  const member =
+    members.find(
+      bot =>
+        bot.name === entry.from?.name &&
+        (entry.from.source ? (bot.connectionLabel || bot.connectionId) === entry.from.source : !bot.remoteSource)
+    ) || null
+
+  if (member) {
+    return botRosterMeta(member, allMeta)
+  }
+
+  if (entry.from.source) {
+    return null
+  }
+
+  return allMeta?.[entry.from.name] || null
 }

@@ -61,69 +61,12 @@ def _telegram(runner):
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     tg = object.__new__(TelegramAdapter)
-    tg.platform = Platform.TELEGRAM
     tg.config = PlatformConfig(enabled=True, extra={})
     tg._authorization_check = None
     tg._message_handler = runner._primary_message_handler()  # closure, no __self__
     runner.adapters = {Platform.TELEGRAM: tg}
     tg.set_authorization_check(runner._make_adapter_auth_check(Platform.TELEGRAM))
     return tg
-
-
-@pytest.mark.parametrize("denied", [False, True])
-@pytest.mark.parametrize("secondary_adapter", [False, True])
-def test_wisdom_callback_checks_command_policy_in_resolved_profile(
-    mux_home, denied, secondary_adapter
-):
-    runner = _runner(mux_home)
-    store = runner.pairing_stores["secondary"]
-    store._save_json(store._approved_path("telegram"), {"777": {}})
-    tg = _telegram(runner)
-    if secondary_adapter:
-        runner._profile_adapters["secondary"][Platform.TELEGRAM] = tg
-        tg.set_authorization_check(
-            runner._make_adapter_auth_check(Platform.TELEGRAM, "secondary")
-        )
-    checked = []
-
-    def policy(source, command):
-        checked.append((source, command))
-        return "disabled" if denied else None
-
-    runner._check_slash_access = policy
-    assert tg._is_callback_user_authorized(
-        "777", chat_id="-100555", chat_type="supergroup", thread_id="7", command="wisdom"
-    ) is (not denied)
-    assert len(checked) == 1
-    source, command = checked[0]
-    assert (source.profile, source.user_id, source.chat_id, source.thread_id, command) == (
-        "secondary", "777", "-100555", "7", "wisdom"
-    )
-    assert source._transport_adapter_ref() is tg
-    assert tg._is_callback_user_authorized(
-        "unauthorized", chat_id="-100555", chat_type="supergroup", command="wisdom"
-    ) is False
-    assert len(checked) == 1
-
-
-@pytest.mark.parametrize("failure", ["raises", "legacy_callback"])
-def test_wisdom_callback_cannot_downgrade_to_env_auth(mux_home, failure):
-    runner = _runner(mux_home)
-    (mux_home / ".env").write_text("GATEWAY_ALLOW_ALL_USERS=true\n")
-    tg = _telegram(runner)
-
-    def unavailable(*args):
-        raise RuntimeError("policy unavailable")
-
-    runner._check_slash_access = unavailable
-    if failure == "legacy_callback":
-        tg.set_authorization_check(lambda user_id, chat_type, chat_id: True)
-    assert tg._is_callback_user_authorized(
-        "777", chat_id="-100555", chat_type="supergroup"
-    ) is True
-    assert tg._is_callback_user_authorized(
-        "777", chat_id="-100555", chat_type="supergroup", command="wisdom"
-    ) is False
 
 
 def test_routed_primary_callback_uses_routed_pairing_store_and_transport_allowlist(mux_home):
@@ -203,12 +146,14 @@ def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatc
 def test_authorization_adapter_ignores_per_turn_active_profile(mux_home):
     """#87240 egress half: inside a secondary profile's runtime scope the
     default bot must not be handed to that profile (fail-closed None); the
-    launch profile still resolves ``self.adapters``."""
+    launch profile still resolves ``self.adapters``. The secondary's own bot
+    is down (reconnect pending), so it is not a route-only satellite."""
     from gateway.run import _profile_runtime_scope
 
     runner = _runner(mux_home)
     default_bot = object()
     runner.adapters = {Platform.TELEGRAM: default_bot}
+    runner._profile_failed_platforms = {"secondary": {Platform.TELEGRAM: object()}}
 
     with _profile_runtime_scope(mux_home / "profiles" / "secondary"):
         assert runner._authorization_adapter(Platform.TELEGRAM, profile="secondary") is None

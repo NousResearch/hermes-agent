@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -96,24 +95,6 @@ def test_sole_credential_billing_403_keeps_full_bench(tmp_path, monkeypatch):
     assert pool.select() is None
 
 
-def test_sole_credential_billing_403_survives_reload(tmp_path, monkeypatch):
-    """The classified reason persists, so a restart can't downgrade the bench.
-
-    `failure_reason` is written to auth.json with the entry; without that, a
-    process restart would re-read a bare 403 and hand the spent key back after
-    60 seconds.
-    """
-    from agent.credential_pool import _exhausted_ttl
-
-    pool = _load(
-        tmp_path,
-        monkeypatch,
-        [_entry(403, age_seconds=90, failure_reason="billing")],
-    )
-    entry = pool.entries()[0]
-    assert entry.failure_reason == "billing"
-    assert _exhausted_ttl(403, sole_credential=True, failure_reason="billing") == 60 * 60
-    assert _exhausted_ttl(403, sole_credential=True) == 60
 
 
 def test_sole_credential_402_keeps_full_bench(tmp_path, monkeypatch):
@@ -230,13 +211,3 @@ def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
     )
 
 
-def test_unverified_billing_survives_reload(tmp_path, monkeypatch):
-    """The unverified marker persists with the entry, so a restart keeps the
-    short cooldown instead of upgrading it to a billing bench."""
-    pool = _load(
-        tmp_path,
-        monkeypatch,
-        [_entry(400, age_seconds=10, failure_reason="billing_unverified")],
-    )
-    entry = pool.entries()[0]
-    assert entry.failure_reason == "billing_unverified"

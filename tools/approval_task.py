@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import re
-from threading import Event
+from threading import Event, Lock
 from uuid import uuid4
 
 MAX_TASK_CHARS = 8192
@@ -51,17 +51,34 @@ def from_composer(session_key: str, provenance) -> TaskLease | None:
 
 
 def revoke_session_task(session: dict) -> None:
-    lease = session.pop("_approval_task_lease", None)
-    if isinstance(lease, TaskLease):
-        lease.revoke()
+    with _session_lease_lock(session):
+        lease = session.pop("_approval_task_lease", None)
+        if isinstance(lease, TaskLease):
+            lease.revoke()
+
+
+def _session_lease_lock(session: dict) -> Lock:
+    # A per-session lock, independent of history_lock (admission already holds it).
+    # dict.setdefault publishes one lock atomically for this in-process session.
+    return session.setdefault("_approval_task_lock", Lock())
+
+
+def install_session_task(session: dict, lease: TaskLease | None) -> None:
+    """Replace the registered generation without exposing an unlocked gap."""
+    with _session_lease_lock(session):
+        previous = session.get("_approval_task_lease")
+        if isinstance(previous, TaskLease):
+            previous.revoke()
+        session["_approval_task_lease"] = lease
 
 
 def release_task(session: dict, lease: TaskLease | None) -> None:
     """Retire only this generation; never remove a successor's lease."""
     if lease is not None:
         lease.revoke()
-        if session.get("_approval_task_lease") is lease:
-            session.pop("_approval_task_lease", None)
+        with _session_lease_lock(session):
+            if session.get("_approval_task_lease") is lease:
+                session.pop("_approval_task_lease", None)
 
 
 @contextmanager

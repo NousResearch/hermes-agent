@@ -39,21 +39,37 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
 # ── _reactions_enabled ───────────────────────────────────────────────
 
 
-def test_reactions_disabled_by_default(monkeypatch):
-    """Telegram reactions should be disabled by default."""
-    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
-    adapter = _make_adapter()
-    assert adapter._reactions_enabled() is False
 
 
-def test_reactions_enabled_when_set_true(monkeypatch):
-    """Setting TELEGRAM_REACTIONS=true enables reactions."""
+
+
+def test_explicit_env_wins_over_materialized_yaml_default(monkeypatch):
+    """TELEGRAM_REACTIONS=true must beat the stock ``reactions: false`` in config.yaml (#109032).
+
+    Fresh installs materialize the whole default config tree, so ``_apply_yaml_config`` seeds
+    ``extra["reactions"] = False`` even when the user never chose a value; the reader must still
+    honour the explicitly set env var, like ``yaml_env_setter`` documents for the bridge.
+    """
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
+    adapter.config.extra["reactions"] = False
     assert adapter._reactions_enabled() is True
 
 
-# ── _set_reaction ────────────────────────────────────────────────────
+def test_scoped_miss_does_not_leak_default_profile_env(monkeypatch):
+    """Under multiplex a scoped miss must not read another profile's process-env value (#72348)."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")  # default profile's bridged value
+    adapter = _make_adapter()
+    adapter.config.extra["reactions"] = False  # this profile's own YAML
+    set_multiplex_active(True)
+    token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "222:b2"})
+    try:
+        assert adapter._reactions_enabled() is False
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)
 
 
 @pytest.mark.asyncio
@@ -152,5 +168,3 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "true"
-
-

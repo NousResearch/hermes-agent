@@ -17,8 +17,8 @@ import pytest
 ])
 def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, enabled, disabled, allowed):
     import model_tools
-    from tools.tool_gateway import bridge, config
-    from tools import connections_tool
+    from tools.connectors import managed
+    from tools.connectors.gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -41,12 +41,12 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
             remote.append("execute")
             return [{"data": "sent", "error": None} for _ in planned]
 
-        def list_connectors(self):
+        def list_connectors(self, **_):
             remote.append("status")
             return []
 
     monkeypatch.setattr(bridge, "_default_client_factory", Client)
-    monkeypatch.setattr(connections_tool, "_default_client", Client)
+    monkeypatch.setattr(managed, "managed_client", Client)
     scope = {"enabled_toolsets": enabled, "disabled_toolsets": disabled}
     defs = model_tools.get_tool_definitions(**scope, quiet_mode=True, skip_tool_search_assembly=True)
     assert ("manage_connections" in {td["function"]["name"] for td in defs}) is allowed

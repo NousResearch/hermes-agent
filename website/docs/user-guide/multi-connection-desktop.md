@@ -92,8 +92,9 @@ headers show the profile name.
 Use a gateway or profile section's menu to **Rename group**, **Reset name**, **Move up**, or
 **Move down**. Renaming changes only the sidebar label, not the gateway or profile.
 Gateways reorder as complete sections, and profiles reorder within their own gateway.
-Drag the section's leading icon to reorder it, or focus that handle and use
-Space, arrow keys, then Space to place it. Names, order, and collapsed sections
+Drag the section header anywhere (its icon, its name, or the empty space) to
+reorder it, or focus the header and use Space, arrow keys, then Space to place
+it. Names, order, and collapsed sections
 are remembered on this desktop. Collapsing a gateway preserves its profiles'
 individual collapse states. Each profile's new-session action targets that
 profile on its owning gateway.
@@ -129,7 +130,16 @@ authentication; manage sign-in from the registered connection controls.
    - *SSH only:*
      - **SSH host** — one composite field in `user@host:22` form (user and
        port optional). Your SSH key is used; the app adopts a dashboard
-       token over the tunnel.
+       token over the tunnel. Remote probes run under the account's login
+       shell; on a `zsh` login shell the probe watchdog cannot kill the whole
+       process group, so a hung probe's grandchildren may linger on the remote
+       (bash/sh remotes reap them).
+     - **Hermes path (optional)** — full path to the `hermes` executable on
+       the remote (for example `/opt/hermes/bin/hermes`). Leave blank to
+       auto-detect. Set it when the remote's non-interactive shell does not
+       have `hermes` on its `PATH` and **Test** reports *"Hermes is not
+       installed on the remote host"*; clearing the field restores
+       auto-detection.
 5. Click **Save connection** (or **Cancel**).
 6. Click **Test** on the new row and wait for *"Reachable"*.
 
@@ -241,11 +251,15 @@ that live on one gateway.
   are all scoped to the active `(gateway, profile)`. Switching from a Telegram
   gateway to a Signal gateway cannot leave the previous gateway's channel groups
   or sessions in the sidebar.
-- Merely displaying the switcher reads Electron's local connection registry.
-  Remote gateways are opened only when selected; there is no periodic fleet
-  polling.
+- Desktop loads the local connection registry at startup, even with the status
+  bar hidden, and keeps it current when gateways are saved or removed. Opening
+  Settings is not required. In Simple mode, the profile rail stays available
+  when more than one gateway is registered, even with only a default profile.
+  Loading the registry does not connect every gateway; there is no periodic
+  fleet polling.
 - Hovering an agent pre-warms its backend so the switch doesn't pay a cold
-  boot.
+  boot. SSH agents are the exception: hovering never dials the tunnel or
+  starts a remote backend — only opening one does.
 - The **Capabilities** page (Skills / Tools / MCP) has a matching scope: its
   **Configuring** selector lists every `(profile, device)` agent from the
   union roster, and picking one reads and writes **that machine's** skills,

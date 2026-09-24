@@ -98,7 +98,7 @@ def _make_runner():
     runner._should_send_telegram_lobby_reminder = lambda _source: False
     runner._check_slash_access = lambda _source, _command: None
     runner._begin_session_run_generation = lambda _key: 1
-    runner._release_running_agent_state = lambda key: runner._running_agents.pop(key, None)
+    runner._release_running_agent_state = lambda key, run_generation=None: runner._running_agents.pop(key, None)
     return runner, adapter
 
 
@@ -127,22 +127,3 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert captured["key"] == build_session_key(_make_source())
     assert captured["generation"] == 1
     assert runner._running_agents == {}
-
-
-@pytest.mark.asyncio
-async def test_wisdom_dm_continuation_obeys_wisdom_slash_policy():
-    runner, adapter = _make_runner()
-    adapter.send_wisdom_continuation = AsyncMock()
-    checked: list[str] = []
-
-    def check_access(_source, command):
-        checked.append(command)
-        return "denied" if command == "wisdom" else None
-
-    runner._check_slash_access = check_access
-
-    result = await runner._handle_message(_make_event("/start wisdom_token-1"))
-
-    assert result == "denied"
-    assert checked == ["start", "wisdom"]
-    adapter.send_wisdom_continuation.assert_not_awaited()

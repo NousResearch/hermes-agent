@@ -40,8 +40,14 @@ futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# HTTP — rustls so we don't need OpenSSL on the build box
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# HTTP — rustls so we don't need OpenSSL on the build box, with the OS trust
+# store rather than the bundled Mozilla roots: on an MDM-managed desktop an SSL
+# inspection proxy (Zscaler, Netskope, Palo Alto) re-signs HTTPS with a CA the
+# admin pushed to the system keychain. webpki-roots cannot see it, so rustls
+# rejected the intercepted certificate and the first download died. Native roots
+# read Keychain / Windows cert store / the Linux CA bundle, which is what every
+# other HTTPS client on those machines already does. See #121846.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream"] }
 
 # Logging — emitted to a file under HERMES_HOME/logs/ and (optionally) the
 # webview console via Tauri's event channel.

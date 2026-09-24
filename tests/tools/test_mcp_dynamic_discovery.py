@@ -37,6 +37,74 @@ class TestRegisterServerTools:
             assert validate_toolset("my_srv") is True
             assert "mcp__my_srv__my_tool" in resolve_toolset("my_srv")
 
+    def test_surfaces_initialize_instructions_in_model_tool_schema(self, mock_registry):
+        """The initialize contract reaches the model through the tool description."""
+        server = MCPServerTask("my_srv")
+        server._tools = [_make_mcp_tool("my_tool", "Use this tool to query data.")]
+        server.session = MagicMock()
+        server.initialize_result = SimpleNamespace(
+            instructions="Call this server before answering questions about its data."
+        )
+
+        with patch("tools.registry.registry", mock_registry), \
+             patch("tools.mcp_tool_registration._make_check_fn", return_value=lambda: True):
+            _register_server_tools("my_srv", server, {})
+            schema = mock_registry.get_definitions({"mcp__my_srv__my_tool"})[0]["function"]
+
+        assert "Use this tool to query data." in schema["description"]
+        assert "Call this server before answering questions about its data." in schema["description"]
+
+    @pytest.mark.parametrize("instructions", [None, "", "   "])
+    def test_missing_or_empty_initialize_instructions_keep_tool_description(self, mock_registry, instructions):
+        server = MCPServerTask("my_srv")
+        server._tools = [_make_mcp_tool("my_tool", "Use this tool to query data.")]
+        server.session = MagicMock()
+        server.initialize_result = SimpleNamespace(instructions=instructions)
+
+        with patch("tools.registry.registry", mock_registry):
+            _register_server_tools("my_srv", server, {})
+            schema = mock_registry.get_schema("mcp__my_srv__my_tool")
+
+        assert schema["description"] == "Use this tool to query data."
+
+    def test_reconnect_replaces_instructions_in_tool_schema(self, mock_registry):
+        server = MCPServerTask("my_srv")
+        server._tools = [_make_mcp_tool("my_tool", "Use this tool to query data.")]
+        server.session = MagicMock()
+
+        with patch("tools.registry.registry", mock_registry):
+            server.initialize_result = SimpleNamespace(instructions="Use the first connection.")
+            _register_server_tools("my_srv", server, {})
+            server.initialize_result = SimpleNamespace(instructions="Use the refreshed connection.")
+            _register_server_tools("my_srv", server, {})
+            schema = mock_registry.get_schema("mcp__my_srv__my_tool")
+
+        assert "Use the refreshed connection." in schema["description"]
+        assert "Use the first connection." not in schema["description"]
+
+    def test_cached_tool_schema_keeps_initialize_instructions(self, mock_registry, monkeypatch, tmp_path):
+        """Lazy registration keeps the last negotiated instructions model-visible."""
+        from tools import mcp_schema_cache
+        from tools import mcp_tool_registration
+
+        monkeypatch.setattr(mcp_schema_cache, "_cache_path", lambda: tmp_path / "cache.json")
+        server = MCPServerTask("my_srv")
+        server._tools = [_make_mcp_tool("my_tool", "Use this tool to query data.")]
+        server.session = MagicMock()
+        server.initialize_result = SimpleNamespace(instructions="Use cached guidance.")
+
+        with patch("tools.registry.registry", mock_registry):
+            _register_server_tools("my_srv", server, {})
+            entry = mcp_schema_cache.get_cached_entry(
+                "my_srv", mcp_schema_cache.config_fingerprint({})
+            )
+            lazy_registry = ToolRegistry()
+            with patch("tools.registry.registry", lazy_registry):
+                mcp_tool_registration._register_from_cache_sync("my_srv", {}, entry)
+
+        schema = lazy_registry.get_schema("mcp__my_srv__my_tool")
+        assert "Use cached guidance." in schema["description"]
+
     def test_colliding_static_toolset_name_merges_both_tool_sets(self, mock_registry):
         """An MCP server named after a built-in toolset must not be shadowed.
 

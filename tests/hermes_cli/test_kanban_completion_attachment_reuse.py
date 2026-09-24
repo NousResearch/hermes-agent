@@ -109,3 +109,42 @@ def test_failed_review_keeps_reused_attachment_and_removes_new_copy(board, monke
     assert Path(stored.stored_path).read_bytes() == b"old"
     assert workspace.exists()
 
+
+def test_worker_tools_return_existing_attachment(board, monkeypatch):
+    import base64
+    import json
+    from tools import kanban_tools as tools
+
+    task = kb.create_task(board, title="worker report")
+    workspace = kbw.resolve_workspace(kb.get_task(board, task))
+    kbw.set_workspace_path(board, task, workspace)
+    kb.claim_task(board, task)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(board, task).current_run_id))
+    report = workspace / "report.html"
+    report.write_bytes(b"<p>worker report</p>")
+    uploaded = json.loads(tools._handle_attach({
+        "filename": report.name,
+        "content_base64": base64.b64encode(report.read_bytes()).decode("ascii"),
+        "content_type": "text/html",
+    }))
+    completed = json.loads(tools._handle_complete({"summary": "report ready", "artifacts": [str(report)]}))
+    assert completed.get("ok") is True, completed
+    assert [a["id"] for a in completed["attachments"]] == [uploaded["attachment_id"]]
+    assert completed["attachments"][0]["content_type"] == "text/html"
+    assert Path(completed["attachments"][0]["stored_path"]).read_bytes() == b"<p>worker report</p>"
+    assert not workspace.exists()
+
+
+def test_completion_does_not_reuse_row_pointing_into_scratch(board):
+    task = kb.create_task(board, title="outside durable attachment directory")
+    workspace = kbw.resolve_workspace(kb.get_task(board, task))
+    kbw.set_workspace_path(board, task, workspace)
+    report = workspace / "report.txt"
+    report.write_bytes(b"report")
+    aid = kb.add_attachment(board, task, filename=report.name, stored_path=str(report), size=6)
+    assert kb.complete_task(board, task, result="done", metadata={"artifacts": [str(report)]})
+    stored = kb.latest_run(board, task).metadata["artifacts"][0]
+    assert stored != kb.get_attachment(board, aid).stored_path
+    assert Path(stored).read_bytes() == b"report"
+    assert not workspace.exists()

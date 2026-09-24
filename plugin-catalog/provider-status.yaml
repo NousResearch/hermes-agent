@@ -1,16 +1,21 @@
 name: provider-status
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 549e84f895d67cee71347a6163487bdf3df4c1f9
+sha: 5994db2e4e7212b073e9017a73e2dc1093b9865d
 subdir: public/provider-status
-description: Multi-provider quota chips in the desktop status bar, with OAuth, color warnings, and extra
-  keys. This edition does not rotate Hermes env keys on exhaust. Disclosure — quota checks for Codex and
-  Grok present those vendors' CLI client identity/user-agent to their CLI endpoints.
+description: >-
+  Status-bar quota tracking for 17 providers: Tavily, OpenCode Go, DeepSeek,
+  GLM (z.ai), OpenRouter, Grok (xAI), Codex (OpenAI), OpenAI, Anthropic, Groq,
+  Cerebras, Moonshot Kimi, MiniMax, Google Gemini, Hugging Face, Mistral, and
+  Qwen. DeepSeek and GLM show peak/off-peak gauges and countdowns. Includes
+  OAuth and multi-key pools. This edition does not rotate Hermes environment
+  keys on exhaust. Codex and Grok checks use their CLI client identity and
+  user-agent.
 maintainer: apoapostolov
 tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/provider-status
-version: 1.5.8
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/549e84f895d67cee71347a6163487bdf3df4c1f9/public/provider-status/docs/hero.png
+version: "1.5.9"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/5994db2e4e7212b073e9017a73e2dc1093b9865d/public/provider-status/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: []

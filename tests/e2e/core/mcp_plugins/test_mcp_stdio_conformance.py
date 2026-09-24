@@ -9,7 +9,8 @@ next provider request carried back to the model (the tool result the model saw):
   a default-trust server runs both (#121042 / #120483 for the read-only half);
 * argument shape: a tool with no required params receives an ``arguments`` JSON object — ``{}`` —
   for every way a model spells "no arguments", and an optional object param keeps its ``{}``
-  (#120269), on the direct path and through the Tool Search ``tool_call`` bridge;
+  (#120269), on the direct path and through the Tool Search ``tool_call`` bridge, with no
+  information-free ``params._meta: {}`` (#120923);
 * image results: a cacheable PNG reaches the model as a ``MEDIA:`` file that exists; formats the
   cache cannot store (SVG, AVIF, TIFF, HEIC, malformed base64) must degrade visibly, never vanish
   (#120227).
@@ -30,13 +31,17 @@ import pytest
 
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
+    apply_known,
     build_home,
     calls_received,
+    payload,
     provider,
     run_chat_q,
     script,
     stdio_server,
+    symptom,
     tool_name,
+    tool_names,
     tool_results,
 )
 from tests.e2e.core.mcp_plugins._plugin_helpers import reap_tagged
@@ -55,14 +60,15 @@ KNOWN: dict[str, str] = {
         "#121042 readOnlyHint read by camelCase attribute under mcp 2.x; every tool needs approval",
     **{f"test_uncacheable_image_is_reported_to_the_model[{fmt}]":
        "#120227 an MCP image the cache cannot store vanishes from the tool result" for fmt in UNSUPPORTED_IMAGES},
+    **{f"test_no_required_param_tools_receive_an_arguments_object[{bridge}]":
+       "#120923 every tools/call carries an information-free params._meta: {} (stdio too)"
+       for bridge in ("direct", "tool_call bridge")},
 }
 
 
 @pytest.fixture(autouse=True)
 def _known(request: pytest.FixtureRequest) -> None:
-    reason = KNOWN.get(request.node.name)
-    if reason:
-        request.applymarker(pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason))
+    apply_known(request, KNOWN)
 
 
 def _run(root: Path, calls: list[tuple[str, dict[str, Any] | str]], *, extra: dict | None = None,
@@ -79,16 +85,9 @@ def _run(root: Path, calls: list[tuple[str, dict[str, Any] | str]], *, extra: di
             reap_tagged(eh)
         detail = f"exit {proc.returncode}\nstdout: {proc.stdout[-1500:]}\nstderr: {proc.stderr[-1500:]}"
         assert proc.returncode == 0 and FINAL in proc.stdout, f"turn did not complete:\n{detail}"
-        offered = {(t.get("function") or {}).get("name") for t in srv.main_requests()[0].get("tools") or []}
+        offered = tool_names(srv.main_requests()[0])
         return {"log": log, "results": tool_results(srv), "canary": f"CANARY-{root.name}", "offered": offered,
                 "stdout": proc.stdout, "detail": detail, "home": eh}
-
-
-def _payload(result: str) -> dict[str, Any]:
-    """The JSON object inside the untrusted-tool-result wrapper."""
-    match = re.search(r"^\{.*\}$", result, re.M | re.S)
-    assert match, f"no JSON payload in tool result: {result!r}"
-    return json.loads(match.group(0))
 
 
 # Trust tiers ---------------------------------------------------------------------------------------
@@ -103,15 +102,15 @@ def untrusted(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 def test_untrusted_server_refuses_destructive_tool_before_the_rpc(untrusted: dict[str, Any]) -> None:
     assert not calls_received(untrusted["log"], "rw_probe"), (
         "a destructiveHint tool on a trust: untrusted server reached the server without approval")
-    rw = _payload(untrusted["results"][1])
+    rw = payload(untrusted["results"][1])
     assert "error" in rw and untrusted["canary"] not in json.dumps(rw), rw
 
 
 def test_untrusted_server_runs_read_only_tool_without_approval(untrusted: dict[str, Any]) -> None:
     received = calls_received(untrusted["log"], "ro_probe")
-    ro = _payload(untrusted["results"][0])
-    assert received and f"RO:{untrusted['canary']}:r" in json.dumps(ro), (
-        f"readOnlyHint=true tool was gated on an untrusted server: server got {received}, model got {ro}")
+    ro = payload(untrusted["results"][0])
+    symptom(received and f"RO:{untrusted['canary']}:r" in json.dumps(ro),
+            f"readOnlyHint=true tool was gated on an untrusted server: server got {received}, model got {ro}")
 
 
 def test_default_trust_server_runs_destructive_tool(tmp_path: Path) -> None:
@@ -143,10 +142,10 @@ def test_no_required_param_tools_receive_an_arguments_object(tmp_path: Path, bri
     got = sorted((p["name"], json.dumps(p.get("arguments"), sort_keys=True)) for p in received)
     want = sorted((name, json.dumps(expect, sort_keys=True)) for name, _, expect in NO_ARG_SPELLINGS)
     assert got == want, f"server received {got}, want {want}"
-    for p in received:
-        meta = p.get("_meta", {})
-        assert isinstance(meta, dict), f"_meta must be an object when present: {p}"
     assert all(obs["canary"] in r for r in obs["results"]), obs["results"]
+    # Last, so the KNOWN symptom below can never mask a wrong-arguments failure above.
+    empty_meta = [p for p in received if "_meta" in p and not p["_meta"]]
+    symptom(not empty_meta, f"tools/call carried an information-free params._meta: {empty_meta}")
 
 
 # Image results -----------------------------------------------------------------------------------------
@@ -157,7 +156,7 @@ def images(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     fmts = ("png", *UNSUPPORTED_IMAGES)
     obs = _run(tmp_path_factory.mktemp("images"), [("image_probe", {"fmt": f}) for f in fmts])
     assert len(obs["results"]) == len(fmts), obs["results"]
-    obs["by_fmt"] = dict(zip(fmts, (_payload(r) for r in obs["results"])))
+    obs["by_fmt"] = dict(zip(fmts, (payload(r) for r in obs["results"])))
     return obs
 
 
@@ -171,10 +170,10 @@ def test_cacheable_image_reaches_the_model_as_a_media_file(images: dict[str, Any
 
 @pytest.mark.parametrize("fmt", UNSUPPORTED_IMAGES)
 def test_uncacheable_image_is_reported_to_the_model(images: dict[str, Any], fmt: str) -> None:
-    payload = images["by_fmt"][fmt]
-    text = json.dumps(payload)
+    block = images["by_fmt"][fmt]
+    text = json.dumps(block)
     status = f"IMG-STATUS:{images['canary']}:{fmt}"
-    assert status in text, f"the text block next to the image was lost: {payload}"
+    assert status in text, f"the text block next to the image was lost: {block}"
     rest = text.replace(status, "")
-    assert "image" in rest.lower(), (
-        f"{fmt} image block vanished: the model got no sign the tool returned an image: {payload}")
+    symptom("image" in rest.lower(),
+            f"{fmt} image block vanished: the model got no sign the tool returned an image: {block}")

@@ -27,14 +27,17 @@ import pytest
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
     HttpMcpServer,
+    apply_known,
     build_home,
     call_tool,
     calls_received,
     http_server_cfg,
     inbound,
+    payload,
     provider,
     run_chat_q,
     script,
+    symptom,
     tool_name,
     tool_results,
 )
@@ -58,15 +61,7 @@ KNOWN: dict[str, str] = {
 
 @pytest.fixture(autouse=True)
 def _known(request: pytest.FixtureRequest) -> None:
-    reason = KNOWN.get(request.node.name)
-    if reason:
-        request.applymarker(pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason))
-
-
-def _payload(result: str) -> dict[str, Any]:
-    match = re.search(r"^\{.*\}$", result, re.M | re.S)
-    assert match, f"no JSON payload in tool result: {result!r}"
-    return json.loads(match.group(0))
+    apply_known(request, KNOWN)
 
 
 def _one_turn(root: Path, calls: list[tuple[str, dict]], *, unauthorized_calls: int = 0) -> dict[str, Any]:
@@ -105,7 +100,7 @@ def test_no_information_free_meta_is_sent_over_http(shape: dict[str, Any]) -> No
     requests = [m for m in inbound(shape["log"]) if isinstance(m, dict) and "id" in m and "method" in m]
     assert requests, "the server logged no requests"
     empty = [m["method"] for m in requests if "_meta" in (m.get("params") or {}) and not m["params"]["_meta"]]
-    assert not empty, f"requests carried an empty/null params._meta: {empty}"
+    symptom(not empty, f"requests carried an empty/null params._meta: {empty}")
 
 
 # 401 on tools/call ---------------------------------------------------------------------------------
@@ -120,17 +115,17 @@ def unauthorized(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 def test_401_on_tools_call_is_reported_as_an_auth_failure(unauthorized: dict[str, Any]) -> None:
     assert any("injected_401_for" in m for m in inbound(unauthorized["log"]) if isinstance(m, dict)), (
         "fixture never answered 401 (vacuous)")
-    first = _payload(unauthorized["results"][0])
+    first = payload(unauthorized["results"][0])
     assert "error" in first, first
-    assert re.search(r"auth|401|sign.?in|credential", json.dumps(first), re.I), (
-        f"a 401 on tools/call reached the model without any sign it is an auth failure: {first}")
+    symptom(re.search(r"auth|401|sign.?in|credential", json.dumps(first), re.I),
+            f"a 401 on tools/call reached the model without any sign it is an auth failure: {first}")
 
 
 def test_the_call_after_a_401_reaches_the_server(unauthorized: dict[str, Any]) -> None:
     served = [m for m in inbound(unauthorized["log"])
               if isinstance(m, dict) and m.get("method") == "tools/call"]
     assert len(served) >= 2, f"the call after the 401 never reached the server: {served}"
-    second = _payload(unauthorized["results"][-1])
+    second = payload(unauthorized["results"][-1])
     assert f"NOARGS:{unauthorized['canary']}" in json.dumps(second), (
         f"the connection stayed broken after one 401: {second}")
 
@@ -177,7 +172,7 @@ def test_server_crash_mid_call_fails_that_call_and_the_next_turn_reconnects(tmp_
                 crashed = tool_results(srv)
                 assert calls_received(http.log, "crash_probe"), f"crash_probe never reached the server: {crashed}"
                 assert http.wait_exit(30) == 7, "fixture server did not crash in the call"
-                assert len(crashed) == 1 and "error" in _payload(crashed[0]), crashed
+                assert len(crashed) == 1 and "error" in payload(crashed[0]), crashed
                 assert len(calls_received(http.log, "crash_probe")) == 1, "crashed call was replayed"
                 assert host.proc.poll() is None, f"host died with the MCP server:\n{host.cap.stderr[-2000:]}"
 
@@ -186,7 +181,7 @@ def test_server_crash_mid_call_fails_that_call_and_the_next_turn_reconnects(tmp_
                 assert FINAL in host.turn(sid, "Use the web tool again.")
                 after = tool_results(srv)[1:]
                 assert len(after) == len(turn2), after
-                assert canary in after[must_succeed], f"{kind}: next turn did not reach the restarted server: {after}"
+                symptom(canary in after[must_succeed], f"{kind}: next turn did not reach the restarted server: {after}")
                 served_by = {m["pid"] for m in _raw(http.log) if m["msg"].get("method") == "tools/call"
                              and (m["msg"].get("params") or {}).get("name") == turn2[0]}
                 assert served_by and old_pid not in served_by, served_by

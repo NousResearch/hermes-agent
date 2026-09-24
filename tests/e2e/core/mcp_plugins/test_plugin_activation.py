@@ -16,8 +16,9 @@ fixture server, launched from a portable package under ``<HERMES_HOME>/plugins/<
   ``.bak-*`` copy next to it) is what ``hermes plugins list`` shows and what a real turn runs,
   and the collision is reported (#121078).
 
-Open bugs are strict xfails through ``KNOWN`` (drop the entry when its fix lands); only an
-``AssertionError`` counts as the bug, so a boot failure or a crash stays red.
+Open bugs are strict xfails through ``KNOWN`` (drop the entry when its fix lands); only a
+``KnownSymptom`` raised by the bug's own assertion counts as the bug, so a boot failure, a
+precondition, a timeout or a crash stays red.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import pytest
 
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
+    apply_known,
     build_home,
     calls_received,
     inbound,
@@ -40,7 +42,9 @@ from tests.e2e.core.mcp_plugins._helpers import (
     run_chat_q,
     script,
     stdio_server,
+    symptom,
     tool_name,
+    tool_names,
     tool_results,
 )
 from tests.e2e.core.mcp_plugins._plugin_helpers import portable_stdio, reap_tagged, tui_host, write_portable_plugin
@@ -66,17 +70,16 @@ KNOWN: dict[str, str] = {
 }
 
 
-def known(fn):
-    """Strict xfail when the test's name is a KNOWN entry; a plain test otherwise."""
-    if fn.__name__ not in KNOWN:
-        return fn
-    return pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN[fn.__name__])(fn)
+@pytest.fixture(autouse=True)
+def _known(request: pytest.FixtureRequest) -> None:
+    apply_known(request, KNOWN)
 
 
 PLUGIN = "e2eplug"
 SERVER = "plug"
 PLUG_TOOL = tool_name(SERVER, "ro_probe")
 CALL_RE = re.compile(r"CALL-PLUGIN:([A-Za-z0-9]+)")
+ENV_RE = re.compile(r"ENV:[^:\s\"\\]*:[^\s\"\\]*")
 
 
 def _user_text(msg: dict[str, Any]) -> str:
@@ -102,10 +105,6 @@ def _first_request_of_turn(bodies: list[dict[str, Any]], marker: str) -> dict[st
         if marker in _last_user(body) and msgs and msgs[-1].get("role") == "user":
             return body
     raise AssertionError(f"no request opened the {marker!r} turn: {[_last_user(b)[-80:] for b in bodies]}")
-
-
-def _names(body: dict[str, Any]) -> set[str]:
-    return {str((t.get("function") or {}).get("name")) for t in body.get("tools") or []}
 
 
 def _canon(value: Any) -> str:
@@ -147,8 +146,8 @@ def test_plugin_enabled_mid_chat_is_usable_in_that_chat_with_an_unchanged_tools_
             after = _first_request_of_turn(bodies, "TURN-TWO")
             assert _canon(after.get("tools")) == _canon(before.get("tools")), (
                 "enabling a plugin mid-chat changed the open chat's model-facing tools[] "
-                f"(prompt-cache prefix): added {sorted(_names(after) - _names(before))}, "
-                f"removed {sorted(_names(before) - _names(after))}")
+                f"(prompt-cache prefix): added {sorted(tool_names(after) - tool_names(before))}, "
+                f"removed {sorted(tool_names(before) - tool_names(after))}")
             assert before["messages"][0].get("role") == "system", before["messages"][0]
             assert _canon(after["messages"][0]) == _canon(before["messages"][0]), (
                 "enabling a plugin mid-chat rewrote the open chat's system prompt (prompt-cache prefix)")
@@ -165,7 +164,6 @@ def test_plugin_enabled_mid_chat_is_usable_in_that_chat_with_an_unchanged_tools_
 # 2. #119751 resource-only portable server -----------------------------------------------------
 
 
-@known
 def test_resource_only_plugin_activated_live_is_reported_connected(tmp_path: Path) -> None:
     log = tmp_path / "res_inbound.jsonl"
     with provider(script()) as srv:
@@ -178,8 +176,8 @@ def test_resource_only_plugin_activated_live_is_reported_connected(tmp_path: Pat
             # Guard: the server really completed the MCP handshake with this host.
             assert "initialize" in methods and "notifications/initialized" in methods, methods
             assert [r["name"] for r in rows] == [SERVER], rows
-            assert rows[0]["connected"] is True and not rows[0].get("error"), (
-                f"a resource-only MCP server that completed the handshake is reported as failed: {rows[0]}")
+            symptom(rows[0]["connected"] is True and not rows[0].get("error"),
+                    f"a resource-only MCP server that completed the handshake is reported as failed: {rows[0]}")
 
 
 # 3. #120526 ${VAR} in a portable mcp.json env (native config.yaml is the control) ---------------
@@ -214,26 +212,31 @@ def env_echo_results(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]
     return {**by_server, "output": proc.stdout + proc.stderr}
 
 
+def _env_line(result: str) -> str:
+    """The server's ``ENV:<canary>:<value>`` echo inside the tool result (what the server saw)."""
+    match = ENV_RE.search(result)
+    assert match, f"no ENV: echo in the tool result: {result[-300:]}"
+    return match.group(0)
+
+
 def test_native_mcp_env_placeholder_is_interpolated(env_echo_results: dict[str, str]) -> None:
-    result = env_echo_results["nat"]
-    assert "ENV:NO-CANARY:native-dotenv-value" in result, (
-        f"native mcp_servers env ${{VAR}} did not reach the server with the .env value: {result[-300:]}")
+    echoed = _env_line(env_echo_results["nat"])
+    assert echoed == "ENV:NO-CANARY:native-dotenv-value", (
+        f"native mcp_servers env ${{VAR}} did not reach the server with the .env value: {echoed}")
 
 
-@known
 def test_portable_mcp_env_placeholder_is_interpolated(env_echo_results: dict[str, str]) -> None:
-    result = env_echo_results[SERVER]
-    assert "${E2E_PORTABLE_KEY}" not in result, (
-        f"the portable plugin's server received the literal placeholder: {result[-300:]}")
-    assert "ENV:NO-CANARY:portable-dotenv-value" in result, result[-300:]
+    echoed = _env_line(env_echo_results[SERVER])
+    symptom("${E2E_PORTABLE_KEY}" not in echoed,
+            f"the portable plugin's server received the literal placeholder: {echoed}")
+    assert echoed == "ENV:NO-CANARY:portable-dotenv-value", echoed
 
 
-@known
 def test_enabled_portable_plugin_server_is_not_reported_as_an_unknown_toolset(env_echo_results: dict[str, str]) -> None:
     """The enabled plugin's server worked in that very run (the fixture asserts its tool result), so a
     startup warning calling it an unknown toolset is a false alarm the user sees on every launch."""
     warned = [line for line in env_echo_results["output"].splitlines() if "Unknown toolsets" in line]
-    assert not warned, f"`hermes chat` warned about the enabled plugin's MCP server: {warned}"
+    symptom(not warned, f"`hermes chat` warned about the enabled plugin's MCP server: {warned}")
 
 
 # 4. #121078 same manifest name in two user plugin dirs ------------------------------------------
@@ -274,20 +277,17 @@ def test_same_name_collision_still_loads_exactly_one_copy(name_collision: dict[s
     assert len(hits) == 1, name_collision["results"]
 
 
-@known
 def test_same_name_backup_dir_does_not_shadow_the_live_plugin(name_collision: dict[str, Any]) -> None:
     rows = [line for line in name_collision["listing"].splitlines() if re.search(r"\bfoo\s*$", line)]
-    assert rows and "2.0.0" in rows[0], (
-        f"`hermes plugins list` shows the backup copy instead of plugins/foo (v2.0.0): {rows}")
-    assert any("RO:CANARY-LIVE:dup" in r for r in name_collision["results"]), (
-        f"a real turn ran the backup dir's MCP server, not plugins/foo's: {name_collision['results']}")
+    assert rows, name_collision["listing"]
+    symptom("2.0.0" in rows[0], f"`hermes plugins list` shows the backup copy instead of plugins/foo (v2.0.0): {rows}")
+    symptom(any("RO:CANARY-LIVE:dup" in r for r in name_collision["results"]),
+            f"a real turn ran the backup dir's MCP server, not plugins/foo's: {name_collision['results']}")
 
 
-@known
 def test_same_name_plugin_collision_is_reported(name_collision: dict[str, Any]) -> None:
     live, backup = str(name_collision["live"]), str(name_collision["backup"])
     surfaces = {"hermes plugins list": name_collision["listing"], "logs/*.log": name_collision["logs"]}
     named_both = [where for where, text in surfaces.items() if live in text and backup in text]
-    assert named_both, (
-        f"two user plugin dirs declare the same name 'foo' ({live} and {backup}) but no user-visible "
-        f"surface names both: {', '.join(surfaces)}")
+    symptom(named_both, f"two user plugin dirs declare the same name 'foo' ({live} and {backup}) but no "
+                        f"user-visible surface names both: {', '.join(surfaces)}")

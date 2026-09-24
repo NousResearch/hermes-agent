@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+import pytest
 import yaml
 
 from tests.e2e.core.parity._helpers import hermes_argv, kill_tagged, tagged_pids, wait_until
@@ -35,13 +37,47 @@ TURN_TIMEOUT = 240.0
 _SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_ACCESS_KEY")
 _PASSTHROUGH_ENV = frozenset({"PATH", "LANG", "LANGUAGE", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ"})
 
-__all__ = ["FINAL", "E2EHome", "HttpMcpServer", "build_home", "stdio_server", "http_server_cfg",
-           "script", "call_tool", "run_chat_q", "inbound", "calls_received", "tool_results", "tool_name",
-           "kill_tagged", "tagged_pids", "wait_until"]
+__all__ = ["FINAL", "E2EHome", "HttpMcpServer", "KnownSymptom", "apply_known", "build_home", "stdio_server",
+           "http_server_cfg", "script", "call_tool", "run_chat_q", "inbound", "calls_received", "tool_results",
+           "tool_name", "tool_names", "payload", "symptom", "kill_tagged", "tagged_pids", "wait_until"]
 
 
 def tool_name(server: str, tool: str) -> str:
     return f"mcp__{server}__{tool}"
+
+
+# Known open bugs ----------------------------------------------------------------------------------
+
+
+class KnownSymptom(Exception):
+    """Raised ONLY by the assertion that observes a KNOWN bug's symptom. KNOWN cells are strict
+    xfails with ``raises=KnownSymptom``, so every other failure in them (a server that never starts,
+    a timeout, a precondition, a crashed host, teardown) is a plain error and stays red."""
+
+
+def symptom(ok: Any, message: str) -> None:
+    """Assert the property a KNOWN bug breaks; its violation raises :class:`KnownSymptom`."""
+    if not ok:
+        raise KnownSymptom(message)
+
+
+def apply_known(request: Any, known: dict[str, str]) -> None:
+    """From an autouse fixture: strict-xfail the current test when its node name is a KNOWN key."""
+    reason = known.get(request.node.name)
+    if reason:
+        request.applymarker(pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=reason))
+
+
+def payload(result: str) -> dict[str, Any]:
+    """The JSON object inside a tool result's untrusted-content wrapper."""
+    match = re.search(r"^\{.*\}$", result, re.M | re.S)
+    assert match, f"no JSON payload in tool result: {result!r}"
+    return json.loads(match.group(0))
+
+
+def tool_names(body: dict[str, Any]) -> set[str]:
+    """Function names in a provider request's ``tools[]``."""
+    return {str((t.get("function") or {}).get("name")) for t in body.get("tools") or []}
 
 
 @dataclass
@@ -57,7 +93,7 @@ class E2EHome:
         """Hermetic child env: fake HOME (so no ``~/.hermes`` of the real user is reachable)."""
         import pwd  # the suite is Linux-gated
 
-        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()
+        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()  # windows-footgun: ok — module is skipif(not linux)
         fixture = self.hermes_home.resolve()
         assert fixture != real_root and fixture.parent != real_root / "profiles", fixture
         assert fixture == (self.home / ".hermes").resolve(), fixture
@@ -148,7 +184,7 @@ class HttpMcpServer:
         with open(self.stderr_path, "ab") as err:
             self.proc = subprocess.Popen([sys.executable, str(FIXTURE_SERVER)], env=env,
                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
-        text = wait_until(lambda: self.port_file.exists() and self.port_file.read_text().strip(), 60,
+        text = wait_until(lambda: self.port_file.exists() and self.port_file.read_text(encoding="utf-8").strip(), 60,
                           f"HTTP MCP server bind ({self.stderr_path})")
         self.port = int(text.split()[0])
         return self
@@ -168,10 +204,6 @@ class HttpMcpServer:
 
 
 # Scripted provider -----------------------------------------------------------------------------
-
-
-def _names(body: dict[str, Any]) -> set[str]:
-    return {(t.get("function") or {}).get("name") for t in body.get("tools") or []}
 
 
 def _tool_msgs_this_turn(body: dict[str, Any]) -> list[dict]:
@@ -198,7 +230,8 @@ def script(*calls: tuple[str, dict[str, Any] | str]) -> Callable[[dict[str, Any]
 
 def call_tool(body: dict[str, Any], name: str, args: dict[str, Any] | str) -> ToolCall:
     """Call ``name`` directly when offered, else through the Tool Search ``tool_call`` bridge."""
-    if name in _names(body) or "tool_call" not in _names(body):
+    offered = tool_names(body)
+    if name in offered or "tool_call" not in offered:
         return ToolCall(name, args)
     return ToolCall("tool_call", {"calls": [{"name": name, "arguments": args}]})
 

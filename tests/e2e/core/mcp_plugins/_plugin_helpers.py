@@ -9,7 +9,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -58,18 +57,15 @@ class TuiHost:
 
     def turn(self, sid: str, text: str, timeout: float = TURN_TIMEOUT) -> str:
         """Submit one prompt and wait for THIS turn's ``message.complete`` (not an earlier turn's)."""
-        seen = len(self.rpc.events)
+        earlier = {id(ev) for ev in self.rpc.events}
         self.rpc.call("prompt.submit", {"session_id": sid, "text": text}, timeout=READY_TIMEOUT)
-        deadline = time.monotonic() + timeout
-        while True:
-            for ev in self.rpc.events[seen:]:
-                if ev.get("type") == "message.complete" and ev.get("session_id") == sid:
-                    out = (ev.get("payload") or {}).get("text")
-                    return out if isinstance(out, str) else json.dumps(out)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise AssertionError(f"no message.complete for {sid} within {timeout}s:\n{self.cap.stderr[-2000:]}")
-            self.rpc._pump(min(remaining, 0.5))  # test-harness sibling: same pump wait_event uses
+        try:
+            ev = self.rpc.wait_event("message.complete", lambda e: e.get("session_id") == sid
+                                     and id(e) not in earlier, timeout=timeout)
+        except AssertionError as exc:
+            raise AssertionError(f"{exc}\nhost stderr:\n{self.cap.stderr[-2000:]}") from exc
+        out = (ev.get("payload") or {}).get("text")
+        return out if isinstance(out, str) else json.dumps(out)
 
 
 @contextlib.contextmanager
@@ -105,4 +101,4 @@ def reap_tagged(eh: E2EHome) -> None:
     """Cleanup: SIGKILL any process still carrying this home's unique tag (reparented orphans too)."""
     for pid in tagged_pids(eh.tag):
         with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — callers are skipif(not linux); /proc scan

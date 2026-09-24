@@ -141,7 +141,10 @@ _LEGACY_MASK_RE = re.compile(r".{4}\.\.\..{4}")
 def is_redacted_credential_preview(submitted: Any) -> bool:
     """Recognize current, stale and legacy dashboard previews by shape alone."""
     value = str(submitted or "")
-    if value == "«redacted-secret»" or (value.startswith("«redacted:") and value.endswith("»")):
+    # Any ``«redacted…`` value is already-masked output (the same test agent.redact uses
+    # to skip re-masking): our ``«redacted:…»`` sentinel, ``«redacted-secret»`` and the
+    # vault marker ``«redacted-vault-secret»``. Then the legacy bare mask shapes.
+    if value.startswith("«redacted"):
         return True
     return value == "***" or _LEGACY_MASK_RE.fullmatch(value) is not None
 

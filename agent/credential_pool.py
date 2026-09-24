@@ -109,6 +109,7 @@ CREDENTIAL_PERSIST_FAILED_REASON = "credential_persist_failed"
 # Singleton-seeded entries (device_code, claude_code) are NOT pruned because
 # ``_seed_from_singletons`` would re-create them from the same stale tokens.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60
+OAUTH_ACCESS_TOKEN_REFRESH_SKEW_MS = 120_000
 
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
@@ -126,6 +127,22 @@ SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
 }
+
+
+def _oauth_expiry_needs_refresh(expires_at_ms: Any) -> bool:
+    """Whether an expiry-bearing OAuth row should refresh before it is leased.
+
+    Plugin-written auth-store data is an external boundary. A malformed non-null
+    value fails closed into refresh rather than crashing selection or leasing a
+    bearer whose validity cannot be established.
+    """
+    if expires_at_ms is None:
+        return False
+    try:
+        expiry = int(expires_at_ms)
+    except (TypeError, ValueError):
+        return True
+    return expiry <= int(time.time() * 1000) + OAUTH_ACCESS_TOKEN_REFRESH_SKEW_MS
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
 # briefly so single-key setups recover; 429/402/other take an hour.
@@ -1952,15 +1969,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
         if self.provider == "anthropic":
-            if entry.expires_at_ms is None:
-                return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
+            return _oauth_expiry_needs_refresh(entry.expires_at_ms)
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(entry.access_token, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
         if self.provider == "xai-oauth":
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
             )
+        if plugin_refresh_hook(self.provider) is not None:
+            return _oauth_expiry_needs_refresh(entry.expires_at_ms)
         # Nous refresh can require network access and happens when runtime
         # credentials are actually resolved, not on enumeration/selection.
         return False
@@ -2088,7 +2105,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
-                if self.provider in _TOKENS_SINGLETON_PROVIDERS:
+                if (
+                    self.provider in _TOKENS_SINGLETON_PROVIDERS
+                    or plugin_refresh_hook(self.provider) is not None
+                ):
                     pending_refresh.append(entry)
                     continue
                 refreshed = self._refresh_entry(entry, force=False)

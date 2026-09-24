@@ -74,6 +74,7 @@ import {
   columnLabel,
   duration,
   errText,
+  isConnectivityError,
   isLockedTarget,
   type KanbanText,
   lockedReason,
@@ -575,7 +576,7 @@ function EstimateSection({ id }: { id: string }) {
 
   const est = useMutation({
     mutationFn: () => estimateTask(id),
-    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onError: err => host.notify({ kind: 'error', message: isConnectivityError(err) ? k.estimateTimeout : errText(err) }),
     onSuccess: r => {
       if (r.ok) {
         setResult(r)

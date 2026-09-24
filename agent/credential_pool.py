@@ -1132,7 +1132,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 return
             rows = auth_mod._entry_ids(written)
             self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
-            for index, entry in enumerate(self._entries):
+            for entry in self._entries:
                 row = rows.get(entry.id)
                 pair = self._persisted_token_pairs.get(entry.id, (None, None))
                 # Reference-only rows are intentionally secret-free on disk; never dehydrate

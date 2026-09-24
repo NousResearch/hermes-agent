@@ -9,6 +9,7 @@ normalisation, and the tool-result message constructor with untrusted-content wr
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -68,9 +69,19 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
-# Legacy compressor builds ended long string leaves with these ambiguous tails.
-# Keep the compatibility guard narrow: real historical rewrites had a 200-char head.
-_LEGACY_CONTEXT_PRUNED_ARG_TAILS = ("...[truncated]", "…[truncated]")
+@functools.lru_cache(maxsize=1)
+def _context_pruned_marker_re() -> re.Pattern[str]:
+    """Producer-shaped regex for the compressor's model-visible prune marker.
+
+    Imported lazily: ``agent.context_compressor`` -> ``agent.prompt_builder`` ->
+    this module, so a module-level import would be circular. Compiled once.
+    """
+    from agent.context_compressor import _COMPRESSION_MARKER_PREFIX
+
+    return re.compile(
+        re.escape(_COMPRESSION_MARKER_PREFIX)
+        + r"\s+\d[\d,]* of \d[\d,]* chars omitted here by Hermes's context compressor\."
+    )
 
 
 def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
@@ -85,22 +96,12 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     if not tool_may_have_side_effect(tool_name):
         return []
 
-    # Late import keeps this helper from making the dispatch module own a second
-    # copy of the compressor sentinel (and avoids a heavy import at CLI startup).
-    from agent.context_compressor import _COMPRESSION_MARKER_PREFIX
-
-    marker_re = re.compile(
-        re.escape(_COMPRESSION_MARKER_PREFIX)
-        + r"\s+\d[\d,]* of \d[\d,]* chars omitted here by Hermes's context compressor\."
-    )
+    marker_re = _context_pruned_marker_re()
     found: list[str] = []
 
     def _walk(value: Any, path: str) -> None:
         if isinstance(value, str):
-            stripped = value.rstrip()
-            if marker_re.search(value) or (
-                len(stripped) > 200 and stripped.endswith(_LEGACY_CONTEXT_PRUNED_ARG_TAILS)
-            ):
+            if marker_re.search(value):
                 found.append(path)
             return
         if isinstance(value, dict):

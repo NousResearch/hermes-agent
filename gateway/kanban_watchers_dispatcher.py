@@ -42,6 +42,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    max_in_progress_per_profile_overrides: dict[str, int]
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -115,6 +116,14 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Per-profile overrides (#91266): parsed by the dispatcher's own shared
+        # parser so the gateway, the CLI and a direct `dispatch_once` caller
+        # cannot disagree about precedence or about which entries are valid.
+        max_in_progress_per_profile_overrides=(
+            _kbd().normalize_profile_cap_overrides(
+                kanban_cfg.get("max_in_progress_per_profile_overrides")
+            )
+        ),
     )
 
 

@@ -1894,6 +1894,14 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-profile overrides for the uniform cap above (#91266). A listed
+        # profile uses its own ceiling; unlisted profiles fall back to
+        # `max_in_progress_per_profile`. With that cap unset, ONLY the listed
+        # profiles are capped -- e.g. `{"designer": 1, "dev": 2}` bounds the two
+        # profiles that exhaust memory/CPU while every other profile runs
+        # unconstrained. Invalid entries are ignored with a warning. An empty
+        # map (the default) preserves existing behaviour.
+        "max_in_progress_per_profile_overrides": {},
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

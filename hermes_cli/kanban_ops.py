@@ -69,6 +69,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None
         )
+        max_in_progress_per_profile_overrides = (
+            kbd.normalize_profile_cap_overrides(
+                _kanban_cfg.get("max_in_progress_per_profile_overrides")
+            )
+        )
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
@@ -80,6 +85,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
+        max_in_progress_per_profile_overrides = {}
         max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
@@ -90,6 +96,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_profile_overrides=(
+                max_in_progress_per_profile_overrides
+            ),
         )
     if getattr(args, "json", False):
         _print_json({

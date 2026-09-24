@@ -381,6 +381,16 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Per-profile concurrency caps, so a fan-out never overwhelms one profile's
+  # local model / API quota / browser pool. Both are unset (unlimited) by
+  # default; they apply alongside the board-wide `max_in_progress`.
+  # max_in_progress_per_profile: 4
+  # Overrides for the cap above: a listed profile uses its own ceiling, unlisted
+  # profiles fall back to `max_in_progress_per_profile`, and with that cap unset
+  # ONLY the listed profiles are capped.
+  # max_in_progress_per_profile_overrides:
+  #   designer: 1
+  #   dev: 2
 
 # =============================================================================
 # Terminal Tool Configuration

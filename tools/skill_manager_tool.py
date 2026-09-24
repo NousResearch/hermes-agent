@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_constants import get_hermes_home, display_hermes_home
-from utils import atomic_write_text, is_truthy_value
+from utils import atomic_write_bytes, atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -429,11 +429,34 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
+    # Snapshot BEFORE mkdir: a name can collide with a pre-existing directory that
+    # _find_skill missed (no SKILL.md, or outside the scanned roots). Only what this
+    # call created may be removed on a blocked scan — the same contract _guarded_write
+    # applies to edit/patch/write_file (issue #119534).
+    dir_pre_existed = skill_dir.exists()
+    original_skill_md = None
+    if dir_pre_existed:
+        _pre_md = skill_dir / "SKILL.md"
+        if _pre_md.exists():
+            try:
+                original_skill_md = _pre_md.read_bytes()
+            except OSError:
+                return _err(f"Cannot read existing SKILL.md at {_pre_md}: permission denied.")
     mkdir_under_hermes_home(skill_dir)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
+        if dir_pre_existed:
+            if original_skill_md is not None:
+                # Restore the pre-existing SKILL.md byte-for-byte...
+                with suppress(Exception):
+                    atomic_write_bytes(skill_md, original_skill_md)
+            else:
+                # ...or unlink only the file this call wrote. Pre-existing contents stay.
+                with suppress(Exception):
+                    skill_md.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(skill_dir, ignore_errors=True)
         return _err(scan_error)
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir

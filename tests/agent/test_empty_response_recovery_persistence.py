@@ -197,6 +197,9 @@ def real_loop(tmp_path, monkeypatch):
     monkeypatch.setenv("no_proxy", "")
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     monkeypatch.setattr("agent.title_generator.start_title_upgrade", lambda *a, **k: None)
+    # The first empty response backs off 5-7.5 s for real; the give-up path is reached via the
+    # deterministic-empty guard, not the wait (``turn_empty_response`` imports this lazily).
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
     monkeypatch.chdir(tmp_path)
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "sess-empty-exit"
@@ -218,9 +221,7 @@ def real_loop(tmp_path, monkeypatch):
     def run(script, user_message):
         pending = list(script)
         agent.client = MagicMock()
-        agent.client.chat.completions.create.side_effect = lambda **_kw: (
-            pending.pop(0)() if callable(pending[0]) else pending.pop(0)
-        )
+        agent.client.chat.completions.create.side_effect = lambda **_kw: pending.pop(0)
         return agent.run_conversation(user_message)
 
     yield SimpleNamespace(agent=agent, db=db, sid=sid, ledger=tmp_path / "ledger.txt", run=run)
@@ -267,3 +268,5 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
     assert real_loop.ledger.read_text() == "PAYMENT #1 SENT\n"
     assert result["interrupted"] is True
     _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
+    # The Stop owner strips the nudge scaffold itself and closes with its own reason.
+    assert result["messages"][-1]["content"] == result["final_response"]

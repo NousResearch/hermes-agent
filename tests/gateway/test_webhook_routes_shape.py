@@ -63,3 +63,18 @@ def test_valid_mapping_passes_through_unchanged():
     routes = {"events": {"path": "/events", "secret": ["s1", "s2"], "script": "ingest.py"}}
     adapter = WebhookAdapter(_config(routes))
     assert adapter._routes == routes
+
+
+def test_null_routes_normalizes_to_empty():
+    # A bare `routes:` YAML key (null) is indistinguishable from an absent key —
+    # must not crash the gateway (review follow-up 24/9).
+    adapter = WebhookAdapter(_config(None))
+    assert adapter._routes == {}
+
+
+def test_list_of_pairs_rejected_actionable():
+    # Deliberate behavior change: dict() previously accepted [['name', {...}]] pair
+    # sequences; the list form is now strictly route-config mappings (documented
+    # in the commit message — exotic, undocumented shape).
+    with pytest.raises(ValueError, match=r"list entries must be mappings.*got list"):
+        WebhookAdapter(_config([["events", {"path": "/events"}]]))

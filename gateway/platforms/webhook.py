@@ -177,6 +177,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # the named mapping this adapter needs (name from path basename); keep an
         # actionable error only for shapes we genuinely cannot recover.
         routes_cfg = extra.get("routes", {})
+        # A bare `routes:` key (YAML null) is indistinguishable from an absent key —
+        # tolerate it as empty rather than crash startup (review follow-up 24/9).
+        if routes_cfg is None:
+            routes_cfg = {}
         if isinstance(routes_cfg, list):
             normalized: Dict[str, dict] = {}
             for entry in routes_cfg:

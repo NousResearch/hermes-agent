@@ -979,3 +979,44 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     finally:
         goals._DB_CACHE.clear()
         registry.release_or_close(db)
+
+
+class TestJudgeEvidenceRequirement:
+    """Judge prompts must require concrete evidence even without a contract.
+
+    Regression: JUDGE_SYSTEM_PROMPT treated 'the response explicitly confirms
+    the goal was completed' as sufficient for DONE, so an agent that merely
+    declared completion (without the work existing) ended the goal loop.
+    """
+
+    def test_system_prompt_does_not_treat_bare_confirmation_as_done(self):
+        from hermes_cli import goals
+
+        assert "explicitly confirms the goal was completed" not in goals.JUDGE_SYSTEM_PROMPT
+        # The DONE section must demand evidence and name the failure mode.
+        assert "CLAIM, not evidence" in goals.JUDGE_SYSTEM_PROMPT
+
+    def test_plain_prompt_requires_evidence_without_contract_or_subgoals(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+
+        class _FakeMsg:
+            content = '{"done": true, "reason": "ok"}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+        def _fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
+            goals.judge_goal("ship it", "done", subgoals=None)
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "concrete evidence" in user_msg
+        assert "return CONTINUE" in user_msg
+        assert "ship it" in user_msg

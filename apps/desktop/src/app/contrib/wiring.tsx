@@ -48,6 +48,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
+import { $hudActive } from '@/store/hud'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -88,7 +89,13 @@ import {
   setMessages
 } from '@/store/session'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { armWakeWord, stopClientCapture } from '@/store/wake-word'
+import {
+  armWakeWord,
+  releaseWakeWord,
+  stopClientCapture,
+  WAKE_HANDOFF_RETRIES,
+  wakeListenerRole
+} from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -928,13 +935,26 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshSessions
   })
 
+  // The wake listener is held by one gateway socket; while the HUD is up the
+  // app window hands it over and takes it back when the HUD closes (see
+  // wakeListenerRole). `$hudActive` follows the HUD however it is closed.
+  const hudActive = useStore($hudActive)
+
   useEffect(() => {
-    if (gatewayState === 'open') {
-      // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
-      // same listener this auto-arm claims.
-      void armWakeWord(requestGateway)
+    if (gatewayState !== 'open') {
+      return
     }
-  }, [gatewayState, requestGateway])
+
+    if (wakeListenerRole(isHudWindow(), hudActive) === 'release') {
+      void releaseWakeWord(requestGateway)
+
+      return
+    }
+
+    // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
+    // same listener this auto-arm claims.
+    void armWakeWord(requestGateway, { retryOwned: WAKE_HANDOFF_RETRIES })
+  }, [gatewayState, hudActive, requestGateway])
 
   const activeIsMessaging =
     !!selectedStoredSessionId &&

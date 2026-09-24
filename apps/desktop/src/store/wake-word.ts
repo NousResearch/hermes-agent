@@ -242,13 +242,41 @@ export function applyWakeStopResult(result: WakeStopResponse | null | undefined)
 }
 
 /**
+ * The wake listener is a single-owner lease held by ONE gateway socket, and
+ * `wake.detected` is emitted only to that socket. The HUD is a full renderer
+ * with its own socket, so while it is up it must hold the lease — otherwise the
+ * app window keeps it and the wake word opens voice in a window the user can't
+ * see. Which role this window plays, given whether it is the HUD and whether a
+ * HUD is currently open:
+ */
+export const wakeListenerRole = (isHud: boolean, hudActive: boolean): 'claim' | 'release' =>
+  !isHud && hudActive ? 'release' : 'claim'
+
+/** Pause between `wake.start` retries while the previous owner hands over. */
+export const WAKE_OWNED_RETRY_MS = 1000
+
+/** Retries for a window claiming the lease after a HUD open/close. The old
+ *  owner may still hold it briefly — its `wake.stop` in flight, or its closed
+ *  socket not yet reaped by the backend — so `reason: "owned"` is expected for
+ *  a moment. ~10 s bounds a real conflict (e.g. the TUI owns the mic). */
+export const WAKE_HANDOFF_RETRIES = 10
+
+export interface ArmWakeWordOptions {
+  /** Re-try `wake.start` this many times while it is refused with `owned`. */
+  retryOwned?: number
+}
+
+/**
  * Gateway-ready sync + auto-arm (wiring.tsx). Queries `wake.status` first so
  * the button knows availability/phrase even when arming is refused, then arms
  * the listener for this surface exactly like the historical auto-arm did.
  * Best-effort: a gateway without the wake.* methods leaves the atom at its
  * hidden default.
  */
-export async function armWakeWord(request: WakeRequester = gatewayRequester): Promise<void> {
+export async function armWakeWord(
+  request: WakeRequester = gatewayRequester,
+  { retryOwned = 0 }: ArmWakeWordOptions = {}
+): Promise<void> {
   try {
     const status = await request<WakeStatusResponse>('wake.status', {
       client_capture: true,
@@ -274,14 +302,44 @@ export async function armWakeWord(request: WakeRequester = gatewayRequester): Pr
       return
     }
 
-    const result = await request<WakeStartResponse>('wake.start', {
+    let result = await request<WakeStartResponse>('wake.start', {
       surface: 'gui',
       client_capture: true
     })
 
+    for (let attempt = 0; attempt < retryOwned && !result?.started && result?.reason === 'owned'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, WAKE_OWNED_RETRY_MS))
+      result = await request<WakeStartResponse>('wake.start', {
+        surface: 'gui',
+        client_capture: true
+      })
+    }
+
     applyWakeStartResult(result)
   } catch {
     // Older backends / transient failures — keep whatever we last knew.
+  }
+}
+
+/**
+ * Give this window's listener up WITHOUT touching `wake_word.enabled` (no
+ * `persist`), so another window can claim it. Used when the HUD opens: the
+ * app window steps aside and the HUD arms. Best-effort — a release that fails
+ * or lands late is covered by the claimant's `retryOwned`.
+ */
+export async function releaseWakeWord(request: WakeRequester = gatewayRequester): Promise<void> {
+  try {
+    const result = await request<WakeStopResponse>('wake.stop', {})
+
+    stopClientCapture()
+    $wakeWord.set({
+      ...$wakeWord.get(),
+      listening: false,
+      notice: result?.stopped ? '' : noticeFrom(result),
+      pending: false
+    })
+  } catch {
+    // Older backends / transient failures — the claimant's retry covers it.
   }
 }
 

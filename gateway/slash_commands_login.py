@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from gateway.run_agent_cache import _first_agent
-from gateway.slash_access import policy_for_source
+
 from hermes_cli import anon_auth
 
 logger = logging.getLogger("gateway.run")
@@ -71,7 +71,7 @@ class GatewayLoginCommandsMixin:
         if not paired_dm:
             return anon_auth.LOGIN_DM_ONLY
 
-        policy = policy_for_source(self.config, src)
+        policy = self._slash_policy_for_source(src)
         if policy.enabled and not policy.is_admin(getattr(src, "user_id", None)):
             return anon_auth.LOGIN_NOT_ALLOWED
 

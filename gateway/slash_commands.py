@@ -316,9 +316,8 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
-        from gateway.slash_access import policy_for_source
         source = event.source
-        policy = policy_for_source(self.config, source)
+        policy = self._slash_policy_for_source(source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = ((source.chat_type if source else "") or "dm").lower()
         scope = "DM" if chat_type in {"dm", "direct", "private", ""} else "group/channel"
@@ -589,11 +588,8 @@ class GatewaySlashCommandsMixin(
         """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
         the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
         never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
-        from gateway.slash_access import policy_for_source
         source = event.source
-        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
-        # no ``config``; policy_for_source treats None as ungated.
-        policy = policy_for_source(getattr(self, "config", None), source)
+        policy = self._slash_policy_for_source(source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
         return {}
@@ -925,13 +921,12 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
-        from gateway.slash_access import policy_for_source
         from hermes_cli.approval_mode import run_approval_mode_command
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
         # Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
+        policy = self._slash_policy_for_source(event.source)
         if requested and not policy.is_admin(event.source.user_id):
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its

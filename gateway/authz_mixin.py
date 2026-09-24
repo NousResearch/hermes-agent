@@ -190,6 +190,33 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
+    def _slash_policy_for_source(self, source: SessionSource):
+        """Resolve slash privileges from the runtime profile, not the host gateway."""
+        from gateway.slash_access import SlashAccessPolicy, policy_for_source
+
+        config = getattr(self, "config", None)
+        if source is None or not getattr(config, "multiplex_profiles", False):
+            return policy_for_source(config, source)
+
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        profile = identity.runtime_profile if identity is not None else getattr(source, "profile", None)
+        if not profile or profile == "default":
+            return policy_for_source(config, source)
+
+        try:
+            from gateway.config import load_gateway_config
+            from gateway.run import _profile_runtime_scope
+            home = self._resolve_profile_home_for_source(source)
+            if not home.is_dir():
+                raise FileNotFoundError(home)
+            with _profile_runtime_scope(home, hydrate_secrets=False):
+                return policy_for_source(load_gateway_config(), source)
+        except Exception:
+            logger.exception("Could not resolve slash policy for profile %s; denying privileged commands", profile)
+            return SlashAccessPolicy(enabled=True, admin_user_ids=frozenset(),
+                                     user_allowed_commands=frozenset())
+
     # ``getattr(self, ...)`` throughout: test helpers build bare runners via ``object.__new__``
     # without ``adapters`` / ``config``.
 

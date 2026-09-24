@@ -19,6 +19,7 @@ Coverage targets:
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -108,6 +109,40 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
+
+
+@pytest.mark.asyncio
+async def test_multiplexed_slash_gate_uses_routed_profile_config(tmp_path, monkeypatch):
+    """Regression for #121705: the host has no admin list, but the routed profile does."""
+    home = tmp_path / ".hermes"
+    profile_home = home / "profiles" / "p2"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "platforms:\n  discord:\n    enabled: true\n    extra:\n"
+        "      allow_admin_from: ['admin']\n"
+        "      user_allowed_commands: ['status']\n"
+        "      group_allow_admin_from: ['group-admin']\n"
+        "      group_user_allowed_commands: ['stop']\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runner = _make_runner()
+    runner.config.multiplex_profiles = True
+    runner._resolve_profile_home_for_source = lambda _source: profile_home
+    source = _make_source(user_id="user")
+    source.profile = "p2"
+
+    whoami = await runner._handle_whoami_command(_make_event("/whoami", source))
+    assert "Tier: user" in whoami and "/status" in whoami
+    assert runner._check_slash_access(source, "model") is not None
+    assert runner._check_slash_access(source, "status") is None
+    assert "`/model" not in await runner._handle_help_command(_make_event("/help", source))
+    source.user_id = "admin"
+    assert runner._check_slash_access(source, "model") is None
+    source.user_id, source.chat_type = "user", "group"
+    assert runner._check_slash_access(source, "model") is not None
+    assert runner._check_slash_access(source, "stop") is None
 
 
 # ---------------------------------------------------------------------------

@@ -18,89 +18,13 @@ queueing behind a task that no longer exists.
 from __future__ import annotations
 
 import asyncio
-import sys
-import types
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# Minimal telegram stub so importing gateway.platforms.base does not pull
-# in the real python-telegram-bot dependency.
-_tg = sys.modules.get("telegram") or types.ModuleType("telegram")
-_tg.constants = sys.modules.get("telegram.constants") or types.ModuleType("telegram.constants")
-_ct = MagicMock()
-_ct.PRIVATE = "private"
-_ct.GROUP = "group"
-_ct.SUPERGROUP = "supergroup"
-_tg.constants.ChatType = _ct
-sys.modules.setdefault("telegram", _tg)
-sys.modules.setdefault("telegram.constants", _tg.constants)
-sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
-
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
-
-
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id=chat_id,
-        chat_type="dm",
-        user_id="u1",
-        user_name="u1",
-        thread_id=None,
-    )
-    return MessageEvent(
-        text=text,
-        message_type=MessageType.TEXT,
-        source=source,
-        message_id=f"msg-{text[:8]}",
-    )
-
-
-class _DummyAdapter(BasePlatformAdapter):  # type: ignore[misc]
-    async def connect(self, *, is_reconnect: bool = False):
-        pass
-
-    async def disconnect(self):
-        pass
-
-    async def get_chat_info(self, chat_id):
-        return None
-
-    async def send(self, *args, **kwargs):
-        return SendResult(success=True, message_id="x")
-
-
-def _make_adapter() -> BasePlatformAdapter:
-    """Build a BasePlatformAdapter without running its heavy __init__."""
-    adapter = object.__new__(_DummyAdapter)
-    adapter.config = PlatformConfig(enabled=True, token="***")
-    adapter.platform = Platform.TELEGRAM
-    adapter._message_handler = AsyncMock(return_value=None)
-    adapter._busy_session_handler = None
-    adapter._active_sessions = {}
-    adapter._pending_messages = {}
-    adapter._session_tasks = {}
-    adapter._background_tasks = set()
-    adapter._post_delivery_callbacks = {}
-    adapter._expected_cancelled_tasks = set()
-    adapter._fatal_error_code = None
-    adapter._fatal_error_message = None
-    adapter._fatal_error_retryable = True
-    adapter._fatal_error_handler = None
-    adapter._running = True
-    adapter._busy_text_mode = "queue"
-    adapter._busy_text_debounce_seconds = 0.1
-    adapter._busy_text_hard_cap_seconds = 1.0
-    adapter._text_debounce = {}
-    adapter._auto_tts_default = False
-    adapter._auto_tts_enabled_chats = set()
-    adapter._auto_tts_disabled_chats = set()
-    adapter._typing_paused = set()
-    return adapter
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent
+from gateway.session import build_session_key
+from tests.gateway.test_active_session_text_merge import _make_adapter, _make_event
 
 
 class _TurnSim:
@@ -136,9 +60,12 @@ async def _wait_until(predicate, timeout: float = 1.5) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_debounced_followup_started_as_fresh_turn_when_session_released_mid_route():
-    """Queue-mode text that yields in the busy handler across cleanup must start a turn (#121393)."""
+@pytest.mark.parametrize("busy_text_mode", ["queue", ""], ids=["debounce", "direct_merge"])
+async def test_followup_started_as_fresh_turn_when_session_released_mid_route(busy_text_mode):
+    """Text that yields in the busy handler across cleanup must start a turn,
+    in both debounce (queue) and direct-merge ('') modes (#121393)."""
     adapter = _make_adapter()
+    adapter._busy_text_mode = busy_text_mode
     followup = _make_event("did you get that?")
     session_key = build_session_key(followup.source)
     adapter._active_sessions[session_key] = asyncio.Event()  # seeded running turn
@@ -161,7 +88,6 @@ async def test_debounced_followup_started_as_fresh_turn_when_session_released_mi
     await handler_entered.wait()
     routing_gate.set()
     await admission
-    assert routing_gate.is_set()
     # Post-fix: the guard was gone when admission resumed, so the event became
     # a fresh turn instead of queueing behind a task that no longer exists.
     assert await _wait_until(lambda: bool(turn.dispatched)), (
@@ -169,7 +95,7 @@ async def test_debounced_followup_started_as_fresh_turn_when_session_released_mi
         % (
             turn.dispatched,
             dict(adapter._pending_messages),
-            dict(getattr(adapter, "_text_debounce", {})),
+            dict(adapter._text_debounce),
             dict(adapter._active_sessions),
             {k: t.done() for k, t in adapter._session_tasks.items()},
         )
@@ -178,40 +104,7 @@ async def test_debounced_followup_started_as_fresh_turn_when_session_released_mi
     assert followup._gateway_accepted is True
     # Nothing left holding the event.
     assert session_key not in adapter._pending_messages
-    assert session_key not in getattr(adapter, "_text_debounce", {})
-
-
-@pytest.mark.asyncio
-async def test_direct_merge_followup_started_as_fresh_turn_when_session_released_mid_route():
-    """Non-debounce (busy_text_mode='') follows the same rule (#121393)."""
-    adapter = _make_adapter()
-    adapter._busy_text_mode = ""
-    followup = _make_event("and again?")
-    session_key = build_session_key(followup.source)
-    adapter._active_sessions[session_key] = asyncio.Event()
-    turn = _TurnSim(adapter, session_key)
-
-    routing_gate = asyncio.Event()
-    handler_entered = asyncio.Event()
-
-    async def _busy_handler(event, key):
-        handler_entered.set()
-        await routing_gate.wait()
-        turn.finish_current_turn()
-        return False
-
-    adapter.set_busy_session_handler(_busy_handler)
-
-    admission = asyncio.create_task(adapter.handle_message(followup))
-    await handler_entered.wait()
-    routing_gate.set()
-    await admission
-    assert await _wait_until(lambda: bool(turn.dispatched)), (
-        "follow-up was stranded: dispatched=%r pending=%r active=%r"
-        % (turn.dispatched, dict(adapter._pending_messages), dict(adapter._active_sessions))
-    )
-    assert turn.dispatched[0] == "and again?"
-    assert session_key not in adapter._pending_messages
+    assert session_key not in adapter._text_debounce
 
 
 @pytest.mark.asyncio

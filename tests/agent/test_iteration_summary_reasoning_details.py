@@ -42,3 +42,21 @@ def test_strict_chat_route_summary_wire_drops_reasoning_details(make_agent):
     api_messages = _iteration_summary_api_messages(agent, [dict(m) for m in _HISTORY])
     kwargs = _build_api_kwargs_for_mode(agent, api_messages)
     assert all("reasoning_details" not in m for m in kwargs["messages"])
+
+
+def test_portal_summary_wire_replays_only_the_newest_assistant_details(make_agent):
+    agent = make_agent("https://inference-api.nousresearch.com/v1", "nous")
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first answer", "reasoning_details": [{"type": "thinking", "thinking": "old", "signature": "OLD"}]},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second answer", "reasoning_details": [{"type": "thinking", "thinking": "new", "signature": "NEW"}]},
+        {"role": "user", "content": "continue"},
+    ]
+
+    api_messages = _iteration_summary_api_messages(agent, [dict(message) for message in history])
+    kwargs = _build_api_kwargs_for_mode(agent, api_messages)
+    replayed = [message for message in kwargs["messages"] if message.get("role") == "assistant"]
+
+    assert "reasoning_details" not in replayed[0]
+    assert replayed[1]["reasoning_details"] == history[3]["reasoning_details"]

@@ -19,7 +19,7 @@ import { $connection } from '@/store/session'
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
 import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
-import { composerPlainText } from '../rich-editor'
+import { caretOffsetInEditor, composerPlainText } from '../rich-editor'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
@@ -339,6 +339,84 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     expect(mockComposerApi.setText).toHaveBeenCalledWith('unsent thought')
 
     remount.unmount()
+  })
+})
+
+describe('useComposerDraft — same-draft scope rekey preserves only the focused caret (#120942)', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    clearSessionDraft('lineage-root')
+    clearSessionDraft('runtime-tip')
+    markActiveComposer('main')
+  })
+
+  function renderDraft(scope: string) {
+    let draft!: ReturnType<typeof useComposerDraft>
+
+    function DraftHarness({ activeScope }: { activeScope: string }) {
+      draft = useComposerDraft({
+        activeQueueSessionKey: activeScope,
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: activeScope
+      })
+
+      return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+    }
+
+    const rendered = render(<DraftHarness activeScope={scope} />)
+
+    return {
+      get draft() {
+        return draft
+      },
+      rerender: (activeScope: string) => rendered.rerender(<DraftHarness activeScope={activeScope} />)
+    }
+  }
+
+  it('keeps the caret when reconciliation rekeys an unchanged focused draft', () => {
+    stashSessionDraft('lineage-root', 'alpha beta', [])
+    stashSessionDraft('runtime-tip', 'alpha beta', [])
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    editor.focus()
+    const range = document.createRange()
+    range.setStart(editor.firstChild!, 6)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    // Focus routing may transiently belong elsewhere during reconnect even
+    // though this contentEditable is still the browser's active element.
+    markActiveComposer('tile:reconnecting')
+    act(() => view.rerender('runtime-tip'))
+
+    expect(view.draft.editorRef.current).toBe(editor)
+    expect(document.activeElement).toBe(editor)
+    expect(composerPlainText(editor)).toBe('alpha beta')
+    expect(caretOffsetInEditor(editor)).toBe(6)
+  })
+
+  it('still sends programmatic mutations to the end instead of preserving a stale caret', () => {
+    stashSessionDraft('lineage-root', 'alpha beta', [])
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    editor.focus()
+    const range = document.createRange()
+    range.setStart(editor.firstChild!, 2)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    markActiveComposer('main')
+
+    act(() => view.draft.insertText('gamma'))
+
+    expect(composerPlainText(editor)).toBe('alpha beta\ngamma')
+    expect(caretOffsetInEditor(editor)).toBe(composerPlainText(editor).length)
   })
 })
 

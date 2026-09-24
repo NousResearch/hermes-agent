@@ -77,7 +77,8 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
 
 
 def preset_for_model(gguf: Path, budget: HardwareBudget,
-                     mtp_capable: set[str], *, requested_window: int | None = None) -> PresetEntry | None:
+                     mtp_capable: set[str], *, requested_window: int | None = None,
+                     context_floor: int | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
     from hermes_cli.local_runtime.growth import load_window_overrides
@@ -97,7 +98,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
-                                         if requested_window is None else requested_window))
+                                         if requested_window is None else requested_window),
+                       **({"floor": context_floor} if context_floor is not None else {}))
     decision = plan.decision
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
@@ -134,7 +136,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
                        spilled=decision.spilled, keys=keys)
 
 
-def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
+def _launch_footprint(gguf: Path, budget: HardwareBudget, context_floor: int | None = None) -> int | None:
     """Estimated resident bytes for one staged model at the window this policy grants it, or None
     when it cannot be priced: an unreadable header, or a model the physics check refuses outright
     (it never loads, so it must not shrink the residency cap)."""
@@ -152,7 +154,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
     mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
     plan = plan_launch(profile, budget, mtp_capable=is_mtp,
                        fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj,
-                       requested_window=load_window_overrides().get(model_id))
+                       requested_window=load_window_overrides().get(model_id),
+                       **({"floor": context_floor} if context_floor is not None else {}))
     if isinstance(plan.decision, PhysicsRefusal):
         return None
     # Priced whole even when the plan spills: a spilled model still holds part of its weights on
@@ -160,7 +163,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
     return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
 
 
-def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
+def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int,
+                             context_floor: int | None = None) -> int:
     """How many models the card may hold resident at once: priced against the budget, not a count.
 
     Residency used to be bounded by a count alone, so a second model was admitted against an
@@ -181,7 +185,7 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
         return configured
     largest = 0
     for gguf in staged_in(models_dir):
-        need = _launch_footprint(gguf, budget)
+        need = _launch_footprint(gguf, budget, context_floor)
         if need:
             largest = max(largest, need)
     if largest <= 0:
@@ -190,7 +194,8 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
-                     mtp_capable: set[str] | None = None) -> list[PresetEntry]:
+                     mtp_capable: set[str] | None = None,
+                     context_floor: int | None = None) -> list[PresetEntry]:
     """Walk the staged models, run the launch decision per model, and write one INI. Refused
     models get no section (the picker surfaces the refusal from the returned entries)."""
     from hermes_cli.local_runtime.bootstrap import staged_in
@@ -198,7 +203,7 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
     entries: list[PresetEntry] = []
     sections: list[str] = []
     for gguf in staged_in(models_dir):
-        entry = preset_for_model(gguf, budget, mtp_capable or set())
+        entry = preset_for_model(gguf, budget, mtp_capable or set(), context_floor=context_floor)
         if entry is None:
             continue
         entries.append(entry)

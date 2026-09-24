@@ -176,6 +176,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import { localModelsEnabled } from './local-models-launch'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
@@ -17781,7 +17782,7 @@ ipcMain.on('hermes:translucency:support', event => {
 // only strips internal flags.
 ipcMain.on('hermes:launch-flags', event => {
   event.returnValue = {
-    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin',
+    localModels: localModelsEnabled(process.argv),
     guestOnboarding: GUEST_ONBOARDING,
     skipIntro: SKIP_INTRO
   }

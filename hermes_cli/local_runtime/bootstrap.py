@@ -142,7 +142,7 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _admitted_models_max(mdir: Path, configured: int) -> int:
+def _admitted_models_max(mdir: Path, configured: int, context_floor: int | None = None) -> int:
     """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
 
     A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
@@ -154,7 +154,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
         from hermes_cli.local_runtime.hardware import probe_budget
         from hermes_cli.local_runtime.presets import admitted_residency_count
 
-        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
+        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured, context_floor)
     except Exception as exc:  # noqa: BLE001
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
@@ -164,7 +164,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
     return cap
 
 
-def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
+def _generate_presets(mdir: Path, preset_path: Path, context_floor: int | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -179,7 +179,7 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
-        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path):
+        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path, context_floor=context_floor):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -329,11 +329,12 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
-            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+            context_floor = section.get("context_floor")
+            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", context_floor)
 
             sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                         models_max=_admitted_models_max(
-                                            mdir, int(section.get("models_max", 4))),
+                                            mdir, int(section.get("models_max", 4)), context_floor),
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()

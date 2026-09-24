@@ -181,6 +181,20 @@ def test_initial_window_never_below_floor_and_never_above_native():
                 assert d.window <= profile.n_ctx_train
 
 
+def test_initial_window_honors_a_lower_configured_floor_to_avoid_spill():
+    """A low-VRAM user may trade initial context for a resident model."""
+    profile = dense(weights_gib=7, layers=32, per_token_f16=1024)
+    budget = card(8, ram_gib=8)
+
+    default = initial_window(profile, budget)
+    lowered = initial_window(profile, budget, floor=16 * KIB)
+
+    assert default.spilled
+    assert lowered.window >= 16 * KIB
+    assert lowered.window < default.window
+    assert not lowered.spilled
+
+
 def test_initial_window_monotone_in_vram():
     p = dense()
     windows = []

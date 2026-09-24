@@ -1995,7 +1995,7 @@ async def test_per_platform_streaming_does_not_override_global_disabled(monkeypa
                 "platforms": {
                     "telegram": {"streaming": True},
                 },
-                "interim_assistant_messages": True,
+                "interim_assistant_messages": False,
             },
             "streaming": {"enabled": False},
         },

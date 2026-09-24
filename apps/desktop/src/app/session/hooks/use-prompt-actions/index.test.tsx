@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -327,6 +328,50 @@ describe('usePromptActions /title', () => {
     )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions /skills review scope', () => {
+  afterEach(() => {
+    rememberDesktopCommandsCatalog(undefined)
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('forwards review subcommands without opening the interactive skills hub', async () => {
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: ['pending', 'approve', 'reject', 'diff', 'approval']
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    const requestGateway = vi.fn(async () => ({ output: 'no pending writes' }) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/skills install my-skill')
+    await handle!.submitText('/skills')
+
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'skills install my-skill' })
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'skills' }))
+
+    await handle!.submitText('/skills pending')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'skills pending' })
+    )
   })
 })
 

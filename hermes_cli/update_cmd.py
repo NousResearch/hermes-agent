@@ -121,6 +121,12 @@ def _m():
     return main
 
 
+# Distinct ``stop_reason`` for a no-op ``hermes update``: lets an automated consumer tell
+# \"installed N commits\" from \"nothing to do\" without diffing pre/post SHAs. Mirrors the
+# fleet guard's SKIP verdict (scripts/update_needed_guard.py).
+_ALREADY_CURRENT_STOP_REASON = "already_current"
+
+
 def _updates_config() -> dict:
     """The ``updates:`` config section (``{}`` when absent/malformed); may raise on config errors."""
     from hermes_cli.config import load_config
@@ -510,22 +516,44 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         proc.stdout.close()
 
 
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+def _check_progress(json_: bool, *parts) -> None:
+    """Emit a human-only progress line for ``--check``. In ``--json`` mode these go to stderr
+    so stdout carries exactly one JSON document (a machine consumer parses stdout only)."""
+    stream = sys.stderr if json_ else sys.stdout
+    print(*parts, file=stream)
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, json_: bool = False):
     """``hermes update --check``: fetch and report without installing. ``branch_explicit`` is
-    True iff --branch was passed (Docker installs print a notice instead of dropping the flag)."""
+    True iff --branch was passed (Docker installs print a notice instead of dropping the flag).
+
+    ``json_`` (--json) emits a machine-readable verdict and a distinct exit code so a cron
+    hop can branch on ``rc`` without parsing prose: 0 when current, 10 when an update is
+    available. The human text output (the default) is unchanged.
+    """
     # Same marker-first admission gate as the apply path, so --check never reports git
     # state for an install whose real update mechanism is an image pull.
     from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
 
     refusal = evaluate_update_admission(_m().PROJECT_ROOT)
     if refusal is not None:
-        print(refusal.message)
+        if json_:
+            _print_check_json({"verdict": VERDICT_UNKNOWN, "reason": refusal.message,
+                               "branch": branch, "head": None, "remote_head": None,
+                               "new_commits": None, "ahead_commits": None,
+                               "dependency_files": []})
+        print(refusal.message, file=sys.stderr if json_ else sys.stdout)
         record_refusal_receipt(refusal)
         sys.exit(2)
 
     git_dir = _m().PROJECT_ROOT / ".git"
     if not git_dir.exists():
-        print("✗ Not a git repository — cannot check for updates.")
+        if json_:
+            _print_check_json({"verdict": VERDICT_UNKNOWN,
+                               "reason": "not a git repository", "branch": branch,
+                               "head": None, "remote_head": None, "new_commits": None,
+                               "ahead_commits": None, "dependency_files": []})
+        print("✗ Not a git repository — cannot check for updates.", file=sys.stderr if json_ else sys.stdout)
         sys.exit(1)
 
     git_cmd = _base_git_cmd()
@@ -533,12 +561,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Interrupted fetches leave .git/*.lock behind ("File exists" forever); self-heal first.
     from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
     for lock_path in clear_stale_git_locks(_m().PROJECT_ROOT):
-        print(f"  (removed stale git lock: {lock_path})")
+        _check_progress(json_, f"  (removed stale git lock: {lock_path})")
     # Aborted fetches also strand tmp_pack_* debris (has reached 6 GB and corrupted the
     # pack dir); same age+process safety contract as the locks.
     swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
     if swept:
-        print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+        _check_progress(json_, f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
 
     # Fetch only <branch> (a bare fetch pulls thousands of auto-generated branches). Prefer
     # upstream only for main (a fork's other branches have no upstream counterpart). Installer
@@ -550,16 +578,21 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Probe locally for an 'upstream' remote before a network fetch non-forks always fail.
     fetch_result = None
     if branch == "main" and _git_run(git_cmd, ["remote", "get-url", "upstream"]).returncode == 0:
-        print("→ Fetching from upstream...")
+        _check_progress(json_, "→ Fetching from upstream...")
         fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["upstream", branch], network=True)
     if fetch_result is not None and fetch_result.returncode == 0:
         compare_branch = f"upstream/{branch}"
     else:
-        print("→ Fetching from origin...")
+        _check_progress(json_, "→ Fetching from origin...")
         fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["origin", branch], network=True)
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
+        if json_:
+            _print_check_json({"verdict": VERDICT_UNKNOWN,
+                               "reason": fetch_result.stderr.strip() or f"fetch failed ({compare_branch})",
+                               "branch": branch, "head": None, "remote_head": None,
+                               "new_commits": None, "ahead_commits": None, "dependency_files": []})
         _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
 
@@ -570,15 +603,21 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
         repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
         if repaired:
-            print(f"  (restored {repaired} broken shallow boundary(ies))")
+            _check_progress(json_, f"  (restored {repaired} broken shallow boundary(ies))")
         pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
         if pruned:
-            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
+            _check_progress(json_, f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
     # rev-list on a bogus ref exits 128 and (check=True) would traceback; verify first.
     verify_result = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", compare_branch])
     if verify_result.returncode != 0:
-        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
+        if json_:
+            _print_check_json({"verdict": VERDICT_UNKNOWN,
+                               "reason": f"branch '{branch}' not found on {compare_branch.split('/', 1)[0]}",
+                               "branch": branch, "head": None, "remote_head": None,
+                               "new_commits": None, "ahead_commits": None, "dependency_files": []})
+        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.",
+              file=sys.stderr if json_ else sys.stdout)
         sys.exit(1)
 
     if is_shallow:
@@ -586,15 +625,99 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # exact count via the GitHub compare API (complete graph).
         head_sha, target_sha = _tip_shas(git_cmd, compare_branch)
         if head_sha and target_sha and head_sha == target_sha:
-            print("✓ Already up to date.")
+            verdict = {"verdict": VERDICT_CURRENT, "branch": branch,
+                       "head": head_sha, "remote_head": target_sha,
+                       "new_commits": 0, "ahead_commits": 0, "dependency_files": []}
+            _print_check_verdict(verdict, compare_branch, json_=json_)
+            if json_:
+                sys.exit(EXIT_CURRENT)
             return
         from hermes_cli.banner import _github_compare_behind
         # counted == 0 means local-ahead, not behind; None means the API could not count.
-        _print_update_check_result(_github_compare_behind(head_sha, target_sha), compare_branch)
+        counted = _github_compare_behind(head_sha, target_sha)
+        # ``None`` (count unrecoverable) still means "tips differ" → update_needed with an
+        # unknown count, matching the human path's "Update available (behind <branch>)".
+        update_known = counted is not None and counted > 0
+        verdict = {
+            "verdict": VERDICT_UPDATE if (update_known or counted is None) else VERDICT_CURRENT,
+            "branch": branch, "head": head_sha, "remote_head": target_sha,
+            "new_commits": counted, "ahead_commits": None, "dependency_files": [],
+        }
+        _print_check_verdict(verdict, compare_branch, json_=json_)
+        if json_:
+            sys.exit(EXIT_UPDATE if (update_known or counted is None) else EXIT_CURRENT)
         return
 
     rev_result = _git_run(git_cmd, ["rev-list", f"HEAD..{compare_branch}", "--count"], check=True)
-    _print_update_check_result(int(rev_result.stdout.strip()), compare_branch)
+    behind = int(rev_result.stdout.strip())
+    head_sha, target_sha = _tip_shas(git_cmd, compare_branch)
+    ahead_result = _git_run(git_cmd, ["rev-list", "--count", f"{compare_branch}..HEAD"])
+    ahead_commits = int(ahead_result.stdout.strip()) if ahead_result.returncode == 0 else None
+    changed = []
+    if behind > 0:
+        diff_result = _git_run(git_cmd, ["diff", "--name-only", "HEAD", compare_branch])
+        changed = sorted({f for f in (diff_result.stdout or "").splitlines() if _is_check_dependency_file(f)})
+    verdict = {
+        "verdict": VERDICT_CURRENT if behind == 0 else VERDICT_UPDATE,
+        "branch": branch,
+        "head": head_sha or None,
+        "remote_head": target_sha or None,
+        "new_commits": behind,
+        "ahead_commits": ahead_commits,
+        "dependency_files": changed,
+    }
+    _print_check_verdict(verdict, compare_branch, json_=json_)
+    if json_:
+        sys.exit(EXIT_CURRENT if behind == 0 else EXIT_UPDATE)
+
+
+def _print_check_verdict(verdict: dict, compare_branch: str, *, json_: bool) -> None:
+    """Render ``--check``'s verdict: human text (default) or JSON (--json)."""
+    if json_:
+        _print_check_json(verdict)
+        return
+    behind = verdict["new_commits"]
+    if verdict["verdict"] == VERDICT_CURRENT and behind in (0, None):
+        print("✓ Already up to date.")
+        return
+    if behind is not None:
+        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
+    else:
+        print(f"☤ Update available (behind {compare_branch}).")
+    from hermes_cli.config import recommended_update_command
+    print(f"  Run '{recommended_update_command()}' to install.")
+
+
+def _print_check_json(verdict: dict) -> None:
+    """Emit the machine-readable --check verdict."""
+    import json as _json
+    print(_json.dumps(verdict, indent=2))
+
+
+# Verdict constants and exit codes mirror the fleet guard (scripts/update_needed_guard.py):
+# 0 current, 10 update available, 2 unknown.
+VERDICT_CURRENT = "current"
+VERDICT_UPDATE = "update_needed"
+VERDICT_UNKNOWN = "unknown"
+EXIT_CURRENT = 0
+EXIT_UPDATE = 10
+
+
+def _is_check_dependency_file(path: str) -> bool:
+    """Dependency manifests whose change between HEAD and the remote is a reason the update
+    is not a pure code refresh. Same set the fleet guard reports (DEP_PATTERNS)."""
+    import fnmatch
+    return any(fnmatch.fnmatch(path, pat) for pat in _CHECK_DEPENDENCY_PATTERNS)
+
+
+_CHECK_DEPENDENCY_PATTERNS = (
+    "pyproject.toml", "setup.py", "setup.cfg", "uv.lock", "poetry.lock",
+    "requirements.txt", "requirements/*.txt",
+    "package.json", "package-lock.json", "npm-shrinkwrap.json",
+    "yarn.lock", "pnpm-lock.yaml",
+    "web/package.json", "web/package-lock.json", "web/yarn.lock", "web/pnpm-lock.yaml",
+    "desktop-app/package.json", "desktop-app/package-lock.json",
+)
 
 
 def _base_git_cmd() -> list[str]:
@@ -612,19 +735,6 @@ def _is_shallow_checkout(git_cmd) -> bool:
 def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
     """``(HEAD sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
     return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in ("HEAD", target_ref))
-
-
-def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
-    """Report ``--check``'s verdict: up to date, N commits behind, or behind by an unknown count."""
-    if behind == 0:
-        print("✓ Already up to date.")
-        return
-    if behind is not None:
-        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
-    else:
-        print(f"☤ Update available (behind {compare_branch}).")
-    from hermes_cli.config import recommended_update_command
-    print(f"  Run '{recommended_update_command()}' to install.")
 
 
 def _repair_venv_on_current_checkout(
@@ -1304,6 +1414,14 @@ def _finish_already_up_to_date(
     elif current_branch not in {branch, "HEAD"}:
         _git_run(git_cmd, ["checkout", current_branch])
 
+    # P2 short-circuit: already current AND nothing owed → a receipt automation can read
+    # (``stop_reason="already_current"``, pre.sha == post.sha), and no gateway restart recorded.
+    # ``_repair_current_checkout()`` still runs: a broken venv / node deps / a handed-off dependency
+    # install are REAL work an "already current" run must not swallow (#91277 durability contract).
+    # Conditioned on the existing predicate (never a new one) so the #91277 catch-up is never
+    # swallowed: it runs whenever a restart is owed, even when ``commit_count == 0``.
+    no_fleet_restart_owed = _plan.commit_count == 0 and not _pending_fleet_restart_needed()
+
     current_checkout_complete = _repair_current_checkout(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
@@ -1311,6 +1429,13 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
+    if no_fleet_restart_owed and current_checkout_complete:
+        head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+        print(f"✓ Already current (HEAD == {branch} @ {head_sha[:10] or 'unknown'}) — nothing to do.")
+        with suppress(Exception):
+            from hermes_cli.update_receipt import finalize_update_receipt
+            finalize_update_receipt("success", stop_reason=_ALREADY_CURRENT_STOP_REASON)
+        return
     # Same contract as the pull path's _resume_windows_gateways_and_merge_outcome: a failed
     # Windows gateway resume (e.g. the relaunch verification racing a Job-Object kill, #48820)
     # must demote this run to incomplete, never abort it. A bare call here let the identical

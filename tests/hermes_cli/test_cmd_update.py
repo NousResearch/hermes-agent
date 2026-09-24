@@ -851,6 +851,8 @@ class TestCmdUpdateCheckBranchFlag:
         *,
         verify_ok: bool = True,
         commit_count: str = "0",
+        ahead_count: str = "0",
+        diff_files: str = "",
         upstream_fetch_ok: bool = True,
     ):
         """Mock side-effect for the _cmd_update_check git pipeline.
@@ -860,6 +862,8 @@ class TestCmdUpdateCheckBranchFlag:
                                  origin/<branch>`` fails (branch missing
                                  on origin)
         - ``commit_count``       rev-list count (0 = up-to-date)
+        - ``ahead_count``        rev-list count for the ahead probe (compare..HEAD)
+        - ``diff_files``         stdout for a diff --name-only call
         - ``upstream_fetch_ok``  if False, ``git fetch upstream`` fails
                                  (forces fallback to origin on branch==main)
         """
@@ -879,8 +883,14 @@ class TestCmdUpdateCheckBranchFlag:
                 rc = 0 if verify_ok else 1
                 return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
 
+            if "rev-list" in joined and "HEAD.." not in joined and "..HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{ahead_count}\n", stderr="")
+
             if "rev-list" in joined:
                 return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+
+            if "diff" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=diff_files, stderr="")
 
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -959,6 +969,83 @@ class TestCmdUpdateCheckBranchFlag:
         # Compare ref is upstream/main (upstream fetch succeeded).
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+
+
+class TestCmdUpdateCheckJson:
+    """P3: ``hermes update --check --json`` is machine-readable with a distinct exit code.
+
+    The verdict fields mirror the fleet guard (scripts/update_needed_guard.py): head,
+    remote_head, new_commits, ahead_commits, dependency_files, verdict. rc=0 when current,
+    rc=10 when an update is available — so a cron hop can branch on rc without parsing prose.
+    """
+
+    def _json_side_effect(self, commit_count):
+        """Like _check_side_effect but rev-parse HEAD returns a 40-char sha for the JSON path."""
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "fetch" in joined and ("upstream" in joined or "origin" in joined):
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined.endswith("rev-parse HEAD"):
+                return subprocess.CompletedProcess(cmd, 0, stdout="a" * 40 + "\n", stderr="")
+            if "rev-parse" in joined and "upstream/main" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="b" * 40 + "\n", stderr="")
+            if "rev-parse" in joined and "origin/main" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="b" * 40 + "\n", stderr="")
+            if "rev-list" in joined and "HEAD.." not in joined and "..HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+            if "diff" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="pyproject.toml\nhermes_cli/update_cmd.py\n", stderr=""
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_json_current_exits_zero(self, mock_run, _mock_method, capsys):
+        """--check --json with nothing behind → verdict current, rc=0, all verdict fields present."""
+        mock_run.side_effect = self._json_side_effect("0")
+        import json
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(SimpleNamespace(check=True, json=True, branch="main"))
+        assert exc_info.value.code == 0
+
+        verdict = json.loads(capsys.readouterr().out)
+        assert verdict["verdict"] == "current"
+        assert verdict["new_commits"] == 0
+        assert verdict["head"] == "a" * 40
+        assert verdict["remote_head"] == "b" * 40
+        assert verdict["ahead_commits"] == 3
+        assert verdict["dependency_files"] == []
+        assert set(verdict) >= {
+            "head", "remote_head", "new_commits", "ahead_commits", "dependency_files", "verdict",
+        }
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_json_update_available_exits_ten(self, mock_run, _mock_method, capsys):
+        """--check --json with commits behind → verdict update_needed, rc=10, deps surfaced."""
+        mock_run.side_effect = self._json_side_effect("4")
+        import json
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(SimpleNamespace(check=True, json=True, branch="main"))
+        assert exc_info.value.code == 10
+
+        verdict = json.loads(capsys.readouterr().out)
+        assert verdict["verdict"] == "update_needed"
+        assert verdict["new_commits"] == 4
+        assert verdict["head"] == "a" * 40
+        assert verdict["remote_head"] == "b" * 40
+        # Only pyproject.toml is a dependency file; the source change is not.
+        assert verdict["dependency_files"] == ["pyproject.toml"]
 
 
 class TestCmdUpdateZipBranchRefusal:

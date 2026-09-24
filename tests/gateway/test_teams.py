@@ -512,6 +512,68 @@ class TestTeamsMessageHandling:
         ]
 
 
+class TestTeamsProcessingAcknowledgement:
+    """Channel threads need a visible acknowledgement because Teams hides typing there."""
+
+    def _event(self, adapter, *, chat_type="channel"):
+        from gateway.platforms.event import MessageEvent
+
+        return MessageEvent(
+            text="Hello",
+            source=adapter.build_source(
+                chat_id="19:channel@thread.v2", chat_type=chat_type,
+                user_id="aad-456", message_id="12345",
+            ),
+            message_id="12345",
+        )
+
+    @pytest.mark.asyncio
+    async def test_channel_thread_posts_default_processing_ack(self):
+        adapter = TeamsAdapter(_make_config())
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        await adapter.on_processing_start(self._event(adapter))
+
+        adapter.send.assert_awaited_once_with(
+            "19:channel@thread.v2", "👀 Processing your message…", reply_to="12345",
+        )
+
+    @pytest.mark.asyncio
+    async def test_processing_ack_skips_direct_chats_and_allows_custom_text(self):
+        direct_adapter = TeamsAdapter(_make_config())
+        direct_adapter.send = AsyncMock()
+        await direct_adapter.on_processing_start(self._event(direct_adapter, chat_type="dm"))
+        direct_adapter.send.assert_not_awaited()
+
+        disabled_adapter = TeamsAdapter(_make_config(processing_ack=False))
+        disabled_adapter.send = AsyncMock()
+        await disabled_adapter.on_processing_start(self._event(disabled_adapter))
+        disabled_adapter.send.assert_not_awaited()
+
+        missing_id_adapter = TeamsAdapter(_make_config())
+        missing_id_adapter.send = AsyncMock()
+        missing_id_event = self._event(missing_id_adapter)
+        missing_id_event.message_id = None
+        await missing_id_adapter.on_processing_start(missing_id_event)
+        missing_id_adapter.send.assert_not_awaited()
+
+        channel_adapter = TeamsAdapter(_make_config(processing_ack="Working on it."))
+        channel_adapter.send = AsyncMock(return_value=SimpleNamespace(success=True))
+        await channel_adapter.on_processing_start(self._event(channel_adapter))
+        channel_adapter.send.assert_awaited_once_with(
+            "19:channel@thread.v2", "Working on it.", reply_to="12345",
+        )
+
+    @pytest.mark.asyncio
+    async def test_processing_ack_failures_do_not_break_message_processing(self):
+        adapter = TeamsAdapter(_make_config())
+        adapter.send = AsyncMock(side_effect=RuntimeError("Teams unavailable"))
+
+        await adapter._run_processing_hook("on_processing_start", self._event(adapter))
+
+        adapter.send.assert_awaited_once()
+
+
 class TestTeamsAttachmentClassification:
     """Document attachments must set MessageType.DOCUMENT so run.py's
     document-context injection surfaces the cached file to the agent

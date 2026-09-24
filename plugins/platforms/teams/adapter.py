@@ -319,6 +319,7 @@ _APPROVAL_CHOICES = {"approve_once": "once", "approve_session": "session", "appr
 _APPROVAL_LABELS = {
     "once": "✅ Allowed (once)", "session": "✅ Allowed (session)", "always": "✅ Always allowed", "deny": "❌ Denied",
 }
+_DEFAULT_PROCESSING_ACK = "👀 Processing your message…"
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -721,6 +722,24 @@ class TeamsAdapter(BasePlatformAdapter):
         if self._app:
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
+
+    def _processing_ack_text(self) -> Optional[str]:
+        """Configured channel-thread acknowledgement, or ``None`` when explicitly disabled."""
+        configured = self._extra.get("processing_ack", True)
+        if configured is False or str(configured).strip().lower() in {"false", "0", "no", "off"}:
+            return None
+        return configured.strip() if isinstance(configured, str) and configured.strip() else _DEFAULT_PROCESSING_ACK
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Acknowledge channel-thread turns, where Teams does not render typing activities."""
+        source = getattr(event, "source", None)
+        if getattr(source, "chat_type", None) != "channel":
+            return
+        chat_id = getattr(source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        text = self._processing_ack_text()
+        if chat_id and message_id and text:
+            await self.send(chat_id, text, reply_to=message_id)
 
     async def _send_media_attachment(
         self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None, media_label: str = "media"

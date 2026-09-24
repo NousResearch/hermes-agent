@@ -219,7 +219,7 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     ns.prompt_enable_tool_gateway(config)
 
     blob = " ".join(captured["items"]).lower()
-    assert "firecrawl" in blob  # web offered
+    assert "web search & extract" in blob  # web offered
     assert "video" not in blob  # video NOT offered to a pool user
 
 

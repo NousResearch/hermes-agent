@@ -4086,13 +4086,15 @@ export interface Translations {
       thoughtFor: (duration: string) => string
       turnDuration: (duration: string) => string
       turnStats: string
-      turnStatsIn: (n: string) => string
-      turnStatsOut: (n: string) => string
-      turnStatsReasoning: (n: string) => string
-      turnStatsCached: (n: string) => string
+      turnStatsInput: string
+      turnStatsOutput: string
+      turnStatsReasoning: string
+      turnStatsCached: string
       turnStatsHit: (n: string) => string
-      turnStatsCalls: (n: string) => string
-      turnStatsCost: (n: string) => string
+      turnStatsTime: string
+      turnStatsCalls: string
+      turnStatsCost: string
+      turnStatsEstimate: string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

@@ -8,8 +8,9 @@ import {
   useMessageRuntime,
   useThreadRuntime
 } from '@assistant-ui/react'
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type FC, Fragment, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { type FC, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
 
 import { requestModelMenuToggle } from '@/app/chat/composer/focus'
@@ -36,6 +37,7 @@ import { formatElapsed } from '@/components/chat/activity-timer'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
 import {
   errorRecoveryPlan,
@@ -943,11 +945,9 @@ const ErrorRecoveryActions: FC = () => {
 const AssistantActionBar: FC<
   MessageActionProps & {
     durationS?: number
-    onToggleStats?: () => void
-    statsOpen?: boolean
     turnStats?: TurnStats
   }
-> = ({ durationS, messageId, getMessageText, onBranchInNewChat, onToggleStats, statsOpen, turnStats }) => {
+> = ({ durationS, messageId, getMessageText, onBranchInNewChat, turnStats }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
 
@@ -984,7 +984,9 @@ const AssistantActionBar: FC<
           // invisible by default (opacity-0 + pointer-events-none, reveals on
           // hover), so keeping it mounted reserves stable layout height with
           // no visual change during streaming.
-          'relative flex flex-row items-center justify-end gap-1.5 py-1.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100'
+          // `has-[…]`: an open stats popover moves focus into its portal, so
+          // the bar would fade out from under the card it anchors.
+          'relative flex flex-row items-center justify-end gap-1.5 py-1.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100'
         }
         data-slot="aui_msg-actions"
       >
@@ -1000,16 +1002,16 @@ const AssistantActionBar: FC<
           </TooltipIconButton>
         )}
         {hasStats && (
-          <TooltipIconButton
-            aria-pressed={statsOpen}
-            onClick={() => {
-              triggerHaptic('selection')
-              onToggleStats?.()
-            }}
-            tooltip={copy.turnStats}
-          >
-            <BarChart3 className="size-3.5" />
-          </TooltipIconButton>
+          <Popover>
+            <PopoverTrigger asChild>
+              <TooltipIconButton onClick={() => triggerHaptic('selection')} tooltip={copy.turnStats}>
+                <BarChart3 className="size-3.5" />
+              </TooltipIconButton>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-60 p-3" side="top">
+              <TurnStatsCard durationS={durationS} turnStats={turnStats} />
+            </PopoverContent>
+          </Popover>
         )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
         <ReadAloudButton getText={getMessageText} messageId={messageId} />
@@ -1111,10 +1113,6 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number; turnStats?:
   turnStats,
   ...props
 }) => {
-  const { t } = useI18n()
-  const [statsOpen, setStatsOpen] = useState(false)
-  const segments = useMemo(() => turnStatsSegments(t.assistant.thread, turnStats, durationS), [durationS, t, turnStats])
-
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
       <BranchPickerPrimitive.Root
@@ -1131,75 +1129,78 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number; turnStats?:
           <Codicon name="chevron-right" size="0.875rem" />
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      <AssistantActionBar
-        durationS={durationS}
-        onToggleStats={() => setStatsOpen(open => !open)}
-        statsOpen={statsOpen}
-        turnStats={turnStats}
-        {...props}
-      />
-      {statsOpen && segments.length > 0 && (
-        <div
-          className="flex flex-wrap justify-end gap-x-1.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground select-none"
-          data-slot="aui_turn-stats"
-        >
-          {segments.map((segment, index) => (
-            <Fragment key={segment}>
-              {index > 0 && <span className="opacity-45">·</span>}
-              <span className="whitespace-nowrap">{segment}</span>
-            </Fragment>
-          ))}
-        </div>
-      )}
+      <AssistantActionBar durationS={durationS} turnStats={turnStats} {...props} />
     </div>
   )
 }
 
-function turnStatsSegments(
-  copy: {
-    turnStatsIn: (n: string) => string
-    turnStatsOut: (n: string) => string
-    turnStatsReasoning: (n: string) => string
-    turnStatsCached: (n: string) => string
-    turnStatsHit: (n: string) => string
-    turnStatsCalls: (n: string) => string
-    turnStatsCost: (n: string) => string
-  },
-  turnStats: TurnStats | undefined,
-  durationS: number | undefined
-): string[] {
-  const segments: string[] = []
-  const elapsed = turnStats?.durationS ?? durationS
-  if (elapsed !== undefined) segments.push(formatElapsed(elapsed))
+/** One label/value row; `hint` is the muted qualifier in front of the value (`92% hit`, `est.`). */
+const TurnStatsRow: FC<{ hint?: string; indent?: boolean; label: string; value: string }> = ({
+  hint,
+  indent,
+  label,
+  value
+}) => (
+  <>
+    <span className={cn('text-muted-foreground', indent && 'pl-3')}>{label}</span>
+    <span className="text-right">
+      {hint && <span className="mr-1.5 text-muted-foreground">{hint}</span>}
+      {value}
+    </span>
+  </>
+)
 
-  if (turnStats?.input !== undefined) segments.push(copy.turnStatsIn(turnStats.input.toLocaleString()))
-  if (turnStats?.output !== undefined) segments.push(copy.turnStatsOut(turnStats.output.toLocaleString()))
-  if (turnStats?.reasoning !== undefined) {
-    segments.push(copy.turnStatsReasoning(turnStats.reasoning.toLocaleString()))
-  }
+/** Per-turn stats card. Grouped by what the figures measure: prompt side (fresh input and
+ *  cache, with a hit meter), completion side (output, reasoning as a part of it), then run. */
+const TurnStatsCard: FC<{ durationS?: number; turnStats?: TurnStats }> = ({ durationS, turnStats }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const stats = turnStats ?? {}
 
-  const cacheRead = turnStats?.cacheRead ?? 0
-  const cacheWrite = turnStats?.cacheWrite ?? 0
-  const cached = cacheRead + cacheWrite
-  if (cached > 0) {
-    segments.push(copy.turnStatsCached(cached.toLocaleString()))
-    const denom = (turnStats?.input ?? 0) + cached
-    if (denom > 0) {
-      segments.push(copy.turnStatsHit(`${Math.round((cacheRead / denom) * 100)}%`))
-    }
-  }
-
-  if (turnStats?.calls !== undefined && turnStats.calls > 1) {
-    segments.push(copy.turnStatsCalls(turnStats.calls.toLocaleString()))
-  }
-
+  const elapsed = stats.durationS ?? durationS
+  const cacheRead = stats.cacheRead ?? 0
+  const cached = cacheRead + (stats.cacheWrite ?? 0)
+  const prompt = (stats.input ?? 0) + cached
+  const hitPct = cached > 0 && prompt > 0 ? Math.round((cacheRead / prompt) * 100) : undefined
+  // A single call is the common case and says nothing; only multi-call turns get the row.
+  const calls = stats.calls !== undefined && stats.calls > 1 ? stats.calls : undefined
   // A zero delta is dropped rather than rendered as `$0.0000`: free routes and
-  // providers that report no price both land there, and neither is worth a segment.
-  if (turnStats?.costUsd) {
-    segments.push(copy.turnStatsCost(formatTurnCost(turnStats.costUsd)))
-  }
+  // providers that report no price both land there, and neither is worth a row.
+  const costUsd = stats.costUsd || undefined
 
-  return segments
+  const hasTokens = stats.input !== undefined || cached > 0 || stats.output !== undefined
+  const hasRun = elapsed !== undefined || calls !== undefined || costUsd !== undefined
+
+  return (
+    <div
+      className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-xs leading-5 tabular-nums select-none"
+      data-slot="aui_turn-stats"
+    >
+      {stats.input !== undefined && <TurnStatsRow label={copy.turnStatsInput} value={compactNumber(stats.input)} />}
+      {cached > 0 && (
+        <TurnStatsRow
+          hint={hitPct !== undefined ? copy.turnStatsHit(`${hitPct}%`) : undefined}
+          label={copy.turnStatsCached}
+          value={compactNumber(cached)}
+        />
+      )}
+      {hitPct !== undefined && (
+        <div aria-hidden className="col-span-2 mb-1 h-1 overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-muted-foreground/60" style={{ width: `${hitPct}%` }} />
+        </div>
+      )}
+      {stats.output !== undefined && <TurnStatsRow label={copy.turnStatsOutput} value={compactNumber(stats.output)} />}
+      {stats.reasoning !== undefined && (
+        <TurnStatsRow indent label={copy.turnStatsReasoning} value={compactNumber(stats.reasoning)} />
+      )}
+      {hasTokens && hasRun && <div className="col-span-2 my-1 border-t border-(--ui-stroke-secondary)" role="none" />}
+      {elapsed !== undefined && <TurnStatsRow label={copy.turnStatsTime} value={formatElapsed(elapsed)} />}
+      {calls !== undefined && <TurnStatsRow label={copy.turnStatsCalls} value={calls.toLocaleString()} />}
+      {costUsd !== undefined && (
+        <TurnStatsRow hint={copy.turnStatsEstimate} label={copy.turnStatsCost} value={formatTurnCost(costUsd)} />
+      )}
+    </div>
+  )
 }
 
 /** Turn cost, four decimals below a dollar so sub-cent turns stay readable, two above. */

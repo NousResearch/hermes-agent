@@ -532,7 +532,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
-  it('tucks the turn stats behind a toggle on the action bar row', () => {
+  it('tucks the turn stats behind a popover on the action bar row', () => {
     const settled = {
       ...assistantMessage('All done.', false),
       metadata: {
@@ -544,11 +544,12 @@ describe('assistant-ui streaming renderer', () => {
       }
     } as ThreadMessage
 
-    const { container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
+    // `baseElement`, not `container`: the popover renders into a portal on the body.
+    const { baseElement, container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
 
-    // Nothing visible by default — the stats ride a toggle inside the action
+    // Nothing visible by default — the stats ride a popover off the action
     // bar, so settling a turn adds no chrome to the transcript.
-    expect(container.querySelector('[data-slot="aui_turn-stats"]')).toBeNull()
+    expect(baseElement.querySelector('[data-slot="aui_turn-stats"]')).toBeNull()
 
     const toggle = screen.getByRole('button', { name: 'Turn stats' })
     const actions = container.querySelector('[data-slot="aui_msg-actions"]')
@@ -559,10 +560,10 @@ describe('assistant-ui streaming renderer', () => {
     expect(actions?.contains(toggle)).toBe(true)
 
     fireEvent.click(toggle)
-    expect(container.querySelector('[data-slot="aui_turn-stats"]')?.textContent).toContain('12s')
+    expect(baseElement.querySelector('[data-slot="aui_turn-stats"]')?.textContent).toContain('12s')
   })
 
-  it('renders every segment the payload carries, and drops a zero cost', () => {
+  it('renders every row the payload carries, and drops a zero cost', () => {
     // Shape and figures taken from a real deepseek turn: 14 calls against a warm prefix cache.
     const withStats = (turnStats: Record<string, number>) =>
       ({
@@ -576,14 +577,23 @@ describe('assistant-ui streaming renderer', () => {
         }
       }) as ThreadMessage
 
-    const strip = (message: ThreadMessage) => {
-      const { container } = render(<TranscriptHarness messages={[userMessage(), message]} />)
+    // One row per figure: `label hint value`, read off the card's grid cells in pairs.
+    const card = (message: ThreadMessage) => {
+      const { baseElement } = render(<TranscriptHarness messages={[userMessage(), message]} />)
       fireEvent.click(screen.getAllByRole('button', { name: 'Turn stats' })[0])
 
-      return container.querySelector('[data-slot="aui_turn-stats"]')?.textContent ?? ''
+      const grid = baseElement.querySelector('[data-slot="aui_turn-stats"]')
+      const cells = Array.from(grid?.children ?? []).filter(el => el.tagName === 'SPAN')
+      const rows: Record<string, string> = {}
+
+      for (let i = 0; i < cells.length; i += 2) {
+        rows[cells[i].textContent ?? ''] = cells[i + 1]?.textContent ?? ''
+      }
+
+      return rows
     }
 
-    const full = strip(
+    const full = card(
       withStats({
         cacheRead: 609_920,
         calls: 14,
@@ -595,22 +605,26 @@ describe('assistant-ui streaming renderer', () => {
       })
     )
 
-    // toLocaleString() on both sides: the grouping separator follows the host locale.
-    expect(full).toContain('1:29')
-    expect(full).toContain(`${(53_132).toLocaleString()} in`)
-    expect(full).toContain(`${(11_383).toLocaleString()} out`)
-    expect(full).toContain(`${(7_491).toLocaleString()} reasoning`)
-    expect(full).toContain(`${(609_920).toLocaleString()} cached`)
-    expect(full).toContain('92% hit')
-    expect(full).toContain('14 calls')
-    // The cost delta is an estimate, and the strip says so — readers must not
-    // take the figure as billing truth.
-    expect(full).toContain('$0.0166 est.')
+    expect(full).toEqual({
+      Input: '53.1k',
+      Cached: '92% hit609.9k',
+      Output: '11.4k',
+      Reasoning: '7.5k',
+      Time: '1:29',
+      Calls: '14',
+      // The cost delta is an estimate, and the card says so — readers must not
+      // take the figure as billing truth.
+      Cost: 'est.$0.0166'
+    })
+
+    // The hit meter tracks the same ratio the hint prints.
+    const meter = screen.getByText('Cached').parentElement?.querySelector<HTMLElement>('[aria-hidden] > div')
+    expect(meter?.style.width).toBe('92%')
 
     cleanup()
 
-    // Free route: the cost delta is zero, so the segment is absent rather than `$0.0000`.
-    expect(strip(withStats({ costUsd: 0, durationS: 3, input: 10 }))).not.toContain('$')
+    // Free route: the cost delta is zero, so the row is absent rather than `$0.0000`.
+    expect(card(withStats({ costUsd: 0, durationS: 3, input: 10 }))).toEqual({ Input: '10', Time: '3s' })
   })
 
   it('renders assistant provider errors inline', () => {

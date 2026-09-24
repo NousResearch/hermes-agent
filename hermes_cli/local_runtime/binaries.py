@@ -102,7 +102,7 @@ def _host_os_arch() -> tuple[str, str]:
 
 
 def select_backend(gpu_vendor: str | None, os_name: str | None = None) -> str:
-    """CUDA if NVIDIA, Metal on macOS, Vulkan if a non-NVIDIA GPU is present, else CPU.
+    """CUDA if NVIDIA on Windows, Metal on macOS, Vulkan on Linux or for non-NVIDIA GPUs, else CPU.
     ``--list-devices`` validates post-install; the supervisor's touch generation is ground truth."""
     if os_name is None:
         os_name, _ = _host_os_arch()
@@ -110,6 +110,8 @@ def select_backend(gpu_vendor: str | None, os_name: str | None = None) -> str:
         return "metal"
     vendor = (gpu_vendor or "").lower()
     if "nvidia" in vendor:
+        if os_name in ("ubuntu", "linux"):
+            return "vulkan"
         return "cuda"
     if vendor in ("amd", "intel") or "radeon" in vendor or "arc" in vendor:
         return "vulkan"

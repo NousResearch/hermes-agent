@@ -97,6 +97,10 @@ class Board:
             "HOME": str(self.home), "HERMES_HOME": str(self.hermes_home),
             "HERMES_BIN": str(self.hermes_bin), "PYTHONPATH": str(REPO),
             "NO_COLOR": "1", "TERM": "dumb",
+            # Children keep pytest's PYTEST_VERSION, which arms the live-DB guard against the scratch
+            # HOME's own state.db; the whole tree is under ``root`` (asserted below), so let workers
+            # open their real session store.
+            "HERMES_STATE_DB_GUARD_BYPASS": "1",
             **FAST_ENV, **self.env_extra,
         })
         assert env["HERMES_HOME"].startswith(str(self.root))

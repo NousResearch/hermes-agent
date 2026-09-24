@@ -34,6 +34,9 @@ pytestmark = [
     pytest.mark.live_system_guard_bypass,
 ]
 
+# The scripted history spends two breaker ticks (the SIGKILL and the expired operator claim); a
+# higher limit keeps the card retryable whichever way those deaths are booked.
+TICK = ("--failure-limit", "5")
 ATTEMPT_ONE_PROSE = "ATTEMPT_ONE_PROSE the card could not be finished in this run."
 ATTEMPT_TWO_MARK = "ATTEMPT_TWO_MARK heartbeat sent, about to call the provider again."
 
@@ -99,10 +102,10 @@ class Scenario:
 
 def _drive(board: Board, director: Director) -> Scenario:
     tid = board.create("sigkill chaos card")
-    board.dispatch()
+    board.dispatch(*TICK)
     w1 = board.task(tid)["worker_pid"]
     board.wait_worker_exit(tid, w1)
-    board.dispatch()  # reaps attempt 1 (protocol violation), spawns attempt 2
+    board.dispatch(*TICK)  # reaps attempt 1 (protocol violation), spawns attempt 2
     w2 = int(board.task(tid)["worker_pid"])
     assert w2 != w1, board.diag(tid)
     wait_until(director.hanging.is_set, 90, f"attempt 2 to hang on its provider call\n{board.diag(tid)}")
@@ -112,19 +115,19 @@ def _drive(board: Board, director: Director) -> Scenario:
     wait_until(lambda: not pid_alive(w2), 15, "SIGKILLed worker to disappear")
     # The fresh claim must start strictly after attempt 2's last heartbeat second.
     wait_until(lambda: int(time.time()) > int(hb) + 1, 5, "clock to pass the last heartbeat")
-    board.dispatch("--max", "0")  # reap only
+    board.dispatch(*TICK, "--max", "0")  # reap only
     assert board.task(tid)["status"] == "ready", board.diag(tid)
     board.cli("claim", tid, "--ttl", "1")
     sc = Scenario(board, tid, director, w2, int(hb))
     sc.after_claim = board.task(tid)
     sc.claim_run = board.runs(tid)[-1]
     wait_until(lambda: int(time.time()) > int(sc.after_claim["claim_expires"]), 5, "operator claim to expire")
-    board.dispatch()  # reclaims the expired claim, spawns attempt 3
+    board.dispatch(*TICK)  # reclaims the expired claim, spawns attempt 3
     w3 = board.task(tid)["worker_pid"]
     assert w3, board.diag(tid)
     board.wait_worker_exit(tid, int(w3))
     wait_until(lambda: board.task(tid)["status"] == "done", 30, f"card done\n{board.diag(tid)}")
-    sc.ticks_after_done = [board.dispatch() for _ in range(2)]
+    sc.ticks_after_done = [board.dispatch(*TICK) for _ in range(2)]
     return sc
 
 

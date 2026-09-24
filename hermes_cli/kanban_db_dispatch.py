@@ -260,6 +260,7 @@ def _exit_code_kind(code: int) -> "tuple[str, int]":
 _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
+_WORKER_LOG_ATTEMPT_MARKER = "[kanban-worker-attempt]"
 
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
@@ -267,14 +268,16 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    or not the process running this sweep ever reaped the worker. Logs are
+    append-mode across attempts, so only trailers after the last spawn-time
+    attempt marker belong to the worker currently being classified.
     """
     try:
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
+    current_attempt = (raw or "").rsplit(_WORKER_LOG_ATTEMPT_MARKER, 1)[-1]
+    matches = _EXIT_TRAILER_RE.findall(current_attempt)
     return int(matches[-1]) if matches else None
 
 
@@ -2714,13 +2717,17 @@ def _open_worker_log(task: Task, board: Optional[str]):
     """Append-mode per-task log (a re-run on unblock appends, never overwrites),
     rotated first. Anchored at the board root (not the shared kanban root) so
     `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
+    collide. The boundary is flushed before spawning so a killed worker cannot
+    be classified from a prior attempt's exit trailer."""
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    log_f = open(log_path, "ab")
+    log_f.write(f"\n{_WORKER_LOG_ATTEMPT_MARKER}\n".encode("utf-8"))
+    log_f.flush()
+    return log_f
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

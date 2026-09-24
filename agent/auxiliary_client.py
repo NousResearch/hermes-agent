@@ -8056,13 +8056,12 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
         raw = str(raw) if raw else ""
     content = raw.strip()
     if content:
-        # Mirrors _strip_think_blocks
-        cleaned = re.sub(
-            r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>"
-            r".*?"
-            r"</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>",
-            "", content, flags=re.DOTALL | re.IGNORECASE,
-        ).strip()
+        # Same precompiled closed-pair patterns as strip_think_blocks.
+        from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS
+        cleaned = content
+        for pattern in _REASONING_BLOCK_PATTERNS:
+            cleaned = pattern.sub("", cleaned)
+        cleaned = cleaned.strip()
         if cleaned:
             return cleaned
     # Content is empty or reasoning-only — try structured reasoning fields

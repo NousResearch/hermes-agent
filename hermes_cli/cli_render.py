@@ -16,6 +16,7 @@ import textwrap
 import threading
 import time
 from contextlib import contextmanager, suppress
+from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
@@ -28,7 +29,7 @@ def _cli():
     return cli
 
 
-_REASONING_TAGS = ("REASONING_SCRATCHPAD", "think", "thinking", "reasoning", "thought")
+_REASONING_TAGS = THINK_TAG_NAMES
 
 
 _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")

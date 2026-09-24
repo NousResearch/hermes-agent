@@ -18,8 +18,12 @@ __all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THIN
 # The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
 # these; a tag added here is covered everywhere. Consumers match case-insensitively, so the
-# literal tags are lowercase.
-THINK_TAG_NAMES: Tuple[str, ...] = ("think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD")
+# literal tags are lowercase. The CJK names cover models (MiniMax-M3) that emit Chinese reasoning
+# tags: 思考 (think), 反思 (reflect), 推理 (reason), 推敲 (deliberate).
+THINK_TAG_NAMES: Tuple[str, ...] = (
+    "think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD",
+    "思考", "反思", "推理", "推敲",
+)
 THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
 THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 

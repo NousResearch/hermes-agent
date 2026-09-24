@@ -31,6 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.tool_result_classification import tool_may_have_side_effect
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -892,7 +893,7 @@ def _run_agent_tool_execution_middleware(
                 "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
                 "tool_call_id": tool_call_id or "",
             },
-            execution_guard=_relay_execution_guard,
+            execution_guard=_relay_execution_guard if tool_may_have_side_effect(function_name) else None,
         )
     except BaseException:
         blocked_args = relay_execution_block.get("args")

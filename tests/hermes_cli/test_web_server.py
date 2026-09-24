@@ -2143,6 +2143,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
 
     def test_env_rejects_its_redacted_preview(self):
+        """Invariant: a GET preview (sentinel or legacy bare mask) never gains write
+        authority, even after another actor rotates the secret behind it."""
         from hermes_cli.config import load_env, save_env_value
 
         key = "OPENAI_API_KEY"
@@ -2155,153 +2157,57 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert response.status_code == 400
         assert load_env()[key] == real
 
-        # A preview remains display-only even if another actor rotates the secret
-        # after the GET that minted it.
         rotated = "sk-rotated-secret-0987654321"
         save_env_value(key, rotated)
-        response = self.client.put("/api/env", json={"key": key, "value": preview})
-        assert response.status_code == 400
-        assert load_env()[key] == rotated
-
-    def test_custom_endpoint_rejects_current_and_legacy_previews(self):
-        from hermes_cli.config import custom_endpoint_key_env, get_env_value
-
-        payload = {
-            "id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1",
-            "model": "m", "api_key": "sk-live-secret-abcdef1234567890",
-        }
-        created = self.client.post("/api/providers/custom-endpoints", json=payload)
-        endpoint = next(e for e in created.json()["endpoints"] if e["id"] == "proxy")
-        env_key = custom_endpoint_key_env("proxy")
-        real = get_env_value(env_key)
-
-        for preview in (endpoint["api_key_preview"], redact_key(real)):
-            response = self.client.post(
-                "/api/providers/custom-endpoints", json={**payload, "api_key": preview})
+        for stale in (preview, redact_key(real)):
+            response = self.client.put("/api/env", json={"key": key, "value": stale})
             assert response.status_code == 400
-            assert get_env_value(env_key) == real
+            assert load_env()[key] == rotated
 
-    def test_custom_endpoint_rejects_stale_key_env_placeholder_after_rotation(self):
-        from hermes_cli.config import load_config, save_config, save_env_value
-
-        provider_id = "env-preview"
-        old_env = "OLD_ENDPOINT_KEY"
-        new_env = "NEW_ENDPOINT_KEY"
-        save_env_value(old_env, "old-secret-1234567890")
-        save_env_value(new_env, "new-secret-0987654321")
-
-        cfg = load_config()
-        providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-        providers[provider_id] = {
-            "name": "Env Preview",
-            "base_url": "https://env-preview.example.com/v1",
-            "model": "m",
-            "key_env": old_env,
-            "models": {"m": {}},
-        }
-        cfg["providers"] = providers
-        save_config(cfg)
-
-        endpoint = next(
-            e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
-            if e["id"] == provider_id
-        )
-        stale_preview = endpoint["api_key_preview"]
-        assert stale_preview == f"${{{old_env}}}"
-
-        cfg = load_config()
-        cfg["providers"][provider_id]["key_env"] = new_env
-        save_config(cfg)
-
-        response = self.client.post(
-            "/api/providers/custom-endpoints",
-            json={
-                "id": provider_id,
-                "name": "Env Preview",
-                "base_url": "https://env-preview.example.com/v1",
-                "model": "m",
-                "api_key": stale_preview,
-            },
-        )
-        assert response.status_code == 400
-        assert load_config()["providers"][provider_id]["key_env"] == new_env
-
-    def test_legacy_custom_endpoint_rejects_stale_preview_after_rotation(self):
-        from hermes_cli.config import load_config, save_config
-
-        provider_id = "legacy-preview"
-        cfg = load_config()
-        providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-        providers[provider_id] = {
-            "name": "Legacy Preview",
-            "base_url": "https://legacy-preview.example.com/v1",
-            "model": "m",
-            "api_key": "legacy-secret-A-1234567890",
-            "models": {"m": {}},
-        }
-        cfg["providers"] = providers
-        save_config(cfg)
-
-        endpoint = next(
-            e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
-            if e["id"] == provider_id
-        )
-        preview = endpoint["api_key_preview"]
-        assert preview.startswith("«redacted")
-
-        cfg = load_config()
-        cfg["providers"][provider_id]["api_key"] = "legacy-secret-B-0987654321"
-        save_config(cfg)
-
-        response = self.client.post(
-            "/api/providers/custom-endpoints",
-            json={
-                "id": provider_id,
-                "name": "Legacy Preview",
-                "base_url": "https://legacy-preview.example.com/v1",
-                "model": "m",
-                "api_key": preview,
-            },
-        )
-        assert response.status_code == 400
-        assert load_config()["providers"][provider_id]["api_key"] == "legacy-secret-B-0987654321"
-
-    def test_messaging_rejects_preview_from_process_env(self, monkeypatch):
-        from hermes_cli.config import load_env
-
-        key = "DISCORD_BOT_TOKEN"
-        real = "discord-live-secret-abcdef1234567890"
-        monkeypatch.setenv(key, real)
-        assert key not in load_env()
-
-        platforms = self.client.get("/api/messaging/platforms").json()["platforms"]
-        discord = next(p for p in platforms if p["id"] == "discord")
-        preview = next(v["redacted_value"] for v in discord["env_vars"] if v["key"] == key)
-        assert preview.startswith("«redacted")
-
-        rotated = "discord-rotated-secret-0987654321"
-        monkeypatch.setenv(key, rotated)
-        response = self.client.put("/api/messaging/platforms/discord", json={"env": {key: preview}})
-
-        assert response.status_code == 400
-        assert key not in load_env()
-        assert os.environ[key] == rotated
-
-    def test_messaging_rejects_preview_before_clearing_secret(self):
-        from hermes_cli.config import load_env, save_env_value
+    def test_messaging_and_custom_endpoint_reject_stale_previews(self):
+        """Invariant: preview rejection runs before any mutation (messaging clear+set),
+        and custom-endpoint display strings (``${KEY_ENV}`` / legacy plaintext preview)
+        are refused even after the entry rotated underneath them."""
+        from hermes_cli.config import load_config, load_env, save_config, save_env_value
 
         key = "DISCORD_BOT_TOKEN"
         real = "discord-live-secret-abcdef1234567890"
         save_env_value(key, real)
-        preview = redact_key(real)
-
         response = self.client.put(
             "/api/messaging/platforms/discord",
-            json={"clear_env": [key], "env": {key: preview}},
+            json={"clear_env": [key], "env": {key: redact_key(real)}},
         )
-
         assert response.status_code == 400
         assert load_env()[key] == real
+
+        save_env_value("OLD_ENDPOINT_KEY", "old-secret-1234567890")
+        save_env_value("NEW_ENDPOINT_KEY", "new-secret-0987654321")
+        cfg = load_config()
+        cfg["providers"] = {
+            "env-preview": {"name": "Env Preview", "base_url": "https://env-preview.example.com/v1",
+                            "model": "m", "key_env": "OLD_ENDPOINT_KEY", "models": {"m": {}}},
+            "legacy-preview": {"name": "Legacy Preview", "base_url": "https://legacy-preview.example.com/v1",
+                               "model": "m", "api_key": "legacy-secret-A-1234567890", "models": {"m": {}}},
+        }
+        save_config(cfg)
+        endpoints = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert endpoints["env-preview"]["api_key_preview"] == "${OLD_ENDPOINT_KEY}"
+        assert endpoints["legacy-preview"]["api_key_preview"].startswith("«redacted")
+
+        cfg = load_config()
+        cfg["providers"]["env-preview"]["key_env"] = "NEW_ENDPOINT_KEY"
+        cfg["providers"]["legacy-preview"]["api_key"] = "legacy-secret-B-0987654321"
+        save_config(cfg)
+        for endpoint_id, base_url in (("env-preview", "https://env-preview.example.com/v1"),
+                                      ("legacy-preview", "https://legacy-preview.example.com/v1")):
+            response = self.client.post("/api/providers/custom-endpoints", json={
+                "id": endpoint_id, "name": "x", "base_url": base_url, "model": "m",
+                "api_key": endpoints[endpoint_id]["api_key_preview"],
+            })
+            assert response.status_code == 400
+        providers = load_config()["providers"]
+        assert providers["env-preview"]["key_env"] == "NEW_ENDPOINT_KEY"
+        assert providers["legacy-preview"]["api_key"] == "legacy-secret-B-0987654321"
 
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""

@@ -474,7 +474,10 @@ display:
   #   separate             — send one message per tool (pre-v0.9 style; noisier)
   # Only applies where tool_progress is already enabled.
   tool_progress_grouping: accumulate   # accumulate | separate
+  full_tool_commands: false             # show complete terminal commands in progress messages
 ```
+
+`full_tool_commands` is opt-in and only changes terminal progress lines. Other tools keep their normal compact previews, and commands are scrubbed for secrets before they are sent.
 
 ### `log` mode — audit file instead of chat messages
 

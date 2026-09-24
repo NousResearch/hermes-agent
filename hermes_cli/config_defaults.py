@@ -902,6 +902,9 @@ DEFAULT_CONFIG = {
         # display.tool_progress_overrides is deprecated (use display.platforms); a user-set value is
         # still honored at runtime and folded into platforms by migration.
         "tool_preview_length": 0,  # max chars for tool call previews (0 = no limit)
+        # Gateway: keep normal compact progress for other tools, but show the complete terminal
+        # command when enabled (also supported under display.platforms.<platform>).
+        "full_tool_commands": False,
         # Human-phrased status labels for built-in tools ("Reading <file>") in CLI spinner and
         # gateway/desktop tool-progress; custom/plugin/MCP tools use the raw preview.
         "friendly_tool_labels": True,

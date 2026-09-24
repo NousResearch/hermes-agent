@@ -66,10 +66,27 @@ def _activated(proj, task_id: Optional[str]) -> str:
         "primary_path": primary})
 
 
+def _calling_session_project_id(conn, task_id: Optional[str]) -> tuple[bool, Optional[str]]:
+    """``(scoped, project_id)`` for the calling session. The GUI gateway registers each session's
+    workspace (``cwd_source``) in the terminal override table; a caller it never registered (CLI,
+    scripts) is unscoped and falls back to the profile-global pointer."""
+    from hermes_cli import projects_db as pdb
+    from tools.terminal_tool import resolve_task_overrides
+    overrides = resolve_task_overrides(task_id) if task_id else {}
+    if "cwd_source" not in overrides:
+        return False, None
+    cwd = overrides.get("cwd") if overrides["cwd_source"] == "session" else None
+    project = pdb.project_for_path(conn, cwd) if cwd else None
+    return True, project.id if project else None
+
+
 def project_list(task_id: Optional[str] = None) -> str:
     from hermes_cli import projects_db as pdb
     with pdb.connect_closing() as conn:
-        active = pdb.get_active_id(conn)
+        # Another tab's switch moves the profile-global pointer; this chat's project is its own cwd.
+        scoped, active = _calling_session_project_id(conn, task_id)
+        if not scoped:
+            active = pdb.get_active_id(conn)
         projects = pdb.list_projects(conn)
     return json.dumps({
         "active_id": active,
@@ -92,19 +109,16 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
         with pdb.connect_closing() as conn:
             existing = pdb.find_by_primary_path(conn, folder) if folder else None
             if existing is not None:
-                # Idempotent create: duplicates would render N identical sidebar subtrees.
-                # Idempotent create: the folder already belongs to a project. Re-activating it beats minting
+                # Idempotent create: the folder already belongs to a project. Reusing it beats minting
                 # a duplicate — duplicated projects render N identical sidebar subtrees (#75820).
-                pdb.set_active(conn, existing.id)
                 proj = existing
             else:
                 pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
-                # A live agent session owns its workspace independently. Creating a
-                # project must not let a background chat redirect the profile-global
-                # Desktop selection used by unrelated and newly created sessions.
-                if not task_id:
-                    pdb.set_active(conn, pid)
                 proj = pdb.get_project(conn, pid)
+            # A live session owns its workspace; only an unscoped caller moves the profile-global
+            # pointer, or a background chat would redirect the sidebar and every new session.
+            if not task_id and proj is not None:
+                pdb.set_active(conn, proj.id)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
     if proj is None:
@@ -118,9 +132,7 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
         proj = _resolve(conn, project)
         if proj is None:
             return json.dumps({"success": False, "error": f"no project matching '{project}'"})
-        # A live agent session owns its workspace independently. Mutating the
-        # profile-global pointer here lets a background chat redirect unrelated
-        # Desktop windows and newly created sessions into this project.
+        # Same rule as create: a live session never moves the profile-global pointer.
         if not task_id:
             pdb.set_active(conn, proj.id)
     return _activated(proj, task_id)
@@ -153,7 +165,7 @@ registry.register(
             "this chat into it — pass path to anchor it to a repo/folder (the "
             "chat's workspace moves there, the sidebar follows). switch: move "
             "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which is active."
+            "intentional way to move the session, not `cd`. list: all projects + which one this chat is in."
         ),
         "parameters": {
             "type": "object",

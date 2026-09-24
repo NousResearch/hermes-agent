@@ -640,34 +640,17 @@ _PRUNED_TOOL_ARGUMENTS_ERROR = "suspected_pruned_tool_arguments"
 _PRUNED_TOOL_ARGUMENTS_MESSAGE = (
     "Tool was not executed because effect-capable arguments contain a Hermes context-compression artifact. "
     "Recover the exact content from its durable source or re-read it, then issue a complete new call; "
-    "do not retry these arguments."
+    "do not retry these arguments. To remove a marker that already landed in a file, match it by its "
+    "HERMES-CONTEXT-COMPRESSION prefix (e.g. a terminal sed on that line) instead of quoting the full marker."
 )
 
 
-def _pruned_tool_arguments_block(function_name: str, function_args: dict[str, Any]) -> dict[str, Any] | None:
-    paths = _context_pruned_argument_paths(function_name, function_args)
-    if not paths:
-        return None
-    return {
-        "error": _PRUNED_TOOL_ARGUMENTS_ERROR,
-        "message": _PRUNED_TOOL_ARGUMENTS_MESSAGE,
-        "argument_paths": paths,
-    }
-
-
-def _blocked_tool_result(
-    agent,
-    ref: _ToolCallRef,
-    *,
-    block_message: Optional[str],
-    block_error_type: str,
-    guardrail_decision,
-    block_payload: dict[str, Any] | None = None,
-) -> str:
-    """Synthesize a blocked tool result and emit its terminal post_tool_call."""
-    if block_message is not None:
-        result = json.dumps(block_payload or {"error": block_message}, ensure_ascii=False)
-        error_type, error_message = block_error_type, block_message
+def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str, guardrail_decision) -> str:
+    """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
+    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
+    if block_body is not None:
+        result = json.dumps(block_body, ensure_ascii=False)
+        error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
     else:
         result = agent._guardrail_block_result(guardrail_decision)
         error_type = "guardrail_block"
@@ -704,7 +687,7 @@ def _dispatch_authorized_once(
     begin_execution,
     authorization_gate: _ConcurrentToolAuthorizationGate | None,
 ) -> Any:
-    """Hermes policy (scope → plugin pre-hooks → guardrails) then the one real dispatch.
+    """Hermes policy (scope → plugin pre-hooks → pruned-arg check → guardrails) then the one real dispatch.
 
     Plugin ``modify`` hooks may rewrite ``ref.args`` (mirrored into ``state.args``).
     ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
@@ -717,38 +700,38 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
-    block_payload = None
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
+    block_body = None if block_message is None else {"error": block_message}
 
     # Checked once, after plugin modify hooks (which may replace arguments) and
     # before guardrails or real dispatch: a copied compression marker in an
     # effect-capable argument must never reach the tool.
-    if block_message is None:
-        block_payload = _pruned_tool_arguments_block(ref.name, ref.args)
-        if block_payload is not None:
-            block_message = block_payload["message"]
+    if block_body is None:
+        pruned_paths = _context_pruned_argument_paths(ref.name, ref.args)
+        if pruned_paths:
+            block_body = {
+                "error": _PRUNED_TOOL_ARGUMENTS_ERROR,
+                "message": _PRUNED_TOOL_ARGUMENTS_MESSAGE,
+                "argument_paths": pruned_paths,
+            }
             block_error_type = _PRUNED_TOOL_ARGUMENTS_ERROR
 
     guardrail_decision = None
-    if block_message is None:
+    if block_body is None:
         guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
         if guardrail_decision.allows_execution:
             guardrail_decision = None
 
-    if block_message is not None or guardrail_decision is not None:
+    if block_body is not None or guardrail_decision is not None:
         _advance_start_order()
         state.blocked = True
         return _blocked_tool_result(
-            agent,
-            ref,
-            block_message=block_message,
-            block_error_type=block_error_type,
-            guardrail_decision=guardrail_decision,
-            block_payload=block_payload,
+            agent, ref,
+            block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
         )
 
     if ref.name == "memory":

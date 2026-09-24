@@ -109,3 +109,22 @@ def test_quiet_mode_does_not_clobber_runagent_logger_level():
     for name in ("run_agent", "tools", "trajectory_compressor", "cron", "hermes_cli"):
         logger = logging.getLogger(name)
         assert logger.getEffectiveLevel() <= logging.WARNING
+
+
+def test_retry_after_drop_reports_the_attempt_that_dropped():
+    """First drop (0-indexed attempt 0) must be announced as attempt 1/N, not 2/N (#90215)."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from agent.chat_completion_helpers import _StreamingCall
+
+    agent = MagicMock()
+    agent._is_provider_stream_parse_error.return_value = False
+    fake = SimpleNamespace(
+        agent=agent,
+        clients=SimpleNamespace(diag=None, close_once=lambda reason: None),
+        _cancel_current_stream_attempt=lambda reason: None,
+    )
+    _StreamingCall._retry_after_drop(fake, ConnectionError("drop"), 0, 2, mid_tool_call=False, reason="t")
+    assert agent._emit_stream_drop.call_args.kwargs["attempt"] == 1
+    assert agent._emit_stream_drop.call_args.kwargs["max_attempts"] == 3

@@ -3468,7 +3468,7 @@ class _StreamingCall(StreamingWaitMonitor):
         clients are never closed from inside a request (FD-recycle hazard); the
         OpenAI primary is replaced lazily."""
         self.agent._emit_stream_drop(
-            error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
+            error=e, attempt=attempt + 1, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
         if self.agent._is_provider_stream_parse_error(e):
             from agent.anthropic_adapter import buffer_anthropic_tool_input
             buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))

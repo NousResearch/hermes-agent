@@ -120,6 +120,33 @@ def test_last_release_keeps_model_warm_by_default(client, monkeypatch):
     assert len(tts_tool_local._piper_voice_cache) == 1
 
 
+def test_release_reads_keep_warm_from_the_requesting_profile(client, monkeypatch, isolated_profiles):
+    from tools import tts_tool_lifecycle, tts_tool_local
+
+    _write_tts_config(isolated_profiles["worker_beta"], {"keep_warm_seconds": 0})
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "loaded", "warmed": True, "provider": "piper"})
+    url = "/api/audio/tts-lease?profile=worker_beta"
+    client.post(url, json={"lease": "desktop:conversation:abc", "active": True})
+    tts_tool_local._piper_voice_cache["voice"] = object()
+
+    last = client.post(url, json={"lease": "desktop:conversation:abc", "active": False}).json()
+
+    assert last["released"] == 1
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_release_for_a_deleted_profile_still_drops_the_lease(client, monkeypatch):
+    from tools import tts_tool_lifecycle
+
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "piper"})
+    client.post("/api/audio/tts-lease", json={"lease": "desktop:read-aloud", "active": True})
+
+    resp = client.post("/api/audio/tts-lease?profile=ghost", json={"lease": "desktop:read-aloud", "active": False})
+
+    assert resp.status_code == 200
+    assert resp.json()["leases"] == 0
+
+
 def test_keep_warm_window_from_config_unloads_after_it_elapses(client, monkeypatch, isolated_profiles):
     import time
     from tools import tts_tool_lifecycle, tts_tool_local

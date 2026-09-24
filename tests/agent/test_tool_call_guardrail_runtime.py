@@ -400,9 +400,11 @@ def test_context_pruned_effectful_call_blocks_before_dispatch():
     assert payload["argument_paths"] == ["$.body"]
     assert "Recover the exact content from its durable source" in payload["message"]
     # Only the compressor's current marker is an artifact; a legacy "...[truncated]" tail is ordinary content.
+    from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
     from agent.tool_dispatch_helpers import _context_pruned_argument_paths
 
     assert _context_pruned_argument_paths("write_file", {"content": "x" * 201 + "...[truncated]"}) == []
+    assert _context_pruned_argument_paths("write_file", {"content": f"see {_COMPRESSION_MARKER_PREFIX} docs"}) == []
 
 
 def test_read_only_tool_may_quote_current_context_prune_marker():

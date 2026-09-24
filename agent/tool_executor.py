@@ -30,6 +30,7 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
+from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
@@ -641,7 +642,7 @@ _PRUNED_TOOL_ARGUMENTS_MESSAGE = (
     "Tool was not executed because effect-capable arguments contain a Hermes context-compression artifact. "
     "Recover the exact content from its durable source or re-read it, then issue a complete new call; "
     "do not retry these arguments. To remove a marker that already landed in a file, match it by its "
-    "HERMES-CONTEXT-COMPRESSION prefix (e.g. a terminal sed on that line) instead of quoting the full marker."
+    f"{_COMPRESSION_MARKER_PREFIX.strip('⟪:')} prefix (e.g. a terminal sed on that line) instead of quoting the full marker."
 )
 
 

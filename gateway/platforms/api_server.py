@@ -1190,6 +1190,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # ``platforms.api_server.tool_progress_events: false`` drops the custom
+        # ``hermes.tool.progress`` SSE frames from Chat Completions streams for strict OpenAI
+        # clients that choke on named events (#12020). Default on.
+        self._tool_progress_events: bool = _coerce_request_bool(
+            extra.get("tool_progress_events"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None

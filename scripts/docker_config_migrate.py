@@ -16,6 +16,7 @@ from hermes_cli.config import (
 from hermes_cli.config_backups import backup_config, list_config_backups
 from hermes_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
+    has_version_stamp,
     support_floor_message,
 )
 from utils import env_var_enabled
@@ -54,8 +55,10 @@ def main() -> int:
     # Below the auto-migration support floor: migrate_config() refuses (and
     # leaves the file untouched), so don't run the backup/verify dance that
     # would raise "did not advance config version" and block the boot.
-    # Warn-and-continue matches the CLI's fail-safe posture.
-    if current_ver < SUPPORT_FLOOR_VERSION:
+    # Warn-and-continue matches the CLI's fail-safe posture. A config with no
+    # _config_version (a volume seeded from the template) is not below the
+    # floor: migrate_config() stamps it.
+    if current_ver < SUPPORT_FLOOR_VERSION and has_version_stamp():
         print(
             f"[config-migrate] WARNING: {support_floor_message()}",
             file=sys.stderr,

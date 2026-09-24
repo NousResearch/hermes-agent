@@ -710,11 +710,15 @@ def _skill_view_with_bump(args, **kw):
         if isinstance(parsed, dict) and parsed.get("success"):
             _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
-                from tools.skill_usage import bump_use, bump_view
-                bump_view(str(resolved))
-                # Viewing is actively loading the skill to act on it — that counts as use
-                # (the curator's stale timer keys off last_used_at).
-                bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
+                # The curator's review fork calls skill_view to inspect candidates it's
+                # judging — that must not itself count as use, or the inspection inflates
+                # the very signal the review reads (#77).
+                if not is_background_review():
+                    from tools.skill_usage import bump_use, bump_view
+                    bump_view(str(resolved))
+                    # Viewing is actively loading the skill to act on it — that counts as use
+                    # (the curator's stale timer keys off last_used_at).
+                    bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
     return result
 
 

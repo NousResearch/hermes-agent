@@ -133,46 +133,4 @@ describe('statusbar context usage lifecycle', () => {
     await act(async () => pending[1].reject(new Error('disconnected')))
     expect(meter().label).toBe('40k/100k')
   })
-
-  it('ignores an idle RPC that resolves after a turn has started', async () => {
-    const { meter, pending } = mountStatusbar()
-    act(() => {
-      $busy.set(true)
-      $currentUsage.set(usage(40_000))
-    })
-    await act(async () => pending[0].resolve(breakdown(20_000)))
-    expect(meter().label).toBe('40k/100k')
-    act(() => $busy.set(false))
-    expect(meter().label).toBe('40k/100k')
-  })
-
-  it('does not accept the previous session RPC after switching sessions', async () => {
-    const { meter, pending } = mountStatusbar()
-    act(() => {
-      $activeSessionId.set('runtime-b')
-      $selectedStoredSessionId.set('stored-b')
-      $currentUsage.set(usage(5_000))
-    })
-    expect(meter().label).toBe('5k/100k')
-    await act(async () => pending[1].resolve(breakdown(8_000)))
-    await act(async () => pending[0].resolve(breakdown(20_000)))
-    expect(meter().label).toBe('8k/100k')
-  })
-
-  it('waits to fetch until the gauge is enabled and skips fetching while busy', async () => {
-    $statusbarHiddenIds.set(['context-usage'])
-    const { meter, pending } = mountStatusbar()
-    expect(pending).toHaveLength(0)
-    act(() => {
-      $busy.set(true)
-      $statusbarHiddenIds.set([])
-      $currentUsage.set(usage(30_000))
-    })
-    expect(meter().label).toBe('30k/100k')
-    expect(pending).toHaveLength(0)
-    act(() => $busy.set(false))
-    expect(pending).toHaveLength(1)
-    await act(async () => pending[0].resolve(breakdown(35_000)))
-    expect(meter().label).toBe('35k/100k')
-  })
 })

@@ -205,9 +205,13 @@ def thinking_toggle_extras(
     ``efforts``) replaces the toggle. DeepSeek instead requires the toggle on every
     request (an omitted toggle defaults thinking on and then demands
     ``reasoning_content`` echoes), hence ``always_emit_toggle``. A requested effort of
-    ``none`` is not a level on these wires; it falls back to the plain toggle.
+    ``none`` is the disabled spelling on these wires, including the bare config
+    emitted by ``hermes batch --reasoning_disabled``.
     """
-    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+    if isinstance(reasoning_config, dict) and (
+        reasoning_config.get("enabled") is False
+        or str(reasoning_config.get("effort") or "").strip().lower() == "none"
+    ):
         return {"thinking": {"type": "disabled"}}, {}
     effort = requested_effort(reasoning_config)
     clamped = clamp_effort(None if effort == "none" else effort, efforts, overrides)

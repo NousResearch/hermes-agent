@@ -18,13 +18,14 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
-import termios
+import termios  # windows-footgun: ok — tmux/pty suite, skipped off Linux
 import time
 import unicodedata
 from collections import Counter
@@ -35,6 +36,7 @@ import pytest
 
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.terminal._pty import cmdline, poll, session_members
+from tests.e2e.core.terminal._vt import Screen
 from tests.fakes.fake_llm_provider import write_hermes_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -142,7 +144,8 @@ class Cells:
         self.phase = "setup"
 
     def add(self, name: str, problem: str, screen: str = "") -> None:
-        self.results[name] = (not problem, f"{problem}\n--- screen ---\n{screen}" if problem else "")
+        detail = f"{problem}\n--- screen ---\n{screen}" if screen else problem
+        self.results[name] = (not problem, detail if problem else "")
 
     def harness_error(self, name: str, detail: str) -> None:
         """The cell could not be judged (its precondition never held): a real failure, never
@@ -254,15 +257,23 @@ class TmuxTui:
                         "-x", str(cols), "-y", str(rows), "-c", str(root / "work"), *argv],
                        env=env, check=True, timeout=30)
         self.tmux("set", "-g", "window-size", "manual")
+        # Everything the pane prints, for failure reports (the screen is blank after exit).
+        self._cols, self._rows = cols, rows
+        self.transcript_path = root / "pty.log"
+        self.tmux("pipe-pane", "-t", "p", f"cat >> {shlex.quote(str(self.transcript_path))}")
         self.pane_pid = int(self.tmux("display", "-p", "-t", "p", "#{pane_pid}").strip())
         self.pane_tty = self.tmux("display", "-p", "-t", "p", "#{pane_tty}").strip()
         self.seen: set[int] = set()
 
     # -- tmux ------------------------------------------------------------------------------------
 
+    def tmux_run(self, *args: str) -> subprocess.CompletedProcess:
+        argv = ["tmux", "-S", self.sock, *args]
+        return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=30)
+
     def tmux(self, *args: str) -> str:
-        return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True,
-                              timeout=30).stdout
+        return self.tmux_run(*args).stdout
 
     def fmt(self, spec: str) -> str:
         return self.tmux("display", "-p", "-t", "p", spec).strip()
@@ -402,22 +413,68 @@ class TmuxTui:
     def track(self) -> None:
         self.seen.update(session_members(self.pane_pid))
 
+    def exit_report(self) -> tuple[str, str] | None:
+        """``(exit status, signal)`` once tmux has reaped the pane process, else None.
+
+        Ordering: tmux flags a pane dead (``pane_dead``) as soon as its pty reads EOF, which the
+        kernel delivers when the exiting process closes its last tty fd -- before the process is
+        a zombie and tmux reaps it on SIGCHLD. Until then ``pane_dead_status`` and
+        ``pane_dead_signal`` are both empty; on a loaded host that gap is long enough to read.
+        """
+        out = self.fmt("#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}")
+        dead, _, rest = out.partition("|")
+        status, _, sig = rest.partition("|")
+        return (status, sig) if dead == "1" and (status or sig) else None
+
     def exit_problem(self, timeout: float = 60.0) -> str:
         """``/exit``: the TUI exits 0 within ``timeout`` and leaves no process of its session."""
         self.track()
+        before = "\n".join([r for r in self.rows() if r.strip()][-30:])
+        t0 = time.monotonic()
         self.submit("/exit")
         try:
-            poll(lambda: self.fmt("#{pane_dead}") == "1", timeout=timeout, what="the TUI to exit")
+            status, sig = poll(self.exit_report, timeout=timeout, what="the TUI to exit")
         except AssertionError:
-            return f"/exit did not exit within {timeout:.0f}s\n{self.dump()}"
-        status = self.fmt("#{pane_dead_status}")
+            return self.exit_diagnostics(f"/exit did not exit within {timeout:.0f}s", t0, before)
+        def members() -> list[int]:
+            return [p for p in self.seen | set(session_members(self.pane_pid)) if _alive(p)]
         try:
-            poll(lambda: not [p for p in self.seen | set(session_members(self.pane_pid)) if _alive(p)],
-                 timeout=15, what="the pane session to empty")
+            poll(lambda: not members(), timeout=15, what="the pane session to empty")
         except AssertionError:
-            left = [f"{p}: {cmdline(p)}" for p in self.seen | set(session_members(self.pane_pid)) if _alive(p)]
-            return f"processes left after /exit: {left}"
-        return "" if status == "0" else f"/exit status {status}"
+            left = [f"{p}: {cmdline(p)}" for p in members()]
+            return self.exit_diagnostics(f"processes left after /exit: {left}", t0, before)
+        if status == "0" and not sig:
+            return ""
+        return self.exit_diagnostics(f"/exit ended with exit status {status or '-'} signal {sig or '-'}",
+                                     t0, before)
+
+    def exit_diagnostics(self, problem: str, t0: float, before: str, tail: int = 40) -> str:
+        """``problem`` plus what explains it: the raw tmux answer (rc/stderr), whether the pane
+        process is still alive, the elapsed time, the frame before ``/exit`` and the last lines of
+        the PTY transcript (the live screen is blank once the TUI left the alternate screen)."""
+        q = self.tmux_run("display", "-p", "-t", "p",
+                          "dead=#{pane_dead} status=#{pane_dead_status} signal=#{pane_dead_signal}")
+        proc = _proc_state(self.pane_pid)
+        return (f"{problem}\n"
+                f"elapsed since /exit: {time.monotonic() - t0:.1f}s\n"
+                f"tmux: rc={q.returncode} out={q.stdout.strip()!r} err={q.stderr.strip()!r}\n"
+                f"pane pid {self.pane_pid}: {proc}\n"
+                f"--- frame before /exit ---\n{before}\n"
+                f"--- last {tail} lines of the PTY transcript ---\n{self.transcript_tail(tail)}")
+
+    def transcript_tail(self, n: int = 40) -> str:
+        """Last ``n`` rows of everything the pane printed (tmux ``pipe-pane`` log, replayed
+        through a VT emulator): scrollback + main screen, i.e. what a user sees after exit."""
+        try:
+            raw = self.transcript_path.read_bytes()
+        except OSError as exc:
+            return f"(no transcript: {exc})"
+        screen = Screen(self._rows, self._cols)
+        screen.feed(raw)
+        lines = screen.transcript()
+        while lines and not lines[-1]:
+            lines.pop()
+        return "\n".join(lines[-n:]) or f"(transcript: {len(raw)} bytes, nothing printable on the main screen)"
 
     def close(self) -> list[str]:
         """Kill the tmux server and every process of the pane's session; return the survivors
@@ -438,7 +495,7 @@ class TmuxTui:
             if _alive(pid):
                 survivors.append(f"{pid}: {cmdline(pid)}")
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only suite
                 except (ProcessLookupError, PermissionError):
                     pass
         return survivors
@@ -475,9 +532,18 @@ class TmuxTui:
         assert self.alive(), f"hermes exited mid-turn\n{self.dump()}"
 
 
+def _proc_state(pid: int) -> str:
+    """'gone (reaped)', or the /proc state letter (Z = zombie not yet reaped) and cmdline."""
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return "gone (reaped)"
+    return f"state {state} ({'zombie, not reaped yet' if state == 'Z' else 'still running'}): {cmdline(pid)}"
+
+
 def _alive(pid: int) -> bool:
     try:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
     except OSError:
         return False
     return state != "Z"

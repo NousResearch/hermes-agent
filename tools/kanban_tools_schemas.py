@@ -515,6 +515,10 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     ),
     {
         "task_id": _prop("string", "Blocked task id to move to ready or parent-gated todo."),
+        "confirm_human": _prop("boolean", (
+            "Set true only after a human has supplied the decision needed by a "
+            "needs_input block. Required to release that block kind."
+        )),
     },
     ["task_id"],
 )

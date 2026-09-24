@@ -571,27 +571,12 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     fresh session's mount from it would leak the previous session's directory.
     Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
     ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
-    A Windows drive path is still a mount source when the cwd-to-/workspace
-    flag is off: it cannot exist inside the Linux container. The container
-    path may be ``/workspace`` or a second mount when that path is taken.
+    A Windows drive path is not a mount source while the cwd-to-/workspace flag
+    is off. A raw host override must stay out of ``docker run -w`` and fall
+    back to the sanitized config cwd. The Windows bind, including when
+    ``/workspace`` is already claimed, is the volume mount, not this override.
     """
-    if config.get("env_type") != "docker":
-        return None
-    if not config.get("docker_mount_cwd_to_workspace"):
-        # POSIX homes stay behind the opt-in flag (isolation). A Windows drive
-        # workspace cannot exist in the container, so it is still a mount source.
-        host = config.get("host_cwd")
-        if isinstance(host, str) and _is_windows_drive_path(host):
-            return host
-        overrides = resolve_task_overrides(task_id) if task_id else {}
-        candidate = overrides.get("cwd") if isinstance(overrides, dict) else None
-        if (
-            isinstance(overrides, dict)
-            and overrides.get("cwd_source") != "process"
-            and isinstance(candidate, str)
-            and _is_windows_drive_path(candidate)
-        ):
-            return candidate
+    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
         return None
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":

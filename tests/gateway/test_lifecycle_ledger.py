@@ -75,6 +75,30 @@ def test_sample_memory_has_expected_keys_on_linux() -> None:
     assert "mem_available_kib" in sample
 
 
+def test_sample_memory_uses_darwin_hardware_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS must provide the fields consumed by the kanban memory guards."""
+    import gateway.lifecycle_ledger as ledger
+    from hermes_cli.local_runtime import hardware
+
+    monkeypatch.setattr(ledger.sys, "platform", "darwin")
+    monkeypatch.setattr(hardware, "_ram_bytes", lambda: (8 << 30, 3 << 30))
+
+    assert sample_memory() == {
+        "mem_total_kib": 8 * 1024 * 1024,
+        "mem_available_kib": 3 * 1024 * 1024,
+    }
+
+
+def test_sample_memory_darwin_probe_failure_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gateway.lifecycle_ledger as ledger
+    from hermes_cli.local_runtime import hardware
+
+    monkeypatch.setattr(ledger.sys, "platform", "darwin")
+    monkeypatch.setattr(hardware, "_ram_bytes", lambda: (0, 0))
+
+    assert sample_memory() == {}
+
+
 # ---------------------------------------------------------------------------
 # First boot / clean lifecycle
 # ---------------------------------------------------------------------------

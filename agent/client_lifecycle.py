@@ -556,11 +556,28 @@ class ClientLifecycleMixin:
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 
+    def _republish_runtime_main(self) -> None:
+        """Re-publish live main provider/model/key for auxiliary `auto` calls (#121756).
+
+        Turn-start publishing (turn_context.build_turn_context) snapshots the
+        credentials; any silent mid-turn rotation adopted here would otherwise
+        leave auxiliary calls sending the revoked token until process restart.
+        Never raises.
+        """
+        try:
+            from agent.turn_context import _publish_runtime_main
+            _publish_runtime_main(self)
+        except Exception:
+            logger.debug("runtime-main republish after credential rotation failed", exc_info=True)
+
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         self._sync_client_kwargs_credentials()
-        return self._replace_primary_openai_client(reason=reason)
+        adopted = self._replace_primary_openai_client(reason=reason)
+        if adopted:
+            self._republish_runtime_main()
+        return adopted
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
@@ -636,6 +653,7 @@ class ClientLifecycleMixin:
             self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
             self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
             self._rebuild_anthropic_client()
+            self._republish_runtime_main()
             return True
         # Nous requests should not inherit OpenRouter-only attribution headers.
         self._client_kwargs.pop("default_headers", None)
@@ -803,7 +821,10 @@ class ClientLifecycleMixin:
             self.base_url = enterprise_base_url.rstrip("/")
         self._sync_client_kwargs_credentials()
         self._apply_client_headers_for_base_url(str(self.base_url or ""))
-        return self._replace_primary_openai_client(reason=reason)
+        adopted = self._replace_primary_openai_client(reason=reason)
+        if adopted:
+            self._republish_runtime_main()
+        return adopted
 
     def _try_refresh_copilot_client_credentials(self) -> bool:
         """Refresh Copilot credentials and rebuild the shared OpenAI client (caller enforces the single-shot guard).

@@ -1152,7 +1152,9 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
         manifest[ORG_MIRROR_DIR_NAME + "/" + ORG_ACTIVE_MARKER] = list(file_signature(st))
     except OSError:
         pass
-    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+    # Same dangling-junction guard as skill_utils.iter_skill_index_files (#121698).
+    for root, dirs, files in os.walk(skills_dir_str, followlinks=True,
+                                     onerror=lambda _exc: None):
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)

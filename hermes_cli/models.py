@@ -1406,7 +1406,10 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
     curated = list(_PROVIDER_MODELS.get("anthropic", []))
     if not live:
-        return curated
+        # A declined live fetch is an outage placeholder, not this account's catalog: flag it so the
+        # disk cache re-probes (fallback TTL) instead of serving the static table for days as if it
+        # had been discovered from the account.
+        return CuratedFallbackModels(curated)
     # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
     # curated first, then live-only extras, so a fresh curated model never disappears.
     return live if cfg_base_url else _merge_unique(curated, live)
@@ -2005,12 +2008,19 @@ def _fetch_anthropic_models(
     except ImportError:
         return None
 
+    explicit_key = (api_key or "").strip()
     resolved_base_url = base_url
-    token = (api_key or "").strip() or resolve_anthropic_token()
+    token = explicit_key or resolve_anthropic_token()
     if not token:
         # A pool credential and its endpoint are one security boundary — never pair the pool key
         # with a caller-provided endpoint.
         token, resolved_base_url = _resolve_anthropic_pool_catalog_credentials()
+    elif not resolved_base_url and not explicit_key:
+        # Mirror _openai_discovery_base_url: an endpoint configured in the environment (relay /
+        # gateway) is the same security boundary as that env's token, so the probe must hit the
+        # host inference actually uses. Otherwise discovery always targets api.anthropic.com and a
+        # relay key 401s, pinning the picker to the static curated table forever.
+        resolved_base_url = os.getenv("ANTHROPIC_BASE_URL", "").strip() or None
     if not token:
         return None
 

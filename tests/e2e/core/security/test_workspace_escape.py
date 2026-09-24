@@ -42,8 +42,7 @@ PROTECTED_SCENARIOS = (
     "ssh_config_symlink_parent_gated", "read_auth_symlink", "read_webhooks_dotdot", "read_google_oauth_symlink_dir",
     "read_project_env_symlink", "search_through_symlink_dir")
 
-KNOWN: dict[str, str] = dict.fromkeys(
-    QUARANTINE_SCENARIOS, "#121278 read denylist misses auth.json.corrupt, the quarantined copy of a corrupt auth store")
+KNOWN: dict[str, str] = {}
 
 
 @dataclass

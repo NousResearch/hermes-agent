@@ -536,9 +536,12 @@ export function activeGateway(): HermesGateway | null {
 /** Passive ordering barrier for a runtime's transcript reads. Inspect only
  * existing sockets: waiting must never dial, activate, or retain a backend.
  * Each client names its own replaying runtime IDs; no ambient route is used
- * to decide which session's events are safe to paint over. */
+ * to decide which session's events are safe to paint over. A pruned or
+ * pool-retired secondary keeps its closed socket's watermarks but will never
+ * reopen to replay them, so it must not veto reads forever. */
 export function pendingSessionReplay(runtimeId: string): Promise<boolean> | undefined {
-  const clients = new Set([g.primaryGateway, ...[...g.secondaries.values()].map(entry => entry.gateway)])
+  const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen && !entry.retiredByPool)
+  const clients = new Set([g.primaryGateway, ...reconnectable.map(entry => entry.gateway)])
 
   const pending = [...clients].flatMap(client => {
     // A dev-HMR survivor can predate the barrier method.

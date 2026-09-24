@@ -3021,6 +3021,10 @@ def _persist_scratch_completion_artifacts(
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
     used_destinations: set[Path] = set()
+    # Missing historical blobs still own their names: a staged copy must not
+    # impersonate such a row and then be removed as its own duplicate.
+    reserved = {Path(a.stored_path).resolve() for a in list_attachments(conn, task_id)}
+    staged_paths: list[str] = []
     changed = False
 
     def _discard_copies() -> None:
@@ -3056,8 +3060,11 @@ def _persist_scratch_completion_artifacts(
         dest: Optional[Path] = None
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
+            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations | reserved)
             _copy_capped(resolved_src, dest, artifact)
+            existing = _matching_completion_attachment(conn, task_id, resolved_src.name, dest, attachment_dir)
+            if existing is not None:
+                dest.unlink()
         except Exception as exc:
             if dest is not None:
                 with contextlib.suppress(OSError):
@@ -3068,15 +3075,49 @@ def _persist_scratch_completion_artifacts(
             raise ArtifactPreservationError(
                 f"could not preserve declared scratch artifact {artifact}: {exc}"
             ) from exc
-        used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
+        if existing is not None:
+            persisted.append(existing)
+        else:
+            used_destinations.add(dest)
+            stored_path = str(dest.resolve())
+            persisted.append(stored_path)
+            staged_paths.append(stored_path)
         changed = True
 
     if changed:
-        metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+        metadata["artifacts"] = list(dict.fromkeys(persisted))
+        # Only newly copied files need rows or rollback cleanup. Reused blobs already
+        # belong to this card and must survive a failed handoff transaction.
+        metadata["_staged_artifacts"] = staged_paths
+
+
+def _matching_completion_attachment(
+    conn: sqlite3.Connection, task_id: str, filename: str, staged: Path, attachment_dir: Path,
+) -> Optional[str]:
+    """Reuse a same-name, byte-identical durable upload on this card only.
+
+    Compare the bounded staged snapshot, not stat metadata or filecmp's cache:
+    an edited report with the same name and size is a new deliverable.
+    Missing/unreadable or out-of-directory historical rows fall back to a new copy.
+    """
+    root = attachment_dir.resolve()
+    for attachment in list_attachments(conn, task_id):
+        if attachment.filename != filename:
+            continue
+        try:
+            path = Path(attachment.stored_path).resolve()
+            if not path.is_relative_to(root) or path.stat().st_size != staged.stat().st_size:
+                continue
+            with path.open("rb") as existing, staged.open("rb") as candidate:
+                while True:
+                    chunk = candidate.read(1024 * 1024)
+                    if existing.read(1024 * 1024) != chunk:
+                        break
+                    if not chunk:
+                        return attachment.stored_path
+        except OSError:
+            continue
+    return None
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:

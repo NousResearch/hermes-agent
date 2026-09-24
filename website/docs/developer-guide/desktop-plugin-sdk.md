@@ -407,10 +407,15 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 
-`COMPOSER_AREAS` (`top`, `bottom`, `leading`, `actions`, `attachments`,
-`middleware`) let a plugin add controls around the message composer, provide an
-attachment source, or transform a draft before it is sent (`ComposerMiddleware`
-with a `handler(draft) => draft | null`).
+`COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
+`attachments`, `middleware`) let a plugin add controls around the message
+composer, provide an attachment source, or transform a draft before it is sent
+(`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
+banner strip above the input and `bottom` a row below the input grid, both
+inside the composer chrome; `underside` is the floating strip BELOW the whole
+composer with no chrome of its own — the seat for a suggestion pill or a status
+hint that should sit outside the input frame (the next-prompt plugin renders its
+"next prompt" pill there).
 
 ### Composer draft API — read and write the live input
 
@@ -445,11 +450,50 @@ const text = await host.composer.getDraft('sess-1')
 // Send as if the user typed + pressed Enter. Fail-closed like the app's own
 // panels: no visible surface for the address → false, never a broadcast.
 const sent = host.composer.submit('sess-1', 'ship it')
+
+// Put the caret in a composer (same addressing). insertText/setDraft already
+// focus a visible surface they paint; use this to return the caret after a
+// plugin popover closes or from a "go to input" keybind.
+host.composer.focus(null)
 ```
+
+```ts
+host.composer: {
+  getDraft(sessionId: string | null): Promise<string | null>
+  setDraft(sessionId: string | null, text: string): Promise<boolean>
+  insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
+  submit(sessionId: string | null, text: string): boolean
+  focus(sessionId: string | null): void
+}
+```
+
+**Arbitration.** Every verb is fail-closed on its address: a request is
+answered only by the mounted composer that owns that session (its tile, or the
+primary pane when it shows that session); `null` is answered only by the surface
+the app's focus bus currently routes to. No exact surface → `null`/`false`, never
+a broadcast into whichever pane happens to be mounted. Writes go through the
+app's own paint path, so `@`-ref / `/`-command tokens hydrate as chips and the
+result is byte-for-byte what the user would get by pasting. These are discrete,
+user-triggered actions with the same authority as typing — no plugin "owns" the
+draft afterwards, so there is **nothing to tear down** on disable; a plugin that
+wants a persistent presence around the input uses a `COMPOSER_AREAS` slot instead.
 
 A multi-session plugin keeps its per-session state on its side (which session
 its panel is editing) and passes that id here; the bus guarantees one
 plugin write can never land in another session's composer.
+
+**Migrating off DOM reach-in** (the held catalog plugins that motivated this API):
+
+| Plugin | Was | Now |
+|---|---|---|
+| next-prompt (#120660) | `window.dispatchEvent(new CustomEvent('hermes:composer-insert', …))` + a `setTimeout` `hermes:composer-focus`; `[data-composer-target]`/`[data-pane-hidden]` scan for the visible target | `await host.composer.insertText(null, suggestion.text, { mode: 'block' })`, then `host.composer.focus(null)` if the pill lost the caret |
+| prompt-snippets (#116030) | same `hermes:composer-insert` event; `[data-slot="composer-input"]`/ProseMirror `textContent` + synthetic `InputEvent` fallback; `surfaceEditorEl().focus()` | `host.composer.insertText(sid, text, { mode: 'block' })`; `setDraft(sid, (await getDraft(sid) ?? '') + '\n' + text)` replaces the fallback; `host.composer.focus(sid)` — `sid = host.state.focusedSessionId.get()` |
+| prompt-enhancer (#116031) | walks the editor's child nodes to serialize, rebuilds chip DOM, `replaceChildren` + synthetic `InputEvent` | `const draft = await host.composer.getDraft(sid)` → transform → `await host.composer.setDraft(sid, enhanced)` (chips hydrate app-side); revert is another `setDraft` |
+| memory-review (#115966) | `host.request('slash.exec', { session_id, command })` for `/memory …` — already SDK-only | optional: `host.composer.insertText(sid, '/memory pending', { mode: 'prefix' })` to seat the command for the user instead of executing it |
+| intelligent-tool-break (#115964) | "Message" button only toasts "type /break" (no composer write) | `host.composer.setDraft(host.state.focusedSessionId.get(), '/break ')` then `host.composer.focus(null)` restores the intended behaviour |
+
+`sessionId` in the table is the id the plugin's UI is bound to; for a composer
+slot render it is `host.state.focusedSessionId.get()`.
 
 ### Transcript directives — inline components the model addresses
 
@@ -1005,7 +1049,7 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

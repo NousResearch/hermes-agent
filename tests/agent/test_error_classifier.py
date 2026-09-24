@@ -2114,6 +2114,24 @@ class TestAuthErrorNamesOffRouteEndpoint:
             assert result.message == "API keys are not supported by this endpoint.", base_url
 
 
+class TestBodyCarriedStatus:
+    """An in-stream SSE error object's numeric ``code`` classifies like the equivalent HTTP
+    response (#121270)."""
+
+    def test_top_level_code_and_status_keys_also_count(self):
+        assert _extract_status_code(MockAPIError("x", body={"code": 503})) == 503
+        assert _extract_status_code(MockAPIError("x", body={"error": {"http_status": 502}})) == 502
+
+    def test_403_ban_is_auth_not_transient_retry(self):
+        body = {"error": {"code": 403, "message": "Your account has been banned by the upstream provider",
+                          "metadata": {"provider_name": "acme"}}}
+        result = classify_api_error(MockAPIError("Error code: 403", body=body), provider="custom")
+        assert result.status_code == 403
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+
 class TestStreamingRenderFormatError:
     """Status-less Jinja render failures (LM Studio / llama.cpp) fail over; see #62662."""
 

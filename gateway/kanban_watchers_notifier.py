@@ -239,7 +239,7 @@ class _Collector:
             *(_platform_names(m) for m in self.profile_adapters.values()))
 
     def collect(self) -> list[dict]:
-        if not self.active_platforms:
+        if not self.active_platforms and not self.gc_due:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
         # Poll each resolved DB path once: several slugs can map to one DB when

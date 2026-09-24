@@ -563,13 +563,6 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     )
 
 
-
-
-
-
-
-
-
 def test_record_notify_delivery_persists_auditable_receipt(kanban_home):
     conn = kbc.connect()
     try:
@@ -731,8 +724,6 @@ def test_purge_stale_notify_deliveries_keeps_old_active_task_receipts(kanban_hom
 # The fix removes the `init_db()` calls in both watchers; this regression
 # test pins that behaviour so we don't reintroduce them.
 # ---------------------------------------------------------------------------
-
-
 
 
 @pytest.mark.asyncio

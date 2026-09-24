@@ -20,6 +20,8 @@ import asyncio
 
 from unittest.mock import patch
 
+import pytest
+
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
@@ -85,7 +87,8 @@ def test_zero_sub_board_skips_writable_open_between_gc_sweeps(tmp_path, monkeypa
     spy_connect.assert_not_called()
     assert adapter.sent == []
 
-def test_zero_sub_board_prunes_terminal_receipts_on_gc_tick(tmp_path, monkeypatch):
+@pytest.mark.parametrize("adapter_connected", [True, False])
+def test_zero_sub_board_prunes_terminal_receipts_on_gc_tick(tmp_path, monkeypatch, adapter_connected):
     import time
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "gc.db"))
     kb.init_db()
@@ -100,7 +103,10 @@ def test_zero_sub_board_prunes_terminal_receipts_on_gc_tick(tmp_path, monkeypatc
     finally:
         conn.close()
     adapter = RecordingAdapter()
-    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    runner = _make_runner(adapter)
+    if not adapter_connected:
+        runner.adapters = {}
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
     conn = kbc.connect()
     try:
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_deliveries").fetchone()[0] == 0

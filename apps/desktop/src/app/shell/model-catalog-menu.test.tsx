@@ -12,6 +12,7 @@ import {
   setModelVisibilityOpen,
   setVisibleModels
 } from '@/store/model-visibility'
+import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
@@ -55,17 +56,36 @@ afterEach(() => {
   // The backend mock echoes this snapshot; retire fixture jobs before jsdom
   // disappears so an in-flight app-level poll cannot schedule another tick.
   $localRuntimeJobs.set([])
+  $defaultReasoningEffort.set('')
   vi.clearAllMocks()
+})
+
+describe('the current row effort', () => {
+  it('does not label the current model with the profile default before its session reports one (#79807)', async () => {
+    $defaultReasoningEffort.set('ultra')
+    renderMenu({ effortPending: true, model: 'gemini-2.5-flash', provider: 'google' })
+
+    const row = (await screen.findByText(/Gemini 2\.5 Flash/i)).closest('[role="menuitem"]')!
+
+    expect(row.textContent).not.toContain('Ultra')
+    cleanup()
+
+    renderMenu({ model: 'gemini-2.5-flash', provider: 'google' })
+
+    const settled = (await screen.findByText(/Gemini 2\.5 Flash/i)).closest('[role="menuitem"]')!
+
+    expect(settled.textContent).toContain('Ultra')
+  })
 })
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
     applyPreset: vi.fn(),
-    current: { effort: '', fast: false, model: '', provider: '' },
+    current: { effort: '', fast: false, model: '', provider: '', ...current },
     presetFor: () => ({}),
     select,
     setOptions: vi.fn()

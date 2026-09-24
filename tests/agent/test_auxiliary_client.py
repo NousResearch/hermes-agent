@@ -3859,6 +3859,27 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
         assert response.usage.completion_tokens == 3
         assert response.usage.total_tokens == 14
 
+    def test_completed_response_with_null_output_does_not_crash(self):
+        """Regression for #33368: a host that returns a completed Responses
+        object with ``output=None`` must yield an empty ``stop`` turn, not
+        ``TypeError: 'NoneType' object is not iterable``."""
+        completed = SimpleNamespace(
+            status="completed", id="r", output=None, output_text="", usage=None,
+            incomplete_details=None, error=None,
+        )
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return completed
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "x"}])
+
+        assert response.choices[0].message.content is None
+        assert response.choices[0].finish_reason == "stop"
+
 
 class TestCodexAuxiliaryAdapterReservedToolAliases:
     """The aux adapter emits the same tool schemas as the main Responses transport: shared

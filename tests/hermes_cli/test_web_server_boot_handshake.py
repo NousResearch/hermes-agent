@@ -5,7 +5,8 @@ Simulates a slow hermes_cli.gateway import (15-30 s on a fresh Windows install
 with Defender scanning every new .pyc) by patching the two helpers that touch
 the blocking import and measuring response latency.
 
-Covered: backend startup is not blocked by hosted-room recovery, shutdown joins the
+Covered: the gateway warmup import completes before the lifespan yields
+(#73083/#73291), backend startup is not blocked by hosted-room recovery, shutdown joins the
 state.db reconcile worker, and /api/status runs its slow drain-timeout resolution off
 the event loop so a concurrent fast endpoint (/api/version) still responds.
 """
@@ -33,6 +34,33 @@ def _make_slow_drain(seconds: float):
         time.sleep(seconds)
         return 180.0
     return _slow
+
+
+def test_lifespan_warmup_is_synchronous(monkeypatch):
+    """_warm_gateway_module must finish on the event-loop thread before the
+    lifespan yields (#73083/#73291). On Windows + Python 3.11 the heavy import
+    holds the GIL, so moving it to run_in_executor / a background task froze
+    the loop after the socket opened and the Desktop's ready-probe timed out.
+    Running it before the yield means no request is served until it is done."""
+    from fastapi.testclient import TestClient
+
+    warm: dict[str, object] = {}
+
+    def _record_warm():
+        try:
+            asyncio.get_running_loop()
+            warm["on_loop_thread"] = True
+        except RuntimeError:
+            warm["on_loop_thread"] = False
+        warm["done"] = True
+
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", _record_warm)
+    with TestClient(web_server_mod.app, raise_server_exceptions=False):
+        assert warm.get("done") is True, "startup completed before the gateway warmup ran"
+        assert warm.get("on_loop_thread") is True, (
+            "gateway warmup was moved off the lifespan (executor/background) — "
+            "the socket now accepts probes while the GIL-holding import runs"
+        )
 
 
 def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch):

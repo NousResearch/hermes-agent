@@ -112,6 +112,13 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
 # env instead of stripping markers.
 os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 
+# Lazy-install kill-switch, set before any test module is imported. The per-test
+# fixture below sets it too, but collection runs first: agent/bedrock_adapter.py
+# calls lazy_deps.ensure() at import time, so collecting a file that imports it
+# ran a real `uv pip install boto3` into the shared venv while other files raced
+# on whether botocore was importable yet.
+os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+
 #: HERMES_HOME as it stood when conftest was imported - i.e. before any test
 #: module could import code that configures logging. Recorded so the guard in
 #: tests/test_log_isolation.py can assert the sandbox existed AT THAT MOMENT.
@@ -643,6 +650,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+@pytest.fixture(autouse=True)
+def _reset_foreground_exit_fence():
+    """A test that drives a hard-exit path raises the one-way foreground-spawn fence; lower it after."""
+    yield
+    if (base := sys.modules.get("tools.environments.base")) is not None:
+        base._exit_fenced = False
 
 
 @pytest.fixture(autouse=True)
@@ -1486,6 +1501,23 @@ def _check_symlink_support() -> bool:
     except OSError:
         _symlink_supported_cache = False
         return False
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtest_call(item):
+    """Join the turn's auto-title threads INSIDE capture, before pytest snaps it.
+
+    A title thread that prints its failure warning while capture's
+    ``readouterr`` swaps the fd crashed the interpreter (SIGSEGV in
+    ``_pytest/capture.py::snap``). The teardown join in
+    ``_close_leaked_session_dbs`` runs after that snap, too late for this race.
+    """
+    try:
+        return (yield)
+    finally:
+        wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+        if wait is not None:
+            wait()
 
 
 def pytest_runtest_setup(item):

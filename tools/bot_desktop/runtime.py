@@ -92,8 +92,12 @@ def package_manager() -> Optional[str]:
 
 def install_command() -> Optional[str]:
     """The distro command that installs the Bot Desktop packages, as the human would type it on THIS host:
-    prefixed with ``sudo`` unless Hermes already runs as root (the official Docker image is uid 0 with no
-    sudo binary), so it is both what the pane shows and what :mod:`tools.bot_desktop.install` runs."""
+    prefixed with ``sudo`` unless Hermes already runs as root, so it is both what the pane shows and what
+    :mod:`tools.bot_desktop.install` runs. ``None`` when no package manager is present.
+
+    Not a promise that it can run here: see :func:`installable`. The published Docker image supervises
+    every service under ``s6-setuidgid hermes`` (UID 10000 by default) and ships no ``sudo`` binary, so an
+    install on a hosted instance is impossible no matter what this returns."""
     pm = package_manager()
     if pm is None:
         return None
@@ -108,6 +112,20 @@ def install_command() -> Optional[str]:
 
 def is_root() -> bool:
     return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def installable() -> bool:
+    """Whether :func:`install_command` could actually succeed on this host.
+
+    False on an unprivileged process with no ``sudo`` to reach for, which is exactly the published Docker
+    image: services drop to the ``hermes`` user and no ``sudo`` binary is installed. The packages can only
+    arrive in the image there, so :func:`start` says that instead of printing a sudo line the user has no
+    way to run. ``status()`` still reports ``install_command`` for the pane; surfacing this there needs a
+    wire-contract change and is deliberately out of scope.
+    """
+    if package_manager() is None:
+        return False
+    return is_root() or shutil.which("sudo") is not None
 
 
 @dataclass
@@ -285,8 +303,9 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
     _reap_if_ours()
 
 
-# Host-wide (every profile allocates from one band), so it lives outside any profile home — but not in
-# world-writable /tmp, where a predictable name lets another local user pre-create or squat the file.
+# Host-wide (every profile allocates from one band), so it lives outside any profile home. A predictable
+# name must not be squattable: XDG_RUNTIME_DIR is the boundary — 0700 from logind, or from
+# docker/stage2-hook.sh in containers, which have none.
 _ALLOC_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "hermes-bot-desktop-alloc.lock"
 
 
@@ -475,6 +494,12 @@ def _profile_name() -> str:
         return "default"
 
 
+# The gate lives in ``resources`` so start() and status() cannot disagree about it. Measured in the
+# official image: gateway idle 304 MiB, +216 for Xvnc/Xfce, 1073 MiB with one Chromium page. The OOM
+# killer picks by score, so on a small instance the casualty is the dashboard or the gateway, not the
+# desktop that caused the pressure.
+
+
 def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
@@ -488,8 +513,18 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
         raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
     missing = missing_binaries()
     if missing:
-        hint = install_command() or "install TigerVNC (Xvnc) and the Xfce core components"
-        raise RuntimeError(f"Bot Desktop needs {', '.join(missing)} on the gateway host. Install: {hint}")
+        # Three dead ends: an operator told "unprivileged, no sudo" while running as root hunts the wrong bug.
+        need = f"Bot Desktop needs {', '.join(missing)} on the gateway host"
+        if package_manager() is None:
+            raise RuntimeError(
+                f"{need}, and no supported package manager (apt/dnf/pacman) is available to install them. "
+                "Install TigerVNC (Xvnc) and the Xfce core components with this distro's own tooling.")
+        if not installable():
+            raise RuntimeError(
+                f"{need}, and this host cannot install them: the process is unprivileged and there is no "
+                "sudo. On the published Docker image the packages have to be baked in, so this needs a "
+                "newer image rather than an install.")
+        raise RuntimeError(f"{need}. Install: {install_command()}")
     sd = state_dir()
     sd.mkdir(parents=True, exist_ok=True)
     os.chmod(sd, 0o700)
@@ -497,8 +532,14 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
         if _launcher_pid() is not None and published_env().get("DISPLAY"):
             return status()
         from tools.bot_desktop import resources
-        if (blocker := resources.memory_blocker()) is not None:
+        floor = resources.min_free_mb()
+        mem = resources.memory_info()
+        if (blocker := resources.memory_blocker(mem, need=floor)) is not None:
             raise RuntimeError(blocker)
+        if mem.available_mb is not None and mem.available_mb < resources.tight_headroom_mb(floor):
+            logger.warning(
+                "Bot Desktop starting with %d MB available; a browser with a few pages open can use most "
+                "of that.", mem.available_mb)
         if _launcher_pid() is None:
             _reap_orphaned_server(sd)
         _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

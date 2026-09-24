@@ -75,7 +75,40 @@ class TestWindowsMarketingVersion:
         assert _windows_marketing_version() == expected
 
 
+class TestAutocompleteDevicePaths:
+    """#42016 — a relpath ValueError on a device path must not escape the completer."""
 
+    def test_relpath_valueerror_is_skipped_not_raised(self, tmp_path, monkeypatch):
+        import os
+        import subprocess
+
+        from hermes_cli import commands_completion as cc
+
+        monkeypatch.chdir(tmp_path)
+        cwd = os.getcwd()
+        # An absolute path relpath cannot express relative to cwd (Windows: a
+        # device path such as \\.\nul, or another drive letter).
+        device = os.path.abspath(os.path.join(os.sep, "nul-device"))
+        real = os.path.join(cwd, "real.txt")
+
+        monkeypatch.setattr(cc.shutil, "which", lambda name: "/fake/rg" if name == "rg" else None)
+        monkeypatch.setattr(
+            cc.subprocess, "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, f"{device}\n{real}\n", ""),
+        )
+        real_relpath = os.path.relpath
+
+        def _relpath(path, start=None):
+            # Windows raises ValueError for device paths / paths on another drive.
+            if path == device:
+                raise ValueError("path is on a different mount than start")
+            return real_relpath(path, start)
+
+        monkeypatch.setattr(cc.os.path, "relpath", _relpath)
+
+        files = cc.SlashCommandCompleter()._get_project_files()
+
+        assert files == ["real.txt"]
 
 
 class TestBrowserScreenshotPathRegex:

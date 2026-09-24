@@ -13,9 +13,20 @@ call is mocked — we never actually shell out during unit tests.
 from __future__ import annotations
 
 
+import os
+
 import pytest
 
 import tools.lazy_deps as ld
+
+# Read while pytest imports this module, i.e. at collection, before any fixture runs.
+_KILL_SWITCH_AT_COLLECTION = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS")
+
+
+def test_lazy_installs_are_disabled_during_collection():
+    """Modules can call ensure() at import time (agent/bedrock_adapter.py does), so the
+    kill-switch must already be set when test modules are collected, not only per test."""
+    assert _KILL_SWITCH_AT_COLLECTION == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +229,12 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
+    def test_plugin_owned_sdk_newer_compatible_release_is_satisfied(self, monkeypatch):
+        """A newer release inside the plugin.yaml range must not be re-pinned downward on refresh
+        (#98407 mem0ai 2.0.19 -> 2.0.10; the same class hit the former hindsight extra, #86992)."""
+        self._fake_version(monkeypatch, {"mem0ai": "2.0.19"})
+        assert ld.feature_missing("memory.mem0") == ()
+
 
 # ---------------------------------------------------------------------------
 # active_features + refresh_active_features (Piece A — hermes update wiring)
@@ -272,6 +289,15 @@ class TestRefreshActiveFeatures:
 
         assert result["platform.matrix"].startswith("skipped:")
         assert "unsupported on Windows" in result["platform.matrix"]
+
+    @pytest.mark.windows_only
+    def test_matrix_probe_reports_unsupported_on_real_windows(self):
+        # The consumer test above stubs the probe; this proves the real probe
+        # actually fires on a real Windows host, so `hermes update` skips the
+        # doomed python-olm install instead of retrying it every run.
+        assert "unsupported on Windows" in (
+            ld._unsupported_feature_reason("platform.matrix") or ""
+        )
 
 
     def test_restore_snapshot_skips_telegram_with_lazy_installs_disabled(

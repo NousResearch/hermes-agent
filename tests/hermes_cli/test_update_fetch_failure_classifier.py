@@ -67,6 +67,25 @@ class TestClassifyFetchFailure:
         )
         assert "Authentication failed" in msg
 
+    def test_ssh_publickey_denial_reports_ssh_auth_not_generic(self):
+        # git wraps OpenSSH's own rejection as "Could not read from remote
+        # repository" — never "Authentication failed" — so this needs its
+        # own rule ahead of the generic fallback (#82169).
+        msg = update_cmd._classify_fetch_failure(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
+        assert "https://github.com/NousResearch/hermes-agent.git" in msg
+
+    def test_ssh_host_key_failure_reports_ssh_auth(self):
+        msg = update_cmd._classify_fetch_failure(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            "Host key verification failed.\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
+
     def test_unknown_falls_back_to_generic(self):
         msg = update_cmd._classify_fetch_failure("fatal: something novel")
         assert msg == "✗ Failed to fetch updates from origin."

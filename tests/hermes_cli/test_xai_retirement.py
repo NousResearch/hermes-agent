@@ -2,12 +2,35 @@
 from __future__ import annotations
 
 
+import yaml
+
 from hermes_cli.xai_retirement import (
+    RetirementIssue,
     _RETIRED_MODELS,
     _looks_like_xai,
     _normalize,
+    apply_migration,
     find_retired_xai_refs,
 )
+
+
+def test_apply_migration_preserves_long_double_quoted_scalar(tmp_path, monkeypatch):
+    """Same fold-after-backslash class as #119844: the migration's own emitter must not mutate
+    unrelated long quoted values while it rewrites the model key."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    value = "A" * 74 + r"D:\CentBrowserPortable " + "B" * 40
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        'model:\n  provider: xai\n  model: grok-3\napprovals:\n  smart_policy: "'
+        + value.replace("\\", "\\\\") + '"\n',
+        encoding="utf-8",
+    )
+
+    apply_migration(cfg, [RetirementIssue("model.model", "grok-3", "grok-4")], backup=False)
+
+    loaded = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert loaded["model"]["model"] == "grok-4"
+    assert loaded["approvals"]["smart_policy"] == value
 
 
 # ---------------------------------------------------------------------------

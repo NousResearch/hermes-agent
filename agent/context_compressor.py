@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
+from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _COMPRESSION_MARKER_TEMPLATE
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
@@ -298,6 +299,9 @@ COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
 # Only micro markers may be superseded/defragged/rehydrated: a batch marker's
 # content is NOT in the rolling micro summary, so rewriting one destroys history.
 MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
+# ``display_metadata`` flag on a row the model reads but nobody typed as one message (micro-compaction's
+# merge of adjacent user turns). Its source rows stay in display history, so display projections skip it.
+MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 # Intrinsic marker stamped on a message dict once it has been written to the SQLite session store. Used by
 # ``_flush_messages_to_session_db`` to decide what is already durable. An object-identity (``id(msg)``)
 # dedup set cannot be trusted across turns: once a flushed message dict is dropped from the live list (e.g.
@@ -376,6 +380,43 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
     for msg in messages:
         if isinstance(msg, dict):
             msg.pop(_DB_PERSISTED_MARKER, None)
+
+
+class StaleHeldHistory(RuntimeError):
+    """The history a lease-less rewrite holds is no longer the session's live generation.
+
+    Its newest exact row is inactive: another compaction already committed (a ``/compress`` on this or
+    another surface, or an earlier prune/micro pass). Published anyway, the stale rewrite would archive the
+    winner's rows under the lease-less watermark and clone them back as a "concurrent tail" — two summary
+    generations live. Prune and micro-compaction hold no compression lease, so they abort on this instead.
+    """
+
+
+def _archive_watermark_for(session_db: Any, session_id: str, held: List[Dict[str, Any]],
+                           start_watermark: Optional[int] = None) -> Optional[int]:
+    """The archive watermark for a commit that rewrites the history this process holds.
+
+    Without one, ``archive_and_compact`` archives every active row, including turns another surface appended
+    to the same session since this process loaded it (a Desktop session continued from Telegram) and rows
+    that arrived while the commit was being built. Those never reached this process, so they would be marked
+    summarized away with no summary holding them: still displayed and searchable, but gone from the model's
+    history. Capping at the newest row the process held sends them down the
+    concurrent-append path instead (cloned after the new set), the same rule the in-place compaction commit
+    applies. *start_watermark* is the store's watermark from before any slow step; it defaults to now.
+    A store without the watermark API keeps today's archive-everything commit.
+
+    Raises :class:`StaleHeldHistory` when the newest held exact row is no longer active. The in-place commit
+    falls back to the lease watermark there because its lease rules out an overlapping compaction; prune and
+    micro-compaction hold no lease, so for them that fallback would publish a stale generation beside the one
+    that won.
+    """
+    watermark_of = getattr(session_db, "get_active_message_watermark", None)
+    if not callable(watermark_of) or not callable(getattr(session_db, "get_message_role", None)):
+        return None
+    if start_watermark is None:
+        start_watermark = watermark_of(session_id)
+    from agent.conversation_compression import held_archive_watermark
+    return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True)
 
 
 def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
@@ -1474,20 +1515,6 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
             api_messages[i] = new_msg
             pruned += 1
     return pruned
-
-
-# #83714 — this text lands inside the model's OWN replayed tool call, so it must not read like
-# something the model would write itself: the bare "...[truncated]" it replaced was imitated into
-# new calls and written to disk. Non-prose delimiters, an explicit "not original content"
-# disclaimer, and per-instance counts keep a copied marker visibly wrong; the counts also make a
-# verbatim copy stale, which is why the marker must never be re-applied (see ``_shrink``).
-_COMPRESSION_MARKER_PREFIX = "⟪HERMES-CONTEXT-COMPRESSION:"
-_COMPRESSION_MARKER_TEMPLATE = (
-    _COMPRESSION_MARKER_PREFIX
-    + " {omitted:,} of {total:,} chars omitted here by Hermes's context compressor. "
-    "This is NOT part of the original tool call and must never be reproduced in new "
-    "output — always write full, untruncated content.⟫"
-)
 
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
@@ -3272,7 +3299,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 session_db.archive_and_compact(
                     session_id, pruned_msgs,
                     model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
+                    watermark=_archive_watermark_for(session_db, session_id, messages),
                 )
+            except StaleHeldHistory:
+                # Another compaction already committed this session's history; a lease-less prune of the
+                # generation this process holds would publish beside the winner. Leave the input alone.
+                logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
+                self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
+                return messages, 0
             except Exception as exc:
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
                 return messages, 0

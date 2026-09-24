@@ -11,8 +11,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.context_compressor import (
-    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, _is_checkpoint_item, _newest_checkpoint_carrier,
-    split_user_originated_turn)
+    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
+    _newest_checkpoint_carrier, split_user_originated_turn)
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
@@ -45,6 +45,10 @@ _BUMP_GENERATION_SQL = """
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
+# Model-only rows (see MODEL_ONLY_DISPLAY_METADATA_KEY) never enter a display projection. Unqualified on
+# purpose: inside a correlated subquery it binds to the innermost ``messages`` alias.
+DISPLAY_VISIBLE_SQL = (
+    f" AND COALESCE({_sql_json_extract('display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 # A display row is indexed only when both halves are set; the read path backfills before projecting, so
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
@@ -876,6 +880,10 @@ class SessionMessagesMixin:
         return (row["role"], dedupe_content, row["timestamp"],
                 row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
+    def _is_model_only_row(self, row) -> bool:
+        """Python twin of :data:`DISPLAY_VISIBLE_SQL`."""
+        return bool((self._decode_display_metadata(row["display_metadata"]) or {}).get(MODEL_ONLY_DISPLAY_METADATA_KEY))
+
     @staticmethod
     def _display_identity(key: Tuple[Any, ...]) -> bytes:
         """Fixed-width durable identity for indexed display-generation lookup."""
@@ -888,6 +896,8 @@ class SessionMessagesMixin:
         seen: Dict[Tuple[Any, ...], Any] = {}
         first_id: Dict[Tuple[Any, ...], int] = {}
         for row in rows:
+            if self._is_model_only_row(row):
+                continue
             key = self._display_dedupe_key(row)
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
@@ -957,6 +967,8 @@ class SessionMessagesMixin:
                     f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
                     (session_id,))
                 for row in rows:
+                    if self._is_model_only_row(row):
+                        continue
                     identity = self._display_identity(self._display_dedupe_key(row))
                     current = representatives.get(identity)
                     candidate = (row["active"], row["id"])
@@ -1011,7 +1023,7 @@ class SessionMessagesMixin:
         return conn.execute(
             f"""WITH page AS (
                    SELECT display_order FROM messages
-                   WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                   WHERE session_id = ? AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}
                    GROUP BY display_order ORDER BY display_order {direction}
                    LIMIT ? OFFSET ?
                )
@@ -1020,7 +1032,7 @@ class SessionMessagesMixin:
                    SELECT candidate.id FROM messages AS candidate
                    WHERE candidate.session_id = ?
                      AND candidate.display_order = page.display_order
-                     AND (candidate.active = 1 OR candidate.compacted = 1)
+                     AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                )
                ORDER BY page.display_order ASC""",

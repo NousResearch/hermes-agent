@@ -380,6 +380,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
+  setF12ShortcutActive: active => ipcRenderer.send('hermes:f12ShortcutActive', Boolean(active)),
+  onF12Shortcut: callback => {
+    const listener = (_event, input) => callback(input)
+    ipcRenderer.on('hermes:f12-shortcut', listener)
+
+    return () => ipcRenderer.removeListener('hermes:f12-shortcut', listener)
+  },
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   mcpOauth: {

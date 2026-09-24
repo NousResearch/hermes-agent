@@ -57,6 +57,9 @@ tests/hermes_cli/test_iron_proxy_cli.py          CLI handler unit tests (~20).  
                                        wire-up, dest='egress_command'
                                        regression guard.
 
+tests/agent/test_iron_proxy_e2e.py          Live E2E (gated on HERMES_RUN_E2E=1).
+                                       Real iron-proxy binary, real curl,
+                                       end-to-end token swap verified.
 ```
 
 ## Lifecycle
@@ -296,6 +299,9 @@ iron-proxy writes line-delimited JSON to `~/.hermes/proxy/iron-proxy.log` on the
 ```bash
 # Hermetic suite (no network, no real binary)
 scripts/run_tests.sh tests/agent/test_iron_proxy.py tests/hermes_cli/test_iron_proxy_cli.py
+
+# Live E2E (real binary, real curl, real CONNECT tunnel)
+HERMES_RUN_E2E=1 scripts/run_tests.sh tests/agent/test_iron_proxy_e2e.py
 
 # Live PTY smoke against `hermes egress`
 HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_cli.main egress --help

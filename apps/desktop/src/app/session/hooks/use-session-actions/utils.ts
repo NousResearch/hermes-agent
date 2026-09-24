@@ -586,29 +586,112 @@ function lastFoldedResponseText(message: ChatMessage): string {
   return afterTool ? text : ''
 }
 
-/**
- * History folds a final answer into the preceding tool-round bubble. A live
- * stream bubble holding only that answer is the same occurrence, but full-bubble
- * equality cannot see it.
- */
-function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessage): boolean {
-  const needle = textWithoutReferenceLines(chatMessageText(live)).trim()
+const toolCallIdsOf = (message: ChatMessage) =>
+  message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
 
-  if (!needle || live.parts.some(part => part.type === 'tool-call')) {
+const textPartsOf = (message: ChatMessage) =>
+  message.parts.flatMap(part => {
+    const text = part.type === 'text' ? textWithoutReferenceLines(part.text).trim() : ''
+
+    return text ? [text] : []
+  })
+
+const isPrompt = (message: ChatMessage) => message.role === 'user' && !isGatewaySystemMarker(message)
+
+/**
+ * Committed rows folding the local turn around `index`, for ANY turn, not just
+ * the latest: rows sharing a tool call id with that turn, plus the assistant
+ * rows after its prompt's durable twin. Only the latest turn may fall back to
+ * position (everything after the last stored prompt).
+ */
+function committedFoldsOfLocalTurn(candidates: ChatMessage[], previous: ChatMessage[], index: number): ChatMessage[] {
+  const start = previous.findLastIndex((row, at) => at < index && isPrompt(row))
+  const end = previous.findIndex((row, at) => at > index && isPrompt(row))
+
+  const turnToolIds = new Set(
+    previous
+      .slice(start + 1, end < 0 ? undefined : end)
+      .flatMap(toolCallIdsOf)
+      .filter(Boolean)
+  )
+
+  const owner = previous[start]
+  const ownerRowIds = owner ? transcriptRowIds(owner) : []
+
+  const anchor = owner
+    ? candidates.findIndex(row => row.id === owner.id || transcriptRowIds(row).some(id => ownerRowIds.includes(id)))
+    : -1
+
+  const from = anchor >= 0 ? anchor : end < 0 ? candidates.findLastIndex(isPrompt) : candidates.length
+  const until = candidates.findIndex((row, at) => at > from && isPrompt(row))
+  const segment = new Set(candidates.slice(from + 1, until < 0 ? undefined : until))
+
+  return candidates.filter(
+    row =>
+      row.role === 'assistant' &&
+      !isLiveTailRow(row) &&
+      (segment.has(row) || toolCallIdsOf(row).some(id => turnToolIds.has(id)))
+  )
+}
+
+const hasWholeLines = (haystack: string, needle: string) => `\n${haystack}\n`.includes(`\n${needle}\n`)
+
+/**
+ * A fold carries sealed text verbatim as a text part, or inside Thinking when
+ * the provider stored public commentary in `reasoning` (Codex Responses, #119716).
+ */
+const foldCarriesText = (fold: ChatMessage, text: string) =>
+  fold.parts.some(part =>
+    part.type === 'text'
+      ? textWithoutReferenceLines(part.text).trim() === text
+      : part.type === 'reasoning' && hasWholeLines(part.text, text)
+  )
+
+/**
+ * History folds a tool-heavy turn into one bubble, while the live stream sealed
+ * each interim segment and the final answer as bubbles of their own. A sealed
+ * live bubble is that same occurrence when its turn's folds hold every tool
+ * call it ran (durable identity) and its text, either verbatim (a sealed middle
+ * segment, #119540) or as the final answer, equal or extended (#118670). This
+ * holds with a partial or missing completion receipt, where full-bubble
+ * equality sees neither.
+ */
+function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage): boolean {
+  const liveToolIds = toolCallIdsOf(live)
+  const sealed = live.pending !== true || live.interim === true
+
+  if (!folds.length || (liveToolIds.length && (!sealed || liveToolIds.some(id => !id)))) {
     return false
   }
 
-  const lastUser = messages.findLastIndex(message => message.role === 'user' && !isGatewaySystemMarker(message))
+  const liveTexts = textPartsOf(live)
 
-  return messages.slice(lastUser + 1).some(message => {
-    if (message.role !== 'assistant' || isLiveTailReplyId(message.id)) {
-      return false
-    }
+  const answer = liveToolIds.length
+    ? lastFoldedResponseText(live)
+    : textWithoutReferenceLines(chatMessageText(live)).trim()
 
-    const folded = lastFoldedResponseText(message)
+  if (!answer && !liveTexts.length && !liveToolIds.length) {
+    return false
+  }
 
-    return folded === needle || isStrictAnswerTextExtension(folded, needle)
-  })
+  const foldedToolIds = new Set(folds.flatMap(toolCallIdsOf))
+
+  if (!liveToolIds.every(id => foldedToolIds.has(id))) {
+    return false
+  }
+
+  if (sealed && liveTexts.every(text => folds.some(fold => foldCarriesText(fold, text)))) {
+    return true
+  }
+
+  return (
+    Boolean(answer) &&
+    folds.some(fold => {
+      const folded = lastFoldedResponseText(fold)
+
+      return folded === answer || isStrictAnswerTextExtension(folded, answer)
+    })
+  )
 }
 
 export function preserveLocalPendingTurnMessages(
@@ -622,7 +705,8 @@ export function preserveLocalPendingTurnMessages(
   const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
   const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)
   const acknowledgedTurn = nextMessages.slice(Math.max(0, acknowledged.storedIndex))
-  const lastStoredRowId = nextMessages.reduce((last, message) => Math.max(last, ...transcriptRowIds(message)), 0)
+  const storedRowIds = new Set(nextMessages.flatMap(transcriptRowIds))
+  const lastStoredRowId = [...storedRowIds].reduce((last, rowId) => Math.max(last, rowId), 0)
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
@@ -678,7 +762,6 @@ export function preserveLocalPendingTurnMessages(
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
-  const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
   let crossedUserBoundary = false
 
   for (const [index, message] of previousMessages.entries()) {
@@ -738,6 +821,20 @@ export function preserveLocalPendingTurnMessages(
       message.durableComplete === true &&
       message.rowId !== undefined &&
       message.rowId <= lastStoredRowId
+    ) {
+      continue
+    }
+
+    // A turn that compressed mid-flight earns only a partial receipt, which
+    // cannot vouch for the whole bubble. Once the store has moved past every
+    // row it names and holds none of them, a later compaction rewrote the turn.
+    const receiptRowIds = message.persistedTurn?.row_ids ?? []
+
+    if (
+      isPendingAssistant &&
+      message.pending !== true &&
+      receiptRowIds.length > 0 &&
+      receiptRowIds.every(rowId => rowId <= lastStoredRowId && !storedRowIds.has(rowId))
     ) {
       continue
     }
@@ -851,8 +948,7 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isPendingAssistant &&
-      previousMessages.indexOf(message) > lastPreviousUser &&
-      durableFoldCoversLiveResponse(candidates, message)
+      durableFoldCoversLiveResponse(committedFoldsOfLocalTurn(candidates, previousMessages, index), message)
     ) {
       continue
     }
@@ -877,7 +973,7 @@ export function preserveLocalPendingTurnMessages(
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
 
-type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> & {
+type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'> & {
   [safelyPersistedInflightUser]?: true
 }
 
@@ -1034,11 +1130,32 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     isLiveTailRow(liveAssistantOfCurrentTurn)
   )
 
+  // An activate snapshot taken before the turn committed goes stale once REST
+  // returns the committed reply after the persisted prompt: its partial
+  // `inflight.assistant` is a prefix of that reply, and projecting it paints
+  // the answer twice (the extra row frozen on its first chunk). Text alone
+  // cannot tell this turn's reply from the previous turn's answer to the same
+  // resent prompt, so the reply must have been written after this turn began.
+  const turnStartedAt = projection.turn_started_at
+  const committedAt = liveAssistantOfCurrentTurn?.timestamp
+
+  const turnAlreadyCommitted = Boolean(
+    inflightUserAlreadyPersisted &&
+    !inflightError &&
+    liveAssistantOfCurrentTurn &&
+    !isLiveTailRow(liveAssistantOfCurrentTurn) &&
+    typeof turnStartedAt === 'number' &&
+    typeof committedAt === 'number' &&
+    committedAt >= turnStartedAt &&
+    !liveAssistantOfCurrentTurn.parts.some(part => part.type === 'tool-call') &&
+    isStrictAnswerTextExtension(chatMessageText(liveAssistantOfCurrentTurn), inflightAssistant)
+  )
+
   const wantsAssistantRow = Boolean(
     inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)
   )
 
-  const projectAssistantDump = wantsAssistantRow && !(turnAlreadyStructured && !inflightError)
+  const projectAssistantDump = wantsAssistantRow && !turnAlreadyCommitted && !(turnAlreadyStructured && !inflightError)
 
   const pushCorrection = (correction: string, index: number): void => {
     if (persistedInLatestRun(correction)) {
@@ -1308,6 +1425,29 @@ export function overlayConcurrentMessageChanges(
       }
 
       continue
+    }
+
+    // message.complete settled this stream row while REST was in flight, and
+    // the page already carries the same reply under its committed id (#70209).
+    // Only a row the page newly added counts: one already in the baseline is an
+    // earlier turn's answer (a resent prompt can repeat it word for word). An
+    // errored row carries a failure the committed text cannot show.
+    if (current.role === 'assistant' && current.pending !== true && !current.error && isLiveTailReplyId(current.id)) {
+      const text = textWithoutReferenceLines(chatMessageText(current)).trim()
+      const lastUser = overlaid.findLastIndex(message => message.role === 'user')
+
+      const committed = overlaid.some(
+        (message, index) =>
+          index > lastUser &&
+          message.role === 'assistant' &&
+          !baselineById.has(message.id) &&
+          !isLiveTailRow(message) &&
+          textWithoutReferenceLines(chatMessageText(message)).trim() === text
+      )
+
+      if (text && committed) {
+        continue
+      }
     }
 
     if (activationStreamIndex >= 0 && current.role === 'assistant' && current.id.startsWith('assistant-stream-')) {
@@ -1832,6 +1972,7 @@ type SessionRuntimeStatePatch = Partial<
     | 'personality'
     | 'provider'
     | 'reasoningEffort'
+    | 'reasoningEffortPending'
     | 'reasoningEffortWire'
     | 'serviceTier'
     | 'yolo'
@@ -1956,6 +2097,7 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort === 'string') {
     sessionState.reasoningEffort = info.reasoning_effort
+    sessionState.reasoningEffortPending = false
   }
 
   if (typeof info.reasoning_effort_wire === 'string') {

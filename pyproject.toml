@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.21.4"
+version = "0.21.5"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -430,7 +430,7 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
-hermes-agent = "run_agent:main"
+hermes-agent = "agent.legacy_cli:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.uv]
@@ -626,6 +626,7 @@ tools = ["bot_desktop/launcher.sh", "bot_desktop/wallpaper.png"]
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "live: secrets-gated canaries against REAL LLM provider APIs (spends money; select with -m live)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
     "real_post_swap_handoff: opt out of the autouse stub that runs the update post-swap tail in-process",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
@@ -638,7 +639,7 @@ markers = [
     "windows_only: exercises native-Windows behaviour; skipped on other hosts",
 ]
 # integration tests take way too long to run in the normal CI environments
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not live'"
 
 [tool.ty.environment]
 python-version = "3.13"

@@ -1,5 +1,7 @@
 import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
 
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+
 export type StoredToolCallLabels = Record<string, ToolLabel[]>
 
 export interface ConfigFieldSchema {
@@ -469,6 +471,7 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    barge_in_threshold_multiplier?: unknown
   }
 }
 
@@ -504,6 +507,7 @@ export interface SessionCreateResponse {
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
+  messages_omitted?: boolean
   session_id: string
   stored_session_id?: string
 }
@@ -602,6 +606,7 @@ export type TimelineDisplayMetadata =
     }
   | { display_text: string }
   | { reactions: MessageReaction[] }
+  | { tool_result_metadata: ToolResultMetadata }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -627,6 +632,10 @@ export interface SessionMessage {
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
+  /** Sanitized, profile-authorized public commentary supplied by the history backend. Never recover this from raw replay. */
+  display_commentary?: string[]
+  /** Display-only reasoning after removing exact public commentary; stored reasoning remains unmodified. */
+  display_reasoning?: string
   context?: unknown
   name?: string
   reasoning?: null | string
@@ -635,6 +644,7 @@ export interface SessionMessage {
   display_kind?:
     | 'async_delegation_complete'
     | 'auto_continue'
+    | 'failed_turn'
     | 'hidden'
     | 'model_switch'
     | 'personality_switch'
@@ -829,6 +839,9 @@ export interface StarmapMemoryCard {
   timestamp?: null | number
   title: string
   body: string
+  /** Digest of the card's text, carried in its node id so an edit names this card and not
+   *  whatever now sits at its index. Absent on an imported or pre-fingerprint graph. */
+  fingerprint?: string
 }
 
 export interface StarmapGraph {

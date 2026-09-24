@@ -67,3 +67,18 @@ def test_malformed_sibling_does_not_hide_the_good_job(tmp_path):
     ]
     # Only the well-formed label was probed against launchd.
     assert [c.args[1] for c in probe.call_args_list] == ["ai.hermes.dashboard.test"]
+
+
+def test_profiled_serve_plist_is_discovered_and_attributed(tmp_path):
+    """A loaded default-profile job owns the detached argv twin, not the updater."""
+    import plistlib
+
+    argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "-p", "default",
+            "serve", "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+    with (tmp_path / "ai.hermes.serve.plist").open("wb") as output:
+        plistlib.dump({"Label": "ai.hermes.serve", "ProgramArguments": argv}, output)
+    with mock.patch("hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)):
+        jobs = main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)])
+    assert jobs == [(f"gui/{os.getuid()}", "ai.hermes.serve", argv, 4321)]
+    assert main_dashboard._launchd_job_owning_backend(9999, argv, jobs) == (
+        f"gui/{os.getuid()}", "ai.hermes.serve", 4321)

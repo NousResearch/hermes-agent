@@ -901,6 +901,17 @@ class TestLaunchdSupervisedBackends:
         "dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--skip-build",
     ]
 
+    def test_profiled_launchd_argv_is_parsed_and_owns_detached_copy(self):
+        """#121596: a profile selector between the entry point and serve must not hide the job."""
+        argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "-p", "default",
+                "serve", "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+        assert main_dashboard._parse_dashboard_runtime(" ".join(argv)) == (
+            "serve", "127.0.0.1", 9119)
+        job = ("gui/501", "ai.hermes.serve", argv, 4321)
+        assert main_dashboard._launchd_job_owning_backend(9999, argv, [job]) == job[:2] + (4321,)
+        assert main_dashboard._parse_dashboard_runtime(
+            "python -m hermes_cli.main -p default gateway run --port 9119") is None
+
     @staticmethod
     def _fake_kill(pid, sig):
         if sig == 0:

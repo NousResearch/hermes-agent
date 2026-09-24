@@ -552,12 +552,14 @@ def _ansi_drop_cells(line: str, cells: int) -> str:
 # by that terminal for its children — decisive whenever it names one. Everything else is inherited
 # from whatever started the shell (TMUX, KITTY_WINDOW_ID or TERM_PROGRAM=vscode leak into an st
 # or urxvt launched from there), so it only speaks for a generic TERM such as xterm-256color;
-# XTERM_VERSION first there: an xterm started from a VTE shell inherits VTE_VERSION but sets
-# XTERM_VERSION itself.
+# TMUX/STY first there: tmux with `default-terminal xterm-256color` (a common setup) hands its
+# panes a generic TERM plus TMUX, while XTERM_VERSION is only inherited from the outer xterm. Then
+# XTERM_VERSION: an xterm started from a VTE shell inherits VTE_VERSION but sets XTERM_VERSION.
 _REFLOW_TERM_PREFIXES = ("tmux", "screen", "xterm-kitty", "alacritty", "foot", "xterm-ghostty", "wezterm",
                          "contour", "vte")
 # TERM is all that survives ssh; these prefixes name terminals that truncate rows in place.
 _NO_REFLOW_TERM_PREFIXES = ("linux", "st", "mosh", "vt", "cons", "rxvt")
+_MULTIPLEXER_ENV = ("TMUX", "STY")
 _NO_REFLOW_ENV = ("XTERM_VERSION",)
 _REFLOW_ENV = ("VTE_VERSION", "KITTY_WINDOW_ID", "WT_SESSION", "KONSOLE_VERSION",
                "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "GHOSTTY_RESOURCES_DIR")
@@ -576,6 +578,8 @@ def _terminal_reflows() -> bool | None:
         return True
     if term.startswith(_NO_REFLOW_TERM_PREFIXES):
         return False
+    if any(env.get(name) for name in _MULTIPLEXER_ENV):
+        return True
     if any(env.get(name) for name in _NO_REFLOW_ENV):
         return False
     if any(env.get(name) for name in _REFLOW_ENV) or env.get("TERM_PROGRAM") in _REFLOW_TERM_PROGRAMS:

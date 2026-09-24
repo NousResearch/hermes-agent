@@ -1754,22 +1754,28 @@ describe('appendLiveSessionProjection', () => {
       } as ChatMessage
     ]
 
-    const restored = appendLiveSessionProjection(stored, {
-      session_id: 's1',
-      inflight: {
-        user: 'Fais X',
-        assistant: 'Tu as raison. Je les regarde vraiment cette fois. + more',
-        streaming: true
-      }
-    })
+    const inflight = {
+      user: 'Fais X',
+      assistant: 'Tu as raison. Je les regarde vraiment cette fois. + more',
+      streaming: true
+    }
+
+    const restored = appendLiveSessionProjection(stored, { session_id: 's1', turn_started_at: 100, inflight })
 
     const assistants = restored.filter(message => message.role === 'assistant')
     expect(assistants).toHaveLength(1)
     expect(assistants[0].id).toBe('assistant-stream-s1')
     expect(assistants[0].pending).toBe(true)
-    // The committed row's tool structure survives; the fuller live text wins.
+    // The committed row's tool structure and row id survive; the fuller live text wins.
     expect(assistants[0].parts.some(part => part.type === 'tool-call')).toBe(true)
+    expect(assistants[0].rowId).toBe(13)
     expect(chatMessageText(assistants[0])).toBe('Tu as raison. Je les regarde vraiment cette fois. + more')
+
+    // Without turn_started_at (older runtime) the tail may be the PREVIOUS
+    // turn's answer to a resent prompt: keep both rows rather than drop it.
+    const untimed = appendLiveSessionProjection(stored, { session_id: 's1', inflight })
+
+    expect(untimed.filter(message => message.role === 'assistant')).toHaveLength(2)
   })
 })
 

@@ -60,11 +60,13 @@ export type RunGit = (
 ) => Promise<{ code: number; stderr: string; stdout: string }>
 
 /**
- * The apps/desktop paths that actually reach the user: renderer sources,
- * main-process sources, the HTML entry, the public/ assets Vite copies into
- * the bundle, app icons, and the packaging config. Docs, e2e specs, scratch
- * scripts, and dev tooling never reach the shipped app, so a delta confined
- * to them is not a torn install in any way the user can see.
+ * The paths that actually reach the user: renderer sources, main-process
+ * sources, the HTML entry, the public/ assets Vite copies into the bundle, app
+ * icons, and the packaging config -- plus apps/shared, which both bundles
+ * compile in (the renderer through the `@hermes/shared` alias, the main process
+ * by relative import). Docs, e2e specs, scratch scripts, and dev tooling never
+ * reach the shipped app, so a delta confined to them is not a torn install in
+ * any way the user can see.
  */
 export const RUNTIME_PATHS = [
   'apps/desktop/src',
@@ -73,7 +75,9 @@ export const RUNTIME_PATHS = [
   'apps/desktop/public',
   'apps/desktop/assets',
   'apps/desktop/package.json',
-  'apps/desktop/vite.config.ts'
+  'apps/desktop/vite.config.ts',
+  'apps/shared/src',
+  'apps/shared/package.json'
 ] as const
 
 const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: false }

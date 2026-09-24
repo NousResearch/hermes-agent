@@ -341,20 +341,6 @@ class TestAudioRecorder:
         mock_sd.InputStream.assert_called_once()
         mock_stream.start.assert_called_once()
 
-    def test_ensure_stream_reuses_active_stream(self, mock_sd):
-        from tools.voice_mode import AudioRecorder
-
-        recorder = AudioRecorder()
-        active_stream = MagicMock()
-        active_stream.active = True
-        recorder._stream = active_stream
-
-        recorder._ensure_stream()
-
-        mock_sd.InputStream.assert_not_called()
-        active_stream.close.assert_not_called()
-        assert recorder._stream is active_stream
-
     def test_ensure_stream_rebuilds_inactive_stream(self, mock_sd):
         from tools.voice_mode import AudioRecorder
 

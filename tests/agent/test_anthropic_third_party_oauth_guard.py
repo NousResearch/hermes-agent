@@ -126,6 +126,76 @@ class TestOAuthFlagOnRefresh:
         assert result is True
         assert agent._anthropic_api_key == new
 
+    def test_refresh_keeps_public_api_key_in_step(self, agent):
+        """A rotated token must reach ``api_key`` too, not only the native client.
+
+        turn_context publishes ``agent.api_key`` as the auxiliary main runtime; left stale, every
+        ``auto`` auxiliary call (smart approvals, plugin tasks) keeps sending the revoked token
+        while the main model works.
+        """
+        old, new = "sk-ant...aaaa", "sk-ant...bbbb"
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.api_key = old
+        agent._anthropic_api_key = old
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            assert agent._try_refresh_anthropic_client_credentials() is True
+
+        assert agent._anthropic_api_key == new
+        assert agent.api_key == new
+
+    def test_auxiliary_main_route_uses_refreshed_token(self, agent):
+        """End to end: after the silent refresh, the runtime published for auxiliary calls
+        carries the new token, and the main-provider route builds its client with it."""
+        from agent import auxiliary_client as aux
+        from agent.turn_context import _publish_runtime_main
+
+        old, new = "sk-ant...aaaa", "sk-ant...bbbb"
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.model = "claude-opus-4-6"
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_key = old
+        agent._anthropic_api_key = old
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent._try_refresh_anthropic_client_credentials()
+
+        try:
+            _publish_runtime_main(agent)
+            runtime = aux._normalize_main_runtime(None)
+            assert runtime.get("api_key") == new
+
+            seen = {}
+
+            def fake_resolve(provider, model, explicit_api_key=None, **kwargs):
+                seen["api_key"] = explicit_api_key
+                return MagicMock(), model
+
+            with (
+                patch.object(aux, "resolve_provider_client", side_effect=fake_resolve),
+                patch.object(aux, "_is_provider_unhealthy", return_value=False),
+            ):
+                aux._try_main_provider_route(
+                    "anthropic", agent.model, runtime.get("base_url", ""),
+                    runtime.get("api_key"), "anthropic_messages",
+                )
+            assert seen["api_key"] == new
+        finally:
+            aux.clear_runtime_main()
 
 
 class TestOAuthFlagOnCredentialSwap:

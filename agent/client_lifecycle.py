@@ -905,6 +905,10 @@ class ClientLifecycleMixin:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
+        # Keep the public key in step, as _swap_credential does: turn_context publishes agent.api_key
+        # as the auxiliary main runtime, and _try_main_provider_route pins `auto` aux calls to it —
+        # a stale value keeps every auxiliary call on the revoked token until the process restarts.
+        self.api_key = new_token
         return True
 
     # ------------------------------------------------------------------ route-derived client config

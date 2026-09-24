@@ -128,7 +128,7 @@ hermes doctor       # Diagnose any issues
 Hermes bekerja dengan penyedia apa pun yang Anda inginkan — itu tidak berubah. Namun jika Anda tidak ingin mengumpulkan lima API key terpisah untuk model, web search, image generation, TTS, dan cloud browser, **[Nous Portal](https://portal.nousresearch.com)** mencakup semuanya dalam satu subscription:
 
 - **300+ model** — pilih salah satunya dengan `/model <name>`
-- **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), semuanya dirutekan melalui subscription Anda. Tidak perlu akun tambahan.
+- **Tool Gateway** — web search, image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), semuanya dirutekan melalui subscription Anda. Tidak perlu akun tambahan.
 
 Satu perintah dari instalasi baru:
 

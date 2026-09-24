@@ -309,3 +309,41 @@ def test_archive_restore_never_signals_recycled_worker_pid(github):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+@pytest.mark.linux_only
+def test_restore_between_spawn_and_registration_stops_unregistered_worker(github, all_assignees_spawnable):
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="release", assignee="forge", parents=[root])
+        assert kb.archive_task(conn, root)
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
+        ).fetchone()[0]
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            def spawn(task, workspace, board=None):
+                assert task.id == child and task.current_run_id is not None
+                assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                                completion_contract="acme/repo", reason="acceptance missing")
+                return proc.pid
+
+            result = dispatch.dispatch_once(conn, spawn_fn=spawn)
+            assert not result.spawned
+            assert proc.wait(timeout=10) is not None
+            fenced = kb.get_task(conn, child)
+            assert fenced.status == "todo" and fenced.worker_pid is None
+            assert fenced.current_run_id is None and fenced.claim_lock is None
+            assert kb.latest_run(conn, child).outcome == "reclaimed"
+            assert kb.get_task(conn, root).status == "blocked"
+            assert not any(e.kind == "spawned" for e in kb.list_events(conn, child))
+            assert any(e.kind == "spawn_claim_lost" and e.payload["terminated"]
+                       for e in kb.list_events(conn, child))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()

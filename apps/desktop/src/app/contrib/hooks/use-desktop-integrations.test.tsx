@@ -1,12 +1,14 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $connectionContextRestore } from '@/store/connections'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
-import { _resetLegacyDiscardForTests } from '@/store/session'
+import { _resetLegacyDiscardForTests, setConnection, setRememberedRoute } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -146,6 +148,114 @@ describe('useDesktopIntegrations', () => {
   }
 
   describe('profile-ready gate', () => {
+    it("restores each connection's remembered session when switching back to it", () => {
+      const local = {
+        baseUrl: 'http://127.0.0.1:8000',
+        connectionId: 'local',
+        mode: 'local',
+        profile: 'default'
+      } as unknown as HermesConnection
+      const remote = {
+        baseUrl: 'https://homelab.example:8443',
+        connectionId: 'homelab',
+        mode: 'remote',
+        profile: 'default'
+      } as unknown as HermesConnection
+
+      try {
+        setConnection(remote)
+        setRememberedRoute('/remote-session', 'default')
+        setConnection(local)
+        setRememberedRoute('/local-session', 'default')
+
+        const result = render({
+          profileReady: true,
+          sessions: [session({ id: 'local-session', profile: 'default' })]
+        })
+        expect(navigate).toHaveBeenCalledWith('/local-session', { replace: true })
+        navigate.mockClear()
+
+        // The browser has followed the local route. The switch barrier still
+        // shows that outgoing URL until its safe new-chat navigation lands.
+        result.rerender({
+          activeProfile: 'default',
+          locationPathname: '/local-session',
+          profileReady: true,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: true,
+          routedSessionId: 'local-session',
+          sessions: [session({ id: 'local-session', profile: 'default' })]
+        })
+
+        act(() => {
+          setConnection(remote)
+          $connectionContextRestore.set({ connectionId: 'homelab', profile: 'default', sequence: 1 })
+        })
+        result.rerender({
+          activeProfile: 'default',
+          locationPathname: '/',
+          profileReady: true,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: true,
+          routedSessionId: null,
+          sessions: []
+        })
+        expect(navigate).not.toHaveBeenCalled()
+
+        result.rerender({
+          activeProfile: 'default',
+          locationPathname: '/',
+          profileReady: true,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: true,
+          routedSessionId: null,
+          sessions: [session({ id: 'remote-session', profile: 'default' })]
+        })
+
+        expect(navigate).toHaveBeenCalledWith('/remote-session', { replace: true })
+        navigate.mockClear()
+
+        result.rerender({
+          activeProfile: 'default',
+          locationPathname: '/remote-session',
+          profileReady: true,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: true,
+          routedSessionId: 'remote-session',
+          sessions: [session({ id: 'remote-session', profile: 'default' })]
+        })
+        act(() => {
+          setConnection(local)
+          $connectionContextRestore.set({ connectionId: 'local', profile: 'default', sequence: 2 })
+        })
+        result.rerender({
+          activeProfile: 'default',
+          locationPathname: '/',
+          profileReady: true,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: true,
+          routedSessionId: null,
+          sessions: []
+        })
+        expect(navigate).not.toHaveBeenCalled()
+        result.rerender({
+          activeProfile: 'default',
+          locationPathname: '/',
+          profileReady: true,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: true,
+          routedSessionId: null,
+          sessions: [session({ id: 'local-session', profile: 'default' })]
+        })
+        expect(navigate).toHaveBeenCalledWith('/local-session', { replace: true })
+      } finally {
+        act(() => {
+          $connectionContextRestore.set(null)
+          setConnection(local)
+        })
+      }
+    })
+
     it('does NOT restore before profileReady is true', () => {
       // Set remembered state, but profileReady=false.
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')

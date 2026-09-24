@@ -61,8 +61,16 @@ const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
+let contextRestoreSequence = 0
 
 export const $pendingConnectionId = atom<null | string>(null)
+/** Winning user-initiated backend switches ask the renderer to restore that
+ *  backend's remembered view after its fresh-draft safety barrier lands. */
+export const $connectionContextRestore = atom<null | {
+  connectionId: string
+  profile: string
+  sequence: number
+}>(null)
 
 $lastProfileByConnection.subscribe(value => persistStringRecord(LAST_PROFILE_STORAGE_KEY, value))
 
@@ -113,7 +121,9 @@ export function _resetConnectionsForTests(): void {
   pendingTarget = null
   restoreAttempted = false
   switchRevision = 0
+  contextRestoreSequence = 0
   $pendingConnectionId.set(null)
+  $connectionContextRestore.set(null)
 }
 
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
@@ -521,6 +531,13 @@ export async function selectConnection(connectionId: string, options: SelectConn
       $newChatProfile.set(targetProfile)
       captureNewChatSource()
       requestFreshSession()
+      if (!restoreOnBoot && currentConnectionId !== null && currentConnectionId !== connectionId) {
+        $connectionContextRestore.set({
+          connectionId,
+          profile: targetProfile,
+          sequence: ++contextRestoreSequence
+        })
+      }
       await refreshActiveProfile()
     }
   } catch (error) {

@@ -281,3 +281,23 @@ test('chatWindowWebPreferences allows autoplay so wake-started voice speaks its 
 
   assert.equal(prefs.autoplayPolicy, 'no-user-gesture-required')
 })
+
+test('secondary URLs preserve exact local and remote routes in packaged and development windows', () => {
+  for (const connectionId of [null, 'remote/a']) {
+    for (const devServer of [undefined, 'http://localhost:5174']) {
+      const url = new URL(
+        buildSessionWindowUrl('child', {
+          connectionId,
+          profile: 'research',
+          watch: true,
+          devServer,
+          rendererIndexPath: '/tmp/hermes/index.html'
+        })
+      )
+      assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
+      assert.equal(url.searchParams.get('profile'), 'research')
+      assert.equal(url.searchParams.get('watch'), '1')
+      assert.equal(url.hash, '#/child')
+    }
+  }
+})

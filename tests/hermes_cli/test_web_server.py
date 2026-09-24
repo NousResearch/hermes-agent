@@ -2142,6 +2142,69 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert endpoint["has_api_key"] is True
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
 
+    def test_env_rejects_its_redacted_preview(self):
+        from hermes_cli.config import load_env, save_env_value
+
+        real = "sk-live-secret-abcdef1234567890"
+        save_env_value("OPENAI_API_KEY", real)
+        preview = self.client.get("/api/env").json()["OPENAI_API_KEY"]["redacted_value"]
+
+        response = self.client.put("/api/env", json={"key": "OPENAI_API_KEY", "value": preview})
+
+        assert response.status_code == 400
+        assert load_env()["OPENAI_API_KEY"] == real
+
+    def test_custom_endpoint_rejects_current_and_legacy_previews(self):
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value
+
+        payload = {
+            "id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1",
+            "model": "m", "api_key": "sk-live-secret-abcdef1234567890",
+        }
+        created = self.client.post("/api/providers/custom-endpoints", json=payload)
+        endpoint = next(e for e in created.json()["endpoints"] if e["id"] == "proxy")
+        env_key = custom_endpoint_key_env("proxy")
+        real = get_env_value(env_key)
+
+        for preview in (endpoint["api_key_preview"], redact_key(real)):
+            response = self.client.post(
+                "/api/providers/custom-endpoints", json={**payload, "api_key": preview})
+            assert response.status_code == 400
+            assert get_env_value(env_key) == real
+
+    def test_messaging_rejects_preview_from_process_env(self, monkeypatch):
+        from hermes_cli.config import load_env
+
+        key = "DISCORD_BOT_TOKEN"
+        real = "discord-live-secret-abcdef1234567890"
+        monkeypatch.setenv(key, real)
+        assert key not in load_env()
+
+        platforms = self.client.get("/api/messaging/platforms").json()["platforms"]
+        discord = next(p for p in platforms if p["id"] == "discord")
+        preview = next(v["redacted_value"] for v in discord["env_vars"] if v["key"] == key)
+        response = self.client.put(f"/api/messaging/platforms/discord", json={"env": {key: preview}})
+
+        assert response.status_code == 400
+        assert key not in load_env()
+        assert os.environ[key] == real
+
+    def test_messaging_rejects_preview_before_clearing_secret(self):
+        from hermes_cli.config import load_env, save_env_value
+
+        key = "DISCORD_BOT_TOKEN"
+        real = "discord-live-secret-abcdef1234567890"
+        save_env_value(key, real)
+        preview = redact_key(real)
+
+        response = self.client.put(
+            "/api/messaging/platforms/discord",
+            json={"clear_env": [key], "env": {key: preview}},
+        )
+
+        assert response.status_code == 400
+        assert load_env()[key] == real
+
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
         from hermes_cli.config import load_config, save_config

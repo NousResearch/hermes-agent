@@ -814,13 +814,23 @@ def interactive_setup() -> None:
 
 
 def _is_connected(config) -> bool:
-    return bool((getattr(config, "extra", {}) or {}).get("bot_id"))
+    """Connected once bot_id + secret resolve (PlatformConfig.extra first, then env — the
+    wizard's picker hands every plugin platform a synthetic empty config, #120870)."""
+    extra = getattr(config, "extra", {}) or {}
+    return bool(
+        (extra.get("bot_id") or _get_scoped_secret("WECOM_BOT_ID", ""))
+        and (extra.get("secret") or _get_scoped_secret("WECOM_SECRET", ""))
+    )
 
 
 def _callback_is_connected(config) -> bool:
-    """Callback mode: corp_id or a multi-app `apps` block."""
+    """Callback mode: corp_id + corp_secret (extra first, then env) or a multi-app `apps` block."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("corp_id") or extra.get("apps"))
+    return bool(
+        ((extra.get("corp_id") or _get_scoped_secret("WECOM_CALLBACK_CORP_ID", ""))
+         and (extra.get("corp_secret") or _get_scoped_secret("WECOM_CALLBACK_CORP_SECRET", "")))
+        or extra.get("apps")
+    )
 
 
 

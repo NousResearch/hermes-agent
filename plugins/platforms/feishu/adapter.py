@@ -4426,9 +4426,13 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Feishu counts as connected once app_id is configured."""
+    """Connected once app_id + app_secret resolve (PlatformConfig.extra first, then env — the
+    wizard's picker hands every plugin platform a synthetic empty config, #120870)."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("app_id"))
+    return bool(
+        (extra.get("app_id") or _get_scoped_secret("FEISHU_APP_ID", ""))
+        and (extra.get("app_secret") or _get_scoped_secret("FEISHU_APP_SECRET", ""))
+    )
 
 
 

@@ -497,6 +497,65 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 })
 
 
+# ── Hermetic env clears that keep the OS floor ──────────────────────────────
+#: Environment variables that belong to the OPERATING SYSTEM, not to Hermes or to
+#: any provider. On Windows the interpreter cannot resolve a home directory, a
+#: temp directory or a command extension without them, so a test that wants "no
+#: configuration" must not clear these along with it.
+_OS_FLOOR_VARS = (
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+)
+
+#: Synthetic home handed to cleared Windows environments. Deterministic (not
+#: ``tmp_path``) because ``cleared_env`` is evaluated at decoration time, before
+#: any fixture exists. Lives under the real temp dir, so it is still disposable.
+_SYNTHETIC_CLEARED_HOME = Path(tempfile.gettempdir()) / "hermes-test-home-isolated"
+
+
+def cleared_env(**overrides: str) -> dict[str, str]:
+    """An environment as empty as a hermetic test wants, minus the OS-owned floor.
+
+    ``patch.dict(os.environ, {}, clear=True)`` removes *every* variable, including the
+    ones the OS owns. On native Windows that leaves ``Path.home()`` with nothing to
+    resolve against and the default-home resolver falls through to::
+
+        RuntimeError: Could not determine home directory.
+
+    so a test that only meant to drop *configuration* instead errors out during
+    fixture setup. Use this helper in place of the bare ``{}``::
+
+        @patch.dict(os.environ, cleared_env(FEISHU_GROUP_POLICY="open"), clear=True)
+
+    Every platform-agnostic behaviour is unchanged — no Hermes, provider or credential
+    variable survives, and on POSIX (where ``Path.home()`` reads the password database,
+    not the environment) the result is identical to ``{}``. Only Windows gains the
+    minimum it needs to resolve a home directory at all, and that home is a synthetic
+    temp path, never the operator's real profile.
+    """
+    env: dict[str, str] = {}
+    if sys.platform == "win32":
+        env.update({name: os.environ[name] for name in _OS_FLOOR_VARS if name in os.environ})
+        home = str(_SYNTHETIC_CLEARED_HOME)
+        drive, tail = os.path.splitdrive(home)
+        env.update(
+            {
+                "USERPROFILE": home,
+                "HOMEDRIVE": drive or "C:",
+                "HOMEPATH": tail or home,
+                "LOCALAPPDATA": os.path.join(home, "AppData", "Local"),
+                "APPDATA": os.path.join(home, "AppData", "Roaming"),
+            }
+        )
+    env.update(overrides)
+    return env
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_environment(tmp_path, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.

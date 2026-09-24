@@ -93,6 +93,10 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
 
     copied_rooms: list[str] = []
     with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)) as legacy:
+        # The first schema read pins one source snapshot through ID/claim preflight
+        # and every later copy SELECT. A separate WAL writer may commit meanwhile,
+        # but its new rows cannot enter the copy after validation has finished.
+        legacy.execute("BEGIN")
         names = {str(row[0]) for row in legacy.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'hosted_room*'")}
         unknown = sorted(name for name in names if name not in _ALLOWED_TABLES | _SKIP_TABLES | {MARKER_TABLE}

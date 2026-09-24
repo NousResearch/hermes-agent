@@ -12,6 +12,17 @@ TABLE = "hosted_room_history_source_reservations"
 ROW = ("released-source", "plugin-release", "a" * 64, "pruned-room")
 
 
+@pytest.fixture
+def runtime_reservations(tmp_path):
+    """Only compact-claim cases require Runtime's independently initialized table."""
+    with rooms._transaction(tmp_path / "provider-probe.db", immediate=True) as conn:
+        present = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)
+        ).fetchone()
+    if present is None:
+        pytest.skip("requires Runtime compact history-source reservation schema")
+
+
 def _reserve(path, row=ROW):
     with rooms._transaction(path, immediate=True) as conn:
         conn.execute(f"INSERT INTO {TABLE} (source_id, source_kind, content_sha256, room_id) VALUES (?, ?, ?, ?)", row)
@@ -35,6 +46,7 @@ def _unsettle(path):
         conn.execute("DELETE FROM hosted_room_legacy_imports")
 
 
+@pytest.mark.usefixtures("runtime_reservations")
 def test_pruned_reservation_only_import_is_durable_and_one_shot(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     _reserve(source)
@@ -51,6 +63,7 @@ def test_pruned_reservation_only_import_is_durable_and_one_shot(tmp_path):
     (ROW[0], ROW[1], ROW[2], "different-room"),
     ("different-source", ROW[1], ROW[2], ROW[3]),
 ])
+@pytest.mark.usefixtures("runtime_reservations")
 def test_conflicting_target_source_identity_rolls_back(tmp_path, target_row):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     _reserve(target, target_row)
@@ -64,6 +77,7 @@ def test_conflicting_target_source_identity_rolls_back(tmp_path, target_row):
     assert source in legacy._failed_sources
 
 
+@pytest.mark.usefixtures("runtime_reservations")
 def test_identical_target_reservation_is_idempotent(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     _reserve(target)
@@ -74,6 +88,7 @@ def test_identical_target_reservation_is_idempotent(tmp_path):
     assert _marker(target) == (0,)
 
 
+@pytest.mark.usefixtures("runtime_reservations")
 def test_identical_claim_with_already_owned_target_room_is_idempotent(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     _reserve(target)
@@ -87,6 +102,7 @@ def test_identical_claim_with_already_owned_target_room_is_idempotent(tmp_path):
 
 
 @pytest.mark.parametrize("namespace", ["authority", "replica", "retired"])
+@pytest.mark.usefixtures("runtime_reservations")
 def test_pruned_reservation_refuses_target_room_namespace(tmp_path, namespace):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     with rooms._transaction(target, immediate=True) as conn:
@@ -103,6 +119,7 @@ def test_pruned_reservation_refuses_target_room_namespace(tmp_path, namespace):
     assert _marker(target) is None
 
 
+@pytest.mark.usefixtures("runtime_reservations")
 def test_missing_target_reservation_schema_refuses_settlement(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     _reserve(source)
@@ -116,6 +133,7 @@ def test_missing_target_reservation_schema_refuses_settlement(tmp_path):
     assert _rows(source) == [ROW]
 
 
+@pytest.mark.usefixtures("runtime_reservations")
 def test_later_copy_failure_rolls_back_reservation_and_parent(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     with rooms._transaction(source, immediate=True) as conn:
@@ -135,6 +153,7 @@ def test_later_copy_failure_rolls_back_reservation_and_parent(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM hosted_rooms").fetchone() == (0,)
 
 
+@pytest.mark.usefixtures("runtime_reservations")
 def test_old_marker_without_reservation_refuses_target_source_collision(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     _reserve(target, (ROW[0], ROW[1], "b" * 64, "other-room"))
@@ -153,6 +172,7 @@ def test_old_marker_without_reservation_refuses_target_source_collision(tmp_path
         assert conn.execute("SELECT source_id FROM hosted_room_history_imports").fetchone() == (ROW[0],)
 
 
+@pytest.mark.usefixtures("runtime_reservations")
 def test_old_marker_without_reservation_backfills_in_runtime_after_copy(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     with rooms._transaction(source, immediate=True) as conn:
@@ -171,7 +191,53 @@ def test_old_provider_without_reservation_table_imports_ordinary_room(tmp_path):
     source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
     with rooms._transaction(source, immediate=True) as conn:
         conn.execute("INSERT INTO hosted_rooms (room_id, name, members_json, authority_gateway_id, authority_epoch, created_at, updated_at) VALUES ('ordinary', 'Ordinary', '[]', 'owner', 1, 1, 1)")
-        conn.execute(f"DROP TABLE {TABLE}")
+        conn.execute(f"DROP TABLE IF EXISTS {TABLE}")
     assert [r["room_id"] for r in rooms.list_rooms(target)] == ["ordinary"]
     assert _marker(target) == (1,)
-    assert _rows(target) == []
+    with sqlite3.connect(target) as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone():
+            assert _rows(target) == []
+
+
+@pytest.mark.usefixtures("runtime_reservations")
+def test_wal_writer_between_preflight_and_copy_cannot_bypass_target_namespace(tmp_path, monkeypatch):
+    source, target = tmp_path / "state.db", tmp_path / "shared-state.db"
+    initial = ("safe-source", ROW[1], ROW[2], "safe-room")
+    _reserve(source, initial)
+    with sqlite3.connect(source) as conn:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    with rooms._transaction(target, immediate=True) as conn:
+        conn.execute("INSERT INTO hosted_rooms (room_id, name, members_json, authority_gateway_id, "
+                     "authority_epoch, created_at, updated_at) VALUES (?, 'Existing', '[]', 'owner', 1, 1, 1)",
+                     (ROW[3],))
+    _unsettle(target)
+
+    real_connect = sqlite3.connect
+    reads = []
+    committed = []
+
+    class ObservedRead(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if (sql.startswith("SELECT source_id, source_kind, content_sha256, room_id FROM ")
+                    and sql.endswith(TABLE)):
+                reads.append(sql)
+                if len(reads) == 2:
+                    # A distinct, real writer commits while the importer still has its
+                    # read-only connection open, before the copy SELECT starts.
+                    with real_connect(source, timeout=0) as writer:
+                        writer.execute(f"INSERT INTO {TABLE} VALUES (?, ?, ?, ?)", ROW)
+                    committed.append(True)
+            return super().execute(sql, parameters)
+
+    def observed_connect(database, *args, **kwargs):
+        if kwargs.get("uri") and "mode=ro" in str(database):
+            return real_connect(database, *args, factory=ObservedRead, **kwargs)
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(legacy.sqlite3, "connect", observed_connect)
+    assert [room["room_id"] for room in rooms.list_rooms(target)] == [ROW[3]]
+    assert committed == [True]
+    assert len(reads) == 2
+    assert _rows(target) == [initial]
+    assert _rows(source) == [ROW, initial]  # ORDER BY source_id
+    assert _marker(target) == (0,)

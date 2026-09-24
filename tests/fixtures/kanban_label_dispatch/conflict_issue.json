@@ -1,0 +1,11 @@
+{
+  "source_type": "issue",
+  "repo": "kiddhu/aion-governance",
+  "number": 504,
+  "title": "Conflicting labels must not auto-dispatch",
+  "body": "This record deliberately has implement and audit labels.",
+  "labels": ["gm2:dispatch-007", "gm2:dispatch-audit"],
+  "project_id": "aion-kanban",
+  "priority": "P0",
+  "formal_record": "https://github.com/kiddhu/aion-governance/issues/504"
+}

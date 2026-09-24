@@ -171,7 +171,7 @@ describe('resolveOauthPartition with connectionId (pre-save sign-in identity)', 
     const got = resolveOauthPartition('https://macmini.lan:9119', { registry: reg, connectionId: 'macmini' })
 
     expect(got).not.toBe(LEGACY_OAUTH_PARTITION)
-    expect(got).toContain('conn:macmini')
+    expect(got).toContain('conn-macmini')
     // Deterministic across calls — the saved entry must read the jar the login wrote.
     expect(resolveOauthPartition('https://macmini.lan:9119', { registry: reg, connectionId: 'macmini' })).toBe(got)
   })

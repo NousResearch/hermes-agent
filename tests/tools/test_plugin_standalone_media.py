@@ -1,6 +1,10 @@
 """Plugin media routing follows the registration contract, not a platform-name list."""
 
 import asyncio
+import json
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -64,3 +68,61 @@ def test_declared_media_without_sender_fails_closed(monkeypatch):
         assert "missing standalone_sender_fn" in result["error"]
     finally:
         platform_registry.unregister("test_missing_sender")
+
+
+def test_discovered_plugin_declaration_delivers_media_through_host_send(tmp_path):
+    """A plugin's public registration flag reaches the real host send path."""
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "media-fixture"
+    plugin.mkdir(parents=True)
+    (home / "config.yaml").write_text("plugins:\n  enabled:\n    - media-fixture\n")
+    (plugin / "plugin.yaml").write_text(
+        "name: media-fixture\nversion: 0.1.0\ndescription: fixture\nkind: platform\n"
+    )
+    (plugin / "__init__.py").write_text(
+        "calls = []\n"
+        "async def send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):\n"
+        "    calls.append({'chat_id': chat_id, 'message': message, 'media_files': media_files})\n"
+        "    return {'success': True, 'media_delivered': bool(media_files)}\n"
+        "def register(ctx):\n"
+        "    ctx.register_platform(name='media_fixture', label='Media fixture', "
+        "adapter_factory=lambda cfg: None, check_fn=lambda: True, "
+        "parse_target_ref_fn=lambda ref: (ref, None), "
+        "standalone_sender_fn=send, standalone_media=True)\n"
+    )
+    media = tmp_path / "report.md"
+    media.write_text("report")
+    script = r'''
+import json
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+from hermes_cli.plugins import discover_plugins
+from gateway.config import Platform
+from gateway.platform_registry import platform_registry
+from tools.send_message_tool import send_message_tool
+
+discover_plugins()
+entry = platform_registry.get("media_fixture")
+platform = Platform("media_fixture")
+pconfig = SimpleNamespace(enabled=True, token=None, extra={})
+config = SimpleNamespace(platforms={platform: pconfig}, get_home_channel=lambda p: None)
+with patch("gateway.config.load_gateway_config", return_value=config), \
+     patch("tools.interrupt.is_interrupted", return_value=False), \
+     patch("gateway.mirror.mirror_to_session", return_value=True):
+    results = [json.loads(send_message_tool({"target": "media_fixture:room",
+                "message": text + "\nMEDIA:" + sys.argv[1]})) for text in ("caption", "")]
+print(json.dumps({"results": results, "calls": entry.standalone_sender_fn.__globals__["calls"]}))
+'''
+    env = dict(os.environ, HERMES_HOME=str(home), PYTHONPATH=os.getcwd())
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(media)], cwd=os.getcwd(), env=env,
+        text=True, capture_output=True, check=True,
+    )
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert len(payload["calls"]) == 2
+    assert [call["message"] for call in payload["calls"]] == ["caption", ""]
+    assert all(call["chat_id"] == "room" for call in payload["calls"])
+    assert all(call["media_files"] == [[str(media.resolve()), False]] for call in payload["calls"])
+    assert all(result["success"] and result["media_delivered"] and not result.get("warnings")
+               for result in payload["results"])

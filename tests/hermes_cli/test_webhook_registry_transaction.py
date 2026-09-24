@@ -275,7 +275,10 @@ def test_prepublication_fsync_eio_does_not_publish_or_disclose_secret(tmp_path, 
     assert "new" not in json.loads(path.read_text())
 
 
-@pytest.mark.parametrize("bad", ["{broken", "[]", '{"bad": "not-a-route"}'])
+@pytest.mark.parametrize("bad", ["{broken", "[]", '{"bad": "not-a-route"}',
+                                      '{"bad": {"events": 23}}',
+                                      '{"bad": {"skills": "code"}}',
+                                      '{"bad": {"events": [23]}}'])
 def test_administrative_reads_report_malformed_registry(tmp_path, monkeypatch, capsys, bad):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)

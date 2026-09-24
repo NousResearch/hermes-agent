@@ -92,6 +92,11 @@ def _existing_route(subs: dict, name: str) -> dict:
     route = subs[name]
     if not isinstance(route, dict):
         raise ValueError(f"Webhook subscription '{name}' is not an object.")
+    for field in ("events", "skills"):
+        value = route.get(field)
+        if value is not None and (not isinstance(value, list)
+                                  or any(not isinstance(item, str) for item in value)):
+            raise ValueError(f"Webhook subscription '{name}' has invalid {field}.")
     return route
 
 

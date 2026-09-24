@@ -160,14 +160,15 @@ class HolographicMemoryProvider(MemoryProvider):
                 if total == 0 else
                 f"Active. {total} facts stored with entity resolution and trust scoring.\n"
                 "Use fact_store to search, probe entities, reason across entities, or add facts.\n")
-        return "# Holographic Memory\n" + body + "Use fact_feedback to rate facts after using them (trains trust scores)."
+        return "# Holographic Memory\n" + body + ("Recalled facts are injected as '- [id N, trust T] content'; "
+                                                   "after using one, call fact_feedback with that id (trains trust scores).")
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._retriever or not query:
             return ""
         try:
             results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
-            lines = [f"- [{r.get('trust_score', r.get('trust', 0)):.1f}] {r.get('content', '')}" for r in results]
+            lines = [f"- [id {r.get('fact_id')}, trust {r.get('trust_score', r.get('trust', 0)):.1f}] {r.get('content', '')}" for r in results]
             return "## Holographic Memory\n" + "\n".join(lines) if results else ""
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)

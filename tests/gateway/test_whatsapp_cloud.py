@@ -772,6 +772,46 @@ class TestDeliveryFailureStatuses:
         assert "wamid.VIAHOOK" in warnings[0].getMessage()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_statuses", [42, {"a": 1}, "x", None])
+    async def test_malformed_statuses_container_ignored_valid_still_warns(self, caplog, bad_statuses):
+        import logging
+
+        adapter = _make_adapter()
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "x",
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {"messaging_product": "whatsapp", "statuses": bad_statuses},
+                        },
+                        {
+                            "field": "messages",
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "statuses": [
+                                    {
+                                        "id": "wamid.NEIGHBOUR",
+                                        "status": "failed",
+                                        "recipient_id": "15551234567",
+                                        "errors": [{"code": 131047, "title": "Re-engagement message"}],
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+        with caplog.at_level(logging.WARNING):
+            await adapter._dispatch_payload(payload)  # must not raise
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "wamid.NEIGHBOUR" in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
     async def test_message_still_dispatched_alongside_failed_status(self, caplog):
         import copy
         import logging

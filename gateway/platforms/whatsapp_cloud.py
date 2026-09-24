@@ -760,7 +760,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             for change in (entry.get("changes") or []) if isinstance(entry, dict) else []:
                 if not isinstance(change, dict) or change.get("field") != "messages":
                     continue  # account_alerts, template_status_update, … — not message ingress
-                value = change.get("value") or {}
+                value = change.get("value")
+                if not isinstance(value, dict):
+                    continue
                 contacts_by_waid = {
                     wa_id: str((contact.get("profile") or {}).get("name") or "").strip()
                     for contact in value.get("contacts") or []
@@ -769,7 +771,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 for raw_message in value.get("messages") or []:
                     if isinstance(raw_message, dict):
                         await self._ingest_message(raw_message, contacts_by_waid, value.get("metadata") or {})
-                for status in value.get("statuses") or []:
+                statuses = value.get("statuses") or []
+                if not isinstance(statuses, list):
+                    logger.debug("[whatsapp_cloud] ignoring non-list statuses container: %r", _one_line(statuses))
+                    continue
+                for status in statuses:
                     if isinstance(status, dict):
                         self._log_delivery_status(status)
 

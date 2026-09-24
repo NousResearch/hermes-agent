@@ -31,6 +31,7 @@ from rich.panel import Panel
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -605,6 +606,16 @@ def _browser_status() -> None:
                "   /browser disconnect   — revert to default")
 
 
+# /browser subcommand word → handler(cli, rest); ``rest`` is the raw (case-preserved)
+# remainder of the line. Adding a subcommand is one row here plus a usage line.
+_BROWSER_SUBCOMMANDS = {
+    "use": lambda cli, rest: _browser_use(cli, rest.lower() or "on"),
+    "connect": lambda cli, rest: _browser_connect(cli, rest or DEFAULT_BROWSER_CDP_URL),
+    "disconnect": lambda cli, rest: _browser_disconnect(cli),
+    "status": lambda cli, rest: _browser_status(),
+}
+
+
 class CLICommandsMixin:
     """Mixin holding the interactive-CLI slash-command handlers."""
 
@@ -632,6 +643,12 @@ class CLICommandsMixin:
         # --all / --force: classic full restore, overwriting user edits too.
         restore_all = any(a.lower() in ("--all", "--force") for a in args)
         args = [a for a in args if a.lower() not in ("--all", "--force")]
+        if reason := mgr.unsupported_backend_reason():  # CLI: no session key, the "default" container
+            # Container-backed session: any host checkpoint listed here belongs to another tree,
+            # so diff/restore are refused; the list stays visible for local administration.
+            print(f"  {reason}")
+            if args:
+                return
         if not args:
             # No checkpoints for this dir → cross-project view (writes may sit under the session cwd).
             checkpoints = mgr.list_checkpoints(cwd)
@@ -758,6 +775,8 @@ class CLICommandsMixin:
             "  (Plain /diff still works — it uses git directly.)"))
         if mgr is None:
             return
+        if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+            return print(f"  {reason}")
         result = mgr.session_diff(cwd)
         if not result.get("success"):
             return print(f"  {result.get('error', 'Could not generate diff')}")
@@ -1379,7 +1398,9 @@ class CLICommandsMixin:
             return _cp("  No conversation to branch — send a message first.")
         if not self._session_db:
             return _cp(_db_unavailable_line())
-        branch_name = _command_arg(cmd_original)
+        # CLI has no threads: always in place; strip the gateway's ``--here`` so it is never a title.
+        from gateway.slash_commands_branch_thread import parse_branch_args
+        _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
         new_session_id = mint_session_id(now)
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
@@ -1389,10 +1410,17 @@ class CLICommandsMixin:
         # user is still on open, not ended with end_reason="branched" and no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions
         # even after the parent is re-ended with a different end_reason.
+        # The child sends the parent's exact system prompt: a row without one makes the branch's first
+        # turn rebuild (re-probing the workspace), so the warm cache the copied transcript buys is
+        # lost at byte 0 whenever the repo moved since the parent's session start.
+        parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
+        if not isinstance(parent_prompt, str) or not parent_prompt:
+            with suppress(Exception):
+                parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
         try:
             self._session_db.create_session(
                 session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model, parent_session_id=parent_session_id,
+                model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,
                 model_config={"max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
                               "_branched_from": parent_session_id})
         except Exception as e:
@@ -1547,12 +1575,12 @@ class CLICommandsMixin:
                     cfg_get(read_raw_config(), "agent", "system_prompt", default=""))
             except Exception:
                 self.system_prompt = ""
-            self.agent = None  # Force re-init
+            _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality cleared {scope}",
                 "  No personality overlay — using base agent behavior.")
         else:
             self.system_prompt = personality_prompt
-            self.agent = None  # Force re-init
+            _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality set to '{name}' {scope}",
                 f"  \"{_ellipsize(personality_prompt, 60)}\"")
 
@@ -1667,6 +1695,7 @@ class CLICommandsMixin:
         result = _cron_api(action="list")
         jobs = result.get("jobs", []) if result.get("success") else []
         if jobs:
+            from hermes_cli.cron import _next_run_row
             _pr("  Current Jobs:", "  " + "-" * 63)
             for job in jobs:
                 print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', '?'):<8}")
@@ -1674,7 +1703,9 @@ class CLICommandsMixin:
                     print(f"      Skills: {', '.join(job['skills'])}")
                 print(f"      {job.get('prompt_preview', '')}")
                 if job.get("next_run_at"):
-                    print(f"      Next: {job['next_run_at']}")
+                    # A stamp parked past the scheduler grace must not read as upcoming (#114309).
+                    label, value = _next_run_row(job)
+                    print(f"      {'Next' if label == 'Next run' else label}: {value}")
                 print()
         else:
             print("  No scheduled jobs. Use '/cron add' to create one.")
@@ -1685,13 +1716,14 @@ class CLICommandsMixin:
         jobs = result.get("jobs", []) if result.get("success") else []
         if not jobs:
             return print("(._.) No scheduled jobs.")
+        from hermes_cli.cron import _next_run_row
         print()
         _pr("Scheduled Jobs:", "-" * 80)
         for job in jobs:
             _pr(f"  ID: {job['job_id']}", f"  Name: {job['name']}",
                 f"  State: {job.get('state', '?')}",
                 f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})",
-                f"  Next run: {job.get('next_run_at', 'N/A')}")
+                "  %s: %s" % _next_run_row(job) if job.get("next_run_at") else "  Next run: N/A")
             if job.get("skills"):
                 print(f"  Skills: {', '.join(job['skills'])}")
             print(f"  Prompt: {job.get('prompt_preview', '')}")
@@ -1772,12 +1804,17 @@ class CLICommandsMixin:
         if action == "remove":
             removed = result.get("removed_job", {})
             return print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")
+        job = result["job"]
+        if action == "run" and job.get("execution_skipped"):
+            # A refused run-now (claim lost, paused, gone) must not read as accepted.
+            return print(f"(x_x) Did not run job: {job['name']} ({job_id})\n  {job['execution_skipped']}")
         verb = {"pause": "Paused", "resume": "Resumed", "run": "Triggered"}[action]
-        print(f"(^_^)b {verb} job: {result['job']['name']} ({job_id})")
+        print(f"(^_^)b {verb} job: {job['name']} ({job_id})")
         if action == "resume":
-            print(f"  Next run: {result['job'].get('next_run_at')}")
+            print(f"  Next run: {job.get('next_run_at')}")
         elif action == "run":
-            print("  It will run on the next scheduler tick.")
+            from hermes_cli.cron import _run_outcome
+            print(f"  {_run_outcome(job)}")
 
     # ---- delegating handlers: /suggestions, /blueprint, /curator, /kanban, /skills, /memory --
     def _handle_suggestions_command(self, cmd: str):
@@ -1951,6 +1988,7 @@ class CLICommandsMixin:
                     **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
                                                    "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
+                    side_agent=True,
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -2130,24 +2168,21 @@ class CLICommandsMixin:
 
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
-        sub = _command_arg(cmd).lower() or "status"
-        if sub == "use" or sub.startswith("use "):
-            _browser_use(self, sub.split(None, 1)[1].strip() if " " in sub else "on")
-        elif sub.startswith("connect"):
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            url = connect_parts[2].strip() if len(connect_parts) > 2 else DEFAULT_BROWSER_CDP_URL
-            _browser_connect(self, url)
-        elif sub == "disconnect":
-            _browser_disconnect(self)
-        elif sub == "status":
-            _browser_status()
-        else:
+        # The subcommand word is matched case-insensitively; the raw argument keeps
+        # its case because a CDP URL's path segment is case-sensitive.
+        parts = _command_arg(cmd).split(None, 1)
+        word = parts[0].lower() if parts else "status"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        handler = _BROWSER_SUBCOMMANDS.get(word)
+        if handler is None:
             _say_block(
                 "Usage: /browser connect|disconnect|status|use", "",
                 "   connect      Connect browser tools to your live Chromium-family browser session",
                 "   disconnect   Revert to default browser backend",
                 "   status       Show current browser mode",
                 "   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
+            return
+        handler(self, rest.strip())
 
     # ---- /heartbeat, /refine, /review -----------------------------------------------------
     def _session_manager(self, getter, label: str):
@@ -2545,11 +2580,13 @@ class CLICommandsMixin:
         """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
         scope unless --global) and thinking display toggles (always saved)."""
         from cli import CLI_CONFIG, _parse_reasoning_config
+        from agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
+        _route = (getattr(self, "provider", None), getattr(self, "model", None))
         if not raw:  # show current state
             rc = self.reasoning_config
             level = ("medium (default)" if rc is None else "none (disabled)"
-                     if rc.get("enabled") is False else rc.get("effort", "medium"))
+                     if rc.get("enabled") is False else effort_display_label(rc.get("effort", "medium"), *_route))
             display_state = "on ✓" if self.show_reasoning else "off"
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             return _cp(_accent_line(f"Reasoning effort:  {level}"),
@@ -2578,13 +2615,14 @@ class CLICommandsMixin:
                        _dim_line('Display:      show, hide'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        _retire_agent(self)  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:
             if not isinstance(CLI_CONFIG.get("agent"), dict):
                 CLI_CONFIG["agent"] = {}
             CLI_CONFIG["agent"]["reasoning_effort"] = arg
-        _cp(_accent_line(f"✓ Reasoning effort set to '{arg}' {_scope_outcome(explicit_global, saved)}"))
+        _cp(_accent_line(f"✓ Reasoning effort set to '{effort_display_label(arg, *_route)}' "
+                         f"{_scope_outcome(explicit_global, saved)}"))
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""
@@ -2635,7 +2673,7 @@ class CLICommandsMixin:
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
         self.service_tier, saved_value = _FAST_TIERS[arg]
-        self.agent = None  # Force agent re-init with new service-tier config
+        _retire_agent(self)  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)
         outcome = _scope_outcome(explicit_global, saved)
         _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))

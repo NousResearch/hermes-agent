@@ -99,9 +99,14 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes gateway install        Install gateway background service
+    hermes gateway start          Start the installed gateway service
+    hermes gateway stop           Stop the gateway service
+    hermes gateway status         Show gateway status
+    hermes -p <profile> <cmd>     Run any command against a named profile's
+                                  home (also --profile) — e.g. hermes -p coder gateway stop
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install gateway background service
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session

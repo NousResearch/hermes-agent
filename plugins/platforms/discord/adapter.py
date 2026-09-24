@@ -255,7 +255,7 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
@@ -272,8 +272,9 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
-    platform_gate_env as _scoped_gate_env, send_error, yaml_env_setter as _yaml_env_setter
+    decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
+    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
+    yaml_env_setter as _yaml_env_setter
 )
 
 # Every refusal (slash command, approval button, picker, prompt) says the same thing.
@@ -502,6 +503,11 @@ class _DiscordNonConversationalMessageTracker:
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
+
+
+def _discord_snowflake_time(snowflake: int) -> dt.datetime:
+    """UTC creation time encoded in a Discord snowflake (ms since 2015-01-01 in the top 42 bits)."""
+    return dt.datetime.fromtimestamp(((snowflake >> 22) + 1420070400000) / 1000, tz=dt.timezone.utc)
 
 
 def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
@@ -1481,13 +1487,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return False, False
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
-                parent_id = None
-                if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                    parent_id = str(message.channel.parent_id)
-                free_channels = self._discord_free_response_channels()
-                channel_keys = self._discord_channel_keys(message, parent_id)
-                if "*" not in free_channels and not (channel_keys & free_channels):
-                    return False, False
+                # A thread the bot joined is not someone else's conversation, and the other two
+                # ingress paths already exempt it: _dispatch_recovered_message() and
+                # _handle_message(). Admission runs on both and can veto what they admit, so
+                # without this a third-party mention in a bot thread is dropped here even though
+                # the same message with no mention at all is admitted. ``thread_require_mention``
+                # still gates multi-bot threads, inside _in_bot_thread().
+                if not self._in_bot_thread(message):
+                    parent_id = None
+                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                        parent_id = str(message.channel.parent_id)
+                    free_channels = self._discord_free_response_channels()
+                    channel_keys = self._discord_channel_keys(message, parent_id)
+                    if "*" not in free_channels and not (channel_keys & free_channels):
+                        # Every other silent return in this function is at least guessable from
+                        # the outside; this one is not, and an operator seeing no log line cannot
+                        # tell it apart from the gateway never receiving the event.
+                        logger.debug(
+                            "[%s] admission: dropping message %s — mentions others, not self, "
+                            "not a bot thread, channel not free-response",
+                            self.name, getattr(message, "id", "?"))
+                        return False, False
         return True, role_authorized
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
@@ -1672,6 +1692,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         self._liveness_task = asyncio.create_task(self._liveness_loop())
 
+    # Reasons from ``_read_websocket_health`` that mean the transport is confirmed dead,
+    # not merely suspect: ``_liveness_loop`` escalates on the first such strike (#118487).
+    _TERMINAL_HEALTH_REASONS = frozenset({"socket_closed", "client_closed"})
+
     def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
         """Return current Discord Gateway health without making a REST request."""
         try:
@@ -1733,6 +1757,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return
             client = self._client
             if not self._running or client is None or self._disconnecting:
+                # The probe must never disappear silently (#118487): an exit here leaves the
+                # gateway with no watchdog, so say why before going away.
+                logger.info(
+                    "[%s] Discord liveness probe exiting (running=%s, client=%s, disconnecting=%s)",
+                    self.name, self._running, client is not None, self._disconnecting,
+                )
                 return
             try:
                 healthy, reason = self._read_websocket_health(client)
@@ -1741,6 +1771,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 healthy = False
                 reason = "health_check_error"
             if healthy:
+                if failures:
+                    # discord.py swaps in a fresh socket while resuming, so a transport-side
+                    # sample can read healthy again while events never resumed (#118487) —
+                    # logging the reset keeps that distinguishable from a dead probe task.
+                    logger.info(
+                        "[%s] Discord Gateway WebSocket healthy again after %d unhealthy sample(s)",
+                        self.name, failures,
+                    )
                 failures = 0
                 continue
             failures += 1
@@ -1748,13 +1786,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)", self.name, reason, failures,
                 threshold,
             )
-            if failures < threshold:
+            # A closed transport is a confirmed death, not a suspicion: escalate on the
+            # first strike; soft signals keep the threshold (#118487).
+            terminal = reason in self._TERMINAL_HEALTH_REASONS
+            if failures < threshold and not terminal:
                 continue
             # Mark recovery before closing: Bot.start()'s done callback must not overwrite this reason.
             self._disconnecting = True
             logger.error(
-                "[%s] Discord Gateway WebSocket remained unhealthy (%s); forcing reconnect",
-                self.name, reason,
+                "[%s] Discord Gateway WebSocket %s (%s, %d/%d); forcing reconnect",
+                self.name,
+                "transport closed" if terminal else "remained unhealthy",
+                reason, failures, threshold,
             )
             self._set_fatal_error(
                 "discord_websocket_health_stale",
@@ -2142,16 +2185,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         configured = self.config.extra.get("missed_message_backfill")
         if isinstance(configured, dict) and "channels" in configured:
             raw = configured.get("channels")
-            if isinstance(raw, list):
-                return {str(item).strip() for item in raw if str(item).strip()}
-            raw = str(raw or "")
-            if raw.strip():
-                return {item.strip() for item in raw.split(",") if item.strip()}
+            channels = self._gate_csv_set(raw)
+            # An explicit list (YAML list or JSON-list string, even empty) is authoritative — the
+            # operator disabled the scan; only the default "" string falls through to the env/default.
+            if channels or isinstance(_decode_json_list_literal(raw), list):
+                return channels
         raw = self._gate_env("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS")
         if not raw.strip():
             allowed = self._get_allowed_channels()
             return allowed | self._discord_free_response_channels()
-        return {item.strip() for item in raw.split(",") if item.strip()}
+        return self._gate_csv_set(raw)
 
     def _missed_message_backfill_number(self, key: str, env_key: str, default, cast, lo, hi=None):
         """Numeric ``missed_message_backfill.<key>`` (dict extra wins over env), clamped to [lo, hi]."""
@@ -2173,6 +2216,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _missed_message_backfill_max_dispatches(self) -> int:
         return self._missed_message_backfill_number(
             "max_dispatches", "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES", 10, int, 1, 100)
+
+    def _missed_message_backfill_max_attempts(self) -> int:
+        """Lifetime re-dispatch ceiling for ONE message, independent of completion state:
+        ``max_dispatches`` caps a scan, not a row, so without this any message whose completion
+        can never be recorded is re-run on every reconnect (#113631)."""
+        return self._missed_message_backfill_number(
+            "max_attempts", "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_ATTEMPTS", 3, int, 1, 100)
 
     def _ensure_missed_message_backfill_task(self) -> asyncio.Task:
         """Return the active recovery task, or start one when none is running."""
@@ -2338,20 +2388,25 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             iterators = next_round
 
     async def _iter_channel_and_thread_messages(self, channel: Any, *, limit: int, after: Any, seen_channels: set[str]):
-        """Yield history from a channel plus active/recent archived child threads."""
+        """Yield history from a channel plus active/recent archived child threads. ``after`` is the
+        scan-window floor; a stored cursor may only narrow it, never widen it, and it is never
+        inherited by child threads (each thread has its own cursor)."""
         channel_key = str(getattr(channel, "id", ""))
         if not channel_key or channel_key in seen_channels:
             return
         seen_channels.add(channel_key)
+        channel_after = after
         cursor = self._discord_recovery_cursor(channel_key)
         if cursor:
             with suppress(ValueError, TypeError):
-                after = discord.Object(id=int(cursor))
+                cursor_id = int(cursor)
+                if not isinstance(after, dt.datetime) or _discord_snowflake_time(cursor_id) > after:
+                    channel_after = discord.Object(id=cursor_id)
         history = getattr(channel, "history", None)
         if callable(history):
             try:
                 # Fetch the latest N then restore order; oldest_first=True could starve newer work forever.
-                history_iter = history(limit=limit, after=after, oldest_first=False)
+                history_iter = history(limit=limit, after=channel_after, oldest_first=False)
                 messages = []
                 async for message in history_iter:  # type: ignore[attr-defined]
                     messages.append(message)
@@ -2413,6 +2468,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if self._discord_message_is_persistently_complete(str(getattr(message, "id", ""))):
             return False
         if self._discord_message_has_active_claim(str(getattr(message, "id", ""))):
+            return False
+        if self._discord_message_attempts_exhausted(str(getattr(message, "id", ""))):
             return False
         # A success reaction is only an ack, not evidence the substantive response completed.
         return not await self._message_has_non_down_bot_response(message)
@@ -2488,8 +2545,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         now = self._utc_now_iso()
 
         def _op(conn):
-            existing = conn.execute("SELECT status FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
-            final_status = existing[0] if existing and existing[0] == "responded" else status
+            existing = conn.execute(
+                "SELECT status, updated_at FROM discord_messages WHERE message_id=?", (message_id,),
+            ).fetchone()
+            # "discovered" only says the scan saw the row: it never overwrites a completed row or an
+            # in-flight claim (queued/processing) — the active-claim guard reads that status and its
+            # original updated_at, so a died dispatch still expires after the 10-minute window.
+            keep = bool(existing) and (existing[0] == "responded" or status == "discovered")
+            final_status = existing[0] if keep else status
+            updated_at = (existing[1] or now) if keep else now
             conn.execute(
                 """
                 INSERT INTO discord_messages (message_id, channel_id, thread_id, parent_channel_id, author_id, created_at, status, updated_at)
@@ -2503,7 +2567,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     status=?,
                     updated_at=excluded.updated_at
                 """,
-                (message_id, channel_id, thread_id, parent_id, author_id, created_text, final_status, now, final_status),
+                (message_id, channel_id, thread_id, parent_id, author_id, created_text, final_status, updated_at, final_status),
             )
         self._with_discord_recovery_db(_op)
 
@@ -2515,15 +2579,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not message_id:
             return
         now = self._utc_now_iso()
+        # ``attempts`` counts dispatches (the "queued" transition) so max_attempts is a ceiling on
+        # how many times one message is re-run, not on how many state transitions it saw.
+        dispatched = 1 if status == "queued" else 0
 
         def _op(conn):
             conn.execute(
                 """
                 UPDATE discord_messages
-                   SET status=?, attempts=attempts+1, last_attempt_at=?, last_error=?, updated_at=?
+                   SET status=?, attempts=attempts+?, last_attempt_at=?, last_error=?, updated_at=?
                  WHERE message_id=?
                 """,
-                (status, now, error, now, message_id),
+                (status, dispatched, now, error, now, message_id),
             )
         self._with_discord_recovery_db(_op)
 
@@ -2550,8 +2617,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
         if not message_id:
             return
-        status = "processed" if outcome == ProcessingOutcome.SUCCESS else ("cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed")
         now = self._utc_now_iso()
+        if outcome == ProcessingOutcome.SUCCESS:
+            # SUCCESS means the base delivered the final (or the stream already had). Attribute it
+            # to the inbound id here: streamed/edited finals, fresh-final sends and media-only replies
+            # carry no reply anchor (reply_to_mode "off" never does), so the send-path ledger writer
+            # cannot mark the row and backfill would re-dispatch it on every reconnect (#113631).
+            def _complete(conn):
+                conn.execute(
+                    "UPDATE discord_messages SET status='responded', replied=1, updated_at=? WHERE message_id=?",
+                    (now, message_id),
+                )
+            self._with_discord_recovery_db(_complete)
+            return
+        status = "cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed"
 
         def _op(conn):
             conn.execute(
@@ -2562,10 +2641,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
         self._with_discord_recovery_db(_op)
 
-    async def _record_response_async(self, reply_to, result: SendResult, content: str, final: bool) -> SendResult:
-        """Record a send outcome in the recovery ledger off-loop and hand back ``result``."""
+    async def _record_response_async(
+        self, reply_to, result: SendResult, content: str, final: bool, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Record a send outcome using its visual or internal reply anchor."""
+        ledger_reply_to = reply_to or (metadata or {}).get("reply_to_message_id")
         await asyncio.to_thread(
-            self._record_discord_response, reply_to=reply_to, result=result, content=content, final=final,
+            self._record_discord_response, reply_to=ledger_reply_to, result=result, content=content, final=final,
         )
         return result
 
@@ -2632,6 +2714,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             ).fetchone()
             return bool(row and row[0] in {"queued", "processing"} and row[1] >= cutoff)
         return bool(self._with_discord_recovery_db(_op, default=True))
+
+    def _discord_message_attempts_exhausted(self, message_id: str) -> bool:
+        """True once a row has been dispatched ``max_attempts`` times (any outcome)."""
+        if not message_id:
+            return False
+        cap = self._missed_message_backfill_max_attempts()
+
+        def _op(conn):
+            row = conn.execute("SELECT attempts FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
+            return bool(row and int(row[0] or 0) >= cap)
+        exhausted = bool(self._with_discord_recovery_db(_op, default=False))
+        if exhausted:
+            logger.debug(
+                "[%s] Not re-dispatching Discord message %s: missed_message_backfill.max_attempts (%d) reached",
+                self.name, message_id, cap,
+            )
+        return exhausted
 
     def _record_recovery_scan_start(self, channels: set[str]) -> str:
         scan_id = f"{int(time.time() * 1000)}-{os.getpid()}"
@@ -2918,7 +3017,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             result = SendResult(success=False, error="Refusing to send empty message")
             # Backfill replays from this table: record the dropped final reply as failed or it is lost.
-            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
+            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
         try:
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -2936,7 +3035,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
-                return await self._record_response_async(reply_to, result, content, final_delivery)
+                return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -2976,7 +3075,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
-            return await self._record_response_async(reply_to, result, content, final_delivery)
+            return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             if _is_discord_transport_error(e):
@@ -2984,7 +3083,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 result = SendResult(success=False, error="send_path_degraded", retryable=True)
             else:
                 result = SendResult(success=False, error=str(e))
-            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
+            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
 
     @staticmethod
     def _forum_thread_parts(thread: Any) -> tuple:
@@ -4615,7 +4714,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             await interaction.followup.send(f"Created thread {link}", ephemeral=True)
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
-            self._threads.mark(thread_id)
+            await self._threads.mark_async(thread_id)
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
@@ -4679,6 +4778,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
         return self._extra_or_env_flag("require_mention", "DISCORD_REQUIRE_MENTION", "true", truthy=False)
+
+    def _discord_free_response_auto_thread(self) -> bool:
+        """Free-response channels also auto-thread when opted in; default replies inline."""
+        return self._extra_or_env_flag(
+            "free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD", "false", truthy=True,
+        )
 
     def _discord_max_attachment_bytes(self) -> int:
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
@@ -4751,6 +4856,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _gate_csv_set(raw) -> set:
         if raw is None:
             return set()
+        raw = _decode_json_list_literal(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -4853,13 +4959,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        # YAML parses a bare numeric value as int; str() any scalar before splitting.
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+        return self._gate_csv_set(raw)
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract user-mention IDs (``<@ID>`` and legacy ``<@!ID>``) from raw content,
@@ -5099,7 +5199,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return ""
 
     async def _resolve_channel(self, channel_id: Any) -> Any:
-        """Cached ``get_channel`` first, REST ``fetch_channel`` on miss (raises on API error)."""
+        """Cached ``get_channel`` first, REST ``fetch_channel`` on miss (raises on API error).
+
+        Every outbound target funnels through here (home channel, cron ``discord:<target>``,
+        thread metadata), so a pasted channel link is accepted at this one boundary instead of
+        dying in ``int()`` as a generic send failure."""
+        if isinstance(channel_id, str):
+            channel_id = discord_channel_id_from_link(channel_id.strip()) or channel_id
         channel = self._client.get_channel(int(channel_id))
         if not channel:
             channel = await self._client.fetch_channel(int(channel_id))
@@ -5391,11 +5497,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.warning("[%s] %s failed: %s", self.name, fail_log, e)
             return SendResult(success=False, error=str(e))
 
-    @staticmethod
-    def _embed_body(text: str, limit: int = 4088) -> str:
-        """Trim to Discord's 4096-char embed description limit (conservatively)."""
-        return text if len(text) <= limit else text[: limit - 3] + "..."
-
     # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
     _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
                   "Do you want Hermes to run this command?\n\n"
@@ -5404,6 +5505,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     _EA_CODE_CLOSE = "\n```\n"
     _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    # The reason shares the 2000-char content cap with the command; unbounded it would starve
+    # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
@@ -5415,7 +5518,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Button view + embed mirror; buttons call ``resolve_gateway_approval()`` (not /approve)."""
+        """Send an approval with content as its canonical payload and an embed for state."""
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5423,10 +5526,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
                 title=f"⚠️ {EA_HEADER_TEXT}",
-                description=f"```\n{self._embed_body(prompt.command)}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name=EA_REASON_LABEL_TEXT, value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
             view = ExecApprovalView(
@@ -5451,9 +5552,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Send a three-button slash-command confirmation prompt."""
         def _build(_channel):
-            embed = discord.Embed(
-                title=title or "Confirm", description=self._embed_body(message), color=discord.Color.orange(),
-            )
+            # Header-only card (same rule as the exec approval prompt): the message lives in
+            # content only, so embed-rendering clients don't see it twice (#114693).
+            embed = discord.Embed(title=title or "Confirm", color=discord.Color.orange())
             content = self._self_contained_prompt_content(f"**{title or 'Confirm'}**", message)
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
@@ -5486,16 +5587,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return str(c).strip()
 
         def _build(_channel):
-            embed = discord.Embed(
-                title="❓ Hermes needs your input",
-                description=self._embed_body(str(question or "").strip()),
-                color=discord.Color.orange(),
-            )
+            # Header-only card (same rule as the exec approval prompt): the question and hint live
+            # in content only, so embed-rendering clients don't see them twice (#114693).
+            embed = discord.Embed(title="❓ Hermes needs your input", color=discord.Color.orange())
             # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
                 hint = "Pick one below, or click ✏️ Other to type a custom answer."
-                embed.add_field(name="Choices", value=hint, inline=False)
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
@@ -5503,7 +5601,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
             else:
                 hint = "Reply in this channel with your answer."
-                embed.add_field(name="Reply", value=hint, inline=False)
                 view = None
             content = self._self_contained_prompt_content(
                 "❓ **Hermes needs your input**", str(question or "").strip(), tail=f"\n\n{hint}",
@@ -5720,9 +5817,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return att.url
 
     async def _collect_attachment_media(self, all_attachments: list) -> tuple:
-        """Cache every attachment and return ``(media_urls, media_types, pending_text_injection)``."""
+        """Cache every attachment and return ``(media_urls, media_types, media_text_inlined,
+        pending_text_injection)``; ``media_text_inlined[i]`` is True only when attachment ``i``'s
+        text was injected."""
         media_urls = []
         media_types = []
+        media_text_inlined: list = []
         pending_text_injection: Optional[str] = None
         for att in all_attachments:
             content_type = att.content_type or "unknown"
@@ -5730,10 +5830,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 media_urls.append(await self._cache_simple_media(
                     att, content_type, "image", {".jpg", ".jpeg", ".png", ".gif", ".webp"}, ".jpg"))
                 media_types.append(content_type)
+                media_text_inlined.append(False)
             elif content_type.startswith("audio/"):
                 media_urls.append(await self._cache_simple_media(
                     att, content_type, "audio", {".ogg", ".mp3", ".wav", ".webm", ".m4a"}, ".ogg"))
                 media_types.append(content_type)
+                media_text_inlined.append(False)
             else:
                 ext = ""
                 if att.filename:
@@ -5763,6 +5865,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         )
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
+                    media_text_inlined.append(False)
                     logger.info(
                         "[Discord] Cached user %s: %s", "document" if in_allowlist else "attachment", cached_path,
                     )
@@ -5781,11 +5884,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                                 pending_text_injection = f"{pending_text_injection}\n\n{injection}"
                             else:
                                 pending_text_injection = injection
+                            media_text_inlined[-1] = True
                         except UnicodeDecodeError:
                             pass
                 except Exception as e:
                     logger.warning("[Discord] Failed to cache document %s: %s", att.filename, e, exc_info=True)
-        return media_urls, media_types, pending_text_injection
+        return media_urls, media_types, media_text_inlined, pending_text_injection
 
     def _attachment_message_type(self, att: Any) -> MessageType:
         """MessageType from the first attachment's MIME. Any non-media (or untyped) attachment
@@ -5825,6 +5929,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
         thread_id = None
         parent_channel_id = None
         is_thread = isinstance(message.channel, discord.Thread)
@@ -5889,7 +5994,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
+            skip_thread = bool(channel_keys & no_thread_channels) or (
+                is_free_channel and not self._discord_free_response_auto_thread()
+            )
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -5898,11 +6006,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     parent_channel_id = str(message.channel.id)
                     is_thread = True
                     thread_id = str(thread.id)
-                    auto_threaded_channel = thread
-                    self._threads.mark(thread_id)
                     # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
                     # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
+                    # Must run before the first await below: mark_async yields to the loop, and the
+                    # echo's _discord_message_admission would otherwise claim the id first.
                     self._dedup.is_duplicate(str(thread.id))
+                    auto_threaded_channel = thread
+                    await self._threads.mark_async(thread_id)
                 else:
                     # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
                     # reply (dumps the task into a shared channel). Surface an error and skip the run.
@@ -5968,7 +6078,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
-        media_urls, media_types, pending_text_injection = await self._collect_attachment_media(all_attachments)
+        media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
+            all_attachments)
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
@@ -6015,6 +6126,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
@@ -6027,7 +6139,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
-            self._threads.mark(thread_id)
+            await self._threads.mark_async(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)
@@ -7167,7 +7279,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
-    for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
+    for key, env_key in (
+        ("auto_thread", "DISCORD_AUTO_THREAD"),
+        ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
+        ("reactions", "DISCORD_REACTIONS"),
+    ):
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())
@@ -7229,8 +7345,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
-        # (require_mention, free_response_channels, auto_thread, reactions, ignored_channels,
-        # allowed_channels, no_thread_channels, allow_mentions.*, reply_to_mode, thread_require_mention)
+        # (require_mention, free_response_channels, auto_thread, free_response_auto_thread,
+        # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
+        # reply_to_mode, thread_require_mention)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,

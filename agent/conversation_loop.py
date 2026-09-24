@@ -31,7 +31,7 @@ from agent.prompt_caching import (
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
-    identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
+    identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -40,7 +40,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import site_copy
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -606,14 +606,18 @@ def _print_billing_or_entitlement_guidance(
     ))
 
 
-def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
+def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
     """Bot Chat capability epoch check for a stored prompt.
 
     The stored prompt embeds a capability fingerprint; a mismatch is a deliberate
     once-per-change rebuild. Unstamped prompts never match; probe failures fail closed
     to "reuse" so the cache is kept. Legacy upgrade: a Bot Chat prompt predating the
     epoch mechanism gets ONE title-gated migration rebuild; the stamped result cannot
-    re-fire."""
+    re-fire. A NULL or empty stored prompt already rebuilds every turn, so this probe
+    is not a gate there and must not run.
+    """
+    if not stored_prompt:
+        return False
     try:
         from tools.bot_mode_probe import (
             BOT_CHAT_TITLE,
@@ -656,6 +660,28 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
         logger.warning(failure_message, agent.session_id, exc)
 
 
+def _restore_pinned_tools(agent, session_row) -> list:
+    """Pin ``agent.tools`` to the session's persisted array (tools freeze); returns the names
+    this surface built BEFORE the pin merged a previous surface's tools back in."""
+    from tools.mcp_tool_agent import agent_tool_names, persist_agent_tool_names, restore_agent_tool_prefix
+    built_for_this_surface = agent_tool_names(agent)
+    saved_tools = session_row.get("tool_names") if session_row else None
+    try:
+        pin = json.loads(saved_tools) if saved_tools else None
+    except ValueError:
+        pin = None  # a pin hash whose row an older build's cleanup swept resolves to itself
+    try:
+        if pin:
+            restore_agent_tool_prefix(agent, pin)
+        elif session_row is not None and not getattr(agent, "_persist_disabled", False):
+            # No usable pin (swept row, a session from before pins): pin what this turn sends,
+            # or every later hop re-derives tools[] until the next compaction.
+            persist_agent_tool_names(agent)
+    except Exception:
+        logger.debug("tool prefix restore skipped", exc_info=True)
+    return built_for_this_surface
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -680,6 +706,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+        # NULL/empty rows never reach this probe: they already rebuild below.
         if _bot_chat_prompt_stale(agent, stored_prompt):
             logger.info(
                 "Bot Chat capability epoch changed for session %s; rebuilding system prompt to "
@@ -719,17 +746,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # ADDS what the new surface brought (a tui -> desktop switch pays a break no freeze can
         # avoid), and what it carries FORWARD is named in the note instead, so a tool that can
         # only answer ``tool_error("desktop only")`` here does not read as a live capability.
-        try:
-            saved_tools = session_row.get("tool_names") if session_row else None
-            if saved_tools:
-                from tools.mcp_tool_agent import agent_tool_names, restore_agent_tool_prefix
-                # Captured BEFORE the pin merges the previous surface's tools back in.
-                built_for_this_surface = agent_tool_names(agent) if announced_switch else []
-                restore_agent_tool_prefix(agent, json.loads(saved_tools))
-                if announced_switch:
-                    note_inert_pinned_tools(agent, built_for_this_surface)
-        except Exception:
-            logger.debug("tool prefix restore skipped", exc_info=True)
+        built_for_this_surface = _restore_pinned_tools(agent, session_row)
+        if announced_switch:
+            note_inert_pinned_tools(agent, built_for_this_surface)
         # Prompt-section callbacks are new-session-only; recover their frozen bytes
         # from the persisted prompt so a compression rebuild keeps them. The static
         # prefix is not persisted either; rebuild it for the early cache breakpoint or
@@ -757,7 +776,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             agent.session_id, stored_state,
         )
 
-    # First turn of a new session (or recovering from a broken stored prompt).
+    # First turn of a new session (or recovering from a broken stored prompt). Rebuilding an
+    # EXISTING session's prompt (cwd drift, model switch) still keeps its pinned tools[]: this
+    # surface's own build (the -q footprint, its tool_search catalog) would otherwise be
+    # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
+    built_for_this_surface = _restore_pinned_tools(agent, session_row)
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
     # The rebuilt prompt describes the CURRENT surface, but a surface note left in the
@@ -765,6 +788,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # unrelated reason (a model switch) would leave the newest interface statement in the
     # request naming a surface the conversation has left (#104414).
     stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
+    note_inert_pinned_tools(agent, built_for_this_surface)
 
     # Persistence-disabled forks share their parent's session ID and are not real sessions.
     if not getattr(agent, "_persist_disabled", False):
@@ -795,20 +819,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     """Return False when the persisted runtime-identity lines are stale."""
-
-    _identity, runtime_marker, runtime = split_runtime_boundary(prompt)
-
-    def host_info_value(label: str) -> str:
-        """New prompts delimit runtime hints; legacy prompts put them before context."""
-        prefix = f"{label}:"
-        host_lines = (runtime.split("\n\n", 1)[0] if runtime_marker else prompt).splitlines()
-        for idx, line in enumerate(host_lines):
-            if line.startswith("User home directory:"):
-                for candidate in host_lines[idx + 1: idx + 4]:
-                    if candidate.startswith(prefix):
-                        return candidate[len(prefix):].strip()
-        return ""
-
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
     # files, the workspace snapshot and the coding posture are all resolved from it), so it
     # still rebuilds; the runtime surface does not (agent/surface_switch.py).
@@ -817,9 +827,15 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         current = str(getattr(agent, attr, "") or "").strip()
         if stored and current and stored != current:
             return False
+    # A prompt stamped for another session (a /branch child copies its parent's bytes) must not
+    # tell the model a foreign Session ID.  Checked only when the trailer is on: with it off, a
+    # "Session ID:" line in project text would read as a mismatch and rebuild every turn.
+    stored_sid = identity_line_value(prompt, "Session ID")
+    if stored_sid and getattr(agent, "pass_session_id", False) and stored_sid != agent.session_id:
+        return False
     # Compare against resolve_agent_cwd() — the SAME resolver used to build the
     # prompt — so TERMINAL_CWD sessions are not falsely rejected.
-    stored_cwd = host_info_value("Current working directory")
+    stored_cwd = runtime_host_value(prompt, "Current working directory")
     if stored_cwd and stored_cwd != str(resolve_agent_cwd()):
         return False
     # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
@@ -868,6 +884,14 @@ _CODEX_INCOMPLETE_NUDGE = (
 _CODEX_ACK_CONTINUATION_NUDGE = (
     "[System: Continue now. Execute the required tool calls and only send your final answer "
     "after completing the task.]"
+)
+
+# Re-prompt after a collapsed fragment ended a turn that had done real tool work (#103483). Asks
+# for the same answer again when it WAS complete, so a false positive costs one call, never the answer.
+_DEGENERATE_FINAL_NUDGE = (
+    "[System: Your previous message ended the turn with a fragment that is not a usable answer. "
+    "If the task is unfinished, continue it and then give the complete answer. If that fragment "
+    "WAS your complete answer, send it again exactly as before.]"
 )
 
 # Re-prompt for finish_reason="tool_calls" with empty tool_calls (an interrupt mid-retry can persist it).
@@ -1511,11 +1535,18 @@ def _run_conversation_turn(
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
+        codex_result = agent._run_codex_app_server_turn(
             user_message=s.user_message, original_user_message=s.original_user_message,
             messages=s.messages, effective_task_id=s.effective_task_id,
             should_review_memory=s._should_review_memory,
         )
+        from agent.turn_recovery import activate_codex_app_server_fallback
+        if not activate_codex_app_server_fallback(agent, codex_result):
+            return codex_result
+        # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
+        # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+        s.api_call_count = int(codex_result.get("api_calls") or 0)
+        s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
@@ -1599,23 +1630,72 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from tools.vision_tools_history_budget import native_turn_images
 
-    result = _run_conversation_turn(
-        agent,
-        user_message,
-        system_message=system_message,
-        conversation_history=conversation_history,
-        task_id=task_id,
-        stream_callback=stream_callback,
-        persist_user_message=persist_user_message,
-        persist_user_timestamp=persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
-        persist_user_platform_id=persist_user_platform_id,
-        moa_config=moa_config,
-        turn_author=turn_author,
-    )
-    return export_current_turn_boundary(agent, result, user_message)
+    # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
+    # it does not embed the same pixels a second time into the same request (#76411).
+    with native_turn_images(user_message):
+        result = _run_conversation_turn(
+            agent,
+            user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            moa_config=moa_config,
+            turn_author=turn_author,
+        )
+    result = export_current_turn_boundary(agent, result, user_message)
+    _close_durable_failed_turn(agent, result)
+    return result
+
+
+def _close_durable_failed_turn(agent, result: Any) -> None:
+    """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
+    durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
+
+    The terminal-failure paths (content-policy refusal, ``_Trunc.end_turn``, retry exhaustion,
+    interrupt before any assistant text) persist the accepted user row and return without
+    reaching ``finalize_turn``; the next prompt then appends a second user row and
+    ``repair_message_sequence`` merges the failed request into the new one. The gateway
+    compensates with ``_hmwa_close_failed_turn``; CLI, TUI/Desktop and ACP hosts hand
+    ``result["messages"]`` straight back as history, so the seam is here.
+
+    Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
+    ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
+    #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
+    tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail already closed by
+    another writer is a no-op, and the gateway's own closer then no-ops in turn.
+    """
+    try:
+        if not isinstance(result, dict) or result.get("completed") is True:
+            return
+        if (
+            result.get("compression_exhausted") or result.get("compression_deferred")
+            or result.get("failure_reason") == "context_overflow"
+        ):
+            return
+        messages = result.get("messages")
+        db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+        if not isinstance(messages, list) or not messages or db is None or not session_id:
+            return
+        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
+            return
+        # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
+        # hedge over the whole list rather than under-report a possible side effect.
+        start = result.get("current_turn_user_idx")
+        turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
+        append_message(messages, {
+            "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
+        })
+        agent._flush_messages_to_session_db(messages)
+    except Exception:
+        logger.debug("failed-turn boundary not written", exc_info=True)
 
 
 __all__ = ["run_conversation"]

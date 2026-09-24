@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { beforeEach, test } from 'vitest'
 
 import {
-  describeGitHubCredentialSource,
   findGhCli,
   forgetGhCliToken,
   GH_CLI_TIMEOUT_MS,
@@ -87,7 +86,12 @@ test('gh is found in the GUI-safe install locations a minimal launch PATH omits'
   assert.equal(macos, brewGh)
 
   const winGh = 'C:\\Program Files\\GitHub CLI\\gh.exe'
-  const windows = findGhCli({ Path: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, 'win32', p => p === winGh)
+
+  const windows = findGhCli(
+    { Path: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' },
+    'win32',
+    p => p === winGh
+  )
 
   assert.equal(windows, winGh)
 
@@ -96,7 +100,10 @@ test('gh is found in the GUI-safe install locations a minimal launch PATH omits'
   const both = findGhCli({ PATH: '/usr/local/bin' }, 'darwin', p => p === pathGh || p === brewGh)
 
   assert.equal(both, pathGh)
-  assert.equal(findGhCli({ PATH: '/usr/bin' }, 'linux', () => false), null)
+  assert.equal(
+    findGhCli({ PATH: '/usr/bin' }, 'linux', () => false),
+    null
+  )
 })
 
 test('gh rung: argv-only spawn, stdin closed, bounded, cached for the process, and after the env rung', async () => {
@@ -136,22 +143,26 @@ test('gh rung: argv-only spawn, stdin closed, bounded, cached for the process, a
   forgetGhCliToken()
   const loggedOut = fakeExecFile({ error: Object.assign(new Error('exit 1'), { code: 1 }), stdout: '' })
 
-  assert.equal(await resolveGitHubCredential({ env, platform: 'darwin', exists, execFileFn: loggedOut.execFileFn }), null)
+  assert.equal(
+    await resolveGitHubCredential({ env, platform: 'darwin', exists, execFileFn: loggedOut.execFileFn }),
+    null
+  )
 
   // "none" is not cached: a `gh auth login` after launch is picked up by the next check without a restart.
   const nowLogged = fakeExecFile({ stdout: 'gho_after_login\n' })
 
-  assert.deepEqual(await resolveGitHubCredential({ env, platform: 'darwin', exists, execFileFn: nowLogged.execFileFn }), {
-    token: 'gho_after_login',
-    source: 'gh-cli'
-  })
+  assert.deepEqual(
+    await resolveGitHubCredential({ env, platform: 'darwin', exists, execFileFn: nowLogged.execFileFn }),
+    {
+      token: 'gho_after_login',
+      source: 'gh-cli'
+    }
+  )
 
   forgetGhCliToken()
-  assert.equal(await resolveGitHubCredential({ env, platform: 'darwin', exists: () => false, execFileFn: logged.execFileFn }), null)
+  assert.equal(
+    await resolveGitHubCredential({ env, platform: 'darwin', exists: () => false, execFileFn: logged.execFileFn }),
+    null
+  )
   assert.equal(logged.calls.length, 1)
-})
-
-test('the rejected-credential log line names the source, never the token', () => {
-  assert.match(describeGitHubCredentialSource('env'), /GITHUB_TOKEN \/ GH_TOKEN/)
-  assert.match(describeGitHubCredentialSource('gh-cli'), /gh auth token/)
 })

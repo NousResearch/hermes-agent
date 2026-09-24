@@ -11,7 +11,7 @@ import pytest
 
 from tools.browser_tool_install import _find_agent_browser, check_browser_requirements
 from tools.browser_tool_session import _run_browser_command
-from tools.browser_tool import AGENT_BROWSER_NPX_SPEC, _SANE_PATH
+from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from tools.browser_tool_install import _agent_browser_candidate_present, _discover_homebrew_node_dirs
 from tools.browser_tool_lightpanda_fallback import _run_chrome_fallback_command
 import tools.browser_tool as _bt
@@ -30,18 +30,6 @@ def _clear_browser_caches():
     _bt._agent_browser_resolved = False
 
 
-class TestSanePath:
-    """Verify _SANE_PATH includes fallback directories used by browser_tool."""
-
-    def test_includes_termux_bin(self):
-        assert "/data/data/com.termux/files/usr/bin" in _SANE_PATH.split(os.pathsep)
-
-
-    def test_includes_standard_dirs(self):
-        path_parts = _SANE_PATH.split(os.pathsep)
-        assert "/usr/local/bin" in path_parts
-        assert "/usr/bin" in path_parts
-        assert "/bin" in path_parts
 
 
 class TestDiscoverHomebrewNodeDirs:
@@ -92,7 +80,9 @@ class TestFindAgentBrowser:
              patch(
                  "tools.browser_tool_install._discover_homebrew_node_dirs",
                  return_value=[],
-             ):
+             ), \
+             patch("tools.browser_tool_install._resolve_npx_bin", return_value=None), \
+             patch("hermes_cli.dep_ensure.ensure_dependency", return_value=False):
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
                 _find_agent_browser()
 

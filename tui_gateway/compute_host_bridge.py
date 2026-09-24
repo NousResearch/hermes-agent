@@ -49,7 +49,8 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
 
 def _compute_host_turn_frame(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    display_metadata: dict | None = None) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -58,6 +59,7 @@ def _compute_host_turn_frame(
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
+        **({"display_metadata": display_metadata} if display_metadata else {}),
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
@@ -127,6 +129,12 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                             and session.get("_compute_host_turn_id") == params["turn_id"]):
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
+    if (isinstance(message, dict) and message.get("method") == "event" and isinstance(params, dict)
+            and not params.get("session_id")):
+        # A session-less (global) event the child could not deliver itself: ``write_json`` would drop it
+        # on this process's stdio; fan it out to every connected client like a local broadcast.
+        _broadcast_global_event(str(params.get("type") or ""), params.get("payload"))
+        return True
     if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
@@ -247,11 +255,12 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    display_metadata: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
-                                     display_kind=display_kind)
+                                     display_kind=display_kind, display_metadata=display_metadata)
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex

@@ -9,6 +9,7 @@ import contextlib
 import argparse
 import hashlib
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -21,6 +22,7 @@ import time as _time_mod
 from pathlib import Path
 from typing import Optional
 from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
+from hermes_platform.host import facts
 from hermes_cli.main_tui_launch import _npm_lifecycle_env
 from hermes_cli.main_web_build import (
     _hash_source_tree, _nixos_build_env, _stamp_is_current, _write_build_stamp)
@@ -96,6 +98,22 @@ def _renderer_bundle_torn(dist_dir: Path) -> bool:
     return False
 
 
+def _packaged_node_pty_missing(dist_dir: Path) -> bool:
+    """True when the packaged node-pty has no native binary for this OS.
+
+    The main process requires node-pty at startup, so such a package dies
+    before any window opens while the source stamp still matches (#62462).
+    Same places node-pty's loader and stage-native-deps.mjs look. Conservative:
+    a package without node-pty at all is not judged here.
+    """
+    root = dist_dir / "node_modules" / "node-pty"
+    if not (root / "package.json").is_file():
+        return False
+
+    native_dirs = [root / "build" / "Release", *(root / "prebuilds").glob(f"{sys.platform}-*")]
+    return not any(next(d.rglob("*.node"), None) for d in native_dirs if d.is_dir())
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """True when the desktop build output is stale, missing, torn, or built in the other mode."""
     if source_mode:
@@ -109,6 +127,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     dist_dir = _renderer_bundle_dir(desktop_dir, source_mode=source_mode)
     if dist_dir is not None and _renderer_bundle_torn(dist_dir):
         print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
+        return True
+
+    if not source_mode and dist_dir is not None and _packaged_node_pty_missing(dist_dir):
+        print("  ⚠ The packaged desktop app has no node-pty native binary; rebuilding it")
         return True
 
     return not _stamp_is_current(
@@ -230,8 +252,12 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         shutil.rmtree(previous, ignore_errors=True)
         moved_aside = live_root.exists()
         if moved_aside:
-            # A Desktop may have reopened during the long packaging step.
-            stopped = _stop_desktop_processes_locking_build(desktop_dir)
+            # A Desktop may have reopened during the long packaging step (Windows lock) or
+            # never exited at all (a manual `hermes update`/`hermes desktop` run does not
+            # wait for it — only the update hand-offs do). Either way a renderer alive
+            # past the rename below keeps fetching its old hashed chunks from disk and
+            # dies on the next lazy import, so stop it on every platform (#109643).
+            stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
             _rename_riding_out_file_lock(live_root, previous)
@@ -284,34 +310,6 @@ def _kernel32():
     return ctypes.WinDLL("kernel32", use_last_error=True)
 
 
-def _windows_native_machine_from_iswow64() -> Optional[str]:
-    """IsWow64Process2's OS-native machine, or None. HANDLE types are bound explicitly: ctypes'
-    default ``c_int`` truncates the ``(HANDLE)-1`` pseudo-handle → ``ERROR_INVALID_HANDLE`` on Win64.
-
-    ctypes defaults ``GetCurrentProcess``'s restype to ``c_int``, so the current-process pseudo-handle
-    ``(HANDLE)-1`` is truncated to ``0xFFFFFFFF`` and zero-extended into a 64-bit invalid handle. On Win64
-    that makes ``IsWow64Process2`` fail with ``ERROR_INVALID_HANDLE`` (6), which is exactly the residual
-    Windows-on-ARM failure after #71218: the gate fell through to ``PROCESSOR_ARCHITECTURE=AMD64`` (the
-    emulated process arch) and rejected a correctly-built ARM64 ``Hermes.exe``. Binding
-    ``restype``/``argtypes`` to ``wintypes.HANDLE`` keeps the full ``0xFFFFFFFFFFFFFFFF`` pseudo-handle.
-    """
-    import ctypes
-    from ctypes import wintypes
-    kernel32 = _kernel32()
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.GetCurrentProcess.argtypes = []
-    kernel32.IsWow64Process2.argtypes = [
-        wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT), ctypes.POINTER(wintypes.USHORT)]
-    kernel32.IsWow64Process2.restype = wintypes.BOOL
-
-    process_machine = wintypes.USHORT(0)
-    native_machine = wintypes.USHORT(0)
-    if not kernel32.IsWow64Process2(
-        kernel32.GetCurrentProcess(), ctypes.byref(process_machine), ctypes.byref(native_machine)):
-        return None
-    return _PE_MACHINE_TO_NAME.get(native_machine.value)
-
-
 def _windows_user_runnable_pe_machines() -> Optional[set]:
     """PE machines this host runs in user mode via GetMachineTypeAttributes (the only API reporting
     AMD64-on-ARM64 emulation); None when unavailable (pre-Win11 22000) so callers fall back."""
@@ -333,31 +331,12 @@ def _windows_user_runnable_pe_machines() -> Optional[set]:
 
 
 def _windows_native_machine() -> str:
-    """The Windows host's NATIVE machine, upper-cased: ``IsWow64Process2`` (the only API that tells
-    the truth from an emulated x64 process on ARM64), then ``PROCESSOR_ARCHITEW6432`` /
-    ``PROCESSOR_ARCHITECTURE``, then ``platform.machine()`` (which lies under emulation).
-    ``GetNativeSystemInfo`` is NOT used: it also returns emulated details.
-
-    ``platform.machine()`` reports the PROCESS architecture, which lies under emulation: the desktop update
-    chain runs an x64 hermes-setup.exe (and thus x64 Python) on Windows-on-ARM devices, where
-    ``platform.machine()`` returns ``AMD64`` even though the OS is ARM64. The #71119 integrity gate then
-    rejected the CORRECT ARM64 rebuild as an "architecture mismatch" (#69179 follow-up report). Probe order:
-    1. ``IsWow64Process2`` with a correctly-typed current-process HANDLE (#71218 + HANDLE-truncation fix).
-    2. 3.
-    """
+    """Return the native Windows machine name in upper-case PE vocabulary."""
     if sys.platform == "win32":
-        try:
-            name = _windows_native_machine_from_iswow64()
-        except (OSError, AttributeError, TypeError, ValueError):
-            name = None  # API missing, DLL load failure in tests, mistyped binding
-        if name:
-            return name
-        env_arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE")
-        if env_arch:
-            return env_arch.upper()
-    import platform as _platform
-
-    return (_platform.machine() or "").upper()
+        return {"arm64": "ARM64", "amd64": "AMD64", "x86": "X86"}.get(
+            facts.native_arch(), (platform.machine() or "").upper()
+        )
+    return (platform.machine() or "").upper()
 
 
 def _expected_windows_pe_machines() -> set:
@@ -652,11 +631,15 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
     return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
-def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
-    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree (Windows
-    only — its lock makes the pack die with ``Access is denied``; POSIX can unlink a running
-    binary). Never raises; returns the PIDs asked to stop."""
-    if sys.platform != "win32":
+def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
+    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
+
+    Windows needs it everywhere: the exe lock makes the pack die with ``Access is denied``.
+    POSIX can rename a running app's files away, so the pack itself needs no stop — but a
+    renderer left alive through the stage-and-swap promotion keeps fetching its OLD hashed
+    chunks by path after the swap and dies on the next lazy import (#109643), so the swap
+    point passes ``also_posix=True``. Never raises; returns the PIDs asked to stop."""
+    if sys.platform != "win32" and not also_posix:
         return []
     try:
         import psutil
@@ -1401,12 +1384,38 @@ def _register_linux_desktop_entry(defer: bool = False):
     return None
 
 
+def _remove_half_installed_get_windows(project_root: Path) -> list[Path]:
+    """Delete a ``node_modules/get-windows`` an interrupted extract left without ``package.json``.
+
+    A Windows in-place update with the Desktop/gateway holding files open fails tar
+    extraction mid-package (#90829); npm never revisits a directory that already exists,
+    so the optional dep stayed unresolvable on every later update until a manual repair.
+    Both the workspace hoist and the app-local copy are checked.
+    """
+    removed = []
+    for candidate in (project_root / "node_modules" / "get-windows",
+                      project_root / "apps" / "desktop" / "node_modules" / "get-windows"):
+        if candidate.is_dir() and not (candidate / "package.json").exists():
+            shutil.rmtree(candidate, ignore_errors=True)
+            print(f"  ⚠ Removed half-installed {candidate} so npm re-extracts it")
+            removed.append(candidate)
+    return removed
+
+
 def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     """npm-install the desktop workspace; exits on a failure that isn't a repairable missing Electron dist."""
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _run_npm_install_deterministic
-    from hermes_constants import with_hermes_node_path
+    from hermes_cli.update_cmd_deps import (
+        DESKTOP_NPM_SCOPE, _clear_npm_lockfile_hash, _desktop_deps_changed, _record_npm_lockfile_hash)
+    from hermes_constants import get_default_hermes_root, with_hermes_node_path
+    hermes_root = get_default_hermes_root()
+    if not _desktop_deps_changed(hermes_root) and (_electron_dir(PROJECT_ROOT) / "package.json").is_file():
+        print("→ Desktop workspace dependencies unchanged, skipping install")
+        return
     print("→ Installing desktop workspace dependencies...")
+    _clear_npm_lockfile_hash(hermes_root, DESKTOP_NPM_SCOPE)
+    _remove_half_installed_get_windows(PROJECT_ROOT)
     # Managed Node on PATH so npm's child scripts that shell out to bare `node`
     # (e.g. electron-winstaller's select-7z-arch.js) resolve it even when the
     # desktop updater chain lost shell PATH customizations. Wrapping the NixOS
@@ -1414,6 +1423,7 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     nixos_env = with_hermes_node_path(_nixos_build_env())
     install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
     if install_result.returncode == 0:
+        _record_npm_lockfile_hash(hermes_root, DESKTOP_NPM_SCOPE)
         return
     if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
         print(f"✗ Desktop dependency install failed\n  Run manually:  cd {PROJECT_ROOT} && npm ci")
@@ -1435,6 +1445,11 @@ def _run_desktop_pack_with_recovery(
     A MISSING exe is the signature of the corrupt-download class; a late failure
     (e.g. macOS signing) leaves it in place and a redownload retry would only
     repeat the same slow failure.
+
+    Both rungs additionally require the Electron distributable to be MISSING.
+    "No staged exe" is also true of every failure before electron-builder ever
+    runs (compile, bundler, native link), and switching mirrors cannot repair
+    those — it just re-runs the whole pack behind a message blaming GitHub.
     """
     from hermes_cli.main import PROJECT_ROOT
     def _staged_exe() -> Optional[Path]:
@@ -1468,13 +1483,13 @@ def _run_desktop_pack_with_recovery(
         build_result.returncode != 0
         and staging_dir is not None
         and not env.get("ELECTRON_MIRROR")
-        and _staged_exe() is None):
+        and _staged_exe() is None
+        and not _electron_dist_ok(PROJECT_ROOT)):
         print("  ⚠ Desktop build still failing; the Electron download from "
               "GitHub looks blocked. Re-downloading via a public mirror "
               "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
         mirror_env = {**npm_build_env, "ELECTRON_MIRROR": _ELECTRON_FALLBACK_MIRROR}
-        if not _electron_dist_ok(PROJECT_ROOT):
-            _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
+        _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
         _stop_desktop_processes_locking_build(desktop_dir)
         build_result = _pack(mirror_env)
     return build_result

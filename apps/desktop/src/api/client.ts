@@ -25,13 +25,15 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
+export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
+
 export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
-      notConnectedErrorMessage: 'Hermes gateway is not connected',
+      notConnectedErrorMessage: GATEWAY_NOT_CONNECTED_MESSAGE,
       // The channel already answered -32603; surface the crash in devtools like the dial-failure sink.
       onRequestHandlerError: (error, request) =>
         console.error(`[gateway] server request handler crashed for ${request.method} (${request.id}):`, error),
@@ -69,6 +71,23 @@ export function profileScoped(profile?: null | string): { priority?: 'foreground
   return {
     ...(selected ? { profile: selected } : {}),
     ...(profile == null ? {} : { priority: 'foreground' as const })
+  }
+}
+
+/** A session's OWNER as a request scope: a profile belongs to ONE gateway, so
+ *  a Bot on another connection is (its connection, its profile) — never the
+ *  active connection with the Bot's profile name. Missing halves fall back to
+ *  the ambient scope; an explicit connection — `'local'` included — overrides
+ *  the ambient tag `hermesApi` spreads underneath (as capabilityScoped does). */
+export interface OwnerScope {
+  connectionId?: null | string
+  profile?: null | string
+}
+
+export function ownerScoped(owner?: OwnerScope): { connectionId?: string; priority?: 'foreground'; profile?: string } {
+  return {
+    ...profileScoped(owner?.profile || undefined),
+    ...(owner?.connectionId ? { connectionId: owner.connectionId } : {})
   }
 }
 
@@ -139,7 +158,7 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //
 // A profile is not a machine-global name — it belongs to ONE gateway. The
 // Capabilities surface can be pointed at any (connection, profile) pair
-// (SkillsView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
+// (CapabilitiesView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
 // its REST helpers accept either the legacy string form or an explicit scope
 // object:
 //

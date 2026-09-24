@@ -111,8 +111,6 @@ def actual_endpoint(monkeypatch):
     [
         "auto",
         "actual",
-        "actual-computer",
-        "actualcomputer",
         "aci",
         "custom",
         "custom:actual-relay",
@@ -225,8 +223,6 @@ def test_actual_background_tasks_reach_chat_completions(
     [
         ("actual", False),
         ("aci", False),
-        ("actual-computer", False),
-        ("actualcomputer", False),
         ("custom", True),
         ("custom:actual-relay", True),
     ],
@@ -353,8 +349,6 @@ def test_actual_runtime_transitions_reach_chat_completions(
     [
         ("actual", False),
         ("aci", False),
-        ("actual-computer", False),
-        ("actualcomputer", False),
         ("custom", True),
         ("custom:actual-relay", True),
     ],

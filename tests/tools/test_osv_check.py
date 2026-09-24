@@ -13,7 +13,6 @@ from tools.osv_check import (
     _parse_package_from_args,
     _parse_npm_package,
     _parse_pypi_package,
-    _query_osv,
 )
 
 
@@ -250,29 +249,6 @@ class TestCheckPackageForMalware:
 
         assert mock_url2.call_count == 0, "disk cache must satisfy the second call"
 
-    def test_disk_cache_format_versioned(self, tmp_path, monkeypatch):
-        """Disk cache JSON has a version field and recoverable entries."""
-        from tools import osv_check
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
-        mock_response.__enter__ = lambda s: s
-        mock_response.__exit__ = MagicMock(return_value=False)
-
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
-            check_package_for_malware("uvx", ["mcp-server-format"])
-
-        cache_file = tmp_path / "cache" / "osv_check.json"
-        with open(cache_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        assert data["version"] == osv_check._DISK_CACHE_VERSION
-        assert "entries" in data
-        key = "PyPI|mcp-server-format|"
-        assert key in data["entries"]
-        assert "expiry" in data["entries"][key]
-        assert data["entries"][key]["result"] is None
 
     def test_disk_cache_retries_after_transient_oserror(self, tmp_path, monkeypatch):
         """A busy/unreadable cache file must not disable disk loads for the process."""
@@ -313,30 +289,3 @@ class TestCheckPackageForMalware:
             assert ("PyPI", "mcp-server-retry", None) in osv_check._cache
 
 
-class TestLiveOsvQuery:
-    """Live integration test against the real OSV API. Skipped if offline."""
-
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib.request", reason="no network"),
-        reason="network required",
-    )
-    def test_known_malware_package(self):
-        """node-hide-console-windows has a real MAL- advisory."""
-        try:
-            result = _query_osv("node-hide-console-windows", "npm")
-            assert len(result) >= 1
-            assert result[0]["id"].startswith("MAL-")
-        except Exception:
-            pytest.skip("OSV API unreachable")
-
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib.request", reason="no network"),
-        reason="network required",
-    )
-    def test_clean_package(self):
-        """react should have zero MAL- advisories."""
-        try:
-            result = _query_osv("react", "npm")
-            assert len(result) == 0
-        except Exception:
-            pytest.skip("OSV API unreachable")

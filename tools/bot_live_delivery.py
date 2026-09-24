@@ -17,7 +17,7 @@ from contextlib import contextmanager
 
 from utils import atomic_json_write, atomic_write_text, fsync_directory
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from hermes_cli.active_sessions import _FileLock
 
@@ -90,11 +90,16 @@ def has_mailbox(profile_home: Path | str) -> bool:
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)
+    created = not root.is_dir()
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
     root.chmod(0o700)
-    fsync_directory(root.parent)
-    fsync_directory(root.parent.parent)
+    if created:
+        # Only a fresh mailbox dir needs its parents durably linked; the live
+        # poller re-enters this lock twice a second per profile, and two
+        # directory fsyncs per idle poll was measurable disk churn for nothing.
+        fsync_directory(root.parent)
+        fsync_directory(root.parent.parent)
     lock = root / ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
@@ -103,10 +108,14 @@ def _locked(home: Path | str):
 
 
 def _read(path: Path) -> dict[str, Any] | None:
+    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(record, dict):
+        raise ValueError(f"ticket {path.name} is not a JSON object ({type(record).__name__})")
+    return record
 
 
 # Tickets already reported unreadable by this process. The live poller rescans the
@@ -114,8 +123,30 @@ def _read(path: Path) -> dict[str, Any] | None:
 _warned_unreadable: set[Path] = set()
 
 
+def _ticket_shape_error(path: Path, record: dict[str, Any]) -> str | None:
+    """Why a parsed ticket is unusable by the scans, or None when it is well-formed.
+
+    A ticket that parses as JSON but lost a field (truncated rewrite, foreign
+    writer, hand edit) used to raise KeyError/TypeError out of the sequence
+    scan and the claim sweep — wedging admission and delivery for the whole
+    profile exactly like corrupt JSON did before ``_scan_read`` existed.
+    """
+    owner = record.get("owner")
+    created_at, sequence = record.get("created_at"), record.get("sequence", record.get("created_at"))
+    if record.get("delivery_id") != path.stem or record.get("id") != path.stem:
+        return "id does not match filename"
+    status = record.get("status")
+    if not isinstance(status, str) or status not in ({"queued", "claimed"} | _TERMINAL):
+        return f"unknown status {status!r}"
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in (created_at, sequence)):
+        return "created_at/sequence are not integers"
+    if not isinstance(owner, dict) or not all(isinstance(owner.get(k), str) and owner[k] for k in _OWNER_KEYS):
+        return "owner pin is incomplete"
+    return None
+
+
 def _scan_read(path: Path) -> dict[str, Any] | None:
-    """Bulk-scan variant: one unreadable ticket must not wedge the whole dir.
+    """Bulk-scan variant: one unreadable or malformed ticket must not wedge the whole dir.
 
     Directory scans (sequence high-water mark, queued-claim sweep) may only
     treat a file as absent when it is provably absent; an unreadable ticket
@@ -126,10 +157,13 @@ def _scan_read(path: Path) -> dict[str, Any] | None:
     """
     try:
         record = _read(path)
+        problem = None if record is None else _ticket_shape_error(path, record)
     except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
+        record, problem = None, str(exc)
+    if problem is not None:
         level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
         _warned_unreadable.add(path)
-        log.log(level, "bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, exc)
+        log.log(level, "bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, problem)
         return None
     _warned_unreadable.discard(path)
     return record
@@ -261,3 +295,52 @@ def complete_delivery(
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
     return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
+
+
+_PENDING = ("queued", "claimed")
+_POLL_SECONDS = 0.5
+
+
+def await_delivery(
+    profile_home: Path | str, delivery_id: str, timeout: float | None,
+    *, should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any] | None:
+    """Poll a receipt until the owner settles it, ``timeout`` lapses, or ``should_stop`` says so.
+
+    Every transport that hands a turn to a live Bot Chat owner (local ``message_agent``, the
+    Desktop relay, ``hermes peer dm`` and ``hermes peer run``) waits on the same receipt; keeping
+    the loop here is what stops the lanes drifting (one lane returned a receipt sentence instead
+    of the reply, two never waited at all). Returns the last record read — still pending when the
+    budget lapsed, None when the receipt was never readable.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        record = read_delivery_result(profile_home, delivery_id)
+        if record is None or record["status"] not in _PENDING:
+            return record
+        if should_stop is not None and should_stop():
+            return record
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            return record
+        time.sleep(_POLL_SECONDS if remaining is None else min(_POLL_SECONDS, remaining))
+
+
+async def await_delivery_async(
+    profile_home: Path | str, delivery_id: str, timeout: float | None,
+    *, should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any] | None:
+    """``await_delivery`` for an event loop: never blocks a worker thread for the whole budget."""
+    import asyncio
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        record = await asyncio.to_thread(read_delivery_result, profile_home, delivery_id)
+        if record is None or record["status"] not in _PENDING:
+            return record
+        if should_stop is not None and should_stop():
+            return record
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            return record
+        await asyncio.sleep(_POLL_SECONDS if remaining is None else min(_POLL_SECONDS, remaining))

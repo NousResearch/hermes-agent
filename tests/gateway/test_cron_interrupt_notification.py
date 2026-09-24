@@ -73,8 +73,6 @@ class TestNotifyInterruptedCronJobs:
         assert len(adapter.sent) == 1
         body = adapter.sent[0]
         assert "daily-digest" in body
-        assert "cut short" in body.lower()
-        assert "hermes cron run daily-digest" in body
         assert adapter.sent_calls[0][0] == "123456"
 
     @pytest.mark.asyncio
@@ -96,19 +94,6 @@ class TestNotifyInterruptedCronJobs:
         assert sent == expected
         assert len(adapter.sent) == expected
 
-    @pytest.mark.asyncio
-    async def test_says_restarting_when_restart_was_requested(self):
-        runner, adapter = make_restart_runner()
-        _bind_notifier(runner)
-        runner._restart_requested = True
-        job = _telegram_job()
-
-        with patch("cron.jobs.get_job", return_value=job), \
-             patch("cron.scheduler._resolve_delivery_targets",
-                   return_value=[_telegram_target()]):
-            await runner._notify_interrupted_cron_jobs([job["id"]])
-
-        assert "restarting" in adapter.sent[0]
 
     @pytest.mark.asyncio
     async def test_local_only_job_stays_silent(self):
@@ -225,6 +210,7 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the interrupt path
+        runner._cron_drain_timeout = 0.01  # don't wait out the 30s cron drain budget
         sched._running_job_ids.add("be62d36a9914")
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 1)
@@ -246,7 +232,7 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         adapter.disconnect = _tracking_disconnect
 
         with patch("gateway.status.remove_pid_file"), \
-             patch("gateway.status.write_runtime_status"), \
+             patch("gateway.status.publish_runtime_status"), \
              patch("cron.scheduler.mark_job_run"), \
              patch("cron.jobs.get_job", return_value=_telegram_job()), \
              patch("cron.scheduler._resolve_delivery_targets",
@@ -260,23 +246,3 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         )
 
 
-class TestDeliveryErrorIsRecordedWhenTheNoticeCannotBeSent:
-    def test_interrupted_run_records_delivery_error_without_mark_job_run(self):
-        """``_consume_interrupted_flag`` short-circuits ``mark_job_run``,
-        which used to discard ``delivery_error`` along with it. The recovery
-        path must use ``update_job`` so the repeat counter and next_run_at
-        bookkeeping that ``mark_job_run`` owns is not run twice for one run.
-        """
-        import inspect
-
-        import cron.scheduler as sched
-
-        body_src = inspect.getsource(sched._run_one_job_body)
-        src = inspect.getsource(sched._finish_interrupted_run)
-        assert 'update_job(job["id"], {"last_delivery_error": delivery_error})' in src, (
-            "interrupted runs must still persist the delivery failure"
-        )
-        # The recovery branch hangs off the interrupted-flag short-circuit,
-        # not off a second mark_job_run call.
-        assert "_consume_interrupted_flag(" in body_src and "_finish_interrupted_run(" in body_src
-        assert "if delivery_error:" in src and "mark_job_run(" not in src

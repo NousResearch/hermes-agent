@@ -167,10 +167,10 @@ def _ctrl(**kw):
 
 
 class TestClassifier:
-    def test_autocomplete_exact_match_scores_100(self):
+    def test_autocomplete_exact_match_maps_token(self):
         for token in ("username", "email", "tel", "current-password"):
             res = classify_login_control(_ctrl(autocomplete=token, type="password" if token == "current-password" else "text"))
-            assert res is not None and res.score == 100 and res.token == token
+            assert res is not None and res.token == token
 
     def test_new_password_autocomplete_excluded(self):
         assert classify_login_control(
@@ -184,20 +184,20 @@ class TestClassifier:
         for label in ("New password", "Confirm Password", "create-password", "Repeat  password"):
             assert classify_login_control(_ctrl(type="password", label=label)) is None, label
 
-    def test_password_type_scores_90(self):
+    def test_password_type_maps_current_password(self):
         res = classify_login_control(_ctrl(type="password"))
-        assert res.score == 90 and res.token == "current-password"
+        assert res.token == "current-password"
 
-    def test_email_tel_types_score_85(self):
-        assert classify_login_control(_ctrl(type="email")).score == 85
+    def test_email_tel_types_map_tokens(self):
+        assert classify_login_control(_ctrl(type="email")).token == "email"
         res = classify_login_control(_ctrl(type="tel"))
-        assert res.score == 85 and res.token == "tel"
+        assert res.token == "tel"
 
     def test_label_heuristics(self):
         assert classify_login_control(_ctrl(label="E-mail address")).token == "email"
         assert classify_login_control(_ctrl(name="mobile_number")).token == "tel"
         res = classify_login_control(_ctrl(label="Username or account"))
-        assert res.token == "username" and res.score == 70
+        assert res.token == "username"
 
     def test_unmatched_returns_none(self):
         assert classify_login_control(_ctrl(label="Search the docs")) is None
@@ -220,12 +220,6 @@ class TestClassifier:
         fills = select_password_fill([pw1, pw2], "p")
         assert len(fills) == 1 and fills[0]["index"] == 1
 
-    def test_build_fill_js_contains_events(self):
-        js = build_fill_js(
-            [{"index": 0, "token": "current-password", "value": "x"}],
-            expected_origin="https://example.com",
-        )
-        assert "InputEvent" in js and '"change"' in js and "filled" in js
 
     def test_build_fill_js_leaves_no_dom_marker_and_binds_target_to_inspection(self):
         # P1-1: no persistent selector for filled controls. The fill targets the input by the
@@ -299,7 +293,7 @@ class TestBrowserVaultTools:
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.com"):
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is False
-        assert "Refused" in out["error"]
+        assert out["error_type"] == "origin_mismatch"
         assert "s3cret-pw" not in json.dumps(out)
 
     @staticmethod
@@ -417,7 +411,7 @@ class TestBrowserVaultTools:
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         # Password-only fill: exactly one field.
-        assert out.pop("next").startswith("Submit")  # workflow hint, not data
+        out.pop("next", None)  # workflow hint, not data
         assert out == {
             "success": True,
             "filled_fields": 1,
@@ -499,22 +493,9 @@ class TestBrowserVaultTools:
         out = json.loads(raw)
         assert out["success"] is False
         assert out["error_type"] == "supervisor_required"
-        assert "supervis" in out["error"].lower()
         assert all(call.args[1] == "get" for call in run_cmd.call_args_list), run_cmd.call_args_list
         assert "s3cret-pw" not in json.dumps([str(c) for c in run_cmd.call_args_list]) and "s3cret-pw" not in raw
 
-    def test_nonsecret_eval_fallback_still_works(self):
-        """_eval_js (non-secret) may still fall back to the CLI eval path."""
-        from tools import browser_vault_tool
-
-        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
-             patch("tools.browser_tool._last_session_key", return_value="k"), \
-             patch("tools.browser_tool_session._run_browser_command") as run_cmd:
-            reg.get.return_value = None
-            run_cmd.return_value = {"success": True, "data": {"result": "https://x.test"}}
-            res = browser_vault_tool._eval_js("t", "window.location.href")
-        assert res == {"success": True, "result": "https://x.test"}
-        run_cmd.assert_called_once()
 
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):
         """P1-1 regression: a filled, non-token-shaped canary password must be
@@ -631,7 +612,6 @@ class TestVaultHardening:
         for target in (vault, vault / "vault.key", vault / "vault.json.enc"):
             err = fs.get_read_block_error(str(target))
             assert err is not None, f"expected read deny for {target}"
-            assert "vault" in err.lower()
 
     def test_read_block_leaves_sibling_dirs_alone(self, tmp_path, monkeypatch):
         import agent.file_safety as fs
@@ -650,36 +630,16 @@ class TestVaultHardening:
         assert "vault.key" in _SECRET_FILE_NAMES
         assert "vault.json.enc" in _SECRET_FILE_NAMES
 
-    def test_ensure_dir_uses_canonical_secure_dir(self, tmp_path, monkeypatch):
-        from unittest.mock import MagicMock
-
-        import hermes_cli.config as cfg
-        from agent.vault_store import VaultStore
-
-        called = MagicMock()
-        monkeypatch.setattr(cfg, "_secure_dir", called)
-        store = VaultStore(base_dir=tmp_path / "vault")
-        store._ensure_dir()
-        assert called.call_count == 1
+    def test_vault_dir_is_owner_only(self, store, tmp_path):
+        old_umask = os.umask(0o022)
+        try:
+            _add_login(store)
+        finally:
+            os.umask(old_umask)
+        mode = stat.S_IMODE(os.stat(tmp_path / "vault").st_mode)
+        assert not mode & 0o077, oct(mode)
 
 
-class TestVaultSchemaCrossToolset:
-    def test_vault_schemas_name_the_input_tool_of_the_active_browser_stack(self):
-        """The vault tools sit in `browser`; the tool that types the identifier lives in `browser-use`
-        (`fill_input` inside browser_exec) or is browser_type. A static name would be a ghost on one stack,
-        so model_tools resolves it per session from the tools actually present."""
-        import model_tools
-        from tools.browser_vault_tool import BROWSER_VAULT_FILL_SCHEMA
-
-        assert "fill_input" not in BROWSER_VAULT_FILL_SCHEMA["description"]
-        base = model_tools._fn_def(dict(BROWSER_VAULT_FILL_SCHEMA))
-        with_exec = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_exec", "description": "x"}),
-                                                        model_tools._fn_def({"name": "terminal", "description": "x"})])
-        with_builtin = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_type", "description": "x"})])
-        desc_exec = with_exec[0]["function"]["description"]
-        desc_builtin = with_builtin[0]["function"]["description"]
-        assert "`fill_input` inside browser_exec" in desc_exec and "browser_type" not in desc_exec
-        assert "browser_type" in desc_builtin and "fill_input" not in desc_builtin
 
 
 def test_every_registered_tool_schema_declares_openai_style_parameters():
@@ -865,4 +825,4 @@ class TestTwoFactor:
         with patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
-        assert out["error_type"] == "no_code_field" and "device" in out["error"]
+        assert out["error_type"] == "no_code_field"

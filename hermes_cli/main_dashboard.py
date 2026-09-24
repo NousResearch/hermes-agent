@@ -14,14 +14,32 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
+from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
 
-def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None) -> list[int]:
-    """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup."""
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
-    return [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
+                               scope_home: str | None = None) -> list[int]:
+    """PIDs of running ``dashboard``/``serve`` backends the caller may stop.
+
+    *scope_home*: keep only backends whose resolved Hermes home (see
+    ``_hermes_home_for_pid``) is this home; unreadable ownership is spared, never guessed.
+    ``--stop`` and the post-update cleanup pass their own home so another install's or
+    profile's backend on the same machine is never a target (#113978).
+    """
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids,
+        _is_caller_wrapper_shell,
+        _pids_owned_by_hermes_home,
+        _scan_dashboard_processes,
+    )
+    pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
+    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    ancestors = _caller_ancestor_pids()
+    pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
+    return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
@@ -233,6 +251,8 @@ def _loaded_launchd_backend_jobs(
     if sys.platform != "darwin":
         return []
     import plistlib
+    from xml.parsers.expat import ExpatError
+
     from hermes_cli.gateway import _launchd_print_service_pid
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     jobs: list[tuple[str, str, list[str], int | None]] = []
@@ -245,7 +265,11 @@ def _loaded_launchd_backend_jobs(
             try:
                 with open(plist_path, "rb") as f:
                     data = plistlib.load(f)
-            except (OSError, ValueError, plistlib.InvalidFileException):
+            # ExpatError is NOT a ValueError: plistlib propagates it unwrapped for
+            # XML that is not well-formed (e.g. a hand-edited plist with a raw
+            # `&` in `ProgramArguments`), and one such operator file must skip —
+            # not abort — the whole post-pull cleanup scan.
+            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
                 continue
             if not isinstance(data, dict):
                 continue
@@ -728,15 +752,140 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def _host_backend_attachment():
+    """Live host serve/dashboard record to attach to, or ``None``.
+
+    Record-based discovery replaces the old bare-TCP probe: "something accepts a connection on
+    this port" proved nothing about WHO answers (a foreign service, or a recycled PID's new
+    owner). The record carries ``(pid, createTime)`` so liveness is proved against the same
+    incarnation, and its token fingerprint must still match the 0600 token file the owner wrote.
+    The record only nominates a CANDIDATE; :func:`_attach_to_host_backend` makes it prove itself.
+    """
+    try:
+        from gateway import host_rendezvous as hr
+
+        record = hr.read_record(hr.ROLE_SERVE)
+        if record is None or not record.port:
+            return None
+        return record if hr.record_token_is_consistent(record) else None
+    except Exception:
+        return None
+
+
+def _explicit_endpoint_flags(argv=None) -> set:
+    """Which of ``--host``/``--port`` the operator actually typed.
+
+    argparse defaults are indistinguishable from a typed value in ``args``, and the difference is
+    load-bearing: an unset ``--port`` may attach to whatever port the host owner bound, but a
+    typed ``--port 8899`` or ``--host 0.0.0.0`` (LAN access) must never be silently answered with
+    a loopback attach on some other port.
+    """
+    typed = set()
+    for token in (sys.argv[1:] if argv is None else argv):
+        name = str(token).split("=", 1)[0]
+        if name in ("--host", "--port"):
+            typed.add(name[2:])
+    return typed
+
+
+def _endpoint_conflict(args, record, typed: set) -> str:
+    """Why an explicitly requested endpoint cannot be served by ``record`` ('' when it can)."""
+    if "port" in typed:
+        wanted_port = getattr(args, "port", None)
+        # ``--port 0`` is "any free port", not a demand for a specific one.
+        if isinstance(wanted_port, int) and wanted_port > 0 and wanted_port != record.port:
+            return f"--port {wanted_port} (the host owner is on port {record.port})"
+    if "host" in typed:
+        wanted_host = str(getattr(args, "host", "") or "")
+        owner_host = record.host or "127.0.0.1"
+        loopback = {"127.0.0.1", "localhost", "::1"}
+        wildcard = {"0.0.0.0", "::", "*"}
+        # A wildcard owner already answers on loopback; anything else must match exactly.
+        reachable = wanted_host == owner_host or (owner_host in wildcard and wanted_host in loopback)
+        if not reachable:
+            return f"--host {wanted_host} (the host owner is bound to {owner_host})"
+    return ""
+
+
+def _attach_to_host_backend(args, headless_backend: bool) -> None:
+    """Multiplex-only: a second `hermes serve`/`dashboard` attaches to the host backend.
+
+    Exactly ONE backend runs per host and multiplexes every profile, so a second invocation —
+    for ANY profile, the default included — reports the live one and exits 0 instead of binding
+    a second port. ``--isolated`` opts out (Desktop's SSH backend proves ownership with it) and
+    Desktop pool backends (HERMES_DESKTOP=1) keep their own lifecycle.
+
+    Exit 0 means "the host backend answered and serves what you asked for", and nothing else:
+
+    * the owner must ANSWER on its recorded port and identify itself (a record alone cannot see a
+      graceful-shutdown window or a foreign listener that inherited the port) — a supervisor or
+      `hermes update` relaunch landing in that window would otherwise exit 0 with NOTHING
+      listening, reporting success for a dead service;
+    * an explicitly typed ``--port``/``--host`` the owner cannot serve is a REFUSAL naming the
+      owner, never a silent redirect. It exits 78 (EX_CONFIG), the deliberate-refusal code
+      ``RestartPreventExitStatus=78`` parks on: exit 1 under ``Restart=always`` was an infinite
+      restart loop with nothing listening on the ingress port (#119824);
+    * a `hermes dashboard` user is never handed a headless backend's URL (no SPA behind it).
+
+    Returns normally — leaving the caller to BIND — when no owner answers.
+    """
+    if getattr(args, "isolated", False) or _is_desktop_owned_backend():
+        return
+    record = _host_backend_attachment()
+    if record is None:
+        return
+
+    from gateway import host_rendezvous as hr
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+    identity = hr.probe_owner(record)
+    if identity is None:
+        # Unprovable liveness (no psutil), a closed port, a foreign listener: all mean "no owner
+        # answered". Fall through to the bind — never exit 0 on an attach that did not happen.
+        return
+
+    typed = _explicit_endpoint_flags()
+    conflict = _endpoint_conflict(args, record, typed)
+    if conflict:
+        print(f"Refusing to start: this host is already served by {hr.describe(record)}.")
+        print(f"  You asked for {conflict}.")
+        print("  Stop that backend, or drop the flag to use the running one.")
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+    if not headless_backend and not identity.get("servesSpa"):
+        print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
+              "which is a headless `hermes serve` backend with no dashboard UI.")
+        print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = get_active_profile_name()
+    except Exception:
+        profile = "default"
+    wanted = getattr(args, "open_profile", "") or profile
+    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
+
+    kind = "backend" if headless_backend else "dashboard"
+    print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")
+    print(f"  Managing profile '{wanted}': {url}")
+    if not headless_backend and not args.no_open:
+        with contextlib.suppress(Exception):
+            import webbrowser
+            webbrowser.open(url)
+    sys.exit(0)
+
+
 def _route_named_profile_dashboard(
     args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
     makes one server per profile pure fragmentation).
 
-    Already listening → open ``?profile=<name>`` and exit; else re-exec pinned to
-    ``-p default`` (so ``_apply_profile_override`` can't re-route via the sticky
-    active_profile file). ``--isolated`` opts out; Desktop pool backends
-    (HERMES_DESKTOP=1) stay per-profile. Returns normally when no routing applies.
+    No-record fallback to :func:`_attach_to_host_backend`, which already attached (and exited)
+    when the host publishes a live rendezvous record: re-exec pinned to ``-p default`` (so
+    ``_apply_profile_override`` can't re-route via the sticky active_profile file). ``--isolated``
+    opts out; Desktop pool backends (HERMES_DESKTOP=1) stay per-profile. Returns normally when no
+    routing applies.
     """
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -748,19 +897,9 @@ def _route_named_profile_dashboard(
         _launch_profile in ("default", "custom")
         or getattr(args, "isolated", False)
         or getattr(args, "open_profile", "")
-        or os.environ.get("HERMES_DESKTOP") == "1"
+        or _is_desktop_owned_backend()
     ):
         return
-
-    url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
-    if _dashboard_listening(args.host, args.port):
-        print(f"Machine dashboard already running on port {args.port}.")
-        print(f"  Managing profile '{_launch_profile}': {url}")
-        if not args.no_open:
-            with contextlib.suppress(Exception):
-                import webbrowser
-                webbrowser.open(url)
-        sys.exit(0)
 
     print(
         f"Routing to the machine dashboard (profile '{_launch_profile}' "

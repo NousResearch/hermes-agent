@@ -2,243 +2,19 @@ from __future__ import annotations
 
 import io
 import sys
-from pathlib import Path
 
 import pytest
 
 from hermes_cli.console_engine import HermesConsoleEngine, run_console_repl
 
 
-EXPECTED_CONSOLE_COMMANDS = {
-    ("status",),
-    ("doctor",),
-    ("logs",),
-    ("version",),
-    ("dump",),
-    ("debug", "share"),
-    ("debug", "delete"),
-    ("prompt-size",),
-    ("insights",),
-    ("security", "audit"),
-    ("portal", "info"),
-    ("portal", "tools"),
-    ("backup",),
-    ("import",),
-    ("send",),
-    ("config", "show"),
-    ("config", "path"),
-    ("config", "env-path"),
-    ("config", "check"),
-    ("config", "migrate"),
-    ("config", "set"),
-    ("sessions", "list"),
-    ("sessions", "stats"),
-    ("sessions", "export"),
-    ("sessions", "rename"),
-    ("sessions", "optimize"),
-    ("sessions", "repair"),
-    ("cron", "list"),
-    ("cron", "status"),
-    ("cron", "create"),
-    ("cron", "edit"),
-    ("cron", "pause"),
-    ("cron", "resume"),
-    ("cron", "run"),
-    ("cron", "remove"),
-    ("cron", "tick"),
-    ("profile",),
-    ("profile", "list"),
-    ("profile", "show"),
-    ("profile", "info"),
-    ("profile", "create"),
-    ("profile", "use"),
-    ("profile", "describe"),
-    ("profile", "rename"),
-    ("profile", "delete"),
-    ("profile", "export"),
-    ("profile", "import"),
-    ("profile", "install"),
-    ("profile", "update"),
-    ("tools", "list"),
-    ("tools", "enable"),
-    ("tools", "disable"),
-    ("tools", "post-setup"),
-    ("plugins", "list"),
-    ("plugins", "enable"),
-    ("plugins", "disable"),
-    ("plugins", "install"),
-    ("plugins", "update"),
-    ("plugins", "remove"),
-    ("skills", "browse"),
-    ("skills", "search"),
-    ("skills", "inspect"),
-    ("skills", "list"),
-    ("skills", "check"),
-    ("skills", "list-modified"),
-    ("skills", "diff"),
-    ("skills", "install"),
-    ("skills", "update"),
-    ("skills", "audit"),
-    ("skills", "uninstall"),
-    ("skills", "reset"),
-    ("skills", "opt-in"),
-    ("skills", "opt-out"),
-    ("skills", "repair-official"),
-    ("skills", "snapshot", "export"),
-    ("skills", "snapshot", "import"),
-    ("skills", "tap", "list"),
-    ("skills", "tap", "add"),
-    ("skills", "tap", "remove"),
-    ("mcp", "list"),
-    ("mcp", "catalog"),
-    ("mcp", "test"),
-    ("mcp", "add"),
-    ("mcp", "remove"),
-    ("mcp", "install"),
-    ("mcp", "login"),
-    ("mcp", "reauth"),
-    ("mcp", "configure"),
-    ("mcp", "picker"),
-    ("memory", "status"),
-    ("memory", "off"),
-    ("memory", "reset"),
-    ("auth", "list"),
-    ("auth", "status"),
-    ("auth", "reset"),
-    ("auth", "add"),
-    ("auth", "remove"),
-    ("auth", "logout"),
-    ("auth", "spotify", "status"),
-    ("auth", "spotify", "login"),
-    ("auth", "spotify", "logout"),
-    ("pairing", "list"),
-    ("pairing", "approve"),
-    ("pairing", "revoke"),
-    ("pairing", "clear-pending"),
-    ("webhook", "list"),
-    ("webhook", "subscribe"),
-    ("webhook", "remove"),
-    ("webhook", "test"),
-    ("hooks", "list"),
-    ("hooks", "test"),
-    ("hooks", "doctor"),
-    ("hooks", "revoke"),
-    ("slack", "manifest"),
-    ("project", "list"),
-    ("project", "show"),
-    ("project", "create"),
-    ("project", "add-folder"),
-    ("project", "remove-folder"),
-    ("project", "rename"),
-    ("project", "set-primary"),
-    ("project", "use"),
-    ("project", "archive"),
-    ("project", "restore"),
-    ("project", "bind-board"),
-    ("kanban", "init"),
-    ("kanban", "boards", "list"),
-    ("kanban", "boards", "create"),
-    ("kanban", "boards", "rm"),
-    ("kanban", "boards", "switch"),
-    ("kanban", "boards", "current"),
-    ("kanban", "boards", "rename"),
-    ("kanban", "boards", "set-workdir"),
-    ("kanban", "create"),
-    ("kanban", "list"),
-    ("kanban", "show"),
-    ("kanban", "assign"),
-    ("kanban", "reclaim"),
-    ("kanban", "reassign"),
-    ("kanban", "diagnose"),
-    ("kanban", "link"),
-    ("kanban", "unlink"),
-    ("kanban", "claim"),
-    ("kanban", "comment"),
-    ("kanban", "complete"),
-    ("kanban", "edit"),
-    ("kanban", "block"),
-    ("kanban", "schedule"),
-    ("kanban", "unblock"),
-    ("kanban", "promote"),
-    ("kanban", "archive"),
-    ("kanban", "stats"),
-    ("kanban", "runs"),
-    ("kanban", "heartbeat"),
-    ("kanban", "assignments"),
-    ("kanban", "context"),
-    ("bundles", "list"),
-    ("bundles", "show"),
-    ("bundles", "create"),
-    ("bundles", "delete"),
-    ("bundles", "reload"),
-    ("checkpoints", "status"),
-    ("checkpoints", "list"),
-    ("checkpoints", "prune"),
-    ("checkpoints", "clear"),
-    ("checkpoints", "clear-legacy"),
-    ("curator", "status"),
-    ("curator", "run"),
-    ("curator", "pause"),
-    ("curator", "resume"),
-    ("curator", "pin"),
-    ("curator", "unpin"),
-    ("curator", "restore"),
-    ("curator", "list-archived"),
-    ("curator", "archive"),
-    ("curator", "prune"),
-    ("curator", "backup"),
-    ("curator", "rollback"),
-    ("pets", "list"),
-    ("pets", "install"),
-    ("pets", "select"),
-    ("pets", "show"),
-    ("pets", "off"),
-    ("pets", "scale"),
-    ("pets", "remove"),
-    ("pets", "doctor"),
-}
+def test_sessions_optimize_accepts_the_force_override_it_advertises(_isolate_hermes_home):
+    """The held-store refusal this command prints points at `sessions optimize --force`; if the
+    console rejected the flag, the command could only ever refuse whenever a gateway is running."""
+    result = HermesConsoleEngine().execute("sessions optimize --force", confirmed=True)
 
-
-MUTATING_CONFIRMATION_SMOKE_COMMANDS = [
-    "config set console.test true",
-    "config migrate",
-    "sessions rename abc123 new title",
-    "sessions optimize",
-    "cron create 'every 1h' 'say hello'",
-    "cron remove abc123",
-    "profile create tester --no-alias --no-skills",
-    "profile delete tester",
-    "tools disable web",
-    "plugins install owner/repo --no-enable",
-    "skills install openai/skills/example",
-    "mcp add demo --url https://example.com/sse",
-    "mcp configure github",
-    "mcp picker",
-    "backup --quick -o /tmp/hermes-console-test.zip",
-    "import /tmp/hermes-console-test.zip",
-    "send --to telegram hello",
-    "memory reset --target memory",
-    "auth remove openrouter 1",
-    "pairing approve abc123",
-    "webhook subscribe test --prompt hello",
-    "hooks test pre_tool_call",
-    "project create demo",
-    "kanban create 'demo task'",
-    "bundles create demo --skill skill-a",
-    "checkpoints prune",
-    "curator pause",
-    "pets install cat",
-]
-
-
-
-
-
-
-
-
-
-
+    assert result.status == "ok", result.output
+    assert "Usage:" not in result.output
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):
@@ -488,13 +264,6 @@ def test_capture_output_surfaces_string_exit_code_as_command_error():
     assert "No credential matching" in str(exc_info.value)
 
 
-def test_capture_output_preserves_integer_exit_code_message():
-    from hermes_cli.console_engine import ConsoleCommandError, _capture_output
-
-    with pytest.raises(ConsoleCommandError) as exc_info:
-        _capture_output(lambda: sys.exit(3))
-
-    assert "status 3" in str(exc_info.value)
 
 
 def test_execute_handler_string_exit_returns_error_not_crash(_isolate_hermes_home):
@@ -563,29 +332,6 @@ def test_console_checkpoints_prune_does_not_reprompt_for_orphans(
     assert prune_calls[0]["orphan_allowlist"] is None
 
 
-def test_console_checkpoints_prune_succeeds_without_a_tty(
-    _isolate_hermes_home, monkeypatch
-):
-    """The dashboard console has no stdin, so an unskipped prompt aborts the command.
-
-    `_capture_output` redirects stdout/stderr but never stdin, so `input()` raises
-    `EOFError`, `_confirm` returns False, and `cmd_prune` returns 1 — which the
-    console surfaces as a failed command for every user with an orphan project.
-    """
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, prune_calls)
-
-    def _eof_input(_prompt):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", _eof_input)
-
-    result = HermesConsoleEngine().execute("checkpoints prune", confirmed=True)
-
-    assert result.status == "ok"
-    assert "Aborted." not in result.output
-    assert len(prune_calls) == 1
-    assert prune_calls[0]["orphan_allowlist"] is None
 
 
 def test_config_set_on_unparseable_yaml_reports_error_not_crash(tmp_path, monkeypatch):

@@ -169,6 +169,17 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
             ),
         }
 
+    # Re-admit at the WRITE. The handler-level fence (_fenced_page_op) admitted before a possibly
+    # human-length prompt (enter_code waits for the user's code); a takeover during that wait must
+    # refuse here, before the credential lands in a page the human is now typing into. The outer
+    # epoch check only discards the result, and a fill is a side effect, not a result.
+    if _bot_desktop_browser_session(task_id):
+        from tools.bot_desktop import lease as _bd_lease
+        try:
+            _bd_lease.assert_agent_may_act()
+        except _bd_lease.HumanHasControl as exc:
+            return {"success": False, "error_type": "human_has_control", "error": str(exc)}
+
     sup = supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
@@ -699,12 +710,32 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
 }
 
 
+def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
+    from tools.browser_tool import _active_sessions, _last_session_key
+    from tools.browser_tool_session import _shares_bot_desktop_browser
+    return _shares_bot_desktop_browser(_active_sessions.get(_last_session_key(task_id or "default")) or {})
+
+
+def _fenced_page_op(task_id: Optional[str], fn) -> str:
+    """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
+    ``_run_browser_command``; they must honour the Bot Desktop lease like every other page access,
+    or a human typing a credential on the taken-over screen could be read or written to."""
+    from tools.browser_tool import _active_sessions, _last_session_key
+    from tools.browser_tool_session import run_fenced
+
+    session = _active_sessions.get(_last_session_key(task_id or "default")) or {}
+    res = run_fenced(session, lambda: {"raw": fn()})
+    return res["raw"] if "raw" in res else json.dumps(res)
+
+
 def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id"))
+    tid = kwargs.get("task_id")
+    return _fenced_page_op(tid, lambda: browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=tid))
 
 
 def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_save_login(label=str(args.get("label") or ""), task_id=kwargs.get("task_id"))
+    tid = kwargs.get("task_id")
+    return _fenced_page_op(tid, lambda: browser_vault_save_login(label=str(args.get("label") or ""), task_id=tid))
 
 
 def _handle_vault_list(args: Dict[str, Any], **kwargs) -> str:
@@ -716,9 +747,8 @@ def _handle_vault_unlock(args: Dict[str, Any], **kwargs) -> str:
 
 
 def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_fill(
-        handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id")
-    )
+    tid = kwargs.get("task_id")
+    return _fenced_page_op(tid, lambda: browser_vault_fill(handle=str(args.get("handle") or ""), task_id=tid))
 
 
 from tools.registry import no_cache_check_fn, registry  # noqa: E402

@@ -13,6 +13,14 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
+
+Note: any room with <=2 joined members is auto-classified as a DM (see
+``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name —
+clients auto-name DMs like "Alice & Bot", so name alone can't be trusted. A DM-classified room
+therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_REQUIRE_MENTION,
+and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
+MATRIX_SESSION_SCOPE. To make a deliberately-created 2-person room behave like a regular room,
+add a third member so it has >2 joined members.
 """
 
 from __future__ import annotations
@@ -1427,7 +1435,7 @@ class MatrixAdapter(BasePlatformAdapter):
         root = result.message_id if result.success else None
         if not root:
             return None
-        self._threads.mark(str(root))  # replies in this thread bypass require_mention, like inbound roots
+        await self._threads.mark_async(str(root))  # replies in this thread bypass require_mention, like inbound roots
         return str(root)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -1595,9 +1603,16 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Upload audio as an MSC3245 voice message. Voice bubbles need Ogg/Opus but callers pass any
-        format (e.g. TTS output), so transcode here — best-effort: without ffmpeg the original is sent."""
+        metadata: Optional[Dict[str, Any]] = None, is_voice: Optional[bool] = None) -> SendResult:
+        """Upload audio. The base media dispatch calls this with ``is_voice``: True for a voice-tagged
+        attachment → MSC3245 voice bubble; False for an audio-ext MEDIA attachment → plain ``m.audio``
+        in the original format. Voice bubbles need Ogg/Opus but callers pass any format (e.g. TTS
+        output), so transcode there — best-effort: without ffmpeg the original is sent. Callers that
+        don't pass the flag (``play_audio``) keep the voice-bubble behavior this method was written
+        for (#116776: the dispatch always passes ``is_voice``, and rejecting it dropped the file)."""
+        if is_voice is False:
+            return await self._send_local_file(
+                chat_id, audio_path, "m.audio", caption, reply_to, metadata=metadata, is_voice=False)
         converted_path: Optional[str] = None
         if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
             # 48k (not the 32k default): Element renders voice bubbles at a higher quality tier.
@@ -2065,7 +2080,7 @@ class MatrixAdapter(BasePlatformAdapter):
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
         if thread_id:
-            self._threads.mark(thread_id)  # covers real roots and synthetic ones alike
+            await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
@@ -2087,10 +2102,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
-        still change (reply-fallback strip); ``extra`` carries media fields / message_type."""
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        still change (reply-fallback strip); ``extra`` carries media fields / message_type.
+        ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
+        downloading); resolving it twice would double the read receipt / thread mark."""
+        if ctx is None:
+            ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
@@ -2154,6 +2172,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
+        # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
+        # non-allowlisted room must not pull media onto the host only to drop it.
+        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        if ctx is None:
+            return
         # Cache locally so downstream tools get a real file path.
         cached_path = None
         if url:
@@ -2167,7 +2190,7 @@ class MatrixAdapter(BasePlatformAdapter):
         http_url = self._mxc_to_http(url) if url and not is_encrypted_media else ""
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, body, source_content, relates_to, message_type=msg_type,
+            room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)
@@ -2274,11 +2297,75 @@ class MatrixAdapter(BasePlatformAdapter):
         invites = (sync_data.get("rooms", {}) if isinstance(sync_data, dict) else {}).get("invite", {})
         if not isinstance(invites, dict):
             return
-        for room_id in invites:
+        for room_id, invited_room in invites.items():
             if room_id in self._joined_rooms:
                 continue
-            logger.info("Matrix: reconciling pending invite for %s", room_id)
-            self._schedule_invite_join(str(room_id))
+            # This reconcile pass runs after _dispatch_sync and sees every
+            # rooms.invite entry, whether _on_invite joined it, rejected
+            # it, or (for invites that arrived while the gateway was down)
+            # is only now seeing it. The invite event object is gone by
+            # this point, so the DM signal must be read from the stripped
+            # invite state; without it a direct invite joined here is never
+            # recorded in m.direct and gets misclassified as a group.
+            is_direct, inviter = self._extract_invite_dm_signal(invited_room)
+            # The inviter allowlist gate from _on_invite must apply here
+            # too: an unconditional join would re-admit a live invite that
+            # _on_invite just rejected milliseconds earlier, and would
+            # auto-join any invite from an arbitrary federated user on
+            # restart. An inviter missing from the stripped invite state
+            # fails closed, like an empty sender in _on_invite.
+            if not self._is_authorized_user(inviter):
+                logger.warning(
+                    "Matrix: rejecting invite to %s from unauthorized user %s",
+                    room_id,
+                    inviter,
+                )
+                continue
+            logger.info(
+                "Matrix: reconciling pending invite for %s (is_direct=%s)",
+                room_id,
+                is_direct,
+            )
+            self._schedule_invite_join(str(room_id), is_direct=is_direct, inviter=inviter)
+
+    def _extract_invite_dm_signal(self, invited_room: Any) -> tuple[bool, str]:
+        """Read the is_direct flag and inviter from a room's invite_state.
+
+        The stripped ``m.room.member`` event for our own user carries the
+        ``is_direct`` flag from the original invite; its sender is the
+        inviter. Returns ``(False, "")`` when the signal is absent.
+        """
+        if not self._user_id:
+            return False, ""
+
+        if not isinstance(invited_room, dict):
+            return False, ""
+
+        invite_state = invited_room.get("invite_state", {})
+        if not isinstance(invite_state, dict):
+            return False, ""
+
+        events = invite_state.get("events", [])
+        if not isinstance(events, list):
+            return False, ""
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "m.room.member":
+                continue
+            if event.get("state_key") != self._user_id:
+                continue
+
+            content = event.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            if content.get("membership") != "invite":
+                continue
+
+            return bool(content.get("is_direct")), str(event.get("sender", ""))
+
+        return False, ""
 
     async def _send_reaction(self, room_id: str, event_id: str, emoji: str) -> Optional[str]:
         """Send an emoji reaction; returns the reaction event_id, or None on failure."""

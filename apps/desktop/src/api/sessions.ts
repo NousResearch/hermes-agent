@@ -42,6 +42,18 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
   return scoped
 }
 
+/**
+ * The profile a session WRITE must name in its body. The PATCH handler reads
+ * its target DB from `body.profile` alone (`_with_db(body.profile, ...)`), and
+ * under multiplex-only there is no per-profile backend whose HERMES_HOME could
+ * stand in for it: an unnamed owner lands the rename/pin/archive/mark-read on
+ * the shared backend's own state.db. "Unnamed" therefore means "the profile I
+ * am looking at", not "whatever home the backend was launched in".
+ */
+function sessionWriteProfile(profile?: null | string): string | undefined {
+  return String(profile ?? '').trim() || getApiRequestProfile() || undefined
+}
+
 function sessionScopeQuery(scope?: ProfileScope): string {
   const profile = sessionScoped(scope).profile
 
@@ -171,16 +183,17 @@ export interface SidebarSessionSlice {
 
 /** Which profiles filled their per-profile window in a returned page. The
  *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. Pinned rows are
- *  discounted — they're back-filled past the LIMIT, so counting them fakes a
- *  full page and leaves a "Load more" that can never resolve. */
+ *  a profile at (or over) the cap still has more on disk. Pinned rows count
+ *  like any other: they occupy LIMIT slots, and a short list has nothing past
+ *  the page for the pin back-fill to add, so pins cannot fake a full page
+ *  (#81484). */
 function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
     const key = session.profile || 'default'
 
-    counts.set(key, (counts.get(key) ?? 0) + (session.pinned ? 0 : 1))
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
   return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
@@ -191,6 +204,9 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
+   *  structurally damaged. Absent from older backends. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SidebarSessionsRequest {
@@ -239,7 +255,10 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
 
+  const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
+
   return {
+    ...(Object.keys(storage).length ? { storage } : {}),
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -330,7 +349,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
-    errors: result.errors
+    errors: result.errors,
+    storage: result.storage
   }
 }
 
@@ -343,11 +363,13 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived, ...(profile ? { profile } : {}) }
+    body: { archived, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -359,11 +381,13 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
   // Owning profile in the PATCH body (see setSessionArchived / renameSession):
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's pin must travel in the body or it no-ops on the wrong state.db.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { pinned, ...(profile ? { profile } : {}) }
+    body: { pinned, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -376,11 +400,13 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's unread toggle must travel in the body or it no-ops on the wrong
   // state.db.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { unread, ...(profile ? { profile } : {}) }
+    body: { unread, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -632,10 +658,12 @@ export function renameSession(
   title: string,
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean; title: string }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title, ...(profile ? { profile } : {}) }
+    body: { title, ...(owner ? { profile: owner } : {}) }
   })
 }

@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import abc
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent import provider_media
 from agent.provider_base import CatalogProviderBase
+from agent.secret_scope import get_secret_str
 
 logger = logging.getLogger(__name__)
 
@@ -92,15 +92,19 @@ def save_url_video(
     max_bytes: int = 200 * 1024 * 1024,
     headers: Optional[Dict[str, str]] = None,
     require_video_content_type: bool = False,
+    trusted_origin: bool = False,
 ) -> Path:
     """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/videos/``;
-    raises on network / HTTP / oversize / empty errors so callers can fall back to the URL."""
+    raises on network / HTTP / oversize / empty errors so callers can fall back to the URL.
+    ``trusted_origin`` is only for URLs built from the operator's configured provider
+    ``base_url`` (see ``provider_media.save_url``)."""
     return provider_media.save_url(
         "videos", url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
         chunk_size=256 * 1024, content_types=_URL_VIDEO_CONTENT_TYPES,
         url_extensions=("mp4", "webm", "mov", "mkv"), default_extension="mp4",
         label="Video", empty_error="Video at {url} was empty (0 bytes).",
         headers=headers, require_known_content_type=require_video_content_type,
+        trusted_origin=trusted_origin,
     )
 
 
@@ -149,7 +153,8 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
     _poll_deadline_s: float = 900.0
 
     def _api_key(self) -> str:
-        return os.environ.get(self._env_key, "").strip()
+        # Through the profile secret scope: under multiplexing os.environ holds another profile's key.
+        return get_secret_str(self._env_key).strip()
 
     def is_available(self) -> bool:
         return bool(self._api_key())
@@ -172,7 +177,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
         return video
 
     def _base_url(self) -> str:
-        return os.environ.get(f"{self.name.upper()}_BASE_URL", "").strip() or self._default_base_url
+        return get_secret_str(f"{self.name.upper()}_BASE_URL").strip() or self._default_base_url
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None,
@@ -226,7 +231,15 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
         if extra_body:
             call_kwargs["extra_body"] = extra_body
 
-        client = openai.OpenAI(api_key=self._api_key(), base_url=self._base_url())
+        # Env-only-proxy httpx client: a macOS system proxy (ExceptionsList invisible to httpx)
+        # must not swallow a local/custom ``<NAME>_BASE_URL`` (#64888).
+        from agent.process_bootstrap import build_keepalive_http_client
+
+        client_kwargs: Dict[str, Any] = {"api_key": self._api_key(), "base_url": self._base_url()}
+        http_client = build_keepalive_http_client(client_kwargs["base_url"])
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
+        client = openai.OpenAI(**client_kwargs)
         try:
             try:
                 video = self._create_and_poll(client, call_kwargs)

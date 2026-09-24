@@ -59,6 +59,29 @@ def _tool_heavy_native_tools():
     ]
 
 
+def _parallel_tool_round(label, count=10):
+    """Build one completed native tool turn with matching, distinct call IDs."""
+    calls = [
+        {
+            "id": f"{label}-{index:02d}",
+            "function": {"name": f"tool_{index:02d}", "arguments": "{}"},
+        }
+        for index in range(count)
+    ]
+    return [
+        {"role": "user", "content": f"{label} request"},
+        {"role": "assistant", "content": "", "tool_calls": calls},
+        *[
+            {
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": f"{label} result {index}",
+            }
+            for index, call in enumerate(calls)
+        ],
+    ]
+
+
 def test_t20880_tool_heavy_native_loop_reproduction():
     """A 28-tool native loop needs a tool marker and a retained transaction endpoint."""
     tools = _tool_heavy_native_tools()
@@ -89,6 +112,107 @@ def test_t20880_tool_heavy_native_loop_reproduction():
     assert final_tool_marked
     assert shared_transaction_endpoint
     assert _count_cache_markers(after_exchange.messages, after_exchange.tools) <= 4
+
+
+def test_native_tool_cache_preserves_two_transaction_endpoints_with_context_prefix():
+    """Two system tiers retain the newest completed endpoint through a 10-way tool round.
+
+    Mutating the two-tier transaction budget back to one endpoint must make the
+    ``E_N`` assertion below fail: a following request would otherwise rely on
+    Anthropic's short automatic lookback after this many tool blocks.
+    """
+    from agent.system_prompt import _SystemCachePrefix
+
+    history = [{"role": "system", "content": "stable prefix\n\ncontext head\n\nvolatile suffix"}]
+    history.extend(_parallel_tool_round("prior", count=1))
+    history.extend(_parallel_tool_round("current"))
+    prefix = _SystemCachePrefix("stable prefix\n\ncontext head", "stable prefix")
+    tools = _tool_heavy_native_tools()
+    original_history = copy.deepcopy(history)
+    original_tools = copy.deepcopy(tools)
+    plan = build_prompt_cache_plan(
+        history,
+        tools,
+        native_anthropic=True,
+        static_system_prefix=prefix,
+        direct_native_tool_cache=True,
+    )
+
+    system_parts = plan.messages[0]["content"]
+    assert [part["text"] for part in system_parts] == [
+        "stable prefix", "\n\ncontext head", "\n\nvolatile suffix",
+    ]
+    assert [("cache_control" in part) for part in system_parts] == [True, True, False]
+    assert "cache_control" not in plan.tools[-1]
+    current_endpoint = len(history) - 1
+    prior_endpoint = 3
+    assert _native_marker_indexes(plan.messages) - {0} == {prior_endpoint, current_endpoint}
+    assert _count_cache_markers(plan.messages, plan.tools) == 4
+
+    next_history = history + _parallel_tool_round("next", count=1)
+    original_next_history = copy.deepcopy(next_history)
+    replanned = build_prompt_cache_plan(
+        next_history,
+        tools,
+        native_anthropic=True,
+        static_system_prefix=prefix,
+        direct_native_tool_cache=True,
+    )
+    next_endpoint = len(next_history) - 1
+    assert _native_marker_indexes(replanned.messages) - {0} == {current_endpoint, next_endpoint}
+    assert current_endpoint in _native_marker_indexes(replanned.messages)
+    assert _count_cache_markers(replanned.messages, replanned.tools) == 4
+    assert history == original_history
+    assert next_history == original_next_history
+    assert tools == original_tools
+
+
+def test_native_three_part_system_split_survives_deepcopy_and_redecoration():
+    """The enlarged prefix rides in ``api_messages`` text parts: those bytes must deep-copy
+    (vision prep, compression snapshots) and strip back to the stored string so a failover
+    redecoration can re-split the same three boundaries."""
+    from agent.system_prompt import _SystemCachePrefix
+
+    prefix = _SystemCachePrefix("stable prefix\n\ncontext head", "stable prefix")
+    history = _tool_heavy_native_history()
+    history[0]["content"] = "stable prefix\n\ncontext head\n\nvolatile suffix"
+    tools = _tool_heavy_native_tools()
+
+    plan = build_prompt_cache_plan(history, tools, native_anthropic=True,
+                                   static_system_prefix=prefix, direct_native_tool_cache=True)
+    assert all(type(part["text"]) is str for part in plan.messages[0]["content"])
+    copied = copy.deepcopy(plan.messages)  # must not raise on the str subclass
+    strip_anthropic_cache_control(copied)
+    assert copied[0]["content"] == history[0]["content"]
+
+    replanned = build_prompt_cache_plan(copied, tools, native_anthropic=True,
+                                        static_system_prefix=prefix, direct_native_tool_cache=True)
+    assert [part["text"] for part in replanned.messages[0]["content"]] == [
+        "stable prefix", "\n\ncontext head", "\n\nvolatile suffix"]
+    assert [("cache_control" in part) for part in replanned.messages[0]["content"]] == [True, True, False]
+
+
+def test_legacy_layout_keeps_stable_boundary_and_four_markers_with_context_head():
+    """Envelope / MoA / non-tool-cache routes use ``apply_anthropic_cache_control``. With the
+    enlarged prefix the stable tier must remain its own marked block (cross-session hit, #70990)
+    and the system side must still spend exactly two of the four breakpoints."""
+    from agent.system_prompt import _SystemCachePrefix
+
+    def plan(context: str):
+        prefix = _SystemCachePrefix(f"stable prefix\n\n{context}", "stable prefix")
+        history = [
+            {"role": "system", "content": f"stable prefix\n\n{context}\n\nvolatile suffix"},
+            {"role": "user", "content": "u0"}, {"role": "assistant", "content": "a0"},
+            {"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"},
+        ]
+        return apply_anthropic_cache_control(history, native_anthropic=False, static_system_prefix=prefix)
+
+    a, b = plan("project A"), plan("project B")
+    marked_a = [p["text"] for p in a[0]["content"] if "cache_control" in p]
+    marked_b = [p["text"] for p in b[0]["content"] if "cache_control" in p]
+    assert marked_a[0] == marked_b[0] == "stable prefix"
+    assert len(marked_a) == 2
+    assert _count_cache_markers(a, []) == 4
 
 
 class TestPromptCachePlan:

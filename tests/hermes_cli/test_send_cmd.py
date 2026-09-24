@@ -214,6 +214,7 @@ def test_list_includes_configured_platform_without_discovered_channels(
 
     fake_dir = types.ModuleType("gateway.channel_directory")
     fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
+    fake_dir.merge_session_channels = lambda platforms: None
 
     def _format(platforms=None):
         lines = []
@@ -255,6 +256,7 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
         "platforms": {"telegram": [{"id": "1", "name": "home"}]},
     }
     fake_dir.format_directory_for_display = lambda platforms=None: ""
+    fake_dir.merge_session_channels = lambda platforms: None
     monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
 
     rc = send_cmd._list_targets(None, json_mode=True)
@@ -263,6 +265,52 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
     assert payload["platforms"]["simplex"] == []
     assert "local" not in payload["platforms"]  # infra pseudo-platform skipped
     assert payload["platforms"]["telegram"]  # discovered entries preserved
+
+
+def test_list_merges_session_dm_into_stale_directory(tmp_path, monkeypatch, capsys):
+    """A DM whose session row exists but whose directory entry is a rebuild away must
+    still appear in `hermes send --list` (unfiltered text, and filtered --json).
+
+    Real gateway.channel_directory end-to-end (#48303): the CLI builds its own
+    platforms dict, so it has to run the session merge itself.
+    """
+    dm_chat_id = "1180000000000000001"
+    directory = tmp_path / "channel_directory.json"
+    directory.write_text(json.dumps({"updated_at": None, "platforms": {
+        "discord": [{"id": "999000111222333444", "name": "general",
+                     "guild": "Some Server", "type": "channel"}],
+    }}))
+    sessions = tmp_path / "sessions" / "sessions.json"
+    sessions.parent.mkdir(parents=True)
+    sessions.write_text(json.dumps({
+        "s_discord_new_dm": {
+            "origin": {"platform": "discord", "chat_id": dm_chat_id,
+                       "chat_name": "new-dm-contact"},
+            "chat_type": "dm",
+        },
+    }))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.channel_directory.DIRECTORY_PATH", directory)
+    monkeypatch.setattr("gateway.channel_directory.CHANNEL_ALIASES_PATH",
+                        tmp_path / "no-aliases.json")
+
+    class _FakeGwConfig:
+        def get_connected_platforms(self):
+            return []
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: _FakeGwConfig())
+
+    rc = send_cmd._list_targets(None, json_mode=False)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "discord:#general" in out  # stale entry preserved
+    assert "discord:new-dm-contact" in out  # the gap this closes
+
+    rc = send_cmd._list_targets("discord", json_mode=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert any(entry["id"] == dm_chat_id for entry in payload["platforms"]["discord"])
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +526,7 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     fake_dir = types.ModuleType("gateway.channel_directory")
     fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
     fake_dir.format_directory_for_display = lambda platforms=None: ""
+    fake_dir.merge_session_channels = lambda platforms: None
     monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
 
     assert send_cmd._list_targets(None, json_mode=False) == 0

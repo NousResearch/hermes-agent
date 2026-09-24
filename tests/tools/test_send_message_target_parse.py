@@ -6,12 +6,14 @@ skips wholesale when optional Telegram dependencies are not installed.
 
 import asyncio
 import json
+import os
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import Platform
 from tools.send_message_tool import _send_to_platform, send_message_tool
-from tools.send_message_targets import _parse_target_ref
+from tools.send_message_targets import _parse_target_ref, resolve_send_target
 
 
 def _run_async_immediately(coro):
@@ -582,3 +584,79 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
 
     assert chat_id is None
     assert error is not None
+
+
+# --- #48303 tool-layer regression lock ------------------------------------
+# The reported symptom: a brand-new Discord DM's session row exists but the
+# on-disk channel_directory.json (rebuilt only every 5 min) does not, so
+# send_message could neither resolve the contact by name nor list it. These
+# pin the fix at the layer the model actually calls: resolve_send_target and
+# send_message(action="list").
+
+
+def _isolated_directory_home(tmp_path):
+    """Context manager over a throwaway HERMES_HOME whose channel directory is
+    the stale pre-rebuild cache: one guild channel, no trace of the new DM."""
+    cache_file = tmp_path / "channel_directory.json"
+    cache_file.write_text(json.dumps({
+        "updated_at": "2026-01-01T00:00:00",
+        "platforms": {"discord": [
+            {"id": "999000111222333444", "name": "general",
+             "guild": "Some Server", "type": "channel"},
+        ]},
+    }), encoding="utf-8")
+    sessions_file = tmp_path / "sessions" / "sessions.json"
+    sessions_file.parent.mkdir(parents=True, exist_ok=True)
+    sessions_file.write_text(json.dumps({
+        "s_discord_newdm": {
+            "origin": {"platform": "discord",
+                       "chat_id": "1180000000000000001",
+                       "chat_name": "new-dm-contact"},
+            "chat_type": "dm",
+        },
+    }), encoding="utf-8")
+    stack = ExitStack()
+    stack.enter_context(patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}))
+    stack.enter_context(patch("gateway.channel_directory.DIRECTORY_PATH", cache_file))
+    # A real ~/.hermes/channel_aliases.json must never leak into the view.
+    stack.enter_context(patch("gateway.channel_directory.CHANNEL_ALIASES_PATH",
+                              tmp_path / "no-aliases.json"))
+    return stack
+
+
+def test_resolve_send_target_finds_brand_new_discord_dm_before_directory_rebuild(tmp_path) -> None:
+    """The exact issue-reported failure: resolve_send_target('discord',
+    'new-dm-contact') during the post-rebuild lag window must return the DM's
+    chat id, not the 'Could not resolve' error."""
+    with _isolated_directory_home(tmp_path):
+        chat_id, thread_id, error = resolve_send_target("discord", "new-dm-contact")
+
+    assert error is None
+    assert chat_id == "1180000000000000001"
+    assert thread_id is None
+
+
+def test_send_message_list_shows_brand_new_dm_and_stale_directory_entries(tmp_path) -> None:
+    """send_message(action='list') is what the model checks after a resolution
+    failure; the new DM must appear next to the entries from the stale cache
+    so the retry hint actually points at the contact."""
+    with _isolated_directory_home(tmp_path):
+        # action='list' never enters the send path; no adapter or config stub needed.
+        result = json.loads(send_message_tool({"action": "list"}))
+
+    targets = result["targets"]
+    assert "discord:new-dm-contact" in targets
+    assert "discord:#general" in targets
+
+
+def test_resolve_send_target_still_rejects_unknown_name_on_present_platform(tmp_path) -> None:
+    """The session fallback must not make resolution permissive: a name in
+    neither the directory nor session data still fails loudly with the
+    model-actionable hint."""
+    with _isolated_directory_home(tmp_path):
+        chat_id, thread_id, error = resolve_send_target("discord", "no-such-contact")
+
+    assert chat_id is None
+    assert thread_id is None
+    assert "no-such-contact" in error
+    assert "send_message(action='list')" in error

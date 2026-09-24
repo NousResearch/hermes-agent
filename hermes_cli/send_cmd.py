@@ -85,7 +85,11 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     """Print the channel directory (all configured targets across platforms), reusing the
     ``format_directory_for_display`` rendering the send_message tool shows the model."""
     try:
-        from gateway.channel_directory import format_directory_for_display, load_directory
+        from gateway.channel_directory import (
+            format_directory_for_display,
+            load_directory,
+            merge_session_channels,
+        )
     except Exception as exc:
         return _fail(f"hermes send: failed to load channel directory: {exc}")
     try:
@@ -104,6 +108,10 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
                 platforms.setdefault(plat_name, [])
     except Exception:
         pass  # directory contents alone are still useful; don't fail --list on a config problem
+    # The directory file lags a brand-new DM by up to one rebuild interval (#48303), and
+    # `--list` assembles its own platforms view, so the formatter's disk-path merge never
+    # fires here — run it ourselves before filtering/serialising to cover every mode.
+    merge_session_channels(platforms)
     if platform_filter:
         key = platform_filter.strip().lower()
         filtered = {k: v for k, v in platforms.items() if k.lower() == key}

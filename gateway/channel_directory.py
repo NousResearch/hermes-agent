@@ -385,13 +385,20 @@ def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
 # --- Read / resolve --------------------------------------------------------
 
 def load_directory() -> Dict[str, Any]:
-    """Load the cached directory from disk, with aliases re-applied on read."""
+    """Load the cached directory from disk, with aliases re-applied on read.
+
+    A cache whose ``platforms`` map is null (or otherwise not a dict) is treated as
+    empty: ``setdefault`` hands back the stored ``None`` instead of the default, so
+    every consumer would crash iterating it (#48303 review NIT).
+    """
     directory_path = _directory_path()
     if directory_path.exists():
         with contextlib.suppress(Exception):
             data = _read_json(directory_path)
+            if not isinstance(data.get("platforms"), dict):
+                data["platforms"] = {}
             # Aliases apply on read too, so new names take effect between timed rebuilds.
-            _apply_channel_aliases(data.setdefault("platforms", {}))
+            _apply_channel_aliases(data["platforms"])
             return data
     base = {"updated_at": None, "platforms": {}}
     _apply_channel_aliases(base["platforms"])
@@ -404,12 +411,8 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     return next((ch.get("type") for ch in channels if ch.get("id") == chat_id), None)
 
 
-def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
-    """Resolve a friendly channel name (e.g. "bot-home", "#bot-home", "GuildName/bot-home",
-    Slack "#engineering") to an ID; case-insensitive, first match wins."""
-    channels = load_directory().get("platforms", {}).get(platform_name, [])
-    if not channels:
-        return None
+def _match_channel(platform_name: str, channels: List[Dict[str, Any]], name: str) -> Optional[str]:
+    """First matching channel id for *name* in *channels*; None when no match."""
     # 0. Exact ID match — case-sensitive, no normalization, so raw platform IDs (e.g. Slack
     # "C0B0QV5434G") work even when _parse_target_ref's format guard didn't recognize them.
     raw = name.strip()
@@ -433,15 +436,72 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     return matches[0]["id"] if len(matches) == 1 else None
 
 
+def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
+    """Resolve a friendly channel name (e.g. "bot-home", "#bot-home", "GuildName/bot-home",
+    Slack "#engineering") to an ID; case-insensitive, first match wins.
+
+    The on-disk directory lags live traffic by up to one rebuild interval, so a
+    brand-new DM (whose session row exists but whose directory entry does not)
+    would be unresolvable (#48303). On a directory MISS we retry against session
+    data — lazily, so a hit never touches the session store. The gate is
+    key-presence, not list-truthiness: a connected DM-only bot legitimately has
+    an empty channel list, and a platform absent from the directory means no
+    live adapter, so session origins must not resurrect it (#60574).
+    """
+    platforms = load_directory().get("platforms", {})
+    if platform_name not in platforms:
+        return None
+    channels = platforms.get(platform_name) or []
+    hit = _match_channel(platform_name, channels, name)
+    if hit is not None or platform_name in _SKIP_SESSION_DISCOVERY:
+        return hit
+    # Retry over the cached list EXTENDED BY session entries, never the session entries
+    # alone: _match_channel's prefix step only accepts an unambiguous match, and
+    # ambiguity is a property of the whole candidate set. Session-only matching let a
+    # name that is ambiguous in the directory ("foo" against "foobar"/"foobaz")
+    # resolve to a lone session DM the user never named (#48303).
+    return _match_channel(platform_name, [*channels, *_build_from_sessions(platform_name)], name)
+
+
+def merge_session_channels(platforms: Dict[str, Any]) -> None:
+    """Extend each already-listed platform's channel list with session-derived
+    entries, in place, deduped by id (#48303: the directory file lags new DMs by
+    up to one rebuild interval).
+
+    Two rules keep #60574's connected-only gate intact:
+    - a platform key is NEVER added — a platform absent from the directory has
+      no live adapter and must not resurface from session history;
+    - only platforms already present (and session-discoverable, i.e. not in
+      ``_SKIP_SESSION_DISCOVERY``) are extended.
+    """
+    for plat_name in list(platforms):
+        if plat_name in _SKIP_SESSION_DISCOVERY:
+            continue
+        entries = platforms[plat_name]
+        if not isinstance(entries, list):
+            continue
+        seen_ids = {e.get("id") for e in entries if isinstance(e, dict)}
+        for entry in _build_from_sessions(plat_name):
+            if entry.get("id") not in seen_ids:
+                entries.append(entry)
+                seen_ids.add(entry.get("id"))
+
+
 def format_directory_for_display(platforms: Optional[Dict[str, Any]] = None) -> str:
     """Format the channel directory as a human-readable list for the model.
 
     ``platforms`` overrides the on-disk directory (``hermes send --list`` merges in
     configured-but-undiscovered platforms); an empty channel list renders a "(no channels
     discovered yet)" hint because the platform is still a valid send target.
+
+    On the disk-load path only, session-derived entries are merged in so a DM newer
+    than the last rebuild still appears (#48303). An explicit ``platforms`` override
+    is the caller's own view and is never merged.
     """
     if platforms is None:
-        platforms = load_directory().get("platforms", {})
+        loaded = load_directory().get("platforms", {})
+        merge_session_channels(loaded)
+        platforms = loaded
     if not platforms:
         return "No messaging platforms connected or no channels discovered yet."
     lines = ["Available messaging targets:\n"]

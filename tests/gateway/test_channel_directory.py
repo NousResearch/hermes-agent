@@ -41,12 +41,41 @@ def _write_directory(tmp_path, platforms):
     return cache_file
 
 
+def _seed_sessions(tmp_path, sessions_data):
+    """Write sessions.json at the path _build_from_sessions expects (its
+    sessions.json fallback fires in tests because there is no state.db)."""
+    sessions_path = tmp_path / "sessions" / "sessions.json"
+    sessions_path.parent.mkdir(parents=True, exist_ok=True)
+    sessions_path.write_text(json.dumps(sessions_data))
+
+
+def _dm_session(platform, chat_id, name):
+    """One sessions.json payload holding a single DM origin."""
+    return {f"s_{platform}_{chat_id}": {
+        "origin": {"platform": platform, "chat_id": chat_id, "chat_name": name},
+        "chat_type": "dm",
+    }}
+
+
 class TestLoadDirectory:
     def test_missing_file(self, tmp_path):
         with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):
             result = load_directory()
         assert result["updated_at"] is None
         assert result["platforms"] == {}
+
+    def test_null_platforms_map_is_treated_as_empty(self, tmp_path):
+        """#48303 review NIT: a cache written as ``{"platforms": null}`` must not
+        crash consumers. setdefault would hand back the stored None, and every
+        read path (merge, resolve, display, lookup) iterates the map."""
+        cache_file = _write_directory(tmp_path, None)
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            directory = load_directory()
+            assert directory["platforms"] == {}
+            # Consumers go through load_directory(); none may raise.
+            assert resolve_channel_name("discord", "anything") is None
+            assert lookup_channel_type("discord", "100") is None
+            assert "No messaging platforms" in format_directory_for_display()
 
 
 class TestBuildChannelDirectoryWrites:
@@ -179,6 +208,127 @@ class TestResolveChannelName:
             assert resolve_channel_name("telegram", "nonexistent") is None
 
 
+class TestSessionFallbackResolution:
+    """#48303: the directory file lags live sessions by up to one rebuild
+    interval (5 min), so a brand-new DM is resolvable from session data on a
+    directory MISS — but only for platforms the directory already lists, or
+    #60574's connected-only gate would regress by resurrecting stale targets."""
+
+    def _home(self, tmp_path, directory_platforms, sessions_payload):
+        cache_file = _write_directory(tmp_path, directory_platforms)
+        _seed_sessions(tmp_path, sessions_payload)
+        return (
+            patch("gateway.channel_directory.DIRECTORY_PATH", cache_file),
+            patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
+        )
+
+    def test_new_discord_dm_resolves_before_directory_rebuild(self, tmp_path):
+        """A: stale directory (guild channel only) + session DM -> resolves to DM id."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [{"id": "10", "name": "general", "guild": "MyServer", "type": "channel"}]},
+            _dm_session("discord", "98765", "new-dm-contact"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "new-dm-contact") == "98765"
+
+    def test_directory_hit_takes_precedence_over_session_entry(self, tmp_path):
+        """B: same name in directory and sessions -> the directory id wins."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [{"id": "D1", "name": "dup-name", "type": "dm"}]},
+            _dm_session("discord", "S1", "dup-name"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "dup-name") == "D1"
+
+    def test_platform_absent_from_directory_never_resurrected(self, tmp_path):
+        """C: #60574 — session origins for a platform the directory omits stay invisible."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"telegram": [{"id": "1", "name": "home", "type": "dm"}]},
+            _dm_session("discord", "777", "ghost-dm"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "ghost-dm") is None
+
+    def test_empty_directory_list_still_resolves_from_sessions(self, tmp_path):
+        """D: DM-only bot — the platform key exists but its channel list is empty;
+        key-presence (not list-truthiness) must let the session fallback through."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": []},
+            _dm_session("discord", "88888", "new-dm-contact"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "new-dm-contact") == "88888"
+
+    @pytest.mark.parametrize("infra_platform", ["local", "api_server", "webhook"])
+    def test_infrastructure_platforms_never_resolve_from_sessions(self, tmp_path, infra_platform):
+        """E: _SKIP_SESSION_DISCOVERY platforms are excluded from the fallback."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {infra_platform: []},
+            _dm_session(infra_platform, "sess-1", "infra-contact"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name(infra_platform, "infra-contact") is None
+
+    def test_directory_hit_does_not_consult_session_store(self, tmp_path):
+        """F: laziness — the fallback is miss-only; a hit must not read sessions."""
+        cache_file = _write_directory(tmp_path, {
+            "telegram": [{"id": "1", "name": "home", "type": "dm"}],
+        })
+        calls = []
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch("gateway.channel_directory._build_from_sessions",
+                   side_effect=lambda plat: calls.append(plat) or []):
+            assert resolve_channel_name("telegram", "home") == "1"
+        assert calls == []
+
+    def test_directory_miss_falls_back_to_session_store(self, tmp_path):
+        """F: a miss on a listed, session-discoverable platform consults sessions."""
+        cache_file = _write_directory(tmp_path, {
+            "telegram": [{"id": "1", "name": "home", "type": "dm"}],
+        })
+        calls = []
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch("gateway.channel_directory._build_from_sessions",
+                   side_effect=lambda plat: calls.append(plat) or []):
+            assert resolve_channel_name("telegram", "unknown-contact") is None
+        assert calls == ["telegram"]
+
+    def test_ambiguous_directory_prefix_is_not_silently_resolved_by_session_entry(self, tmp_path):
+        """G: "foo" is ambiguous in the directory ("foobar" vs "foobaz"), so
+        nothing may be silently chosen — even when the session entries alone
+        look unambiguous. Uniqueness is a property of the whole candidate set;
+        matching sessions in isolation manufactures a false prefix hit and
+        mis-addresses the send (#48303 review follow-up)."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [
+                {"id": "111", "name": "foobar", "guild": "G", "type": "channel"},
+                {"id": "222", "name": "foobaz", "guild": "G", "type": "channel"},
+            ]},
+            _dm_session("discord", "77", "foobar-dm"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "foo") is None
+
+    def test_unique_session_prefix_resolves_when_directory_has_no_competitor(self, tmp_path):
+        """H: the union fix must not over-correct — a session-only name whose
+        prefix is unique across directory AND sessions still resolves, by full
+        name and by prefix."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [{"id": "111", "name": "general", "guild": "G", "type": "channel"}]},
+            _dm_session("discord", "77", "foobar-dm"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "foobar") == "77"
+            assert resolve_channel_name("discord", "foo") == "77"
+
+
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
         """Write sessions.json at the path _build_from_sessions expects."""
@@ -239,6 +389,69 @@ class TestFormatDirectoryForDisplay:
                 {"irc": [{"id": "#chan", "name": "#chan", "type": "channel"}]}
             )
         assert "irc:#chan" in result
+
+
+class TestFormatDirectorySessionMerge:
+    """#48303: send_message(action="list") reads the on-disk directory, which
+    lags live sessions by up to one rebuild interval; the disk-load path merges
+    session-derived entries so a brand-new DM shows up immediately — without
+    ever inventing a platform key (#60574)."""
+
+    def _home(self, tmp_path, directory_platforms, sessions_payload):
+        cache_file = _write_directory(tmp_path, directory_platforms)
+        _seed_sessions(tmp_path, sessions_payload)
+        return (
+            patch("gateway.channel_directory.DIRECTORY_PATH", cache_file),
+            patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
+        )
+
+    def test_new_session_dm_appears_in_display(self, tmp_path):
+        """G: stale directory (guild channel) + session DM -> both render, DM grouped."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [{"id": "10", "name": "general", "guild": "MyServer", "type": "channel"}]},
+            _dm_session("discord", "98765", "new-dm-contact"),
+        )
+        with dir_patch, home_patch:
+            result = format_directory_for_display()
+        assert "discord:#general" in result
+        assert "discord:new-dm-contact" in result
+        # The merged DM lands in the DM group, not the guild group.
+        assert "Discord (DMs):" in result
+        assert result.index("Discord (DMs):") < result.index("discord:new-dm-contact")
+
+    def test_session_entry_already_in_directory_not_duplicated(self, tmp_path):
+        """H: merge is id-deduped against the directory."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [{"id": "98765", "name": "already-known", "type": "dm"}]},
+            _dm_session("discord", "98765", "already-known"),
+        )
+        with dir_patch, home_patch:
+            result = format_directory_for_display()
+        assert result.count("discord:already-known") == 1
+
+    def test_display_never_invents_a_platform_key(self, tmp_path):
+        """I: sessions for a platform absent from the directory must not surface it."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"telegram": [{"id": "1", "name": "home", "type": "dm"}]},
+            _dm_session("whatsapp", "1500@g.us", "stale-group"),
+        )
+        with dir_patch, home_patch:
+            result = format_directory_for_display()
+        assert "whatsapp" not in result
+        assert "stale-group" not in result
+
+    def test_explicit_override_does_not_consult_sessions(self, tmp_path):
+        """J: an explicit ``platforms`` dict is the caller's view — no merge."""
+        calls = []
+        with patch("gateway.channel_directory._build_from_sessions",
+                   side_effect=lambda plat: calls.append(plat) or []):
+            format_directory_for_display(
+                {"telegram": [{"id": "1", "name": "home", "type": "dm"}]}
+            )
+        assert calls == []
 
 
 class TestLookupChannelType:

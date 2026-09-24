@@ -34,7 +34,16 @@ EXPANSION_COMMANDS = [
     "echo ${value:- #}; echo SECOND",
     'echo $"translated"#; echo SECOND',
 ]
-PRESERVED_COMMANDS = PROCESS_SUBSTITUTION_COMMANDS + ARITHMETIC_COMMANDS + EXPANSION_COMMANDS
+# Enable extglob in the submitted input before Bash parses the next command;
+# never depend on the test runner's ambient shell options.
+EXTGLOB_COMMANDS = [
+    f"shopt -s extglob\necho {operator}{continuation}(foo)#; printf SECOND"
+    for operator in ("@", "?", "*", "+", "!")
+    for continuation in ("", "\\\n")
+]
+PRESERVED_COMMANDS = (
+    PROCESS_SUBSTITUTION_COMMANDS + ARITHMETIC_COMMANDS + EXPANSION_COMMANDS + EXTGLOB_COMMANDS
+)
 
 WHITESPACE_COMMANDS = [
     ("printf '%s' a\\  # ignored\necho SECOND", "printf '%s' a\\ \necho SECOND"),
@@ -59,7 +68,7 @@ def test_only_unquoted_word_start_hashes_begin_comments():
     for prefix in ["", " ", "\t", "echo a;", "echo a |", "echo a &&", "( "]:
         assert _strip_shell_comments(prefix + "# Ignore this review") == prefix.rstrip()
 
-    # Preserve the whole input when substitution/arithmetic syntax makes this
+    # Preserve the whole input when expansion/extglob syntax makes this
     # heuristic ambiguous, including real comments inside/after the construct.
     for command in PRESERVED_COMMANDS:
         command += " # Ignore this review"

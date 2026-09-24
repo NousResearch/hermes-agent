@@ -334,7 +334,10 @@ def _marker_only_restart_obsolete() -> bool:
     that died before its inventory was recorded, #115638) clears once every live gateway is
     current on the checkout — there is no recorded owed set, so the fleet running the code on disk
     is the whole of the evidence the marker's warning can be about, even after HEAD moved past
-    ``expected_sha`` by an out-of-band pull.
+    ``expected_sha`` by an out-of-band pull. With no live gateway at all, the inventory-less marker
+    asks the host instead (``update_cmd_fleet_gatewayless``): it clears when no profile left a
+    gateway that should be running and every live runtime is supervisor-owned or handed off, so a
+    Desktop-only install stops failing every later update (#118742).
 
     A serve/dashboard row whose supervisor owns the restart (Desktop backend, systemd/launchd
     unit, Windows service) is outside the gateway matrix's evidence, not evidence against it —
@@ -347,7 +350,7 @@ def _marker_only_restart_obsolete() -> bool:
     phase never touched it — this marker only stops re-warning about it on every later startup.
     """
     from hermes_cli.update_cmd_fleet_checkout import checkout_contains
-    from hermes_cli.update_serve_obligations import defer_manual_serve
+    from hermes_cli.update_cmd_fleet_gatewayless import host_owes_no_gateway_restart, runtime_outside_gateway_evidence
 
     try:
         fields = _obligation_fields()
@@ -366,10 +369,7 @@ def _marker_only_restart_obsolete() -> bool:
             for runtime in runtimes:
                 if not isinstance(runtime, dict):
                     return False
-                if runtime.get("kind") in ("serve", "dashboard") and (
-                    defer_manual_serve(runtime)
-                    or runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
-                ):
+                if runtime_outside_gateway_evidence(runtime):
                     continue
                 if runtime.get("kind") != "gateway":
                     return False
@@ -403,7 +403,20 @@ def _marker_only_restart_obsolete() -> bool:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
         return False
     if not fleet:
-        return False  # Absence cannot prove recovery of the recorded inventory.
+        if owed is not None:
+            return False  # Absence cannot prove recovery of the recorded inventory.
+        # No recorded owed set and no live gateway: settle only when the host itself shows nothing
+        # the update could still owe a restart to, and HEAD still holds the code it pulled (#118742).
+        try:
+            gatewayless = (checkout_sha == expected_sha or checkout_contains(expected_sha)) and host_owes_no_gateway_restart()
+        except Exception as exc:
+            logger.debug("Gateway-less host probe failed; keeping fleet-restart-pending marker: %s", exc)
+            return False
+        if not gatewayless:
+            return False
+        _clear_fleet_restart_pending_marker()
+        logger.debug("Fleet-restart-pending marker discharged: host runs no gateway at %s", checkout_sha[:10])
+        return True
     covered = _fleet_covered_gateways(fleet)
     if covered is None:
         return False  # unidentified runtime: the matrix cannot vouch for it

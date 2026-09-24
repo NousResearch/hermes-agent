@@ -1279,7 +1279,7 @@ def _refuse_env_adoption_if_config_corrupt() -> None:
     silently adopt the PAID openrouter provider over whatever the broken config really names.
     Fires ONLY on the auto path and clears itself once the file parses again."""
     try:
-        from hermes_cli.config import get_active_config_parse_failure
+        from hermes_cli.config_read_errors import get_active_config_parse_failure
         err = get_active_config_parse_failure()
         if not err:
             return

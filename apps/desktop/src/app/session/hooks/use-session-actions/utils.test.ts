@@ -637,6 +637,60 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(next, previous)).toEqual(next)
   })
 
+  // A turn that compressed mid-flight only earns a partial receipt
+  // (`complete: false`), but its rows are still proven committed. When a later
+  // compaction rewrites every one of them, the local copy is stale history.
+  const partialReceipt = { row_ids: [11350, 11355, 11359], complete: false, final_assistant_row_id: 11359 }
+
+  it('does not re-append a partially receipted reply once compaction rewrote all of its rows', () => {
+    const previous = [
+      msg('u1', 'user', 'q1', { rowId: 11340 }),
+      msg('user-9-x', 'user', 'q2', { rowId: 11350 }),
+      msg('assistant-stream-9-0', 'assistant', 'r2', {
+        pending: false,
+        rowId: 11359,
+        durableComplete: false,
+        persistedTurn: partialReceipt
+      })
+    ]
+
+    const reinserted = [
+      msg('s-summary', 'assistant', '[summary]', { rowId: 11440 }),
+      msg('s-u2', 'user', 'q2', { rowId: 11450 }),
+      msg('s-a2', 'assistant', 'r2', { rowId: 11459 })
+    ]
+
+    const summarizedAway = [
+      msg('s-summary', 'assistant', '[summary]', { rowId: 11440 }),
+      msg('s-u3', 'user', 'q3', { rowId: 11450 }),
+      msg('s-a3', 'assistant', 'r3', { rowId: 11459 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(reinserted, previous)).toEqual(reinserted)
+    expect(preserveLocalPendingTurnMessages(summarizedAway, previous)).toEqual(summarizedAway)
+  })
+
+  it('keeps a partially receipted reply the store has not reached or still partly holds', () => {
+    const reply = msg('assistant-stream-9-0', 'assistant', 'r2 with unpersisted tail', {
+      pending: false,
+      rowId: 11359,
+      durableComplete: false,
+      persistedTurn: partialReceipt
+    })
+
+    const previous = [msg('u1', 'user', 'q1', { rowId: 11340 }), msg('user-9-x', 'user', 'q2', { rowId: 11350 }), reply]
+    const behind = [msg('s-u1', 'user', 'q1', { rowId: 11340 })]
+
+    const partlyHeld = [
+      msg('s-u1', 'user', 'q1', { rowId: 11340 }),
+      msg('s-u2', 'user', 'q2', { rowId: 11350 }),
+      msg('s-a2', 'assistant', 'r2', { rowId: 11460 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(behind, previous).map(message => message.id)).toContain(reply.id)
+    expect(preserveLocalPendingTurnMessages(partlyHeld, previous).map(message => message.id)).toContain(reply.id)
+  })
+
   it('does not append acknowledged local history after a shifted newest page', () => {
     const previous = [
       msg('user-first', 'user', 'Original request', { timestamp: 1 }),

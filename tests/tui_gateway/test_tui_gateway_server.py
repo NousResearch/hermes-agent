@@ -2518,6 +2518,25 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_types_the_failed_turn_boundary_for_resume():
+    """Desktop keys the failed-turn boundary on ``display_kind`` (a room poller must not post it
+    as the member's reply); rows written before the closer typed it are typed on read."""
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+
+    history = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": FAILED_TURN_NOTICE, "display_kind": FAILED_TURN_DISPLAY_KIND},
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": PARTIAL_FAILED_TURN_NOTICE},  # legacy untyped row
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": f"Quoting Hermes: {FAILED_TURN_NOTICE}"},  # a real reply
+    ]
+
+    assert [m.get("display_kind") for m in server._history_to_messages(history)] == [
+        None, FAILED_TURN_DISPLAY_KIND, None, FAILED_TURN_DISPLAY_KIND, None, None,
+    ]
+
+
 def test_history_to_messages_drops_pure_compaction_scaffolding():
     from agent.context_compressor import (
         HISTORICAL_TASK_HEADING,
@@ -16383,7 +16402,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     save_credential.assert_called_once_with(env_var, fake_key)
 
 
-def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch):
+def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch, tmp_path):
     """The gated picker's own chat waits on ``setup.status``, which answers from the boot record:
     a key saved for the launch profile must flip a ``False`` record (+ ``setup.ready``) at once;
     a key saved for another profile (``profile`` param) must leave the launch record alone."""
@@ -16399,6 +16418,9 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     monkeypatch.setattr(fb, "_resolve_inference", lambda: "test-provider")
     broadcasts = []
     monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+    other_home = tmp_path / "profiles" / "other"  # model.save_key is profile scoped: "other" must exist
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
     fb.reset_for_tests()
     stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
                            has_identity=False, other_providers=False)
@@ -16465,7 +16487,7 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: object())
         monkeypatch.setattr(server, "reset_hermes_home_override", lambda _token: order.append("reset_home"))
-        monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda _session: contextlib.nullcontext())
+        monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda _session, **_kw: contextlib.nullcontext())
         monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _trim)
 
         resp = server.handle_request(

@@ -1,8 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introZh } from './intro-zh'
 
 export const zh = defineLocale({
+  intro: introZh,
   connectors: {
     title: '连接你的应用',
     connect: '连接',
@@ -1650,6 +1652,9 @@ export const zh = defineLocale({
       moaSetDefault: '设为默认',
       moaNewPresetPlaceholder: '新预设',
       moaAddPreset: '添加预设',
+      customModel: '自定义模型…',
+      customModelPlaceholder: '模型 ID',
+      chooseFromList: '从列表中选择',
       moaDefault: '默认：',
       moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
       moaReferenceTitle: index => `参考 ${index}`,
@@ -3209,6 +3214,37 @@ export const zh = defineLocale({
   },
 
   sidebar: {
+    filter: {
+      grouping: '分组',
+      ordering: '排序',
+      show: '显示',
+      filters: '筛选',
+      status: '状态',
+      pullRequest: '拉取请求',
+      profile: '配置档案',
+      project: '项目',
+      archived: '已归档',
+      resetToDefaults: '重置为默认',
+      expandAll: '全部展开',
+      collapseAll: '全部折叠',
+      inboxStyle: '收件箱样式',
+      updated: '更新时间',
+      created: '创建时间',
+      tokens: '词元数',
+      cost: '费用',
+      manual: '手动',
+      preview: '预览',
+      pr: 'PR',
+      needsInput: '需要输入',
+      working: '运行中',
+      unread: '未读',
+      draft: '草稿',
+      idle: '空闲',
+      open: '打开',
+      merged: '已合并',
+      closed: '已关闭',
+      noPR: '无PR'
+    },
     profileRail: '配置档案栏',
     gatewayGroups: {
       grouping: '网关与配置',
@@ -4091,14 +4127,19 @@ export const zh = defineLocale({
     free: '免费',
     freeTier: '免费层',
     priceTitle: '每百万 token 的输入/输出价格',
-    wasPrice: '原价'
+    wasPrice: '原价',
+    customModel: '自定义模型',
+    addCustomModelAction: '添加自定义模型…',
+    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
   },
 
   modelVisibility: {
     title: '模型',
     search: '搜索模型',
     noAuthenticatedProviders: '没有已认证的提供方。',
-    addProvider: '添加提供方…'
+    addProvider: '添加提供方…',
+    addCustomModel: '添加自定义模型',
+    removeCustomModel: '移除自定义模型'
   },
 
   shell: {

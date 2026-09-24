@@ -3,6 +3,8 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  // English editorial copy stays in the shipped JSONL; other locales override it.
+  intro: { stock: {}, custom: () => [] },
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',
@@ -1700,6 +1702,9 @@ export const en: Translations = {
       moaSetDefault: 'Set default',
       moaNewPresetPlaceholder: 'new preset',
       moaAddPreset: 'Add preset',
+      customModel: 'Custom model…',
+      customModelPlaceholder: 'Model id',
+      chooseFromList: 'Choose from list',
       moaDefault: 'Default:',
       moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
       moaReferenceTitle: index => `Reference ${index}`,
@@ -3391,6 +3396,37 @@ export const en: Translations = {
   },
 
   sidebar: {
+    filter: {
+      grouping: 'Grouping',
+      ordering: 'Ordering',
+      show: 'Show',
+      filters: 'Filters',
+      status: 'Status',
+      pullRequest: 'Pull request',
+      profile: 'Profile',
+      project: 'Project',
+      archived: 'Archived',
+      resetToDefaults: 'Reset to defaults',
+      expandAll: 'Expand all',
+      collapseAll: 'Collapse all',
+      inboxStyle: 'Inbox style',
+      updated: 'Updated',
+      created: 'Created',
+      tokens: 'Tokens',
+      cost: 'Cost',
+      manual: 'Manual',
+      preview: 'Preview',
+      pr: 'PR',
+      needsInput: 'Needs input',
+      working: 'Working',
+      unread: 'Unread',
+      draft: 'Draft',
+      idle: 'Idle',
+      open: 'Open',
+      merged: 'Merged',
+      closed: 'Closed',
+      noPR: 'No PR'
+    },
     gatewayGroups: {
       grouping: 'Gateway & profile',
       rename: 'Rename group',
@@ -4344,14 +4380,19 @@ export const en: Translations = {
     free: 'Free',
     freeTier: 'Free tier',
     priceTitle: 'Input / Output price per million tokens',
-    wasPrice: 'was'
+    wasPrice: 'was',
+    customModel: 'Custom model',
+    addCustomModelAction: 'Add custom model…',
+    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5'
   },
 
   modelVisibility: {
     title: 'Models',
     search: 'Search models',
     noAuthenticatedProviders: 'No authenticated providers.',
-    addProvider: 'Add provider…'
+    addProvider: 'Add provider…',
+    addCustomModel: 'Add custom model',
+    removeCustomModel: 'Remove custom model'
   },
 
   shell: {

@@ -862,6 +862,8 @@ Set `typing_indicator: false` on any platform where the indicator is unwanted. S
 
 When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.
 
+Only turns that were actually in flight are resumed, and each resumes once. A chat whose turn had already finished is never answered again just because it was active shortly before a crash. If the gateway was killed after the agent finished a reply but before it was sent, the stored reply is delivered (with a "Recovered reply" notice) instead of being regenerated.
+
 This behaviour is on by default and is logged at gateway start:
 
 ```

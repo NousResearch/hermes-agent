@@ -257,6 +257,31 @@ describe('I18nProvider', () => {
     vi.useRealTimers()
   })
 
+  it('stops retrying once the provider unmounts mid-retry', async () => {
+    vi.useFakeTimers()
+    const getConfig = vi.fn().mockRejectedValue(new Error('backend not ready yet'))
+
+    const view = render(
+      <I18nProvider configClient={{ getConfig, saveConfig: vi.fn() }}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await act(async () => {})
+    expect(getConfig).toHaveBeenCalledTimes(1)
+
+    // A retry is now scheduled; unmounting must cancel it, not keep polling a
+    // backend nobody is listening for.
+    view.unmount()
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(getConfig).toHaveBeenCalledTimes(1)
+
+    vi.useRealTimers()
+  })
+
   it('a late startup read never overrides a language the user picked mid-retry', async () => {
     vi.useFakeTimers()
 

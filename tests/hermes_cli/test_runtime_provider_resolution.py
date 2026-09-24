@@ -623,6 +623,26 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     assert resolved["api_key"] == "sk-openai-fallback"
 
 
+@pytest.mark.parametrize("openai_base_url, expected_key", [
+    ("https://proxy.corp.example/v1", ""),
+    ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
+    ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+])
+def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == expected_key
+
+
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
     """Persisted custom endpoints in config.yaml must still resolve when
     OPENAI_BASE_URL is absent from the current environment.

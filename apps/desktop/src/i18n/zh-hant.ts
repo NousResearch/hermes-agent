@@ -1,8 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
+  intro: introZhHant,
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
@@ -1312,6 +1314,9 @@ export const zhHant = defineLocale({
       moaSetDefault: '設為預設',
       moaNewPresetPlaceholder: '新預設',
       moaAddPreset: '新增預設',
+      customModel: '自訂模型…',
+      customModelPlaceholder: '模型 ID',
+      chooseFromList: '從清單中選擇',
       moaDefault: '預設：',
       moaReferenceToggle: (enabled, index) => `${enabled ? '停用' : '啟用'}參考 ${index}`,
       moaReferenceTitle: index => `參考 ${index}`,
@@ -1830,6 +1835,16 @@ export const zhHant = defineLocale({
   skills: {
     plugins: {
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。'
+    },
+    hub: {
+      search: '搜尋',
+      searching: '搜尋中…',
+      noResults: '技能中心沒有符合的技能。',
+      installed: '已安裝',
+      installStarted: name => `正在安裝「${name}」…`,
+      pickerBrowse: '瀏覽完整技能中心',
+      pickerHide: '隱藏技能中心瀏覽器',
+      pickerHint: '按下任一技能的「+ Add to this Agent」，即可安裝並顯示在上方清單中。'
     },
     tabSkills: '技能',
     tabToolsets: '工具集',
@@ -2566,6 +2581,39 @@ export const zhHant = defineLocale({
   },
 
   sidebar: {
+    profileRail: '設定檔列',
+    markAllRead: '全部標示為已讀',
+    filter: {
+      grouping: '分組',
+      ordering: '排序',
+      show: '顯示',
+      filters: '篩選',
+      status: '狀態',
+      pullRequest: '提取請求',
+      profile: '設定檔',
+      project: '專案',
+      archived: '已封存',
+      resetToDefaults: '重設為預設值',
+      expandAll: '全部展開',
+      collapseAll: '全部收合',
+      inboxStyle: '收件匣樣式',
+      updated: '已更新',
+      created: '已建立',
+      tokens: '詞元數',
+      cost: '費用',
+      manual: '手動',
+      preview: '預覽',
+      pr: 'PR',
+      needsInput: '需要輸入',
+      working: '運作中',
+      unread: '未讀',
+      draft: '草稿',
+      idle: '閒置',
+      open: '開啟',
+      merged: '已合併',
+      closed: '已關閉',
+      noPR: '無 PR'
+    },
     gatewayGroups: {
       grouping: '閘道與設定檔',
       rename: '重新命名群組',
@@ -3342,14 +3390,19 @@ export const zhHant = defineLocale({
     free: '免費',
     freeTier: '免費層',
     priceTitle: '每百萬 Token 的輸入/輸出價格',
-    wasPrice: '原價'
+    wasPrice: '原價',
+    customModel: '自訂模型',
+    addCustomModelAction: '新增自訂模型…',
+    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5'
   },
 
   modelVisibility: {
     title: '模型',
     search: '搜尋模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
-    addProvider: '新增提供方…'
+    addProvider: '新增提供方…',
+    addCustomModel: '新增自訂模型',
+    removeCustomModel: '移除自訂模型'
   },
 
   shell: {

@@ -46,7 +46,7 @@ def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(herm
     assert all(get_cwidth(line) <= 80 for line in lines)
     dock.collapsed = True
     collapsed = dock.dock_text(columns=80, rows=40)
-    assert "\n" not in collapsed and "goal active · 4 queued · F7 restore · ⊙ Goal" in collapsed
+    assert "\n" not in collapsed and "goal active · 4 queued · Ctrl+R restore · ⊙ Goal" in collapsed
     assert "Ctrl+T" not in collapsed  # the monitor only lists subagents/processes
     assert get_cwidth(collapsed) <= 80
 

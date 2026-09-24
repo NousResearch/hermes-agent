@@ -1598,8 +1598,12 @@ _ensure_ssl_certs()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home, get_hermes_home_override
-_hermes_home = get_hermes_home()
+from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
+# The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)
+# first imports this module lazily from a session's agent build, under that session's routed profile
+# override, and the import-time config bridge below would then latch the secondary's terminal.* and
+# settings into the launch process env for every later launch-profile turn.
+_hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -4047,8 +4051,9 @@ class GatewayRunner(
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
-    # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by suspend_recently_active()
-    # on crash recovery (no .clean_shutdown marker). All mean "killed mid-turn" -> startup auto-resume.
+    # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by recover_interrupted_turns()
+    # for a crash-left turn marker (no .clean_shutdown marker). All mean "killed mid-turn" -> startup
+    # auto-resume.
     _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted"})
 
     _MAX_SUPERVISED_RESTARTS = 5

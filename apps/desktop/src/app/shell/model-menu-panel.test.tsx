@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { $customModels } from '@/store/custom-models'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
 
@@ -46,6 +47,7 @@ beforeEach(() => {
   $currentModel.set('')
   $currentProvider.set('')
   $collapsedProviders.set([])
+  $customModels.set([])
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
 
@@ -202,16 +204,43 @@ describe('ModelMenuPanel search', () => {
     })
   })
 
-  it('Enter with no matches is a no-op (menu stays put, nothing selected)', async () => {
+  it('Enter on an id nothing lists selects it as a custom model', async () => {
     const { content, onSelectModel } = renderPanel()
 
     await content.findByText('DeepSeek')
 
     const input = screen.getByRole('textbox', { name: 'Search models' })
     fireEvent.change(input, { target: { value: 'zzz-no-such-model' } })
+
+    // One row per configured provider (MoA excluded).
+    await vi.waitFor(() => {
+      expect(content.getAllByText(/^zzz-no-such-model/)).toHaveLength(2)
+    })
+
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(onSelectModel).not.toHaveBeenCalled()
+    // First configured provider, since no provider is current.
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'zzz-no-such-model',
+        provider: 'deepseek',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
+  it('a query that still matches catalog rows offers no custom model', async () => {
+    const { content } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+    expect(rowWithText(content, /^gemini$/)).toBeNull()
   })
 
   it('arrows move the selection without leaving the input; Enter commits the stepped row', async () => {

@@ -1,8 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introJa } from './intro-ja'
 
 export const ja = defineLocale({
+  intro: introJa,
   sessionImport: {
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',
@@ -1278,6 +1280,9 @@ export const ja = defineLocale({
       moaSetDefault: 'デフォルトに設定',
       moaNewPresetPlaceholder: '新しいプリセット',
       moaAddPreset: 'プリセットを追加',
+      customModel: 'カスタムモデル…',
+      customModelPlaceholder: 'モデル ID',
+      chooseFromList: 'リストから選択',
       moaDefault: 'デフォルト:',
       moaReferenceToggle: (enabled, index) => `参照 ${index} を${enabled ? '無効化' : '有効化'}`,
       moaReferenceTitle: index => `参照 ${index}`,
@@ -1582,6 +1587,16 @@ export const ja = defineLocale({
     plugins: {
       pageBlurb:
         'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。'
+    },
+    hub: {
+      search: '検索',
+      searching: '検索中…',
+      noResults: '一致するスキルがハブにありません。',
+      installed: 'インストール済み',
+      installStarted: name => `「${name}」をインストール中…`,
+      pickerBrowse: 'ハブ全体を見る',
+      pickerHide: 'ハブのブラウザーを隠す',
+      pickerHint: 'スキルの「+ Add to this Agent」を押すと、インストールされて上の一覧に表示されます。'
     },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
@@ -2343,6 +2358,39 @@ export const ja = defineLocale({
   },
 
   sidebar: {
+    profileRail: 'プロファイルバー',
+    markAllRead: 'すべて既読にする',
+    filter: {
+      grouping: 'グループ化',
+      ordering: '並び替え',
+      show: '表示',
+      filters: 'フィルター',
+      status: 'ステータス',
+      pullRequest: 'プルリクエスト',
+      profile: 'プロファイル',
+      project: 'プロジェクト',
+      archived: 'アーカイブ',
+      resetToDefaults: 'デフォルトに戻す',
+      expandAll: 'すべて展開',
+      collapseAll: 'すべて折りたたむ',
+      inboxStyle: '受信トレイスタイル',
+      updated: '更新',
+      created: '作成',
+      tokens: 'トークン',
+      cost: 'コスト',
+      manual: '手動',
+      preview: 'プレビュー',
+      pr: 'PR',
+      needsInput: '入力待ち',
+      working: '実行中',
+      unread: '未読',
+      draft: '下書き',
+      idle: 'アイドル',
+      open: 'オープン',
+      merged: 'マージ済み',
+      closed: 'クローズ済み',
+      noPR: 'PRなし'
+    },
     gatewayGroups: {
       grouping: 'ゲートウェイとプロファイル',
       rename: 'グループ名を変更',
@@ -3145,14 +3193,19 @@ export const ja = defineLocale({
     free: '無料',
     freeTier: '無料プラン',
     priceTitle: '100 万トークンあたりの入力/出力価格',
-    wasPrice: '旧価格'
+    wasPrice: '旧価格',
+    customModel: 'カスタムモデル',
+    addCustomModelAction: 'カスタムモデルを追加…',
+    customModelPlaceholder: 'モデル ID を入力（例: openai/gpt-5）'
   },
 
   modelVisibility: {
     title: 'モデル',
     search: 'モデルを検索',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
-    addProvider: 'プロバイダーを追加…'
+    addProvider: 'プロバイダーを追加…',
+    addCustomModel: 'カスタムモデルを追加',
+    removeCustomModel: 'カスタムモデルを削除'
   },
 
   shell: {

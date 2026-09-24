@@ -217,6 +217,93 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def _pin_agent(self, **over):
+        return _agent(
+            load_soul_identity=False, skip_context_files=True, valid_tool_names={"terminal"},
+            platform="cli", model="gpt-4o", _task_completion_guidance=False,
+            _parallel_tool_call_guidance=False, _tool_use_enforcement=False, _execution_guidance=False,
+            _environment_probe=False, _bot_mode_protocol=False, _kanban_worker_guidance="",
+            pass_session_id=False, session_id="s1", _emit_status=lambda *a, **k: None, **over,
+        )
+
+    def test_binding_the_launch_dir_explicitly_replays_the_pin(self):
+        """CLI-shaped first build (no cwd bound -> launch dir), then TUI /compress binds that same dir:
+        one workspace, so the rebuild replays the session-start snapshot."""
+        import os, tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-bind-"))
+        old_cwd = os.getcwd()
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            os.chdir(repo)
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+                    p1 = build_system_prompt(agent)
+                self.assertIn("Status: clean", p1)
+                (repo / "untracked.txt").write_text("wip\n")
+                invalidate_system_prompt(agent)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                    self.assertEqual(build_system_prompt(agent), p1)
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_agent_that_did_not_build_the_prompt_replays_the_persisted_snapshot(self):
+        """Resume / gateway / TUI shape: a fresh agent rebuilds (compaction, a first /compress) after
+        the repo moved and replays the snapshot its session row already holds — unless that prompt
+        was taken in another cwd."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-resume-"))
+        try:
+            repo, other = _init_repo(tmp / "proj", "init commit"), _init_repo(tmp / "other", "init other")
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                stored = build_system_prompt(self._pin_agent())
+                self.assertIn("Status: clean", stored)
+                (repo / "untracked.txt").write_text("wip\n")
+                db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                self.assertEqual(build_system_prompt(resumed), stored)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+                moved = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                self.assertIn(f"- Root: {other}", build_system_prompt(moved))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_persisted_prompt_without_a_snapshot_does_not_pin_an_empty_one(self):
+        """A session row built where no workspace block was emitted (a messaging surface) and
+        resumed in the same repo must capture a real snapshot, not pin "no workspace" for good."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-"))
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            stored = f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}\n\nBODY"
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints",
+                       return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                self.assertIn(f"- Root: {repo}", build_system_prompt(resumed))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

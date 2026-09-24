@@ -634,6 +634,8 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             continue
         try:
             pricing_kwargs = {"cached_only": True} if cached_only else {}
+            if slug.startswith("custom:"):
+                pricing_kwargs["base_url"] = str(row.get("api_url") or "")
             raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}
         except Exception:
             raw_pricing = {}
@@ -738,10 +740,18 @@ def _prewarm_pricing_async(
     from hermes_constants import hermes_home_key
     from hermes_cli.models_pricing import pricing_cache_scope
 
-    slugs = {str(row.get("slug") or "").lower() for row in rows if row.get("slug")}
+    slugs = {
+        (
+            str(row.get("slug") or "").lower(),
+            str(row.get("api_url") or "") if str(row.get("slug") or "").lower().startswith("custom:") else "",
+        )
+        for row in rows if row.get("slug")
+    }
     endpoint_scope = tuple(sorted(
-        (slug, pricing_cache_scope(slug, current_provider=current_provider, current_base_url=current_base_url))
-        for slug in slugs))
+        (slug, pricing_cache_scope(
+            slug, base_url=base_url, current_provider=current_provider, current_base_url=current_base_url,
+        ))
+        for slug, base_url in slugs))
     prewarm_key = (hermes_home_key(), endpoint_scope)
 
     with _pricing_prewarm_lock:

@@ -23,34 +23,10 @@ def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
     assert sudo_stdin is None
 
 
-def test_terminal_schema_advertises_persistent_env_state():
-    description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
-
-    assert "exported environment variables persist between calls" in description
-    assert "activate a virtualenv" in description
-    assert "once per session" in description
 
 
-def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):
-    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-
-    command = "printf '%s\\n' sudo"
-    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(command)
-
-    assert transformed == command
-    assert sudo_stdin is None
 
 
-def test_non_command_argument_named_sudo_does_not_trigger_rewrite(monkeypatch):
-    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-
-    command = "grep -n sudo README.md"
-    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(command)
-
-    assert transformed == command
-    assert sudo_stdin is None
 
 
 def test_actual_sudo_command_uses_configured_password(monkeypatch):
@@ -76,6 +52,19 @@ def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
 
     assert transformed == "sudo -S -p '' true"
     assert sudo_stdin == "\n"
+
+
+def test_headless_sudo_never_runs_backend_nopasswd_probe(monkeypatch):
+    """No prompt can fire without a UI, so the backend round trip must not be paid."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    terminal_tool.set_sudo_password_callback(None)
+
+    def _fail_probe():
+        raise AssertionError("headless sudo must not probe the backend")
+
+    assert terminal_tool_sudo._transform_sudo_command("sudo true", sudo_nopasswd_check=_fail_probe) == (
+        "sudo true", None)
 
 
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():

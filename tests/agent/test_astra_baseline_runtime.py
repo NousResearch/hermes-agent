@@ -26,7 +26,9 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     )
 
     assert agent.api_mode == "codex_responses"
-    assert agent.context_compressor.context_length == 1_050_000
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    assert agent.context_compressor.context_length == DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
     kwargs = agent._get_transport().build_kwargs(
         model=agent.model,
         messages=[{"role": "user", "content": "Hi"}],

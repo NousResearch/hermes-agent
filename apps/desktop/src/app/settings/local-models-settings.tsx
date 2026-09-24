@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 
 import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
+import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import {
   activateLocalModel,
@@ -16,7 +17,6 @@ import {
   getLocalModelsStatus,
   type HFFileGroup,
   type HFSearchHit,
-  installLocalRuntime,
   listHFRepoFiles,
   quickstartLocalModels,
   searchHFModels,
@@ -41,15 +41,18 @@ import {
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
+  $localRuntimeInstallStarting,
   $localRuntimeJobs,
   runningDownloadFor,
   runningRuntimeInstall,
+  startLocalRuntimeInstall,
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus } from '@/types/hermes'
 
 import { ListRow, Pill, SettingsContent, SettingsSection, SettingsSkeleton } from './primitives'
+import { ActiveProfileNote } from './profile-scope'
 
 function ProgressBar({ percent }: { percent: number | undefined }) {
   return (
@@ -88,6 +91,7 @@ function fitRank(model: LocalCatalogModel): number {
 export function LocalModelsSettings() {
   const { t } = useI18n()
   const copy = t.settings.localModels
+  const installStarting = useStore($localRuntimeInstallStarting)
   const [status, setStatus] = useState<LocalModelsStatus | null>(null)
   const [hardware, setHardware] = useState<LocalHardware | null>(null)
   const [catalog, setCatalog] = useState<LocalCatalogModel[] | null>(null)
@@ -95,7 +99,7 @@ export function LocalModelsSettings() {
   const [serverBusy, setServerBusy] = useState(false)
   // Quickstart escape hatch: true once the user asks for the full pane
   // (model list, HF browser) instead of the one-button setup card.
-  const [configure, setConfigure] = useState(false)
+  const [configure, setConfigure] = useState(() => $localRuntimeInstallStarting.get())
   // Jobs live in the app-level store (they must survive this pane
   // unmounting); the pane just renders the slice it cares about.
   const jobs = useStore($localRuntimeJobs)
@@ -162,15 +166,6 @@ export function LocalModelsSettings() {
   useEffect(() => {
     refresh()
   }, [refresh, runningCount])
-
-  async function handleInstallRuntime() {
-    try {
-      await installLocalRuntime()
-      watchLocalRuntimeJobs()
-    } catch (err) {
-      notifyError(err, copy.installFailed)
-    }
-  }
 
   async function handleQuickstart() {
     try {
@@ -299,14 +294,19 @@ export function LocalModelsSettings() {
   // ── Quickstart: the dummy-proof front door ──
   // Until something is servable (runtime + at least one model), the pane
   // leads with a hero that does everything in one click; the full pane
-  // stays one 'Configure…' click away. A running quickstart pins this
+  // stays one 'Let me choose' click away. A running quickstart pins this
   // view so its progress has a home even after a remount.
   const qJob = runningQuickstart ?? null
 
   const needsSetup = !status.runtime_installed || status.models.length === 0
-  const heroModel = catalog.find(c => c.recommended && c.fits) ?? catalog.find(c => c.fits) ?? null
+  // The setup hero is reserved for an automatic recommendation. A
+  // spilled model remains visible below, but setup must not silently choose it.
+  const heroModel = catalog.find(c => c.recommended && c.fits) ?? null
+  const hasRecommendation = catalog.some(c => c.recommended)
 
-  if (qJob || (needsSetup && !configure && heroModel)) {
+  const failedInstall = jobs.some(job => job.kind === 'runtime-install' && job.status === 'error')
+
+  if (qJob || (needsSetup && !configure && heroModel && !installStarting && !rJob && !failedInstall)) {
     // Stage rail derived from the job phase: engine -> model -> finish.
     const phase = qJob?.phase ?? ''
 
@@ -407,6 +407,7 @@ export function LocalModelsSettings() {
 
   return (
     <SettingsContent>
+      <ActiveProfileNote className="mb-5" />
       {/* ── Runtime ── */}
       <SettingsSection
         aside={
@@ -468,7 +469,7 @@ export function LocalModelsSettings() {
         ) : (
           <ListRow
             action={
-              <Button onClick={() => void handleInstallRuntime()} size="sm">
+              <Button disabled={installStarting} onClick={() => void startLocalRuntimeInstall()} size="sm">
                 <Download />
                 {copy.installAction}
               </Button>
@@ -481,7 +482,7 @@ export function LocalModelsSettings() {
         {status.update_available && !rJob && (
           <ListRow
             action={
-              <Button onClick={() => void handleInstallRuntime()} size="sm">
+              <Button disabled={installStarting} onClick={() => void startLocalRuntimeInstall()} size="sm">
                 <Download />
                 {copy.updateAction}
               </Button>
@@ -551,6 +552,24 @@ export function LocalModelsSettings() {
 
       {/* ── Models ── */}
       <SettingsSection icon={Download} meta={`${catalog.length}`} title={copy.modelsTitle}>
+        {!hasRecommendation && (
+          <ListRow
+            action={
+              <Button
+                onClick={() =>
+                  document.getElementById('local-model-browse')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }
+                size="sm"
+              >
+                <Search />
+                {copy.noRecommendationAction}
+              </Button>
+            }
+            description={copy.noRecommendationDetail}
+            title={copy.noRecommendationTitle}
+          />
+        )}
+
         <div className="grid gap-1">
           {sortedCatalog.map(model => {
             const dJob = runningDownloadFor(jobs, model.id)
@@ -982,124 +1001,124 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
       icon={Search}
       title={copy.browseTitle}
     >
-      <p className="text-[0.75rem] text-muted-foreground">{copy.browseHint}</p>
+      <div id="local-model-browse">
+        <p className="text-[0.75rem] text-muted-foreground">{copy.browseHint}</p>
 
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <input
-          className="w-full rounded-md border border-(--ui-border) bg-transparent py-1.5 pl-8 pr-3 text-[0.8rem] outline-none placeholder:text-muted-foreground focus:border-primary"
-          onChange={e => setQuery(e.target.value)}
+        <SearchField
+          containerClassName="w-full"
+          inputClassName="flex-1"
+          onChange={setQuery}
           placeholder={copy.browsePlaceholder}
           value={query}
         />
-      </div>
 
-      {searching && (
-        <p className="flex items-center gap-2 text-[0.75rem] text-muted-foreground">
-          <Loader2 className="size-3 animate-spin" />
-          {copy.browseSearching}
-        </p>
-      )}
+        {searching && (
+          <p className="flex items-center gap-2 text-[0.75rem] text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />
+            {copy.browseSearching}
+          </p>
+        )}
 
-      {error && <p className="text-[0.75rem] text-destructive">{error}</p>}
+        {error && <p className="text-[0.75rem] text-destructive">{error}</p>}
 
-      <div className="grid gap-1">
-        {hits.map(hit => (
-          <div key={hit.repo}>
-            <ListRow
-              action={
-                <Button onClick={() => openFiles(hit.repo)} size="sm" variant="ghost">
-                  {openRepo === hit.repo ? copy.browseRefresh : copy.browseShowFiles}
-                </Button>
-              }
-              description={
-                <span>
-                  {Intl.NumberFormat().format(hit.downloads)} {copy.browseDownloads}
-                  {' · '}
-                  {Intl.NumberFormat().format(hit.likes)} {copy.browseLikes}
-                  {hit.gated ? ` · ${copy.browseGated}` : ''}
-                </span>
-              }
-              title={<span className="font-mono text-[0.8rem]">{hit.repo}</span>}
-            />
+        <div className="grid gap-1">
+          {hits.map(hit => (
+            <div key={hit.repo}>
+              <ListRow
+                action={
+                  <Button onClick={() => openFiles(hit.repo)} size="sm" variant="ghost">
+                    {openRepo === hit.repo ? copy.browseRefresh : copy.browseShowFiles}
+                  </Button>
+                }
+                description={
+                  <span>
+                    {Intl.NumberFormat().format(hit.downloads)} {copy.browseDownloads}
+                    {' · '}
+                    {Intl.NumberFormat().format(hit.likes)} {copy.browseLikes}
+                    {hit.gated ? ` · ${copy.browseGated}` : ''}
+                  </span>
+                }
+                title={<span className="font-mono text-[0.8rem]">{hit.repo}</span>}
+              />
 
-            {openRepo === hit.repo && (
-              <div className="ml-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 border-l border-(--ui-border) py-1 pl-3">
-                {listing && (
-                  <p className="col-span-full flex items-center gap-2 py-1 text-[0.75rem] text-muted-foreground">
-                    <Loader2 className="size-3 animate-spin" />
-                    {copy.browseListing}
-                  </p>
-                )}
+              {openRepo === hit.repo && (
+                <div className="ml-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 border-l border-(--ui-border) py-1 pl-3">
+                  {listing && (
+                    <p className="col-span-full flex items-center gap-2 py-1 text-[0.75rem] text-muted-foreground">
+                      <Loader2 className="size-3 animate-spin" />
+                      {copy.browseListing}
+                    </p>
+                  )}
 
-                {!listing && files.length === 0 && (
-                  <p className="col-span-full py-1 text-[0.75rem] text-muted-foreground">{copy.browseNoGguf}</p>
-                )}
+                  {!listing && files.length === 0 && (
+                    <p className="col-span-full py-1 text-[0.75rem] text-muted-foreground">{copy.browseNoGguf}</p>
+                  )}
 
-                {files.map(group => {
-                  const dJob = runningDownloadFor(jobs, browsedModelId(group))
+                  {files.map(group => {
+                    const dJob = runningDownloadFor(jobs, browsedModelId(group))
 
-                  return (
-                    <div
-                      className={cn(
-                        'flex flex-col gap-1 rounded-md border border-(--ui-border) px-2.5 py-1.5',
-                        group.fit === 'too-big' && 'opacity-45'
-                      )}
-                      key={group.label}
-                    >
-                      <span className="flex w-full items-center justify-between gap-2">
-                        <span className="truncate font-mono text-[0.75rem]">
-                          {group.label}
-                          {group.paths.length > 1 ? ` ×${group.paths.length}` : ''}
+                    return (
+                      <div
+                        className={cn(
+                          'flex flex-col gap-1 rounded-md border border-(--ui-border) px-2.5 py-1.5',
+                          group.fit === 'too-big' && 'opacity-45'
+                        )}
+                        key={group.label}
+                      >
+                        <span className="flex w-full items-center justify-between gap-2">
+                          <span className="truncate font-mono text-[0.75rem]">
+                            {group.label}
+                            {group.paths.length > 1 ? ` ×${group.paths.length}` : ''}
+                          </span>
+
+                          <Button
+                            aria-label={copy.browseDownloadAria.replace('{name}', group.label)}
+                            className="h-6 shrink-0 px-2"
+                            disabled={group.fit === 'too-big' || Boolean(dJob)}
+                            onClick={() => startBrowsedDownload(hit.repo, group)}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            {dJob ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+                          </Button>
                         </span>
 
-                        <Button
-                          aria-label={copy.browseDownloadAria.replace('{name}', group.label)}
-                          className="h-6 shrink-0 px-2"
-                          disabled={group.fit === 'too-big' || Boolean(dJob)}
-                          onClick={() => startBrowsedDownload(hit.repo, group)}
-                          size="sm"
-                          variant="ghost"
-                        >
-                          {dJob ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
-                        </Button>
-                      </span>
+                        {dJob ? (
+                          <>
+                            <ProgressBar percent={dJob.percent} />
 
-                      {dJob ? (
-                        <>
-                          <ProgressBar percent={dJob.percent} />
+                            <span className="text-[0.68rem] text-muted-foreground">
+                              {!dJob.done_bytes && dJob.detail
+                                ? dJob.detail
+                                : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="flex items-center justify-between gap-2">
+                            <Pill tone={fitTone(group.fit)}>
+                              <Cpu className="mr-1 size-3" />
+                              {group.fit === 'fits-gpu'
+                                ? copy.pillFitsGpu
+                                : group.fit === 'needs-ram'
+                                  ? copy.pillUsesRam
+                                  : group.fit === 'too-big'
+                                    ? copy.pillTooBig
+                                    : copy.browseFitUnknown}
+                            </Pill>
 
-                          <span className="text-[0.68rem] text-muted-foreground">
-                            {!dJob.done_bytes && dJob.detail
-                              ? dJob.detail
-                              : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                            <span className="shrink-0 text-[0.7rem] text-muted-foreground">
+                              {gbLabel(group.total_bytes)}
+                            </span>
                           </span>
-                        </>
-                      ) : (
-                        <span className="flex items-center justify-between gap-2">
-                          <Pill tone={fitTone(group.fit)}>
-                            <Cpu className="mr-1 size-3" />
-                            {group.fit === 'fits-gpu'
-                              ? copy.pillFitsGpu
-                              : group.fit === 'needs-ram'
-                                ? copy.pillUsesRam
-                                : group.fit === 'too-big'
-                                  ? copy.pillTooBig
-                                  : copy.browseFitUnknown}
-                          </Pill>
-
-                          <span className="shrink-0 text-[0.7rem] text-muted-foreground">
-                            {gbLabel(group.total_bytes)}
-                          </span>
-                        </span>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        ))}
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </SettingsSection>
   )

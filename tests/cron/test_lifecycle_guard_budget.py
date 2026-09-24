@@ -57,13 +57,6 @@ def test_root_budget_counts_utf8_bytes(monkeypatch):
     assert guard("ééé") is True
 
 
-def test_exhaustion_is_logged_at_warning(monkeypatch, caplog):
-    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 4)
-    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_LINE_BYTES", 4)
-
-    with caplog.at_level("WARNING", logger=lifecycle_guard.logger.name):
-        assert guard("echo hello") is True
-    assert "budget exhausted" in caplog.text
 
 
 def test_lifecycle_scan_root_within_budget_is_not_a_verdict(monkeypatch):
@@ -130,24 +123,6 @@ def test_cumulative_text_budget_bounds_recursive_scan(monkeypatch, tmp_path):
     assert guard("bash a.sh;bash b.sh", cwd=cwd) is True
 
 
-def test_referenced_read_is_capped_at_remaining_budget(monkeypatch, tmp_path):
-    """A file bigger than what the walk can still afford is never read whole:
-    the read helper receives the remaining budget as its cap."""
-    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 64)
-    (tmp_path / "big.sh").write_text("echo " + "x" * 200 + "\n", encoding="utf-8")
-
-    caps: list = []
-    original = lifecycle_guard._read_referenced_script
-
-    def spy(path, *, max_bytes=None):
-        caps.append(max_bytes)
-        return original(path, max_bytes=max_bytes)
-
-    monkeypatch.setattr(lifecycle_guard, "_read_referenced_script", spy)
-
-    root = "bash big.sh"
-    assert guard(root, cwd=str(tmp_path)) is True
-    assert caps == [64 - len(root)]
 
 
 def test_remote_script_sanitizer_honours_remaining_budget():

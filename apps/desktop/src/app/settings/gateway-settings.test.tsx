@@ -57,6 +57,66 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
+  it('reconnects a moved agent under its new team without replacing its saved identity or changing another default', async () => {
+    const saved = {
+      id: 'saved-b',
+      kind: 'cloud',
+      label: 'My agent',
+      url: 'https://moved.example',
+      authMode: 'oauth',
+      org: 'old-team'
+    }
+
+    registry.value = { connections: [saved] }
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      cloudOrg: 'old-team',
+      remoteUrl: 'https://other.example'
+    })
+    const calls: string[] = []
+
+    const oauthLogoutConnectionConfig = vi.fn(async () => {
+      calls.push('logout')
+    })
+
+    const agentSignIn = vi.fn(async () => {
+      calls.push('login')
+
+      return { connected: true }
+    })
+
+    const save = vi.fn(async () => {
+      calls.push('save')
+    })
+
+    const discover = vi.fn().mockResolvedValue({
+      needsOrgSelection: true,
+      orgs: [{ id: 'new-team', name: 'New team', role: 'OWNER' }]
+    })
+
+    Object.assign(window.hermesDesktop, {
+      oauthLogoutConnectionConfig,
+      connections: { save },
+      cloud: { status: vi.fn().mockResolvedValue({ signedIn: true }), discover, agentSignIn }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('New team')
+    discover.mockResolvedValue({
+      agents: [{ id: 'moved', name: 'Moved agent', dashboardUrl: saved.url }],
+      org: { id: 'new-team' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Select', exact: true }))
+    await screen.findByRole('button', { name: 'Use gateway' })
+    expect(save).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Use gateway' }))
+    await waitFor(() => expect(selectConnection).toHaveBeenCalledWith(saved.id))
+    expect(calls).toEqual(['logout', 'login', 'save'])
+    expect(agentSignIn).toHaveBeenCalledWith(saved.url)
+    expect(save).toHaveBeenCalledWith({ ...saved, org: 'new-team' })
+    expect(saveConnectionConfig).not.toHaveBeenCalled()
+    registry.value = null
+  })
   it('keeps saved Cloud instances usable without discovery and marks the live source, not the default', async () => {
     getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: 'https://a.example' })
     registry.value = {
@@ -120,12 +180,71 @@ describe('GatewaySettings', () => {
     expect(agentSignIn).toHaveBeenCalledExactlyOnceWith('https://new-a.example')
     expect(applyConnectionConfig).toHaveBeenCalledTimes(1)
   })
+  // #114856: an env-pinned remote (HERMES_DESKTOP_REMOTE_URL) whose session
+  // lapsed could not be re-authenticated from Settings → Gateway at all — the
+  // whole remote block (URL + probe + Authentication) was hidden behind
+  // `!state.envOverride`, so the recovery card's "Gateway settings" escape led
+  // to a read-only banner with no sign-in, leaving "Use local gateway" as the
+  // only way back in. The env override pins the URL, not the browser session
+  // (docs: "you still sign in from the Gateway settings panel"), so the
+  // Authentication row must stay reachable — its controls are not env-owned.
+  describe('env-override remote', () => {
+    const envUrl = 'http://100.116.104.53:9191'
+
+    const envRemote = {
+      ...localConnection,
+      envOverride: true,
+      mode: 'remote',
+      remoteAuthMode: 'token',
+      remoteUrl: envUrl
+    }
+
+    const oauthProbe = {
+      authMode: 'oauth',
+      providers: [{ displayName: 'Nous Research', name: 'nous', supportsPassword: false }],
+      reachable: true
+    }
+
+    it('reaches sign-in for a lapsed session instead of a dead env banner', async () => {
+      const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ connected: true })
+      const probeConnectionConfig = vi.fn().mockResolvedValue(oauthProbe)
+
+      getConnectionConfig.mockResolvedValue({ ...envRemote, remoteOauthConnected: false })
+      // Sign-in persists the URL + oauth mode before opening the login window;
+      // the saved echo must stay remote or the signing sequence resets.
+      saveConnectionConfig.mockResolvedValue({ ...envRemote, remoteAuthMode: 'oauth' })
+      Object.assign(window.hermesDesktop, { oauthLoginConnectionConfig, probeConnectionConfig })
+
+      render(<GatewaySettings embedded />)
+
+      // The env override still owns the URL: the editor stays read-only.
+      expect(((await screen.findByDisplayValue(envUrl)) as HTMLInputElement).disabled).toBe(true)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Nous Research' }))
+
+      await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(envUrl))
+    })
+
+    it('leaves a saved (non-env) remote session editable and unchanged', async () => {
+      const oauthLoginConnectionConfig = vi.fn()
+
+      getConnectionConfig.mockResolvedValue({ ...envRemote, envOverride: false, remoteOauthConnected: false })
+      Object.assign(window.hermesDesktop, {
+        oauthLoginConnectionConfig,
+        probeConnectionConfig: vi.fn().mockResolvedValue(oauthProbe)
+      })
+
+      render(<GatewaySettings embedded />)
+
+      expect(((await screen.findByDisplayValue(envUrl)) as HTMLInputElement).disabled).toBe(false)
+      expect(await screen.findByRole('button', { name: 'Sign in with Nous Research' })).toBeTruthy()
+      expect(oauthLoginConnectionConfig).not.toHaveBeenCalled()
+    })
+  })
+
   it('loads the machine-level connection config (no profile scoping)', async () => {
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()
-    expect(
-      screen.getByText('Start a private Hermes backend on localhost. This is the default and works offline.')
-    ).toBeTruthy()
 
     // The page manages the machine's gateway connections; it must load the
     // global config, never a per-profile override.

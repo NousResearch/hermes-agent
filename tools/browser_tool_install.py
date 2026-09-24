@@ -179,7 +179,8 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
     env = _bt._build_browser_env()
     env["PATH"] = _merge_browser_path(env.get("PATH", ""))
-    popen_kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "env": env}
+    popen_kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True,
+                          "encoding": "utf-8", "errors": "replace", "env": env}
     if os.name == "posix":
         popen_kwargs.update(creationflags=windows_hide_flags(), start_new_session=True)
     else:
@@ -335,8 +336,5 @@ def check_browser_vision_requirements() -> bool:
     """
     if not check_browser_requirements():
         return False
-    try:
-        from tools.vision_tools import check_vision_requirements
-    except ImportError:
-        return False
+    from tools.vision_tools import check_vision_requirements
     return check_vision_requirements()

@@ -1,0 +1,16 @@
+name: kiro-provider
+repo: https://github.com/anpicasso/hermes-kiro-provider
+sha: 9e3f28c993ac6b70e8921a2f8bc7a70f2c351465
+subdir: provider
+description: Native Kiro model provider over HTTPS with AWS Builder ID / IAM Identity Center device login. Disclosure — dynamically registers an AWS OIDC public client named `hermes-kiro` during login and stores OAuth grants in Hermes' profile-scoped auth.json credential pool.
+maintainer: anpicasso
+tier: community
+category: models
+docs_url: https://github.com/anpicasso/hermes-kiro-provider#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

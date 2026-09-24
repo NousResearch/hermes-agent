@@ -79,3 +79,24 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
     assert graph["stats"]["nodes"] == len(skill_nodes)
     assert graph["stats"]["memory_nodes"] == len(graph["memory"])
     assert all("timestamp" in n for n in graph["nodes"])
+
+
+def test_foreground_created_skill_is_in_journey_before_first_use(tmp_path):
+    """A skill created in the foreground (/learn, skill_manage) shows in the journey with zero
+    uses, while an unmarked never-used local skill (hand-written) stays out."""
+    from tools import skill_usage
+
+    home = tmp_path / ".hermes"
+    for name in ("fresh-learn-skill", "hand-written"):
+        (home / "skills" / "demo" / name).mkdir(parents=True)
+        (home / "skills" / "demo" / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: d.\n---\n\n# {name}\n", encoding="utf-8")
+    token = set_hermes_home_override(home)
+    try:
+        skill_usage.record_created("fresh-learn-skill", agent_created=False)
+        skill_nodes = {n["id"] for n in learning_graph.build_learning_graph()["nodes"] if n["kind"] == "skill"}
+    finally:
+        reset_hermes_home_override(token)
+
+    assert "fresh-learn-skill" in skill_nodes
+    assert "hand-written" not in skill_nodes

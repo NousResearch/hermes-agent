@@ -322,12 +322,27 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
 
 
 
-def test_native_client_accepts_injected_http_client():
-    from agent.gemini_native_adapter import GeminiNativeClient
 
-    injected = SimpleNamespace(close=lambda: None)
-    client = GeminiNativeClient(api_key="AIza-test", http_client=injected)
-    assert client._http is injected
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, "https://generativelanguage.googleapis.com/v1beta"),
+        ("https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta"),
+        ("http://localhost:4000/gemini///", "http://localhost:4000/gemini/v1beta"),
+        ("https://proxy.example/gemini/v1alpha/", "https://proxy.example/gemini/v1alpha"),
+        ("https://proxy.example/v1", "https://proxy.example/v1"),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta"),
+    ],
+)
+def test_normalize_gemini_base_url_guarantees_version_segment(configured, expected):
+    """Host roots (how Google's own client is configured) gain ``/v1beta``; versioned URLs and the
+    ``/openai`` strip are unchanged, so ``{base}/models/{model}:generateContent`` never 404s."""
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+
+    assert normalize_gemini_base_url(configured) == expected
+
+
 
 
 def test_native_client_rejects_empty_api_key_with_actionable_message():
@@ -340,7 +355,6 @@ def test_native_client_rejects_empty_api_key_with_actionable_message():
             GeminiNativeClient(api_key=bad)  # type: ignore[arg-type]
         msg = str(excinfo.value)
         assert "GOOGLE_API_KEY" in msg and "GEMINI_API_KEY" in msg
-        assert "aistudio.google.com" in msg
 
 
 @pytest.mark.asyncio
@@ -398,6 +412,54 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
     assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
     assert first[-1].choices[0].finish_reason == "tool_calls"
+
+
+def _fc_event(name, args, call_id=None, finish=None):
+    fc = {"name": name, "args": args}
+    if call_id:
+        fc["id"] = call_id
+    cand = {"content": {"parts": [{"functionCall": fc}]}}
+    if finish:
+        cand["finishReason"] = finish
+    return {"candidates": [cand]}
+
+
+def _tool_call_deltas(chunks):
+    return [(tc.index, tc.function.arguments) for c in chunks for tc in (c.choices[0].delta.tool_calls or [])]
+
+
+def test_distinct_same_tool_calls_in_separate_events_get_their_own_slots():
+    """Gemini 2.5 (no call id) streams each parallel call as parts[0] of its own event; two
+    different calls to one tool must not share a slot, and a resend of the second must land on
+    the slot it opened instead of concatenating onto the first."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = []
+    for args in ({"q": "A"}, {"q": "B"}, {"q": "B"}):
+        out += translate_stream_event(_fc_event("search", args), model="gemini-2.5-flash", tool_call_indices=slots)
+
+    assert _tool_call_deltas(out) == [(0, '{"q": "A"}'), (1, '{"q": "B"}'), (1, "")]
+    for (_, arguments) in _tool_call_deltas(out)[:2]:
+        json.loads(arguments)
+
+
+def test_provider_call_id_is_the_slot_identity():
+    """Gemini 3 ids two calls with identical name and args as two calls; the same id across events
+    (with drifting part_index / signature) is one call."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c1"), model="gemini-3-pro", tool_call_indices=slots)
+    out += translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c2"), model="gemini-3-pro", tool_call_indices=slots)
+    resend = {"candidates": [{"content": {"parts": [{"text": "x"}, {"functionCall": {"name": "search", "args": {"q": "A"}, "id": "c1"},
+                                                        "thoughtSignature": "sig"}]}}]}
+    out += translate_stream_event(resend, model="gemini-3-pro", tool_call_indices=slots)
+
+    deltas = _tool_call_deltas(out)
+    assert deltas == [(0, '{"q": "A"}'), (1, '{"q": "A"}'), (0, "")]
+    ids = [tc.id for c in out for tc in (c.choices[0].delta.tool_calls or [])]
+    assert ids == ["c1", "c2", "c1"]
 
 
 def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
@@ -675,3 +737,182 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+class _FakeStreamResponse:
+    """Minimal httpx.Response stand-in for _iter_sse_events: text chunks only."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def iter_text(self):
+        yield from self._chunks
+
+
+def test_iter_sse_events_flushes_residual_buffer_after_eof():
+    """A final SSE frame without a trailing newline must not be dropped (pi#8997 class)."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\n',
+        'data: {"candidates": [2]}',  # no newline, then EOF
+    ])
+    events = list(_iter_sse_events(resp))
+    assert events == [{"candidates": [1]}, {"candidates": [2]}]
+
+
+def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
+    """[DONE] terminates iteration even when more frames follow; a residual
+    [DONE] in the leftover buffer is not yielded as data."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\ndata: [DONE]\ndata: {"candidates": [3]}\n',
+    ])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+    resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+
+@pytest.mark.parametrize(
+    "api_key, configured, expected_prefix",
+    [
+        # AQ. keys exist for BOTH AI Studio and Vertex express mode (#115306): the prefix never
+        # reroutes, so an AI-Studio AQ. key keeps working on the default Studio host.
+        ("AQ.studio-key", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # Control: legacy AIza Studio key keeps the Studio host too.
+        ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form —
+        # the express key's only route to aiplatform now that the prefix no longer reroutes.
+        ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # An explicit proxy is never overridden by the key shape.
+        ("AQ.studio-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+    ],
+)
+def test_native_client_never_reroutes_aq_keys_off_the_configured_surface(api_key, configured, expected_prefix):
+    """Google issues ``AQ.`` keys for both AI Studio and Vertex express mode, so the key prefix must
+    not decide the surface (#115306): the default (or explicitly configured) base is used verbatim,
+    and an explicit aiplatform base is completed to ``…/publishers/google/models/…``."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    seen = []
+
+    class _HTTP:
+        def post(self, url, **_):
+            seen.append(url)
+            return SimpleNamespace(status_code=200, json=lambda: {"candidates": [
+                {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}]})
+
+    client = GeminiNativeClient(api_key=api_key, base_url=configured, http_client=_HTTP())
+    client.chat.completions.create(model="gemini-3.7-flash", messages=[{"role": "user", "content": "hi"}])
+    assert seen == [f"{expected_prefix}gemini-3.7-flash:generateContent"]
+
+
+def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
+    """The express base is native Gemini; the OAuth Vertex provider's OpenAI-compatible
+    ``…/endpoints/openapi`` base must NOT be captured by the native adapter."""
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/publishers/google")
+    assert not is_native_gemini_base_url(
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    )
+
+
+def test_thinking_tokens_are_counted_as_output_and_surfaced_as_reasoning():
+    """Gemini bills hidden thinking under its own ``thoughtsTokenCount``;
+    ``candidatesTokenCount`` covers visible output only while ``totalTokenCount``
+    includes thoughts. Dropping thoughts made the emitted usage internally
+    inconsistent (prompt + completion != total) and billed a thinking turn at a
+    fraction of its real output."""
+    from agent.gemini_native_adapter import translate_gemini_response
+    from agent.usage_pricing import normalize_usage
+
+    prompt, visible, thoughts = 10, 200, 5000
+    payload = {
+        "candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": prompt,
+            "candidatesTokenCount": visible,
+            "thoughtsTokenCount": thoughts,
+            "totalTokenCount": prompt + visible + thoughts,
+        },
+    }
+
+    usage = translate_gemini_response(payload, model="gemini-2.5-flash").usage
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    assert usage.completion_tokens_details.reasoning_tokens == thoughts
+
+    canonical = normalize_usage(usage, provider="google")
+    assert canonical.output_tokens == visible + thoughts
+    assert canonical.reasoning_tokens == thoughts
+
+
+def test_response_without_thinking_tokens_keeps_its_output_count():
+    """Non-thinking / older responses omit ``thoughtsTokenCount``; their numbers
+    must not move, and reasoning stays zero."""
+    from agent.gemini_native_adapter import translate_gemini_response
+    from agent.usage_pricing import normalize_usage
+
+    prompt, visible = 10, 5
+    payload = {
+        "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": prompt,
+            "candidatesTokenCount": visible,
+            "totalTokenCount": prompt + visible,
+        },
+    }
+
+    usage = translate_gemini_response(payload, model="gemini-2.5-flash").usage
+    assert usage.completion_tokens == visible
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    assert normalize_usage(usage, provider="google").reasoning_tokens == 0
+
+
+@pytest.mark.parametrize("json_schema_surface, key", [(True, "responseJsonSchema"), (False, "responseSchema")])
+def test_build_gemini_request_translates_response_format_on_both_schema_surfaces(json_schema_surface, key):
+    """OpenAI response_format reaches generationConfig: full JSON Schema under ``responseJsonSchema`` on
+    v1beta, the OpenAPI subset under ``responseSchema`` elsewhere (with unsupported keys stripped)."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": schema}},
+        tools_as_json_schema=json_schema_surface,
+    )["generationConfig"]
+    assert generation["responseMimeType"] == "application/json"
+    assert generation[key]["properties"] == schema["properties"] and generation[key]["required"] == ["ok"]
+    assert ("additionalProperties" in generation[key]) is json_schema_surface
+
+
+@pytest.mark.parametrize("tool_choice", ["required", {"type": "function", "function": {"name": "lookup"}}])
+def test_build_gemini_request_drops_json_output_when_tool_choice_forces_calls(tool_choice):
+    """Gemini 400s on forced function calling (mode ANY) combined with a JSON responseMimeType, on every model."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        tool_choice=tool_choice, model="gemini-3-flash",
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": {"type": "object"}}},
+        tools_as_json_schema=True,
+    )["generationConfig"]
+    assert not {"responseMimeType", "responseJsonSchema", "responseSchema"} & set(generation)
+
+
+@pytest.mark.parametrize("model, keeps_json", [("gemini-2.5-flash", False), ("gemini-3-flash", True)])
+def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keeps_json):
+    """Pre-Gemini-3 rejects function declarations alongside a JSON mime type (HTTP 400 "Function calling
+    with a response mime type: 'application/json' is unsupported"); Gemini 3+ accepts the combination."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
+    )["generationConfig"]
+    assert ("responseMimeType" in generation) is keeps_json

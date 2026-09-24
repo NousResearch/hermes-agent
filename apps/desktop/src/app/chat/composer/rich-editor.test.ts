@@ -4,10 +4,13 @@ import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
+  caretOffsetInEditor,
   composerPlainText,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
+  placeCaretEnd,
   refChipElement,
   renderComposerContents,
   replaceBeforeCaret,
@@ -124,6 +127,62 @@ describe('replaceBeforeCaret across split text nodes', () => {
 })
 
 describe('normalizeComposerEditorDom', () => {
+  it.each([
+    [6, 6],
+    [2, 12],
+    [12, 2]
+  ])('preserves selection %i → %i inside a native block wrapper', (anchor, focus) => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    const wrapper = document.createElement('div')
+    const text = document.createTextNode('still typing here')
+    wrapper.append(text)
+    editor.append(wrapper)
+    document.body.append(editor)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(text, anchor, text, focus)
+
+    try {
+      normalizeComposerEditorDom(editor)
+
+      expect(composerPlainText(editor)).toBe('still typing here')
+      expect(selection.anchorNode).toBe(text)
+      expect(selection.anchorOffset).toBe(anchor)
+      expect(selection.focusNode).toBe(text)
+      expect(selection.focusOffset).toBe(focus)
+    } finally {
+      editor.remove()
+    }
+  })
+
+  it('leaves another editor’s selection alone when normalizing a background draft', () => {
+    const foreground = document.createElement('div')
+    const text = document.createTextNode('foreground draft')
+    foreground.append(text)
+    const background = document.createElement('div')
+    background.dataset.slot = RICH_INPUT_SLOT
+    const wrapper = document.createElement('p')
+    wrapper.textContent = 'background draft'
+    background.append(wrapper)
+    document.body.append(foreground, background)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(text, 10, text, 3)
+
+    try {
+      normalizeComposerEditorDom(background)
+
+      expect(composerPlainText(background)).toBe('background draft')
+      expect(selection.anchorNode).toBe(text)
+      expect(selection.anchorOffset).toBe(10)
+      expect(selection.focusNode).toBe(text)
+      expect(selection.focusOffset).toBe(3)
+    } finally {
+      foreground.remove()
+      background.remove()
+    }
+  })
+
   it('unwraps a single insertHTML wrapper div so plain text stays one line', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
@@ -144,6 +203,38 @@ describe('normalizeComposerEditorDom', () => {
 
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
     expect(editor.querySelector('br')).toBeNull()
+  })
+
+  it('preserves a live caret anchored in an empty direct text node', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+
+    const leadingLitter = document.createTextNode('')
+    const caretContainer = document.createTextNode('')
+    const trailingLitter = document.createTextNode('')
+    editor.append(leadingLitter, refChipElement('file', '`src/foo.ts`'), caretContainer, trailingLitter)
+
+    const caret = document.createRange()
+    caret.setStart(caretContainer, 0)
+    caret.collapse(true)
+
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    normalizeComposerEditorDom(editor)
+
+    expect(leadingLitter.isConnected).toBe(false)
+    expect(trailingLitter.isConnected).toBe(false)
+    expect(caretContainer.isConnected).toBe(true)
+    expect(editor.contains(selection.getRangeAt(0).startContainer)).toBe(true)
+    expect(selection.getRangeAt(0).startContainer).toBe(caretContainer)
+    expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
+
+    selection.removeAllRanges()
+    editor.remove()
   })
 })
 
@@ -379,6 +470,102 @@ describe('deleteSelectionInEditor', () => {
     expect(composerPlainText(editor)).toBe('')
     expect(selection.getRangeAt(0).collapsed).toBe(true)
     expect(deleteSelectionInEditor(editor)).toBe(false)
+
+    editor.remove()
+  })
+})
+
+describe('caret placement on a detached editor', () => {
+  it('leaves the document selection alone instead of selecting into a detached node', () => {
+    const attached = document.createElement('div')
+    attached.textContent = 'visible composer'
+    document.body.append(attached)
+    placeCaretAtEnd(attached)
+
+    const detached = document.createElement('div')
+    detached.dataset.slot = RICH_INPUT_SLOT
+    detached.textContent = 'unmounted composer'
+
+    const selection = window.getSelection()
+    const before = selection?.getRangeAt(0).startContainer
+
+    expect(() => placeCaretEnd(detached)).not.toThrow()
+    expect(() => placeCaretAtOffset(detached, 3)).not.toThrow()
+    expect(selection?.rangeCount).toBe(1)
+    expect(selection?.getRangeAt(0).startContainer).toBe(before)
+    expect(detached.contains(selection?.anchorNode ?? null)).toBe(false)
+
+    attached.remove()
+  })
+})
+
+describe('normalizeComposerEditorDom — caret preservation', () => {
+  it('re-establishes a caret anchored inside a removed phantom tail block', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    document.body.append(editor)
+    editor.focus()
+
+    expect(document.activeElement).toBe(editor)
+
+    const text = document.createTextNode('hi')
+    const tailBlock = document.createElement('div')
+
+    tailBlock.append(document.createElement('br'))
+    editor.append(text, tailBlock)
+
+    const caret = document.createRange()
+    caret.setStart(tailBlock, 0)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    normalizeComposerEditorDom(editor)
+
+    expect(tailBlock.isConnected).toBe(false)
+    expect(selection.isCollapsed).toBe(true)
+
+    const range = selection.getRangeAt(0)
+    expect(editor.contains(range.startContainer)).toBe(true)
+    expect(range.startContainer).toBe(text)
+    expect(range.startOffset).toBe(2)
+
+    editor.remove()
+  })
+
+  it('leaves a still-valid selection untouched', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    document.body.append(editor)
+    editor.focus()
+
+    const br = document.createElement('br')
+    editor.append(refChipElement('file', '`a.ts`'), br)
+
+    const caret = document.createRange()
+    caret.setStart(editor, 1)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    const offsetBefore = caretOffsetInEditor(editor)
+
+    normalizeComposerEditorDom(editor)
+
+    // The trailing <br> after a chip is gone — normalization did mutate — but
+    // the selection was valid, so it must come through untouched.
+    expect(editor.contains(br)).toBe(false)
+
+    const range = selection.getRangeAt(0)
+    expect(range.startContainer).toBe(editor)
+    expect(range.startOffset).toBe(1)
+    expect(caretOffsetInEditor(editor)).toBe(offsetBefore)
 
     editor.remove()
   })

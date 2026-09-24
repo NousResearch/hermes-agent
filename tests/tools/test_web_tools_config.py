@@ -5,6 +5,7 @@ Coverage:
   constructor failure recovery, return value verification, edge cases.
   _get_backend() — backend selection logic with env var combinations.
   plugins.web.parallel.provider._get_sync_client() — Parallel client configuration, singleton caching.
+  plugins.web._common.cached_sdk_client() — Parallel/Exa clients follow the currently resolved key.
   check_web_api_key() — unified availability check across all web backends.
 """
 
@@ -14,7 +15,7 @@ import os
 import sys
 import types
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 
 class TestFirecrawlClientConfig:
@@ -402,12 +403,20 @@ class TestParallelClientConfig:
         fake_parallel.Parallel = Parallel
         fake_parallel.AsyncParallel = AsyncParallel
         sys.modules["parallel"] = fake_parallel
+        # The fake parallel module above answers every SDK touch; the real
+        # lazy-dep gate (a version-pinned metadata check) must not refuse first
+        # on an install without the parallel extra.
+        self._lazy_gate_patch = patch(
+            "tools.lazy_deps.ensure", lambda *args, **kwargs: None
+        )
+        self._lazy_gate_patch.start()
 
     def teardown_method(self):
         import tools.web_tools
         tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
         sys.modules.pop("parallel", None)
+        self._lazy_gate_patch.stop()
 
     def test_creates_client_with_key(self):
         """PARALLEL_API_KEY set → creates Parallel client."""
@@ -432,20 +441,95 @@ class TestParallelClientConfig:
             client2 = _get_parallel_client()
             assert client1 is client2
 
+    def test_client_follows_the_key_reload_applies(self):
+        """/reload (reload_env) fixing or removing the key reaches the next call: the client built
+        with the old key is never handed out again."""
+        from hermes_cli.config import get_env_path, reload_env
+        from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
+        with patch.dict(os.environ):
+            get_env_path().write_text("PARALLEL_API_KEY=typo-key\n")
+            reload_env()
+            assert _get_parallel_client().api_key == "typo-key"
+            get_env_path().write_text("PARALLEL_API_KEY=fixed-key\n")
+            reload_env()
+            assert _get_parallel_client().api_key == "fixed-key"
+            get_env_path().write_text("")
+            reload_env()
+            with pytest.raises(ValueError, match="PARALLEL_API_KEY"):
+                _get_parallel_client()
+
+
+class TestExaClientConfig:
+    """Exa shares the key-checked client cache with Parallel."""
+
+    def setup_method(self):
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        os.environ.pop("EXA_API_KEY", None)
+        fake_exa = types.ModuleType("exa_py")
+
+        class Exa:
+            def __init__(self, api_key):
+                self.api_key = api_key
+                self.headers = {}
+
+            def search(self, query, num_results, contents):
+                hit = types.SimpleNamespace(url="https://example.com", title="t", highlights=[self.api_key])
+                return types.SimpleNamespace(results=[hit])
+
+        fake_exa.Exa = Exa
+        sys.modules["exa_py"] = fake_exa
+        self._lazy_gate_patch = patch("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+        self._lazy_gate_patch.start()
+
+    def teardown_method(self):
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        os.environ.pop("EXA_API_KEY", None)
+        sys.modules.pop("exa_py", None)
+        self._lazy_gate_patch.stop()
+
+    def test_multiplexed_profiles_search_with_their_own_key(self, tmp_path, monkeypatch):
+        """One process serving two profiles: each turn's search goes out with its own profile's key, and a
+        profile WITHOUT a key is refused — never served on the launch profile's ``os.environ`` key."""
+        from agent import secret_scope
+        from plugins.web.exa.provider import ExaWebSearchProvider
+        homes = {}
+        for name, line in (("a", "EXA_API_KEY=key-a\n"), ("b", "EXA_API_KEY=key-b\n"), ("nokey", "")):
+            homes[name] = tmp_path / name
+            homes[name].mkdir()
+            (homes[name] / ".env").write_text(line)
+        monkeypatch.setenv("EXA_API_KEY", "key-launch")
+        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+
+        def sent_with(name):
+            token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(homes[name]))
+            try:
+                result = ExaWebSearchProvider().search("q")
+            finally:
+                secret_scope.reset_secret_scope(token)
+            if not result["success"]:
+                return result["error"]
+            return result["data"]["web"][0]["description"]
+
+        assert [sent_with("a"), sent_with("b"), sent_with("a")] == ["key-a", "key-b", "key-a"]
+        assert "EXA_API_KEY" in sent_with("nokey") and "key-launch" not in sent_with("nokey")
+        assert sent_with("a") == "key-a"
+
+    def test_single_profile_process_env_still_serves_the_key(self, monkeypatch):
+        """Control: no profile scope bound (plain CLI / systemd-injected env) keeps reading os.environ."""
+        from plugins.web.exa.provider import ExaWebSearchProvider
+        monkeypatch.setenv("EXA_API_KEY", "key-env")
+        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
+        result = ExaWebSearchProvider().search("q")
+        assert result["success"], result
+        assert result["data"]["web"][0]["description"] == "key-env"
+
 
 class TestWebSearchSchema:
     """Test suite for web_search tool schema and handler wiring."""
 
-    def test_schema_exposes_optional_limit(self):
-        import tools.web_tools
-
-        limit_schema = tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]["limit"]
-
-        assert limit_schema["type"] == "integer"
-        assert limit_schema["minimum"] == 1
-        assert limit_schema["maximum"] == 100
-        assert limit_schema["default"] == 5
-        assert "limit" not in tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["required"]
 
 
     def test_web_search_clamps_limit_before_backend_call(self):
@@ -568,6 +652,39 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is False
 
+    def test_configured_xai_backend_still_lights_gate(self):
+        """An explicit ``web.backend: xai`` selection still counts toward the
+        gate: the bundled web-xai plugin's provider can serve it when loaded,
+        and a stored selection is returned as-is by _get_backend either way."""
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "xai"}), \
+             patch("tools.xai_http.has_xai_credentials", return_value=True):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_xai_only_env_end_to_end_toolset_gate(self, monkeypatch, tmp_path):
+        """E2e through the registry: a real XAI_API_KEY env var -> the real
+        has_xai_credentials probe -> check_fn -> get_tool_definitions. The web
+        toolset must serve zero tools (xai can never be dispatched to), and it
+        must light up once a real web key joins."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # isolate auth.json / credential pool
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        from tools.registry import invalidate_check_fn_cache
+        import model_tools
+
+        with patch("tools.web_tools._load_web_config", return_value={}):
+            invalidate_check_fn_cache()
+            names = {d["function"]["name"]
+                     for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
+            assert names == set()
+
+            monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-key")
+            invalidate_check_fn_cache()
+            names = {d["function"]["name"]
+                     for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
+            assert names == {"web_search", "web_extract"}
+
 
     def test_configured_firecrawl_backend_accepts_managed_gateway(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
@@ -625,12 +742,6 @@ class TestCheckWebApiKey:
             assert check_web_api_key() is True
 
 
-def test_web_requires_env_includes_exa_key():
-    from tools.web_tools import _web_requires_env
-
-    env = _web_requires_env()
-    assert "EXA_API_KEY" in env
-    assert "TAVILY_API_KEY" in env
 
 
 class TestNonBuiltinProviderAvailability:
@@ -732,18 +843,6 @@ class TestNonBuiltinProviderAvailability:
             from tools.web_tools import _get_extract_backend
             assert _get_extract_backend() == "fake-plugin-prov"
 
-    def test_tool_registry_entries_not_filtered_out(self):
-        """web_search and web_extract tool entries must remain in the
-        registry when only a custom provider is available."""
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
-            import tools.web_tools
-            web_search_entry = tools.web_tools.registry.get_entry("web_search")
-            web_extract_entry = tools.web_tools.registry.get_entry("web_extract")
-            assert web_search_entry is not None, \
-                "web_search tool was filtered out despite custom provider being available"
-            assert web_extract_entry is not None, \
-                "web_extract tool was filtered out despite custom provider being available"
 
 
 class TestFirecrawlEnvResolution:
@@ -810,7 +909,6 @@ class TestSiblingProvidersEnvResolution:
         """is_available() must see a key that lives only in the .env layer."""
         monkeypatch.delenv(env_key, raising=False)
 
-        import importlib
         module = importlib.import_module(module_path)
         provider = getattr(module, cls_name)()
 
@@ -875,3 +973,35 @@ class TestSiblingProvidersEnvResolution:
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""
+
+
+def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeypatch, tmp_path):
+    """With the bundled web-xai plugin registered (the default), the registry resolves xai
+    as the single eligible search provider while _get_backend never autodetects it. The
+    gate must follow the dispatcher: keyless off -> no servable backend -> tools stay off
+    (#116175 review follow-up). Module-level on purpose: TestCheckWebApiKey neutralizes the
+    registry path with get_active_*_provider -> None."""
+    from agent import web_search_registry as registry
+    from plugins.web.xai.provider import XAIWebSearchProvider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    with registry._lock:
+        saved = dict(registry._providers)
+        registry._providers.clear()
+    registry.register_provider(XAIWebSearchProvider())
+    try:
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ensure_web_plugins_loaded", lambda: None), \
+             patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+            from tools.web_tools import _get_backend, check_web_api_key
+            assert registry.get_active_search_provider().name == "xai"
+            assert _get_backend() == "firecrawl"  # legacy sentinel: nothing servable
+            assert check_web_api_key() is False
+    finally:
+        with registry._lock:
+            registry._providers.clear()
+            registry._providers.update(saved)

@@ -73,6 +73,24 @@ RUN apt-get -o Acquire::Retries=3 update && \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
+# Bot Screen (opt-in): PACKAGES["apt"] from tools/bot_desktop/runtime.py plus apt
+# `chromium` for the dock's Browser icon. ~930 MB apt on debian:13.4 (~1.4 GB of
+# image once the gated headed Chromium below is counted); nothing starts
+# at boot. docker.yml builds both variants and publishes these packages under
+# the `-desktop` tags: hosted sandboxes pull a prebuilt image and never run a
+# build, and cannot apt at run time either (unprivileged, no sudo). Only this
+# build step needs root —
+# Xvnc is a userspace X server, so the runtime user can drive it.
+#   docker build --build-arg HERMES_BOT_DESKTOP=1 .
+ARG HERMES_BOT_DESKTOP=0
+RUN if [ "$HERMES_BOT_DESKTOP" = "1" ]; then \
+        apt-get -o Acquire::Retries=3 update && \
+        DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        tigervnc-standalone-server xfce4-panel xfwm4 xfdesktop4 xfce4-settings xfce4-terminal \
+        dbus-x11 x11-xserver-utils x11-utils x11-xkb-utils xauth fonts-dejavu-core chromium && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
 # public library name stable so both the system interpreter and the uv-created
 # venv resolve the replacement without changing Python import paths.
@@ -196,12 +214,24 @@ COPY apps/shared/ apps/shared/
 # guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
 
+# chrome-headless-shell: what the browser tool has always driven headlessly.
+# Smaller, no window code paths. --with-deps pulls the shared system libraries.
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
     for i in 1 2 3; do \
         npx playwright install --with-deps chromium --only-shell && break || \
-        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+        { [ "$i" = 3 ] && exit 1; echo "playwright headless-shell install failed (attempt $i); retrying in 10s"; sleep 10; }; \
     done && \
     npm cache clean --force
+
+# chrome-headless-shell cannot open a window, so the dock's Browser icon needs the
+# full build. Same Chromium family as the shell, so agent and human share one
+# --user-data-dir. Gated: a build with no desktop has nothing to show it on.
+RUN if [ "$HERMES_BOT_DESKTOP" = "1" ]; then \
+        for i in 1 2 3; do \
+            npx playwright install chromium && break || \
+            { [ "$i" = 3 ] && exit 1; echo "playwright chromium install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+        done; \
+    fi
 
 # ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
 # The photon plugin's Node sidecar needs its own node_modules
@@ -247,12 +277,10 @@ RUN cd plugins/platforms/photon/sidecar && \
 # Health export is enabled. Collector and observability-backend dependencies
 # remain external and are not part of the Hermes production image.
 #
-# The hindsight memory provider's client (hindsight-client) is baked in
-# for the same reason: it lazy-installs into /opt/hermes/.venv at first
-# use, which lives inside the (immutable) image layer rather than the
-# mounted /opt/data volume, so it is lost on every container recreate /
-# image update and recall/retain then fails with
-# `ModuleNotFoundError: No module named 'hindsight_client'` (#38128).
+# Catalog memory plugins (e.g. hindsight, since it left the tree) are not
+# baked in: their pip dependencies install at plugin-install time through
+# tools/lazy_deps.py into HERMES_LAZY_INSTALL_TARGET (the durable /opt/data
+# volume, see below), so they survive container recreates (#38128).
 #
 # The Matrix gateway's deps ([matrix] extra) are baked in because
 # python-olm (transitive via mautrix[encryption]) builds from source on
@@ -261,10 +289,15 @@ RUN cd plugins/platforms/photon/sidecar && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# Google Chat's [google-chat] extra (google-cloud-pubsub + Chat API clients)
+# is baked so hosted/immutable images can enable the adapter without writing
+# the sealed venv. Runtime --install-deps still routes through lazy_deps into
+# HERMES_LAZY_INSTALL_TARGET when the extra is not present.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra matrix --extra google-chat
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -274,6 +307,15 @@ COPY ui-tui/ ui-tui/
 COPY apps/shared/ apps/shared/
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
+
+# ---------- Bot Screen X socket directory ----------
+# Xvnc would create this itself (/tmp is 1777); pre-creating it keeps ownership
+# deterministic when HERMES_UID is remapped between boots.
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
+# XDG_RUNTIME_DIR (set below) sits under a predictable name in world-writable /tmp.
+# Shipping it root-owned means stage2 finds a directory it trusts and chowns it.
+RUN mkdir -p /tmp/hermes-runtime && chmod 0700 /tmp/hermes-runtime
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -399,6 +441,12 @@ ENV HERMES_DISABLE_LAZY_INSTALLS=1
 # on the /opt/data volume, so it persists across container recreates / image
 # updates (an ABI stamp invalidates it if a rebuild bumps the interpreter).
 ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
+
+# Xfce, dbus and the display-allocation lock need one; containers have no logind
+# to create /run/user/<uid>. The default fallback ($HOME/.cache) is the /opt/data
+# volume, which a host-side install may share — two instances would then contend
+# for one lock. Container-scoped instead; seeded 0700 by docker/stage2-hook.sh.
+ENV XDG_RUNTIME_DIR=/tmp/hermes-runtime
 
 # `docker exec` privilege-drop shim. When operators run
 # `docker exec <c> hermes ...` they default to root, and any file the

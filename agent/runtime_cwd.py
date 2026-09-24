@@ -44,6 +44,21 @@ def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
 
 
+def scoped_session_cwd() -> str:
+    """Return the current session's declared cwd without local path validation.
+
+    Remote and container paths may not exist on the Hermes host. Callers that only need
+    logical workspace identity should preserve the declared value instead of resolving it.
+    """
+    value = _SESSION_CWD.get()
+    return "" if value is _UNSET else str(value).strip()
+
+
+def reset_session_cwd(token: Token) -> None:
+    """Restore the logical cwd that was active before the matching ``set_session_cwd``."""
+    _SESSION_CWD.reset(token)
+
+
 def scope_terminal_cwd() -> str:
     """Scope-aware TERMINAL_CWD value (may be empty) — every cwd consumer reads through this.
 

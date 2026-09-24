@@ -8,13 +8,23 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
+# Pay-per-token first-party APIs whose models.dev rate card is the vendor's own
+# list price, keyed by billing-route provider -> API domain. A model missing from
+# the snapshot below is priced from models.dev only on HTTPS:443 to that domain
+# (or with no base URL, i.e. the provider default): a proxy, relay or custom
+# endpoint serving the same model id may bill differently, and subscription
+# routes (openai-codex, xai-oauth) keep their own policy.
+_MODELS_DEV_DIRECT_HOSTS = {
+    "openai": "openai.com", "xai": "x.ai", "anthropic": "anthropic.com", "google": "googleapis.com",
+    "deepseek": "deepseek.com", "xiaomi": "xiaomimimo.com",
+}
 
 # Below $0.01, render at 4 dp so cheap-model costs never display as $0.00.
 # Sub-cent cost threshold: below $0.01, render at 4 decimal places so the display is non-zero (e.g. $0.0046
@@ -180,17 +190,22 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
         "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
     }),
+    # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
+        "claude-opus-5": _OPUS,
+        "claude-opus-5-5": ("4.00", "20.00", "0.20", "5.00"),
+    }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
         "gpt-4.1": ("2.00", "8.00", "0.50"), "gpt-4.1-mini": ("0.40", "1.60", "0.10"),
         "gpt-4.1-nano": ("0.10", "0.40", "0.025"), "o3": ("10.00", "40.00", "2.50"),
         "o3-mini": ("1.10", "4.40", "0.55"),
     }),
-    # deepseek-chat / deepseek-reasoner are deprecated aliases of
-    # deepseek-v4-flash's non-thinking / thinking modes — same rates.
-    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-07", {
-        ("deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"): ("0.14", "0.28", "0.0028"),
-        "deepseek-v4-pro": ("0.435", "0.87", "0.003625"),
+    # Off-peak USD rates (peak = 2x, Mon-Fri 01-04 + 06-10 UTC). ``deepseek-v4-flash`` and the
+    # retired deepseek-chat / deepseek-reasoner aliases are served by V4.1-Flash at the Flash price.
+    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
+        ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
+        "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
@@ -256,6 +271,25 @@ _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
     cache_write_cost_per_million_above=Decimal("25.00"),
 )
 
+# GPT-6 Sol / Luna (the 5.6 Sol/Luna successors): same 272K whole-request tier as Astra
+# (2x input + cache, 1.5x output). Cache write = 1.25x input, cache read = 0.10x input.
+# Terra has no published model page yet, so it deliberately has no row.
+for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above in (
+    ("gpt-6-sol", "2.00", "10.00", "0.20", "2.50", "4.00", "15.00", "0.40", "5.00"),
+    ("gpt-6-luna", "0.10", "0.50", "0.01", "0.125", "0.20", "0.75", "0.02", "0.25"),
+):
+    _OFFICIAL_DOCS_PRICING[("openai", _slug)] = _snap(
+        _inp, _out, _read, _write,
+        url=f"https://developers.openai.com/api/docs/models/{_slug}",
+        version="openai-gpt-6-tiers-2026-09",
+        tier_threshold_tokens=272_000,
+        input_cost_per_million_above=Decimal(_inp_above),
+        output_cost_per_million_above=Decimal(_out_above),
+        cache_read_cost_per_million_above=Decimal(_read_above),
+        cache_write_cost_per_million_above=Decimal(_write_above),
+    )
+del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above
+
 # Context-tiered Gemini Pro: above 200k prompt tokens the *_above rates apply to
 # the whole request (see PricingEntry).
 _OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-pro")] = _snap(
@@ -268,15 +302,27 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
+# Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
+# prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.
+_ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
+    _model: _snap(*_rates, version="anthropic-fast-mode-2026-09", url=f"{_ANTHROPIC_URL}#fast-mode-pricing")
+    for _models, _rates in (
+        (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
+        (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
+    )
+    for _model in _models
+}
 del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 
-# GPT-5.6 "-pro" high-effort variants bill at the base tier's per-token rates
-# (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
+# GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
+# rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
 # picker variants are the same model with the suffix stripped on the wire.
 # The direct Gemini provider emits preview IDs for two models; key the snapshot
 # by both the documented stable name and the emitted ID.
 for _provider, _alias, _canonical in (
-    *((("openai", f"{m}-{suffix}", m) for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna") for suffix in ("pro", "900k"))),
+    *((("openai", f"{m}-{suffix}", m)
+       for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
+       for suffix in ("pro", "900k"))),
     ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro"),
     ("google", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
 ):
@@ -403,6 +449,17 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
     return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
 
 
+def _served_fast(usage: CanonicalUsage) -> bool:
+    """Anthropic names the speed that served a fast-mode request in ``usage.speed``."""
+    return isinstance(usage.raw_usage, dict) and usage.raw_usage.get("speed") == "fast"
+
+
+def _anthropic_fast_mode_entry(model: str) -> Optional[PricingEntry]:
+    name = model.lower()
+    return _ANTHROPIC_FAST_MODE_PRICING.get(name) or _ANTHROPIC_FAST_MODE_PRICING.get(
+        _normalize_anthropic_model_name(name))
+
+
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     return _pricing_entry_from_metadata(
         fetch_model_metadata(), route.model,
@@ -439,6 +496,31 @@ def _pricing_entry_from_metadata(
     )
 
 
+
+def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """models.dev list price for a direct first-party route (see ``_MODELS_DEV_DIRECT_HOSTS``)."""
+    domain = _MODELS_DEV_DIRECT_HOSTS.get(route.provider)
+    if not domain or not route.model:
+        return None
+    if route.base_url:
+        scheme, host, port = base_url_origin(route.base_url)
+        if (scheme, port) != ("https", 443) or not (host == domain or host.endswith("." + domain)):
+            return None
+    from agent.models_dev import get_model_info
+
+    model_info = get_model_info(route.provider, route.model)
+    if model_info is None or not model_info.has_cost_data():
+        return None
+    return PricingEntry(
+        input_cost_per_million=_to_decimal(model_info.cost_input),
+        output_cost_per_million=_to_decimal(model_info.cost_output),
+        cache_read_cost_per_million=_to_decimal(model_info.cost_cache_read),
+        cache_write_cost_per_million=_to_decimal(model_info.cost_cache_write),
+        source="provider_models_api", source_url="https://models.dev", pricing_version="models.dev",
+        fetched_at=_UTC_NOW(),
+    )
+
+
 def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -460,7 +542,7 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return None
+    return _models_dev_pricing_entry(route)
 
 
 # Usage-field candidate paths per API shape: (input/prompt total, output, cache
@@ -542,6 +624,7 @@ def normalize_usage(
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )
 
 
@@ -553,6 +636,11 @@ def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> CostResult:
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider or '')
+    reported = profile.get_usage_cost(model_name, usage) if profile else None
+    if reported is not None:
+        return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return CostResult(
@@ -561,6 +649,10 @@ def estimate_usage_cost(
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
+    if route.provider == "anthropic" and _served_fast(usage):
+        entry = _anthropic_fast_mode_entry(route.model)
+        if not entry:
+            return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
     if not entry:
         return _unknown_cost("none")
 

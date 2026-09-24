@@ -11,7 +11,6 @@ from hermes_cli.telegram_managed_bot import (
     create_pairing,
     poll_for_setup_result,
     print_qr_code,
-    render_qr_terminal,
 )
 from hermes_cli import setup_platforms
 
@@ -21,20 +20,25 @@ SECOND_VALID_TOKEN = "987654321:abcdefghijklmnopqrstuvwxyzABCDEF"
 
 
 class TestQRCode:
-    def test_render_returns_string(self):
-        result = render_qr_terminal("https://example.com")
-        if result:
-            assert isinstance(result, str)
-            assert len(result) > 10
 
-    def test_render_graceful_without_qrcode(self):
-        with patch.dict("sys.modules", {"qrcode": None}):
-            render_qr_terminal("https://example.com")
 
     def test_print_qr_code_with_url(self, capsys):
         print_qr_code("https://t.me/newbot/Bot/test_bot")
         captured = capsys.readouterr()
         assert "https://t.me/newbot/Bot/test_bot" in captured.out
+
+    def test_print_qr_code_tip_targets_active_interpreter(self, capsys):
+        # Regression for #111695: a bare `pip install` targets the wrong
+        # environment when Hermes runs in an isolated venv (which has no pip
+        # module at all). The fallback tip must name the interpreter that is
+        # actually running, via uv.
+        import sys
+
+        with patch.dict("sys.modules", {"qrcode": None}):
+            print_qr_code("https://t.me/newbot/Bot/test_bot")
+        captured = capsys.readouterr()
+        assert f"uv pip install --python {sys.executable} qrcode" in captured.out
+        assert " pip install qrcode)" not in captured.out
 
 
 class TestCreatePairing:

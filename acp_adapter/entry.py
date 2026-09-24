@@ -20,6 +20,13 @@ else:
     # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch cwd from shadowing Hermes modules.
     hermes_bootstrap.harden_import_path()
 
+# `hermes-acp` runs without hermes_cli.main: repair a `hermes update` killed mid-pull here, before
+# importing anything else from the checkout (a no-op under `hermes acp`, which already did).
+from hermes_cli import _early_recovery
+
+if _early_recovery.restore_interrupted_pull():
+    _early_recovery.relaunch_after_restore()
+
 import argparse
 import asyncio
 import logging
@@ -157,6 +164,14 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
         return 1
 
 
+def _warm_memory_provider_import(logger: logging.Logger) -> None:
+    """Import ``memory.provider``'s module + numpy (no provider instance) before the ACP threads start."""
+    from plugins.memory import import_memory_provider_module
+
+    if not import_memory_provider_module():
+        logger.debug("memory provider not warmed (none configured or import failed; agent init reports that)")
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
@@ -181,6 +196,15 @@ def main(argv: list[str] | None = None) -> None:
 
     import acp
     from .server import HermesACPAgent
+
+    # Windows: import the configured memory provider (and numpy) on the main thread before
+    # the MCP-discovery and ACP stdin-reader threads start (hermes_cli's ~150 ms
+    # plugin-discovery thread is the only one already running). A first-time
+    # native-extension import (numpy via holographic / mnemosyne / hindsight) racing another
+    # thread's import chain deadlocked in create_module and session/new never answered
+    # (#58083). After this the off-loop agent build finds the modules in sys.modules.
+    if sys.platform == "win32":
+        _warm_memory_provider_import(logger)
 
     # MCP discovery from config.yaml runs in a background daemon thread so the ACP server is
     # responsive immediately (blocking here cost 2-5 s); per-session MCP servers registered via

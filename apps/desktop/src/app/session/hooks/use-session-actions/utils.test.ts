@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -13,7 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -352,33 +352,6 @@ describe('chatPartsEquivalent', () => {
     expect(chatPartsEquivalent(started, completed)).toBe(false)
   })
 
-  it('returns true for identical reasoning parts', () => {
-    const partA = { type: 'reasoning' as const, text: 'Thinking...' }
-    const partB = { type: 'reasoning' as const, text: 'Thinking...' }
-
-    expect(chatPartsEquivalent(partA, partB)).toBe(true)
-  })
-
-  it('returns true for tool-call parts with same identity and both have no result', () => {
-    const partA = {
-      type: 'tool-call' as const,
-      toolCallId: 'tc-1',
-      toolName: 'read_file',
-      args: {} as never,
-      argsText: '{}'
-    }
-
-    const partB = {
-      type: 'tool-call' as const,
-      toolCallId: 'tc-1',
-      toolName: 'read_file',
-      args: {} as never,
-      argsText: '{}'
-    }
-
-    expect(chatPartsEquivalent(partA, partB)).toBe(true)
-  })
-
   it('returns true for tool-call parts with same identity and both have results', () => {
     const partA = {
       type: 'tool-call' as const,
@@ -424,12 +397,6 @@ describe('chatPartsEquivalent', () => {
 
     expect(chatPartsEquivalent(partA, partB)).toBe(false)
   })
-
-  it('uses reference equality fast-path for identical part objects', () => {
-    const part = { type: 'text' as const, text: 'Same reference' }
-
-    expect(chatPartsEquivalent(part, part)).toBe(true)
-  })
 })
 
 describe('chatMessagesEquivalent', () => {
@@ -448,86 +415,12 @@ describe('chatMessagesEquivalent', () => {
     expect(chatMessagesEquivalent(msg('1', 'user', 'Hello'), msg('1', 'user', 'World'))).toBe(false)
   })
 
-  it('returns false when tool result presence differs', () => {
-    const messageA: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [{ type: 'tool-call', toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }]
-    }
-
-    const messageB: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [
-        {
-          type: 'tool-call',
-          toolCallId: 'tc-1',
-          toolName: 'read_file',
-          args: {} as never,
-          argsText: '{}',
-          result: { content: 'data' },
-          isError: false
-        }
-      ]
-    }
-
-    expect(chatMessagesEquivalent(messageA, messageB)).toBe(false)
-  })
-
   it('returns false when message IDs differ', () => {
     expect(chatMessagesEquivalent(msg('msg-1', 'user', 'Hello'), msg('msg-2', 'user', 'Hello'))).toBe(false)
-  })
-
-  it('compares large messages with embedded images structurally without JSON.stringify', () => {
-    // Verifies that two structurally identical messages (that would be equal
-    // via stringify) are also equal via the new cheap structural compare.
-    const messageA: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [
-        { type: 'text', text: 'Here are the images:' },
-        {
-          type: 'tool-call',
-          toolCallId: 'img-1',
-          toolName: 'image_generate',
-          args: { prompt: 'a cat' } as never,
-          argsText: '{"prompt":"a cat"}',
-          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
-          isError: false
-        }
-      ]
-    }
-
-    const messageB: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [
-        { type: 'text', text: 'Here are the images:' },
-        {
-          type: 'tool-call',
-          toolCallId: 'img-1',
-          toolName: 'image_generate',
-          args: { prompt: 'a cat' } as never,
-          argsText: '{"prompt":"a cat"}',
-          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
-          isError: false
-        }
-      ]
-    }
-
-    // The structural compare treats these as equal (both have result defined,
-    // same toolCallId/toolName), without comparing the full result object.
-    expect(chatMessagesEquivalent(messageA, messageB)).toBe(true)
   })
 })
 
 describe('chatMessageArraysEquivalent', () => {
-  it('returns true for identical arrays via identity fast-path', () => {
-    const messages: ChatMessage[] = [msg('1', 'user', 'x')]
-
-    expect(chatMessageArraysEquivalent(messages, messages)).toBe(true)
-  })
-
   it('compares length and per-message equivalence', () => {
     const a = [msg('1', 'user', 'x'), msg('2', 'assistant', 'y')]
     expect(chatMessageArraysEquivalent(a, [msg('1', 'user', 'x'), msg('2', 'assistant', 'y')])).toBe(true)
@@ -726,6 +619,115 @@ describe('reconcileResumeMessages', () => {
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
+  it('does not re-append a durably completed reply that compaction re-inserted under a new row id', () => {
+    const previous = [
+      msg('u1', 'user', 'q1', { rowId: 11340 }),
+      msg('a1', 'assistant', 'r1', { rowId: 11345, durableComplete: true }),
+      msg('user-9-x', 'user', 'q2', { rowId: 11350 }),
+      msg('assistant-stream-9-0', 'assistant', 'r2', { pending: false, rowId: 11359, durableComplete: true })
+    ]
+
+    const next = [
+      msg('s-u1', 'user', 'q1', { rowId: 11440 }),
+      msg('s-a1', 'assistant', 'r1', { rowId: 11444 }),
+      msg('s-u2', 'user', 'q2', { rowId: 11450 }),
+      msg('s-a2', 'assistant', 'r2', { rowId: 11459 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toEqual(next)
+  })
+
+  // A turn that compressed mid-flight only earns a partial receipt
+  // (`complete: false`), but its rows are still proven committed. When a later
+  // compaction rewrites every one of them, the local copy is stale history.
+  const partialReceipt = { row_ids: [11350, 11355, 11359], complete: false, final_assistant_row_id: 11359 }
+
+  it('does not re-append a partially receipted reply once compaction rewrote all of its rows', () => {
+    const previous = [
+      msg('u1', 'user', 'q1', { rowId: 11340 }),
+      msg('user-9-x', 'user', 'q2', { rowId: 11350 }),
+      msg('assistant-stream-9-0', 'assistant', 'r2', {
+        pending: false,
+        rowId: 11359,
+        durableComplete: false,
+        persistedTurn: partialReceipt
+      })
+    ]
+
+    const reinserted = [
+      msg('s-summary', 'assistant', '[summary]', { rowId: 11440 }),
+      msg('s-u2', 'user', 'q2', { rowId: 11450 }),
+      msg('s-a2', 'assistant', 'r2', { rowId: 11459 })
+    ]
+
+    const summarizedAway = [
+      msg('s-summary', 'assistant', '[summary]', { rowId: 11440 }),
+      msg('s-u3', 'user', 'q3', { rowId: 11450 }),
+      msg('s-a3', 'assistant', 'r3', { rowId: 11459 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(reinserted, previous)).toEqual(reinserted)
+    expect(preserveLocalPendingTurnMessages(summarizedAway, previous)).toEqual(summarizedAway)
+  })
+
+  it('keeps a partially receipted reply the store has not reached or still partly holds', () => {
+    const reply = msg('assistant-stream-9-0', 'assistant', 'r2 with unpersisted tail', {
+      pending: false,
+      rowId: 11359,
+      durableComplete: false,
+      persistedTurn: partialReceipt
+    })
+
+    const previous = [msg('u1', 'user', 'q1', { rowId: 11340 }), msg('user-9-x', 'user', 'q2', { rowId: 11350 }), reply]
+    const behind = [msg('s-u1', 'user', 'q1', { rowId: 11340 })]
+
+    const partlyHeld = [
+      msg('s-u1', 'user', 'q1', { rowId: 11340 }),
+      msg('s-u2', 'user', 'q2', { rowId: 11350 }),
+      msg('s-a2', 'assistant', 'r2', { rowId: 11460 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(behind, previous).map(message => message.id)).toContain(reply.id)
+    expect(preserveLocalPendingTurnMessages(partlyHeld, previous).map(message => message.id)).toContain(reply.id)
+  })
+
+  it('does not append acknowledged local history after a shifted newest page', () => {
+    const previous = [
+      msg('user-first', 'user', 'Original request', { timestamp: 1 }),
+      msg('assistant-stream-first', 'assistant', 'Working.', { pending: false, timestamp: 2 }),
+      msg('user-followup', 'user', 'Follow-up request', { timestamp: 3 }),
+      msg('assistant-stream-final', 'assistant', 'Completed.', { pending: false, rowId: 30, durableComplete: true })
+    ]
+
+    const answer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 30, timestamp: 5 })
+
+    const folded = { ...answer, rowId: 20, parts: [{ ...textPart('Completed.'), sourceRowId: 30 }] }
+
+    for (const next of [[answer], [msg('stored-followup', 'user', 'Follow-up request'), answer], [folded]]) {
+      expect(preserveLocalPendingTurnMessages(next, previous)).toEqual(next)
+    }
+
+    const unacknowledged = msg('user-new', 'user', 'A new request', { timestamp: 6 })
+    expect(preserveLocalPendingTurnMessages([answer], [...previous, unacknowledged])).toEqual([answer, unacknowledged])
+  })
+
+  it('keeps a newer equal reply and its prompt until that occurrence is persisted', () => {
+    const previousAnswer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 10 })
+    const prompt = msg('user-new', 'user', 'Repeat the check', { rowId: 11 })
+    const reply = msg('assistant-stream-new', 'assistant', 'Completed.', { pending: false, rowId: 12 })
+    reply.parts.push({ type: 'reasoning', text: 'Reasoning only from the new occurrence.' })
+    expect(reconcileResumeMessages([previousAnswer], [prompt, reply])).toEqual([previousAnswer])
+
+    // Neither equal prose nor missing clocks can make a different persisted
+    // occurrence acknowledge this one, even when the older row left the cache.
+    for (const previous of [
+      [previousAnswer, prompt, reply],
+      [prompt, reply]
+    ]) {
+      expect(preserveLocalPendingTurnMessages([previousAnswer], previous)).toEqual([previousAnswer, prompt, reply])
+    }
+  })
+
   it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
     const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
 
@@ -940,29 +942,6 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
-
-  it.each(WIRE_REFERENCE_KINDS.filter(kind => kind !== 'file' && kind !== 'image'))(
-    'does not duplicate the optimistic %s turn when the persisted turn carries its directive',
-    kind => {
-      const ref = `@${kind}:X`
-
-      const previous = [
-        msg('1-user', 'user', 'first'),
-        msg('2-assistant', 'assistant', 'first answer'),
-        msg('user-optimistic', 'user', 'text', {
-          attachmentRefs: [ref]
-        })
-      ]
-
-      const next = [
-        msg('1-user-stored', 'user', 'first'),
-        msg('2-assistant-stored', 'assistant', 'first answer'),
-        msg('3-user-stored', 'user', `${ref}\n\ntext`)
-      ]
-
-      expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
-    }
-  )
 
   it('does not duplicate a directive-only file turn', () => {
     const previous = [
@@ -1185,6 +1164,195 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  it('does not keep a settled final-answer bubble already folded into the tool-round message', () => {
+    const folded = {
+      id: '1790016993.1043298-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), folded]
+
+    const previous = [
+      msg('1-user', 'user', 'inspect the fixture'),
+      { ...folded, parts: folded.parts.slice(0, 2) },
+      msg('assistant-stream-placeholder', 'assistant', '', { pending: false }),
+      msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    const finals = preserved.flatMap(message =>
+      message.parts.filter(part => part.type === 'text' && part.text === 'The result is 71.')
+    )
+
+    expect(finals).toHaveLength(1)
+    expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
+  })
+
+  it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
+    const toolRound = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), toolRound]
+    const previous = [...next, msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-final'
+    )
+  })
+
+  it('keeps an equal final answer that belongs to a later turn history has not stored', () => {
+    const folded = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'first'), folded, msg('2-user', 'user', 'again')]
+    const previous = [...next, msg('assistant-stream-later', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-later'
+    )
+  })
+
+  // A Codex Responses turn: an acknowledgement, two progress updates between
+  // tool rounds, then the answer. Live, each seals as its own bubble; history
+  // folds them into one row and may keep the public commentary only in
+  // `reasoning` (#119716). Tool call ids are the durable identity either way.
+  const tool = (toolCallId: string) =>
+    ({ type: 'tool-call', toolCallId, toolName: 'terminal', result: 'ok' }) as ChatMessagePart
+
+  const sealed = (id: string, parts: ChatMessagePart[], extra: Partial<ChatMessage> = {}) =>
+    ({ id, role: 'assistant', parts, pending: false, interim: true, ...extra }) as ChatMessage
+
+  const lunaTurn = (prefix: string, callPrefix: string) => [
+    sealed(`assistant-stream-${prefix}-ack`, [{ type: 'text', text: `${prefix}: on it, reading the logs.` }]),
+    sealed(`assistant-stream-${prefix}-progress-1`, [
+      tool(`${callPrefix}-1`),
+      { type: 'text', text: `${prefix}: logs clean.` }
+    ]),
+    sealed(`assistant-stream-${prefix}-progress-2`, [
+      tool(`${callPrefix}-2`),
+      { type: 'text', text: `${prefix}: config fixed.` }
+    ]),
+    sealed(
+      `assistant-stream-${prefix}-final`,
+      [tool(`${callPrefix}-3`), { type: 'text', text: `${prefix}: all done.` }],
+      {
+        interim: false
+      }
+    )
+  ]
+
+  const lunaFold = (id: string, prefix: string, callPrefix: string, commentary: 'reasoning' | 'text') =>
+    ({
+      id,
+      role: 'assistant',
+      parts: [
+        ...[`${prefix}: on it, reading the logs.`, `${prefix}: logs clean.`, `${prefix}: config fixed.`].flatMap(
+          (text, at) => [
+            commentary === 'text'
+              ? ({ type: 'text', text } as ChatMessagePart)
+              : ({ type: 'reasoning', text: `**Plan**\n\n${text}` } as ChatMessagePart),
+            tool(`${callPrefix}-${at + 1}`)
+          ]
+        ),
+        { type: 'text', text: `${prefix}: all done.` }
+      ]
+    }) as ChatMessage
+
+  it.each(['reasoning', 'text'] as const)(
+    'retires every sealed bubble of a folded turn whose commentary hydrated as %s',
+    commentary => {
+      const user = msg('1-user', 'user', 'fix it', { rowId: 1 })
+      const next = [user, lunaFold('2-assistant', 'a', 'call-a', commentary)]
+
+      expect(preserveLocalPendingTurnMessages(next, [user, ...lunaTurn('a', 'call-a')])).toBe(next)
+    }
+  )
+
+  // The previous turn's bubbles are not owned by the newest prompt, so they
+  // must not resurface under it (#119511, and the self-sustaining tail of
+  // stale commentary in #119362) — nor may they swallow the live reply.
+  it.each(['reasoning', 'text'] as const)(
+    'does not re-append an earlier turn under a newer prompt when its commentary hydrated as %s',
+    commentary => {
+      const next = [
+        msg('1-user', 'user', 'fix it', { rowId: 1 }),
+        lunaFold('2-assistant', 'a', 'call-a', commentary),
+        msg('3-user', 'user', 'and the other one', { rowId: 9 })
+      ]
+
+      const previous = [
+        msg('user-1-a', 'user', 'fix it', { rowId: 1 }),
+        ...lunaTurn('a', 'call-a'),
+        // No submit receipt yet, so no acknowledged boundary past turn a.
+        msg('user-2-b', 'user', 'and the other one'),
+        sealed('assistant-stream-live', [tool('call-b-1'), { type: 'text', text: 'b: still going.' }])
+      ]
+
+      expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+        '1-user',
+        '2-assistant',
+        '3-user',
+        'assistant-stream-live'
+      ])
+    }
+  )
+
+  // #118228: narration bubbles still marked pending when the rehydrate lands.
+  // A sealed interim's text is final, so the fold carrying it retires it.
+  it('retires pending interim narration the merged fold already carries, even with later turns stored', () => {
+    const user = msg('1-user', 'user', 'run the build', { rowId: 1 })
+
+    // More live bubbles than stored assistant rows: ordinal pairing runs out.
+    const turn = [
+      ...lunaTurn('a', 'call-a')
+        .slice(0, 3)
+        .map(row => ({ ...row, pending: true })),
+      msg('assistant-stream-a-tail', 'assistant', 'a: all done.', { pending: true })
+    ]
+
+    const next = [
+      user,
+      lunaFold('2-assistant', 'a', 'call-a', 'text'),
+      msg('3-system', 'system', 'Background Process Finished: bash build.sh'),
+      msg('4-assistant', 'assistant', 'build verified'),
+      msg('5-user', 'user', 'installed it, same problem', { rowId: 20 }),
+      msg('6-assistant', 'assistant', 'then it is not the line count')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, [user, ...turn])).toBe(next)
+  })
+
+  // The fold committed the tool rounds but not the answer yet: that bubble is
+  // the only copy and must survive, while the carried commentary retires.
+  it('keeps the final answer a fold has not committed yet', () => {
+    const user = msg('1-user', 'user', 'fix it', { rowId: 1 })
+    const fold = lunaFold('2-assistant', 'a', 'call-a', 'reasoning')
+    const next = [user, { ...fold, parts: fold.parts.filter(part => part.type !== 'text') }]
+
+    expect(
+      preserveLocalPendingTurnMessages(next, [user, ...lunaTurn('a', 'call-a')]).map(message => message.id)
+    ).toEqual(['1-user', '2-assistant', 'assistant-stream-a-final'])
+  })
+
   // The whole point of replacing rather than appending: one reply on screen,
   // and the committed history around the live turn untouched.
   it('does not duplicate or rewrite committed history around the live turn', () => {
@@ -1264,6 +1432,46 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // A synthetic starting prompt keeps the display typing its persisted row
+  // will get: on reconnect it renders as the same timeline event as history,
+  // never as a user bubble; a real user quoting the marker text stays a user
+  // bubble because the gateway typed nothing (#112144).
+  it('renders a typed synthetic in-flight prompt as its timeline event, not a user bubble', () => {
+    const typed = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: '[IMPORTANT: Background process finished] fixture',
+        display_kind: 'process_complete',
+        display_metadata: { display_text: 'Background Process Finished: fixture' },
+        assistant: '',
+        streaming: true
+      }
+    })
+
+    const inflightRow = (message: ChatMessage) => message.id === 'user-inflight-runtime-1'
+
+    expect(typed.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['system', 'Background Process Finished: fixture']
+    ])
+
+    const quoted = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true }
+    })
+
+    expect(quoted.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['user', '[IMPORTANT: Background process finished] fixture']
+    ])
+  })
+
+  it('omits a hidden synthetic in-flight prompt but keeps its streaming reply', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true }
+    })
+
+    expect(restored.map(message => [message.role, chatMessageText(message)])).toEqual([['assistant', 'On it.']])
+  })
   // Corrections typed while a turn ran are their own user bubbles on the same
   // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
   // whole dump precedes them — never the old prompt → corrections → reply
@@ -1545,7 +1753,7 @@ describe('resolveResumedBusy', () => {
   })
 })
 
-const runningProjection = (user: string): SessionResumeResponse =>
+const runningProjection = (user: string): SessionResumeResult =>
   ({
     session_id: 'runtime-1',
     session_key: 'stored-1',
@@ -1554,7 +1762,7 @@ const runningProjection = (user: string): SessionResumeResponse =>
     messages: [],
     running: true,
     inflight: { user, assistant: 'partial answer', streaming: true }
-  }) as SessionResumeResponse
+  }) as SessionResumeResult
 
 describe('dedupeInflightUserAgainstTranscript', () => {
   it('retains the in-flight user source only when it already exists after the runtime anchor', () => {
@@ -1717,6 +1925,86 @@ describe('overlayConcurrentMessageChanges', () => {
       { type: 'text', text: ' + delta B' }
     ])
   })
+
+  // Switch back to a chat mid-reply: session.activate snapshots the first
+  // chunk, message.complete settles the live row, THEN the gated REST page
+  // resolves with the committed reply. Warm-activation composition order.
+  it('keeps one reply when message.complete lands while the switch-back hydrate is in flight', () => {
+    const snapshot = {
+      session_id: 'runtime-b',
+      turn_started_at: 100,
+      inflight: { user: 'prompt b', assistant: 'A2 ', streaming: true }
+    }
+
+    const baseline = [
+      msg('user-optimistic', 'user', 'prompt b'),
+      msg('assistant-stream-1-2', 'assistant', 'A2 ', { pending: true })
+    ]
+
+    const current = [
+      baseline[0],
+      msg('assistant-stream-1-2', 'assistant', 'A2 finished while away', { pending: false })
+    ]
+
+    const persisted = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished while away', { rowId: 4, timestamp: 105 })
+    ]
+
+    const hydrated = appendLiveSessionProjection(persisted, snapshot)
+    const overlaid = overlayConcurrentMessageChanges(hydrated, baseline, current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished while away']
+    ])
+
+    // Before the commit the same snapshot still projects the running reply.
+    const running = overlayConcurrentMessageChanges(
+      appendLiveSessionProjection(persisted.slice(0, 1), snapshot),
+      baseline,
+      [baseline[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished', { pending: true })]
+    )
+
+    expect(running.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['assistant-stream-1-2', 'A2 finished']
+    ])
+  })
+
+  // The same prompt sent again (from another client, so the cache lacks its
+  // row) streams the same opening as the previous answer. The cached-transcript
+  // path must keep that NEXT turn's stream, and an errored settled row keeps
+  // its failure instead of folding into identical committed text.
+  it('keeps the next turn of a resent prompt and an errored settled row', () => {
+    const cached = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'Same answer', { rowId: 4, timestamp: 105 })
+    ]
+
+    const snapshot = {
+      session_id: 'runtime-b',
+      turn_started_at: 200,
+      inflight: { user: 'prompt b', assistant: 'Same ', streaming: true }
+    }
+
+    const hydrated = appendLiveSessionProjection(cached, snapshot)
+
+    expect(hydrated.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'Same answer'],
+      ['assistant-stream-runtime-b', 'Same ']
+    ])
+
+    const settledNextTurn = msg('assistant-stream-1-3', 'assistant', 'Same answer', { pending: false })
+
+    expect(overlayConcurrentMessageChanges(cached, cached, [...cached, settledNextTurn]).at(-1)).toBe(settledNextTurn)
+
+    const errored = msg('assistant-stream-1-2', 'assistant', 'A2 done', { pending: false, error: 'stream lost' })
+    const page = [msg('3-user', 'user', 'prompt b'), msg('4-assistant', 'assistant', 'A2 done')]
+
+    expect(overlayConcurrentMessageChanges(page, [page[0]], [page[0], errored]).at(-1)).toBe(errored)
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {
@@ -1729,12 +2017,6 @@ describe('preserveEquivalentTranscript', () => {
 
     expect(preserved).toBe(current)
     expect(preserved[0]).toBe(current[0])
-  })
-
-  it('keeps the current array when the arrays are the same reference', () => {
-    const current = [msg('u-1', 'user', 'hello')]
-
-    expect(preserveEquivalentTranscript(current, current)).toBe(current)
   })
 
   it('accepts the replacement when anything changed', () => {

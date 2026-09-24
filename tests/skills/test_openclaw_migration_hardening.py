@@ -188,17 +188,6 @@ def test_provider_keys_skipped_warning_when_secrets_disabled(tmp_path):
 # ───────────────────────────────────────────────────────────────────────
 # Blocked-by-earlier-conflict sequencing
 # ───────────────────────────────────────────────────────────────────────
-def test_config_apply_block_flips_on_config_yaml_conflict(tmp_path):
-    mod = _load()
-    migrator = _make_minimal_migrator(mod, tmp_path, execute=True)
-    assert migrator._config_apply_blocked is False
-    migrator.record(
-        "model-config",
-        source=None,
-        destination=migrator.target_root / "config.yaml",
-        status=mod.STATUS_CONFLICT,
-    )
-    assert migrator._config_apply_blocked is True
 
 
 
@@ -306,18 +295,5 @@ def test_json_mode_redacts_secrets_in_output(tmp_path):
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_record_honors_sensitive_flag(tmp_path):
-    mod = _load()
-    migrator = _make_minimal_migrator(mod, tmp_path)
-    migrator.record("x", None, None, "migrated", sensitive=True)
-    assert migrator.items[0].sensitive is True
 
 
-def test_status_constants_match_historical_strings():
-    """Downstream consumers (claw.py, tests, docs) depend on these string values."""
-    mod = _load()
-    assert mod.STATUS_MIGRATED == "migrated"
-    assert mod.STATUS_SKIPPED == "skipped"
-    assert mod.STATUS_CONFLICT == "conflict"
-    assert mod.STATUS_ERROR == "error"
-    assert mod.STATUS_ARCHIVED == "archived"

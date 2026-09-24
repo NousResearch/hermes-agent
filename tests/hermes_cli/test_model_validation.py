@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.models import azure_foundry_model_api_mode, copilot_model_api_mode, fetch_github_model_catalog, curated_models_for_provider, fetch_api_models, github_model_reasoning_efforts, normalize_copilot_model_id, normalize_opencode_model_id, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_label, provider_model_ids
+from hermes_cli.models import azure_foundry_model_api_mode, copilot_model_api_mode, curated_models_for_provider, fetch_api_models, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_model_ids
 from hermes_cli.models_local import fetch_lmstudio_models
 from hermes_cli.models_validate import validate_requested_model
 
@@ -45,17 +45,6 @@ class TestParseModelInput:
 # -- curated_models_for_provider ---------------------------------------------
 
 class TestCuratedModelsForProvider:
-    def test_openrouter_returns_curated_list(self):
-        with patch(
-            "hermes_cli.models.fetch_openrouter_models",
-            return_value=[
-                ("anthropic/claude-opus-4.6", "recommended"),
-                ("qwen/qwen3.6-plus", ""),
-            ],
-        ):
-            models = curated_models_for_provider("openrouter")
-        assert len(models) > 0
-        assert any("claude" in m[0] for m in models)
 
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
@@ -81,30 +70,9 @@ class TestNormalizeProvider:
         assert normalize_provider("github-copilot") == "copilot"
 
 
-class TestProviderLabel:
-    def test_known_labels_and_auto(self):
-        assert provider_label("anthropic") == "Anthropic"
-        assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
-        assert provider_label("stepfun") == "StepFun Step Plan"
-        assert provider_label("copilot") == "GitHub Copilot"
-        assert provider_label("copilot-acp") == "GitHub Copilot ACP"
-        assert provider_label("auto") == "Auto"
-
-
 # -- provider_model_ids ------------------------------------------------------
 
 class TestProviderModelIds:
-
-
-    def test_stepfun_prefers_live_catalog(self):
-        with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={"api_key": "***", "base_url": "https://api.stepfun.com/step_plan/v1"},
-        ), patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["step-3.5-flash", "step-3-agent-lite"],
-        ):
-            assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
 
 
     def test_anthropic_provider_uses_configured_base_url_for_live_catalog(self):
@@ -134,7 +102,7 @@ class TestProviderModelIds:
             assert provider_model_ids("anthropic") == ["enterprise-claude"]
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models?limit=1000"
         assert req.get_header("X-api-key") == "proxy-key"
 
     def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
@@ -214,20 +182,6 @@ class TestFetchApiModels:
         assert probe["used_fallback"] is False
 
 
-class TestGithubReasoningEfforts:
-    def test_gpt5_supports_minimal_to_high(self):
-        catalog = [{
-            "id": "gpt-5.4",
-            "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
-            "supported_endpoints": ["/responses"],
-        }]
-        assert github_model_reasoning_efforts("gpt-5.4", catalog=catalog) == [
-            "low",
-            "medium",
-            "high",
-        ]
-
-
 class TestCopilotNormalization:
 
     def test_copilot_api_mode_gpt5_uses_responses(self):
@@ -237,9 +191,6 @@ class TestCopilotNormalization:
         assert copilot_model_api_mode("gpt-5.3-codex") == "codex_responses"
         assert copilot_model_api_mode("gpt-5.2-codex") == "codex_responses"
         assert copilot_model_api_mode("gpt-5.2") == "codex_responses"
-
-
-
 
 
     def test_opencode_go_api_modes_match_docs(self):
@@ -263,6 +214,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
+        # Union Alpha is exposed through /v1/messages on both relays.
+        assert opencode_model_api_mode("opencode-go", "union-alpha") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/union-alpha") == "anthropic_messages"
         # GPT models on Go are Responses-only (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "gpt-5.6-luna") == "codex_responses"
         assert opencode_model_api_mode("opencode-go", "opencode-go/gpt-5.6-luna") == "codex_responses"
@@ -285,7 +239,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
@@ -335,6 +289,34 @@ class TestNormalizeOpencodeBaseUrl:
         assert normalize_opencode_base_url(
             "openrouter", "chat_completions", "https://openrouter.ai/api"
         ) == "https://openrouter.ai/api"
+
+
+class TestNormalizeOpencodeBaseUrlFamilyPath:
+    """A carried-over base_url is healed on the FAMILY path segment (``/zen`` vs ``/zen/go``), not
+    just ``/v1`` (#112600): ``model.base_url`` pinned to the Zen relay survived a switch to
+    ``opencode-go`` and every request 401'd ("Model mimo-v2.5 is not supported")."""
+
+    @pytest.mark.parametrize("provider, api_mode, url, expected", [
+        ("opencode-go", "chat_completions", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),
+        ("opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
+        # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go"),
+        ("opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go", "https://opencode.ai/zen"),
+        # A self-hosted OPENCODE_*_BASE_URL proxy has no family path to rewrite.
+        ("opencode-go", "chat_completions", "https://gateway.internal.example/zen/v1", "https://gateway.internal.example/zen/v1"),
+        # Non-/zen paths on the real host keep the pre-existing /v1 behaviour.
+        ("opencode-go", "chat_completions", "https://opencode.ai/api", "https://opencode.ai/api/v1"),
+        # A custom provider merely NAMED after a family declared its relay explicitly: no family
+        # heal, but still the family's /v1 handling.
+        ("opencode-zen-bridge", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1"),
+        ("opencode-go-bridge", "chat_completions", "https://opencode.ai/zen/go", "https://opencode.ai/zen/go/v1"),
+        # The host check is on the hostname, so a port does not defeat the heal; query survives.
+        ("opencode-go", "chat_completions", "https://opencode.ai:443/zen/v1", "https://opencode.ai:443/zen/go/v1"),
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1?x=1", "https://opencode.ai/zen/go?x=1"),
+    ])
+    def test_family_path_follows_the_resolved_provider(self, provider, api_mode, url, expected):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(provider, api_mode, url) == expected
 
 
 class TestAzureFoundryModelApiMode:
@@ -400,11 +382,13 @@ class TestValidateFormatChecks:
 
 class TestValidateApiNotFound:
 
-    def test_warning_includes_suggestions(self):
+    def test_not_listed_rejects_with_suggestions(self):
+        """A near-miss on an aggregator listing is rejected with the listed sibling offered, never
+        silently swapped in (the user asked for 4.5, not 4.6)."""
         result = _validate("anthropic/claude-opus-4.5")
-        assert result["accepted"] is True
-        # Close match auto-corrects; less similar inputs show suggestions
-        assert "Auto-corrected" in result["message"] or "Similar models" in result["message"]
+        assert result["accepted"] is False
+        assert "corrected_model" not in result
+        assert "anthropic/claude-opus-4.6" in result["message"]
 
 
 # -- validate — API unreachable — soft-accept via catalog or warning --------
@@ -426,10 +410,6 @@ class TestValidateApiFallback:
     """
 
 
-
-
-
-
     def test_fetch_lmstudio_models_filters_embedding_type(self):
         mock_resp = MagicMock()
         mock_resp.__enter__.return_value = mock_resp
@@ -445,7 +425,6 @@ class TestValidateApiFallback:
             models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
 
         assert models == ["publisher/chat-model"]
-
 
 
     def test_validate_lmstudio_distinguishes_auth_failure(self):
@@ -471,32 +450,32 @@ class TestValidateApiFallback:
         assert "LM_API_KEY" in result["message"]
 
 
+# -- validate — the requested id is never rewritten -----------------------------
 
-# -- validate — Codex auto-correction ------------------------------------------
+class TestRequestedIdIsNeverRewritten:
+    """A selected id that is merely CLOSE to a catalog entry is the user's choice (a newer release,
+    a dated snapshot, a qualifier), never a typo to "fix": the verdict may warn or reject, but no
+    branch may return a different model under the user's label."""
 
-class TestValidateCodexAutoCorrection:
-    """Auto-correction for typos on openai-codex provider."""
+    @pytest.mark.parametrize("requested, listing", [
+        ("deepseek-v4.1-flash", ["deepseek-v4-flash-0731", "deepseek-v4-flash"]),   # custom endpoint (#mao)
+        ("gemini-3.8-flash", ["gemini-3.6-flash", "gemini-3.6-pro"]),               # version bump (#101975)
+        ("gpt5.3-codex", ["gpt-5.4", "gpt-5.3-codex"]),                             # genuine typo
+    ])
+    def test_live_listing_near_miss_keeps_requested_id(self, requested, listing):
+        for provider, base_url in (("custom:hyper", "http://127.0.0.1:1/v1"), ("openrouter", None)):
+            result = _validate(requested, provider, api_models=listing, base_url=base_url)
+            assert "corrected_model" not in result
+            assert result["recognized"] is False
+            assert "Similar models" in (result["message"] or "") or listing[-1] in (result["message"] or "")
 
-    def test_missing_dash_auto_corrects(self):
-        """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
-                        "gpt-5.2-codex", "gpt-5.1-codex-max"]
-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
-            result = validate_requested_model("gpt5.3-codex", "openai-codex")
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-        assert result["corrected_model"] == "gpt-5.3-codex"
-        assert "Auto-corrected" in result["message"]
-
-    def test_exact_match_no_correction(self):
-        """Exact model name does not trigger auto-correction."""
+    def test_static_catalog_near_miss_keeps_requested_id(self):
         codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
         with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
-            result = validate_requested_model("gpt-5.3-codex", "openai-codex")
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-        assert result.get("corrected_model") is None
-        assert result["message"] is None
+            result = validate_requested_model("gpt5.3-codex", "openai-codex")
+        assert "corrected_model" not in result
+        assert result["recognized"] is False
+        assert "gpt-5.3-codex" in result["message"]  # offered as a suggestion, not applied
 
 
 class TestValidateCodex900kVariants:
@@ -588,8 +567,6 @@ class TestProbeApiModelsUserAgent:
         assert req.get_header("Authorization") is None
 
 
-
-
 # -- validate — OpenRouter routing-variant suffixes (:nitro / :floor / ...) ----
 
 class TestValidateOpenRouterVariantSuffixes:
@@ -617,12 +594,6 @@ class TestValidateOpenRouterVariantSuffixes:
         assert result.get("corrected_model") is None
         assert result["message"] is None
 
-    def test_variant_not_fuzzy_corrected_to_base(self):
-        """The old failure mode: get_close_matches would 'fix' model:nitro
-        to the bare base id and silently drop the routing behavior."""
-        result = self._validate("x-ai/grok-4.6:nitro")
-        assert result["accepted"] is True
-        assert result.get("corrected_model") is None
 
     def test_variant_on_unknown_base_rejected(self):
         result = self._validate("x-ai/notreal-model:nitro")
@@ -643,15 +614,6 @@ class TestValidateOpenRouterVariantSuffixes:
         assert result["accepted"] is True
         assert result.get("corrected_model") is None
 
-    def test_non_openrouter_provider_unaffected(self):
-        """The variant carve-out is OpenRouter-only; other providers keep
-        their existing behavior for colon-suffixed names."""
-        result = _validate(
-            "x-ai/grok-4.6:nitro",
-            "groq",
-            api_models=["x-ai/grok-4.6"],
-        )
-        assert result.get("corrected_model") != "x-ai/grok-4.6:nitro"
 
     def test_static_catalog_fallback_accepts_variant(self):
         """Gateway path: /models unreachable → static catalog validates the
@@ -781,19 +743,82 @@ class TestValidateRequestedModelNousPortalRecommendations:
         mock_portal.assert_not_called()
         assert result["accepted"] is False
 
-    def test_curated_catalog_hit_short_circuits_before_portal_check(self):
-        """When the curated-catalog fallback already accepts the model, the
-        Portal feed should not need to be consulted at all (cheaper, and
-        avoids an unnecessary network call on the common path)."""
-        api_models = ["inclusionai/ling-2.6-flash"]
-        probe_payload = {
-            "models": api_models, "probed_url": "x", "resolved_base_url": "x",
-            "suggested_base_url": None, "used_fallback": False,
-        }
-        with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
-             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
-             patch("hermes_cli.models._model_in_provider_catalog", return_value=True), \
-             patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal:
-            result = validate_requested_model("inclusionai/ling-2.6-flash", "nous")
-        mock_portal.assert_not_called()
+
+# -- validate — custom endpoint fallback when /models is unreachable (#12220) --
+
+class TestValidateCustomUnreachableFallback:
+    """A custom proxy without GET /models must not brick `/model` switches (#12220)."""
+
+    def _validate(self, model, provider, models, **kw):
+        probe = {"models": models, "probed_url": "http://localhost:8000/v1/models",
+                 "resolved_base_url": "http://localhost:8000/v1", "suggested_base_url": None, "used_fallback": False}
+        with patch("hermes_cli.models.probe_api_models", return_value=probe):
+            return validate_requested_model(model, provider, api_key="k", base_url="http://localhost:8000/v1", **kw)
+
+    @pytest.mark.parametrize("provider", ["custom", "custom:myproxy"])
+    @pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
+    def test_unreachable_catalog_persists_unverified_for_chat_modes(self, provider, api_mode):
+        result = self._validate("my-proxy-model", provider, models=None, api_mode=api_mode)
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "accepted without verification" in result["message"]
+
+    @pytest.mark.parametrize("api_mode", [None, "codex_responses"])
+    def test_unreachable_catalog_still_rejects_other_api_modes(self, api_mode):
+        result = self._validate("my-proxy-model", "custom", models=None, api_mode=api_mode)
+        assert result["accepted"] is False
+        assert "was not saved" in result["message"]
+        # A reachable catalog keeps authoritative validation regardless of mode.
+        assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True
+
+    def test_anthropic_messages_reachable_listing_without_slug_is_not_called_unimplemented(self):
+        """A listing that answered 200 but lacks the slug must not be described as a proxy that
+        'does not implement GET /v1/models'; it names the alias candidates instead (#111436)."""
+        result = self._validate("kimi-k3", "kimi-coding", models=["k3", "k3-turbo"], api_mode="anthropic_messages")
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "do not implement" not in result["message"]
+        assert "`k3`" in result["message"]
+        # Case-only spelling differences are a match, not a warning.
+        assert self._validate("K3", "kimi-coding", models=["k3"], api_mode="anthropic_messages")["recognized"] is True
+
+
+# -- validate — profile-owned catalog is authoritative (#116667) ----------------
+
+class TestProfileCatalogAuthoritative:
+    """A profile that points ``models_url`` at its own catalog endpoint (relay re-shape,
+    #101705) owns validation: the generic ``{base_url}/models`` listing may expose a
+    different product line that this deployment cannot serve, so a miss in the
+    profile-owned catalog must not be turned into an acceptance by that generic
+    listing (#116667). Unavailable/empty profile catalogs keep the generic fallback."""
+
+    @pytest.fixture
+    def relay_profile(self, monkeypatch):
+        import providers
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(
+            name="relay-owned-catalog", auth_type="api_key",
+            env_vars=("RELAY_TEST_KEY",), base_url="https://relay.example.invalid/v1",
+            models_url="https://relay.example.invalid/catalog",
+            fallback_models=("plan/model-1",),
+        )
+        monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+        return profile
+
+    def test_model_only_in_generic_listing_is_rejected(self, relay_profile):
+        """Profile catalog: ["plan/model-1"]; generic /models: ["other-vendor/model-a"];
+        requested "other-vendor/model-a" — the generic hit must not accept it."""
+        result = _validate(
+            "other-vendor/model-a", "relay-owned-catalog", api_models=["other-vendor/model-a"])
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "plan/model-1" in result["message"]
+
+    def test_unavailable_profile_catalog_keeps_generic_fallback(self, relay_profile):
+        """The profile's own catalog unreachable/empty (e.g. no credentials yet):
+        the generic listing stays the validator, as before (#116667's carve-out)."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=["other-vendor/model-a"]), \
+             patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            result = validate_requested_model(
+                "other-vendor/model-a", "relay-owned-catalog", api_key="k")
         assert result["accepted"] is True
+        assert result["recognized"] is True

@@ -70,6 +70,16 @@ function isCredentialEnvVar(name: string): boolean {
   return CREDENTIAL_SUFFIXES.some((suffix) => name.endsWith(suffix))
 }
 
+// Runtime state of whatever Hermes launched this run. A spec driven from inside
+// an agent's terminal inherits HERMES_YOLO_MODE, HERMES_INTERACTIVE,
+// HERMES_SESSION_ID…, and the sandboxed backend then skips approvals or binds
+// the caller's session — the approval spec failed locally on the leaked yolo
+// flag while CI (which never has these) stayed green. The fixtures set every
+// HERMES_* the app needs themselves; only the harness's own knobs pass.
+function isInheritedHermesRuntimeVar(name: string): boolean {
+  return name.startsWith('HERMES_') && !name.startsWith('HERMES_DESKTOP_') && !name.startsWith('HERMES_E2E_')
+}
+
 function stripCredentials(env: Record<string, string | undefined>): Record<string, string> {
   const clean: Record<string, string> = {}
 
@@ -78,7 +88,7 @@ function stripCredentials(env: Record<string, string | undefined>): Record<strin
       continue
     }
 
-    if (isCredentialEnvVar(key)) {
+    if (isCredentialEnvVar(key) || isInheritedHermesRuntimeVar(key)) {
       continue
     }
 
@@ -205,7 +215,7 @@ ${modelContextLength ? `  context_length: ${modelContextLength}\n` : ''}provider
     key_env: MOCK_API_KEY
     models:
       mock-model: {}
-    context_length: 4096
+    context_length: 64000
 ${autoTitleDefault}${approvalsDefault}${displaySection}${extraConfig ? `\n${extraConfig.trim()}\n` : ''}`
 
   fs.writeFileSync(configPath, config, 'utf8')
@@ -262,6 +272,14 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     HERMES_HOME: sandbox.hermesHome,
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
+    // One `hermes serve` per host, and profile roots are HOME-anchored
+    // (`~/.hermes/profiles`, the default profile's own home): without both of
+    // these a local e2e run attaches to the developer's running backend or
+    // lists and writes their real profiles, and chats through their real
+    // model and state.db instead of the sandbox + mock provider. CI never has
+    // either, so only local runs ever took that path.
+    HERMES_DESKTOP_ISOLATED_BACKEND: '1',
+    HOME: sandbox.root,
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
     HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
     // `app.close()` in teardown must exit even when a spec leaves a turn
@@ -492,7 +510,7 @@ providers:
     key_env: MOCK_API_KEY
     models:
       mock-model: {}
-    context_length: 4096
+    context_length: 64000
 `,
     'utf8',
   )

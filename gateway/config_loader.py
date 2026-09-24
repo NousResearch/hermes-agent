@@ -11,9 +11,9 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from gateway.config import Platform, _dict_slot, _normalize_choice
+from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -48,6 +48,23 @@ def load_legacy_gateway_json(home: Path) -> Any:
 #   "dict":     top-level value is not a mapping → nested value; accepted only if a mapping.
 #   "nested":   nested form only (no top-level spelling is bridged).
 
+# True while GATEWAY_ALLOW_ALL_USERS in os.environ is the bridge's own write (from config.yaml), not an
+# operator's env var: only then may a reload overwrite/clear it, and restart env builders drop it so a
+# child gateway re-derives the grant from its config.yaml instead of inheriting a stale open posture.
+_BRIDGED_ALLOW_ALL_USERS = False
+
+
+def bridged_allow_all_users() -> Optional[str]:
+    """``os.environ['GATEWAY_ALLOW_ALL_USERS']`` when it is the bridge's own write, else None."""
+    return os.environ.get("GATEWAY_ALLOW_ALL_USERS") if _BRIDGED_ALLOW_ALL_USERS else None
+
+
+def drop_bridged_env(env: dict) -> dict:
+    """Remove the bridge-owned ``GATEWAY_ALLOW_ALL_USERS`` from a child-process env (operator-set stays)."""
+    if bridged_allow_all_users() is not None:
+        env.pop("GATEWAY_ALLOW_ALL_USERS", None)
+    return env
+
 def _quick_commands_ok(value: Any) -> bool:
     if isinstance(value, dict):
         return True
@@ -59,7 +76,7 @@ def _quick_commands_ok(value: Any) -> bool:
 
 
 def _dm_behavior_choice(value: Any, default: str = "pair") -> str:
-    return _normalize_choice(value, {"pair", "ignore"}, default)
+    return _normalize_choice(value, UNAUTHORIZED_DM_BEHAVIORS, default)
 
 
 def _presence(*keys: str) -> tuple:
@@ -72,7 +89,7 @@ _TOPLEVEL_BRIDGE: tuple = (
     ("stt", "stt", "presence", lambda v: isinstance(v, dict), None),
     *_presence("stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user"),
     ("multiplex_profiles", "multiplex_profiles", "gwdata", None, None),
-    *_presence("multiplex_profile_allowlist", "room_link_url"),
+    *_presence("room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
     *_presence("max_concurrent_sessions"),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
@@ -83,6 +100,7 @@ _TOPLEVEL_BRIDGE: tuple = (
         "filter_silence_narration",
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),
+    *_presence("unauthorized_dm_decline_message"),
 )
 
 
@@ -125,8 +143,8 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     ``gateway.platforms.*`` → top-level ``platforms.*`` → ``gateway.<platform>`` subsections (nested
     first so top-level config keeps precedence, matching the gateway.streaming fallback). An
     ``enabled`` key in any block sets the ``_enabled_explicit`` marker consumed by the env pass.
-    Finally api_server's port/key/host/cors_origins/model_name are bridged into ``extra`` so
-    ``gateway.api_server.port: 8642`` reaches the adapter (mirrors the env path).
+    Top-level adapter keys (``gateway.api_server.port: 8642``) reach ``extra`` in
+    ``PlatformConfig.from_dict``.
     """
     platforms_data = _dict_slot(gw_data, "platforms")
 
@@ -150,13 +168,6 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     merge(nested_gateway.get("platforms"))
     merge(yaml_cfg.get("platforms"))
     merge({k: v for k, v in nested_gateway.items() if k != "platforms" and isinstance(v, dict) and _is_platform_name(k)})
-
-    api_plat = platforms_data.get("api_server")
-    if isinstance(api_plat, dict):
-        api_extra = _dict_slot(api_plat, "extra")
-        for key in ("port", "key", "host", "cors_origins", "model_name"):
-            if key in api_plat and key not in api_extra:
-                api_extra[key] = api_plat.pop(key)
     return platforms_data
 
 
@@ -212,17 +223,15 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
-# Top-level port/host/secret bridged into ``extra`` for adapters that read them from config.extra
-# (PlatformConfig.from_dict only reads the ``extra:`` sub-key, so ``platforms.webhook.port`` would be lost).
-_PORT_BRIDGE_KEYS: dict = {
-    Platform.WEBHOOK: ("port", "host", "secret"),
-    Platform.MSGRAPH_WEBHOOK: ("port", "host", "secret"),
-    Platform.API_SERVER: ("port", "host"),
-}
-
-
-def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
+def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:
+    """Shared-key bridge; a ROOT-level ``<platform>:`` block (which ``merge_platform_sections``
+    never copies into ``platforms_data``) also gets its adapter keys promoted into ``extra``, with
+    the same typed-key exclusion and explicit-``extra`` precedence as ``PlatformConfig.from_dict``."""
     bridged: dict = {}
+    if root_block:
+        typed = PlatformConfig._TYPED_KEYS | {"channel_overrides"}
+        bridged.update({k: v for k, v in platform_cfg.items() if k not in typed})
+        bridged.update(_coerce_dict(platform_cfg.get("extra", {})))
     for key, only, transform in _SHARED_KEYS:
         if key not in platform_cfg or (only is not None and plat not in only):
             continue
@@ -230,9 +239,6 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
             bridged[key] = _dm_behavior_choice(platform_cfg[key], gw_data.get("unauthorized_dm_behavior", "pair"))
         else:
             bridged[key] = transform(platform_cfg[key]) if transform else platform_cfg[key]
-    for key in _PORT_BRIDGE_KEYS.get(plat, ()):
-        if key in platform_cfg and key not in platform_cfg.get("extra", {}):
-            bridged[key] = platform_cfg[key]
     return bridged
 
 
@@ -262,7 +268,7 @@ def bridge_platform_shared_keys(
         platform_cfg, cfg_toplevel = platform_section(yaml_cfg, plat.value, gateway_platforms)
         if not isinstance(platform_cfg, dict):
             continue
-        bridged = _bridged_keys(plat, platform_cfg, gw_data)
+        bridged = _bridged_keys(plat, platform_cfg, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
             plat_data = _dict_slot(platforms_data, plat.value)
@@ -308,12 +314,44 @@ def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_da
 
 
 def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
-    """The two YAML→env bridges that stay in core (per-platform ones live in plugin hooks).
+    """The YAML→env bridges that stay in core (per-platform ones live in plugin hooks).
 
     Top-level ``require_mention`` → Telegram when the ``telegram:`` section has none: users write it
     alongside ``group_sessions_per_user`` expecting it to work, and the telegram plugin's hook only
     runs when a telegram block exists. Signal ``require_mention`` → ``SIGNAL_REQUIRE_MENTION`` (env wins).
+    ``allow_all_users`` (top-level or ``gateway.allow_all_users``) → ``GATEWAY_ALLOW_ALL_USERS``: every
+    allow-all reader (authz mixin, startup access check, own-policy adapters, plugin gates) consults
+    that env var, so the bridge is the one seam that makes the YAML key reach all of them (#110690).
+
+    Platform values are ALWAYS seeded into the owning platform's ``extra`` (the adapters read extra
+    first); the process-env write is skipped while a multiplexed secondary profile's scope is active —
+    the loader runs inside ``_profile_runtime_scope`` for every secondary, and a first-writer-wins write
+    there would make the secondary's policy the DEFAULT profile's (#80099 class). A secondary profile
+    sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
+    global _BRIDGED_ALLOW_ALL_USERS
+    from gateway.platforms._shared import profile_scoped
+
+    skip_env_bridge = profile_scoped()
+    gateway_section = yaml_cfg.get("gateway")
+    allow_all = yaml_cfg.get("allow_all_users")
+    if allow_all is None and isinstance(gateway_section, dict):
+        allow_all = gateway_section.get("allow_all_users")
+    # Only a value this bridge wrote may be overwritten/cleared by a later load (config flipped to
+    # false + reload); an operator's explicit env var still wins. Only a truthy grant is exported:
+    # presence-based readers treat any non-empty value as "auth configured".
+    if not skip_env_bridge and (_BRIDGED_ALLOW_ALL_USERS or not os.getenv("GATEWAY_ALLOW_ALL_USERS")):
+        _BRIDGED_ALLOW_ALL_USERS = str(allow_all).lower() in {"true", "1", "yes"}
+        if _BRIDGED_ALLOW_ALL_USERS:
+            os.environ["GATEWAY_ALLOW_ALL_USERS"] = "true"
+            # The key was inert before it was bridged, so a forgotten line silently flips the
+            # posture to open — name the grant source at startup.
+            logger.warning(
+                "config.yaml allow_all_users: true grants every sender on every platform access "
+                "(bridged to GATEWAY_ALLOW_ALL_USERS; an explicit env var wins)."
+            )
+        else:
+            os.environ.pop("GATEWAY_ALLOW_ALL_USERS", None)
     tl_require_mention = yaml_cfg.get("require_mention")
     if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
         tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
@@ -323,7 +361,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
         # which only runs when a telegram config block exists — can't cover the no-telegram-block case
         # (#3979).
-        if not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+        if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
             os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
@@ -331,24 +369,51 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # WhatsApp settings → env vars: migrated to the whatsapp plugin's apply_yaml_config_fn hook
     # (plugins/platforms/whatsapp/adapter.py). #41112 / #3823.
     signal_cfg = yaml_cfg.get("signal", {})
-    if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-        os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+    if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg:
+        sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
+        sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
+        if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
+            os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
 
 
-def load_yaml_layer(home: Path, gw_data: dict) -> None:
-    """Overlay ``config.yaml`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
-    import yaml
+def read_yaml_layers(home: Path) -> dict:
+    """User ``config.yaml`` with the managed overlay applied — the YAML the gateway loader sees.
 
+    Raises on a malformed user file (the loader then falls back to env + gateway.json WITHOUT the
+    managed layer). An ABSENT user file is an empty layer, not a reason to skip the administrator's
+    values: a fleet host with no ``config.yaml`` must still honor them. Any pre-activation predicate
+    (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
+    ``load_gateway_config()`` on which files count.
+    """
     config_yaml_path = home / "config.yaml"
-    if not config_yaml_path.exists():
-        return
-    with open(config_yaml_path, encoding="utf-8") as f:
-        yaml_cfg = yaml.safe_load(f) or {}
+    yaml_cfg: dict = {}
+    if config_yaml_path.exists():
+        # The installer seeds config.yaml by copying cli-config.yaml.example (~120 KB, almost all
+        # comments), and nothing caches this loader — so the pure-Python parser dominates the load.
+        from utils import fast_safe_load
+
+        with open(config_yaml_path, encoding="utf-8") as f:
+            yaml_cfg = fast_safe_load(f) or {}
+
+    from hermes_cli.config import _expand_env_vars
+
+    # ${VAR} / ${env:VAR} expansion — the same primitive the CLI loader applies, so platform
+    # adapter settings (webhook secret, api_server key, teams credentials) arrive resolved
+    # instead of as literal refs. User layer first: the managed overlay is expanded by
+    # apply_managed_overlay itself and must not be re-resolved (config_effective._effective order).
+    yaml_cfg = _expand_env_vars(yaml_cfg)
 
     # Managed scope: overlay administrator-pinned values (this loader bypasses
     # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
     from hermes_cli import managed_scope
-    yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+    return managed_scope.apply_managed_overlay(yaml_cfg)
+
+
+def load_yaml_layer(home: Path, gw_data: dict) -> None:
+    """Overlay ``read_yaml_layers`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
+    yaml_cfg = read_yaml_layers(home)
+    if not yaml_cfg:
+        return
 
     gateway_section = yaml_cfg.get("gateway")
     bridge_toplevel_keys(yaml_cfg, gateway_section, gw_data)

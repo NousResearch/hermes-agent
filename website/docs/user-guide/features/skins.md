@@ -57,6 +57,9 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `banner_text` | Body text in the banner (tool names, skill names) | `#FFF8DC` (cornsilk) |
 | `ui_accent` | General UI accent color (highlights, active elements) | `#FFBF00` |
 | `ui_label` | UI labels and tags | `#DAA520` (goldenrod) |
+| `ui_user` | Ink TUI user-message text and prompt glyph | `ui_label` |
+| `ui_heading` | Ink TUI Markdown headings (ATX and Setext), independent of user text | `ui_accent` |
+| `user_message_bg` | Ink TUI full-width user-message surface, including blank/wrapped rows. Setting it adds one cell of horizontal and vertical padding; horizontal padding shrinks on very narrow terminals. | Unset (transparent, no padding) |
 | `ui_ok` | Success indicators (checkmarks, completion) | `#4caf50` (green) |
 | `ui_error` | Error indicators (failures, blocked) | `#ef5350` (red) |
 | `ui_warn` | Warning indicators (caution, approval prompts) | `#ffa726` (orange) |
@@ -186,6 +189,24 @@ tool_emojis:
 # banner_hero: |
 #   [#FFD700]  Custom art here  [/]
 ```
+
+### Transcript readability (Ink TUI)
+
+These optional colors travel through the normal skin engine and gateway; older skins keep
+transparent user rows and their existing label/accent colors. For example, on an existing
+custom skin:
+
+```bash
+hermes skin set ui_user "#e68e0d"
+hermes skin set ui_heading "#4dd0e1"
+hermes skin set user_message_bg "#282828"
+hermes skin set background "#121212"
+```
+
+The surface fills the available transcript width (inside its outer gutter), not just the
+text. Padding participates in wrapping and scrolling. Links, inline code, fenced code,
+and the composer retain their existing colors. These three transcript tokens currently
+apply to Ink, not the classic CLI or desktop renderer.
 
 ### Minimal custom skin example
 

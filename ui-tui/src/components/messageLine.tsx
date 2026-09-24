@@ -9,7 +9,7 @@ import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
-import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
+import { transcriptBodyWidth, transcriptGutterWidth, userMessageLayout } from '../lib/inputMetrics.js'
 import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
@@ -160,7 +160,8 @@ export const MessageLine = memo(function MessageLine({
   }
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
-  const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
+  const userLayout = userMessageLayout(cols, t.brand.prompt, Boolean(t.userMessageBg), TERMUX_TUI_MODE)
+  const gutterWidth = msg.role === 'user' ? userLayout.gutter : transcriptGutterWidth(msg.role, t.brand.prompt)
 
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
@@ -293,25 +294,40 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
-      {stamp && (
+      <Box
+        backgroundColor={msg.role === 'user' ? t.userMessageBg : undefined}
+        flexDirection="column"
+        paddingX={msg.role === 'user' ? userLayout.paddingX : 0}
+        paddingY={msg.role === 'user' ? userLayout.paddingY : 0}
+      >
+        {stamp && (
+          <Box>
+            <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
+              <Text> </Text>
+            </NoSelect>
+            <Text color={t.color.muted} dim>
+              {stamp}
+            </Text>
+          </Box>
+        )}
+
         <Box>
           <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-            <Text> </Text>
+            <Text bold={msg.role === 'user'} color={prefix}>
+              {glyph}{' '}
+            </Text>
           </NoSelect>
-          <Text color={t.color.muted} dim>
-            {stamp}
-          </Text>
+
+          <Box
+            width={
+              msg.role === 'user'
+                ? userLayout.bodyWidth
+                : transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
+            }
+          >
+            {content}
+          </Box>
         </Box>
-      )}
-
-      <Box>
-        <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-          <Text bold={msg.role === 'user'} color={prefix}>
-            {glyph}{' '}
-          </Text>
-        </NoSelect>
-
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
     </Box>
   )

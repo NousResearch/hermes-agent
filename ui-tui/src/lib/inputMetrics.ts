@@ -191,6 +191,16 @@ export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: s
   return Math.max(20, available)
 }
 
+// The transcript owns outer padding/scrollbar cells. A filled user block
+// spends two more cells on its inset, but never forces a 20-column minimum.
+export function userMessageLayout(totalCols: number, userPrompt: string, filled: boolean, termuxMode = false) {
+  const width = Math.max(1, totalCols - (termuxMode ? 2 : 4))
+  const gutter = Math.min(transcriptGutterWidth('user', userPrompt), Math.max(0, width - 1))
+  const paddingX = filled && width - gutter >= 3 ? 1 : 0
+
+  return { bodyWidth: Math.max(1, width - gutter - paddingX * 2), gutter, paddingX, paddingY: filled ? 1 : 0 }
+}
+
 export function stableComposerColumns(totalCols: number, promptWidth: number, termuxMode = false) {
   // Physical render/wrap width. Always reserve outer composer padding and
   // prompt prefix. Only reserve the transcript scrollbar gutter when the

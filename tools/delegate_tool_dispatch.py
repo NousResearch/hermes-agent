@@ -48,6 +48,7 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    rejected_tasks: List[Dict[str, Any]] | None = None
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -204,6 +205,8 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    if batch.rejected_tasks:
+        combined["rejected_tasks"] = batch.rejected_tasks
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
@@ -350,6 +353,8 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
         "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
         "note": _BACKGROUND_NOTES["one"] if n == 1 else _BACKGROUND_NOTES["many"].format(n=n, k=len(units)),
     }
+    if batch.rejected_tasks:
+        payload["rejected_tasks"] = batch.rejected_tasks
     if len(units) > 1:
         payload["units"] = [
             {"delegation_id": uid, "group": unit.group, "task_indexes": [i for (i, _, _) in unit.children]}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
@@ -302,6 +303,77 @@ _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
 }
 
 
+# ── Subagent spawn reservation/commit (#72550) ────────────────────────────
+# delegate_task normalises its arguments AFTER the guardrail check, so the
+# guardrail cannot know the actual spawn count at before_call() time. Reserve
+# the normalised count before construction, then commit only after every
+# admitted child was built. The context manager rolls the reservation back on
+# validation/construction failure. The active controller is wired in by
+# _execute_tool_calls.
+#
+# Thread-local storage prevents cross-contamination when a synchronous
+# orchestrator subagent (running inside the parent's delegate_task call)
+# overwrites the active guardrail — each thread sees its own controller.
+
+_active_subagent_guardrail: threading.local = threading.local()
+
+
+def _set_active_subagent_guardrail(ctrl: "ToolCallGuardrailController | None") -> None:
+    _active_subagent_guardrail.value = ctrl
+
+
+@dataclass
+class SubagentSpawnReservation:
+    """An admitted subagent count that is charged only when construction succeeds."""
+
+    count: int
+    _controller: "ToolCallGuardrailController | None" = None
+    _open: bool = True
+
+    def commit(self, actual_count: int | None = None) -> int:
+        """Charge successfully built children and release any unused reservation."""
+        if not self._open:
+            raise RuntimeError("subagent spawn reservation is already closed")
+        actual = self.count if actual_count is None else actual_count
+        if isinstance(actual, bool) or not isinstance(actual, int) or not 0 <= actual <= self.count:
+            raise ValueError(f"actual subagent spawn count must be between 0 and {self.count}")
+        if self._controller is not None:
+            self._controller._turn_subagent_reserved_count -= self.count
+            self._controller._turn_subagent_count += actual
+        self._open = False
+        return actual
+
+    def rollback(self) -> None:
+        """Release this reservation without charging the turn budget."""
+        if not self._open:
+            return
+        if self._controller is not None:
+            self._controller._turn_subagent_reserved_count -= self.count
+        self._open = False
+
+    def __enter__(self) -> "SubagentSpawnReservation":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.rollback()
+
+
+def reserve_subagent_spawns(count: int) -> SubagentSpawnReservation:
+    """Reserve up to the remaining per-turn subagent budget after normalisation."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("subagent spawn reservation count must be a non-negative integer")
+    ctrl = getattr(_active_subagent_guardrail, "value", None)
+    if ctrl is None:
+        return SubagentSpawnReservation(count)
+    cap = ctrl.config.loop_caps.max_subagents
+    admitted = count
+    if cap:
+        available = max(0, cap - ctrl._turn_subagent_count - ctrl._turn_subagent_reserved_count)
+        admitted = min(count, available)
+    ctrl._turn_subagent_reserved_count += admitted
+    return SubagentSpawnReservation(admitted, ctrl)
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -335,6 +407,7 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._turn_subagent_reserved_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -550,12 +623,34 @@ class ToolCallGuardrailController:
         spec = _LOOP_CAPS.get(tool_name)
         if spec is None:
             return None
-        cap_field, count_attr, code = spec
-        cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
-        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
-        if increment and cap and count >= cap:
-            return self._decide("block", code, tool_name, count, signature, cap=cap)
-        setattr(self, count_attr, count + increment)
+        if tool_name == "delegate_task":
+            spawn_count = _subagent_spawn_count(args)
+            if spawn_count == 0:
+                # Control action (list/steer/stop) — spawns nothing. Never
+                # block: once the spawn cap is hit, steering/stopping the
+                # existing children is exactly what should still work.
+                return None
+            cap = self.config.loop_caps.max_subagents
+            count = self._turn_subagent_count + self._turn_subagent_reserved_count
+            if cap and count >= cap:
+                message = _DECISION_MESSAGES["loop_subagent_cap"].format(
+                    tool_name=tool_name, count=count, cap=cap,
+                )
+                goals = _subagent_spawn_goals(args)
+                if goals:
+                    message += f" Rejected goals: {json.dumps(goals, ensure_ascii=False)}."
+                return self._decide(
+                    "block", "loop_subagent_cap", tool_name, count, signature,
+                    message=message, cap=cap,
+                )
+            # Defer admission and charging until delegate_tool has normalised
+            # and transactionally constructed the admitted children. (#72550)
+            return None
+        cap = self.config.loop_caps.max_web_searches
+        count = self._turn_web_search_count
+        if cap and count >= cap:
+            return self._decide("block", "loop_web_search_cap", tool_name, count, signature, cap=cap)
+        self._turn_web_search_count += 1
         return None
 
 
@@ -631,6 +726,18 @@ def _subagent_spawn_count(args: Mapping[str, Any]) -> int:
         return 0
     tasks = args.get("tasks")
     return len(tasks) if isinstance(tasks, list) and tasks else 1
+
+
+def _subagent_spawn_goals(args: Mapping[str, Any]) -> list[str]:
+    """Best-effort goal labels for a fully rejected delegate_task call."""
+    tasks = args.get("tasks")
+    if isinstance(tasks, str):
+        parsed = safe_json_loads(tasks)
+        tasks = parsed if isinstance(parsed, list) else None
+    if isinstance(tasks, list) and tasks:
+        return [str(task.get("goal", "")) for task in tasks if isinstance(task, Mapping) and task.get("goal")]
+    goal = args.get("goal")
+    return [goal] if isinstance(goal, str) and goal else []
 
 
 def _sha256(value: str) -> str:

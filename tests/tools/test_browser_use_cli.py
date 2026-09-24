@@ -1395,3 +1395,66 @@ class TestTimeoutProcessGroupKill:
         monkeypatch.setattr(bu_cli, "_kill_cli_process_group", lambda proc: None)
         with pytest.raises(subprocess.TimeoutExpired):
             bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain harness IPC")
+def test_shutdown_harness_daemon_uses_session_socket(tmp_path, monkeypatch):
+    """Every completed browser_exec tears down its detached named harness daemon."""
+    calls = {}
+
+    class _Socket:
+        def settimeout(self, timeout):
+            calls["timeout"] = timeout
+
+        def connect(self, path):
+            calls["path"] = path
+
+        def sendall(self, payload):
+            calls["payload"] = payload
+
+        def recv(self, size):
+            return b'{"ok": true}\n'
+
+        def close(self):
+            calls["closed"] = True
+
+    monkeypatch.setattr(bu_cli.socket, "socket", lambda *args: _Socket())
+
+    bu_cli._shutdown_browser_harness_daemon({"BH_HOME": str(tmp_path)}, "r7k2")
+
+    assert calls["path"] == str(tmp_path / "runtime" / "bu-r7k2.sock")
+    assert json.loads(calls["payload"]) == {"meta": "shutdown"}
+    assert calls["closed"] is True
+
+
+def test_browser_exec_shuts_down_harness_after_success(tmp_path, monkeypatch):
+    cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "done"\n')
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+    shutdowns = []
+    monkeypatch.setattr(
+        bu_cli, "_shutdown_browser_harness_daemon",
+        lambda env, session: shutdowns.append((env, session)),
+    )
+
+    result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
+
+    assert result["success"] is True
+    assert shutdowns[0][1] == "r7k2"
+
+
+def test_browser_exec_shuts_down_harness_after_timeout(monkeypatch):
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
+    monkeypatch.setattr(
+        bu_cli, "_run_cli_killing_process_group",
+        lambda *args: (_ for _ in ()).throw(subprocess.TimeoutExpired("browser-use", 5)),
+    )
+    shutdowns = []
+    monkeypatch.setattr(
+        bu_cli, "_shutdown_browser_harness_daemon",
+        lambda env, session: shutdowns.append(session),
+    )
+
+    result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
+
+    assert "timed out" in result["error"]
+    assert shutdowns == ["r7k2"]

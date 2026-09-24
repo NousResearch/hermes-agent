@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -571,6 +572,50 @@ def _clamp_timeout(timeout_s: Any) -> int:
 # After a whole-group SIGKILL, every pipe holder is dead, so the drain below is normally
 # instant; the deadline only guards against a process outside the group still holding a pipe.
 _POST_KILL_DRAIN_S = 10.0
+_HARNESS_SHUTDOWN_TIMEOUT_S = 1.0
+
+
+def _shutdown_browser_harness_daemon(env: dict, session: str) -> None:
+    """Best-effort shutdown for the harness daemon started by one CLI exec.
+
+    ``browser_harness`` is installed in the browser-use CLI environment rather
+    than Hermes's environment, so speak its small local IPC protocol directly.
+    A failed shutdown must never change the CLI result: the next invocation can
+    still reuse or replace the daemon as browser-harness normally would.
+    """
+    name = session or "default"
+    runtime_dir = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
+    if runtime_dir:
+        runtime = Path(runtime_dir).expanduser()
+    else:
+        harness_home = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
+        if harness_home:
+            runtime = Path(harness_home).expanduser() / "runtime"
+        elif env.get("XDG_CONFIG_HOME"):
+            runtime = Path(env["XDG_CONFIG_HOME"]).expanduser() / "browser-harness" / "runtime"
+        else:
+            runtime = Path.home() / ".config" / "browser-harness" / "runtime"
+    shared_runtime = env.get("BH_RUNTIME_DIR_SHARED") == "1"
+    stem = "bu" if runtime_dir and not shared_runtime else f"bu-{name}"
+    client = None
+    try:
+        if os.name == "nt":
+            port_data = json.loads((runtime / f"{stem}.port").read_text(encoding="utf-8"))
+            request = {"meta": "shutdown", "token": port_data["token"]}
+            client = socket.create_connection(("127.0.0.1", int(port_data["port"])), _HARNESS_SHUTDOWN_TIMEOUT_S)
+        else:
+            request = {"meta": "shutdown"}
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(_HARNESS_SHUTDOWN_TIMEOUT_S)
+            client.connect(str(runtime / f"{stem}.sock"))
+        client.sendall((json.dumps(request) + "\n").encode())
+        client.recv(1 << 16)  # consume the bounded daemon acknowledgement before closing
+    except Exception as exc:
+        logger.debug("browser_exec: harness daemon shutdown skipped: %s", exc)
+    finally:
+        if client is not None:
+            with contextlib.suppress(OSError):
+                client.close()
 
 
 def _kill_cli_process_group(proc) -> None:
@@ -668,6 +713,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             )}
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+        finally:
+            _shutdown_browser_harness_daemon(env, session)
 
     if bot_desktop_browser:
         from tools.browser_tool_session import run_fenced

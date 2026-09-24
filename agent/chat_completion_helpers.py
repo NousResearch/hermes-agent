@@ -2246,7 +2246,8 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
     return (normalized.content or "").strip()
 
 
-def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _codex_summary_attempt(agent, api_messages: list, api_request_id: str, *, disable_tools: bool = False):
+    del disable_tools
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
         # The transport emits these three as one block (transports/codex.py build_kwargs);
@@ -2261,7 +2262,8 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
     return _attempt
 
 
-def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str, *, disable_tools: bool = False):
+    del disable_tools
     def _attempt(retry_count: int) -> str:
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
@@ -2273,12 +2275,18 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
     return _attempt
 
 
-def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
-    # Same kwargs builder as the main loop so the summary keeps the cached prefix (tools,
-    # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
-    # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
-    # prefix diverges. (cache_control breakpoint decoration is not re-applied on this path.)
-    summary_kwargs = agent._build_api_kwargs(api_messages)
+def _chat_summary_attempt(agent, api_messages: list, api_request_id: str, *, disable_tools: bool = False):
+    # Iteration-limit summaries preserve the cached tool prefix for compatibility.
+    # Aggregate tool-budget exhaustion is different: the hard resource boundary
+    # requires a genuinely tool-less synthesis request even when that costs a cache miss.
+    summary_kwargs = (
+        agent._build_api_kwargs(api_messages, tools_for_api=[])
+        if disable_tools else agent._build_api_kwargs(api_messages)
+    )
+    if disable_tools:
+        summary_kwargs.pop("tools", None)
+        summary_kwargs.pop("tool_choice", None)
+        summary_kwargs.pop("parallel_tool_calls", None)
     # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
     sanitize_outbound_kwargs(agent, summary_kwargs)
@@ -2296,9 +2304,24 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
-    """Request a summary when max iterations are reached. Returns the final response text."""
-    warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
+def handle_max_iterations(
+    agent, messages: list, api_call_count: int, *, tool_execution_budget=None,
+    tool_execution_budget_unavailable: bool = False,
+) -> str:
+    """Request one bounded final synthesis after an iteration or aggregate tool cap."""
+    if tool_execution_budget_unavailable:
+        warning = (
+            "⚠️  Turn tool-execution budget authority is unavailable. "
+            "Requesting final synthesis without tools..."
+        )
+    elif tool_execution_budget is None:
+        warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
+    else:
+        used, maximum = tool_execution_budget
+        warning = (
+            f"⚠️  Reached turn tool-execution budget ({used}/{maximum}). "
+            "Requesting final synthesis..."
+        )
     if getattr(agent, "suppress_status_output", False):
         # Strict machine-readable mode (-Q, oneshot): keep diagnostics off stdout. quiet_mode is
         # NOT the gate — the interactive CLI runs quiet_mode=True by default and must see this.
@@ -2311,15 +2334,27 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
     summary_call_outcome = "failed"
 
-    # Shared constant so compaction recognizers can identify this runtime nudge by its stable
-    # content after SessionDB projection strips metadata flags.
-    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    # Stable content markers let compaction remove runtime-only synthesis nudges
+    # after SessionDB projection strips private metadata.
+    from agent.context_compressor import (
+        MAX_ITERATIONS_SUMMARY_REQUEST, TOOL_EXECUTION_BUDGET_SUMMARY_REQUEST,
+        TOOL_EXECUTION_BUDGET_UNAVAILABLE_SUMMARY_REQUEST,
+    )
+    if tool_execution_budget_unavailable:
+        summary_request = TOOL_EXECUTION_BUDGET_UNAVAILABLE_SUMMARY_REQUEST
+    elif tool_execution_budget is not None:
+        summary_request = TOOL_EXECUTION_BUDGET_SUMMARY_REQUEST
+    else:
+        summary_request = MAX_ITERATIONS_SUMMARY_REQUEST
+    append_message(messages, {"role": "user", "content": summary_request})
 
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
-        attempt = build_attempt(agent, api_messages, summary_api_request_id)
+        attempt = build_attempt(
+            agent, api_messages, summary_api_request_id,
+            disable_tools=(tool_execution_budget is not None or tool_execution_budget_unavailable),
+        )
 
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE

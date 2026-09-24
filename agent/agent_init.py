@@ -2384,7 +2384,8 @@ def init_agent(
     gateway_session_key: str = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
     skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
-    iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
+    iteration_budget: "IterationBudget" = None, turn_resource_budget=None,
+    run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
@@ -2407,8 +2408,11 @@ def init_agent(
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None
-    # Shared iteration budget: parent creates, children inherit.
+    # IterationBudget remains per-agent. TurnResourceBudget is separate and is
+    # inherited only by delegated descendants of the same originating user turn.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+    agent.turn_resource_budget = turn_resource_budget
+    agent._inherits_turn_resource_budget = turn_resource_budget is not None
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's
     # renderer (StdoutProxy would mangle them). None = builtins.print.
     agent._print_fn = None

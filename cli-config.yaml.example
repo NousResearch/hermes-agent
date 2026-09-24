@@ -816,6 +816,10 @@ compression:
 #
 # tool_budget:
 #   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
+#   # Aggregate live tool calls across the root agent and all delegated descendants.
+#   # Omitted = reuse agent.max_turns/max_iterations as the turn-wide cap.
+#   # Set 0 to disable the aggregate cap explicitly.
+#   max_tool_executions: 90
 
 # =============================================================================
 # Anthropic prompt caching TTL

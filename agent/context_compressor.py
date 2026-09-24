@@ -337,6 +337,15 @@ MAX_ITERATIONS_SUMMARY_REQUEST = (
     "You've reached the maximum number of tool-calling iterations allowed. Please provide a final response "
     "summarizing what you've found and accomplished so far, without calling any more tools."
 )
+TOOL_EXECUTION_BUDGET_SUMMARY_REQUEST = (
+    "The shared live tool-execution budget for this user turn has been exhausted across the parent agent and "
+    "its delegated descendants. Stop gathering evidence now. Provide the best final response you can from the "
+    "evidence already collected, without calling any more tools."
+)
+TOOL_EXECUTION_BUDGET_UNAVAILABLE_SUMMARY_REQUEST = (
+    "The authority that controls this user turn's live tool-execution budget is unavailable. Do not attempt "
+    "any more tools. Provide the best final response you can from evidence already collected."
+)
 _BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
 
 
@@ -4200,7 +4209,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         )
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
-            MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
+            MAX_ITERATIONS_SUMMARY_REQUEST, TOOL_EXECUTION_BUDGET_SUMMARY_REQUEST,
+            TOOL_EXECUTION_BUDGET_UNAVAILABLE_SUMMARY_REQUEST,
+            _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
             _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE,
             _LENGTH_CONTINUATION_NETWORK_STUB, _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,

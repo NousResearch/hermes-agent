@@ -471,6 +471,8 @@ CREATE TABLE IF NOT EXISTS session_admissions (
     outcome TEXT,
     owner_epoch INTEGER,
     generation INTEGER,
+    tool_budget_max INTEGER CHECK (tool_budget_max IS NULL OR tool_budget_max >= 0),
+    tool_budget_used INTEGER NOT NULL DEFAULT 0 CHECK (tool_budget_used >= 0),
     UNIQUE (principal_id, target_session_id, request_id),
     CHECK (status != 'started' OR (owner_epoch IS NOT NULL AND generation IS NOT NULL))
 );

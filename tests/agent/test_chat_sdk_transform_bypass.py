@@ -151,6 +151,48 @@ def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     assert seen[0]["extra_body"]["tools"] == body["tools"]
 
 
+def test_tool_budget_summary_disables_tools_before_sdk_dispatch(monkeypatch):
+    from agent import chat_completion_helpers
+
+    seen = _capture_sdk_create(monkeypatch)
+    client = _Recorder().client
+    body = {"model": "m", "messages": [{"role": "user", "content": "evidence"}]}
+    build_calls = []
+
+    def build(messages, tools_for_api=None):
+        build_calls.append(tools_for_api)
+        return {
+            **body,
+            "messages": messages,
+            "tools": _wire_body()["tools"],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+        }
+
+    transport = types.SimpleNamespace(
+        normalize_response=lambda response, **kw: types.SimpleNamespace(
+            content="bounded answer", tool_calls=None
+        )
+    )
+    agent = types.SimpleNamespace(
+        provider="p", model="m", api_mode="chat_completions",
+        _force_ascii_payload=False, _build_api_kwargs=build,
+        _ensure_primary_openai_client=lambda reason: client,
+        _get_transport=lambda: transport,
+    )
+
+    result = chat_completion_helpers._chat_summary_attempt(
+        agent, body["messages"], "req-budget", disable_tools=True
+    )(0)
+
+    assert result == "bounded answer"
+    assert build_calls == [[]]
+    assert len(seen) == 1
+    assert "tools" not in seen[0]
+    assert "tool_choice" not in seen[0]
+    assert "parallel_tool_calls" not in seen[0]
+
+
 def test_relay_stream_path_shows_relay_the_full_conversation(monkeypatch):
     """On the Relay-managed stream path the bypass must run INSIDE the provider callback: Relay's
     tracing/intercepts see the real ``messages`` while the SDK still gets only the placeholder."""

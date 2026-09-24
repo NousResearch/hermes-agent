@@ -569,6 +569,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None),
+    ("_turn_resource_budget_unavailable", False),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
@@ -606,6 +607,9 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         agent._compression_warning = None  # send once
 
     agent.iteration_budget = IterationBudget(agent.max_iterations)
+    if not getattr(agent, "_inherits_turn_resource_budget", False):
+        from agent.turn_resource_budget import build_turn_resource_budget
+        agent.turn_resource_budget = build_turn_resource_budget(agent)
     # Wall-clock run budget: stamped only when configured (one wrap-up notice per run).
     agent._run_budget_started_at = (
         time.time() if getattr(agent, "run_budget_seconds", None) else None

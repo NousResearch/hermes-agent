@@ -921,7 +921,10 @@ MCP tool results (tools named `mcp_*`) spill at a tighter **50,000-char** defaul
 ```yaml
 tool_budget:
   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
+  max_tool_executions: 90        # aggregate live calls across parent + delegated descendants
 ```
+
+`max_tool_executions` is a turn-wide resource boundary, separate from each agent's iteration counter. When omitted, Hermes reuses the finite `max_turns`/`max_iterations` value as the aggregate live-tool cap; set it to `0` to explicitly disable the aggregate cap. Parallel and nested delegation debit the same originating turn budget, so fan-out cannot multiply the allowed work. At 80% usage Hermes emits a diagnostic status; at exhaustion it blocks further live tool dispatch and makes one tool-disabled final synthesis request from evidence already collected.
 
 The MCP threshold is always capped at the (possibly context-scaled) generic per-result threshold, so raising it cannot exceed what the active model's window allows.
 

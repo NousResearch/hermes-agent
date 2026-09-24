@@ -660,6 +660,33 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any]
     return result
 
 
+def _resource_budget_blocked_result(agent, ref: _ToolCallRef, decision=None, *, unavailable: Exception | None = None) -> str:
+    """Structured terminal result for aggregate turn-budget refusal.
+
+    Budget accounting happens only after every ordinary authorization gate passed,
+    so these calls are genuine would-be live executions, not policy blocks.
+    """
+    if unavailable is not None:
+        payload = {
+            "error": "Turn resource budget could not be verified; live tool execution was blocked.",
+            "code": "turn_resource_budget_unavailable",
+        }
+        error_type = "turn_resource_budget_unavailable"
+    else:
+        maximum = getattr(decision, "max_tool_executions", None)
+        used = int(getattr(decision, "used_tool_executions", 0) or 0)
+        payload = {
+            "error": "Turn tool-execution budget exhausted. Answer from evidence already collected.",
+            "code": "turn_tool_execution_budget_exhausted",
+            "used_tool_executions": used,
+            "max_tool_executions": maximum,
+        }
+        error_type = "turn_tool_execution_budget_exhausted"
+    result = json.dumps(payload, ensure_ascii=False)
+    ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=payload["error"])
+    return result
+
+
 def _pre_tool_block(agent, ref: _ToolCallRef):
     """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
     hook-modified args applied. Hook failures never block."""
@@ -734,6 +761,36 @@ def _dispatch_authorized_once(
             agent, ref,
             block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
         )
+
+    turn_budget = getattr(agent, "turn_resource_budget", None)
+    if turn_budget is not None:
+        try:
+            budget_decision = turn_budget.try_consume_tool_execution(
+                tool_name=ref.name, tool_call_id=ref.call_id,
+            )
+        except Exception as exc:
+            _advance_start_order()
+            agent._turn_resource_budget_unavailable = True
+            state.blocked = True
+            return _resource_budget_blocked_result(agent, ref, unavailable=exc)
+        if not budget_decision.allowed:
+            _advance_start_order()
+            state.blocked = True
+            return _resource_budget_blocked_result(agent, ref, budget_decision)
+        maximum = budget_decision.max_tool_executions
+        used = budget_decision.used_tool_executions
+        if maximum is not None:
+            warning_at = (4 * maximum + 4) // 5  # ceil(80%)
+            if warning_at < maximum and used == warning_at:
+                agent._emit_diagnostic_status(
+                    f"⚠️ Turn tool budget nearing limit ({used}/{maximum} executions used)."
+                )
+        if budget_decision.became_exhausted:
+            agent._emit_diagnostic_status(
+                f"⚠️ Turn tool budget reached "
+                f"({budget_decision.used_tool_executions}/{budget_decision.max_tool_executions}) "
+                "— answering from evidence already collected."
+            )
 
     if ref.name == "memory":
         agent._turns_since_memory = 0

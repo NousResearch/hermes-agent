@@ -150,6 +150,80 @@ def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
     return db._execute_write(write)
 
 
+def _consume_admission_tool_execution_row(conn, row, *, epoch: int, generation: int,
+                                          max_tool_executions: int, tool_name: str,
+                                          tool_call_id: str) -> dict:
+    if (type(max_tool_executions) is not int or max_tool_executions < 0
+            or not isinstance(tool_name, str) or len(tool_name) > 1024
+            or not isinstance(tool_call_id, str) or len(tool_call_id) > 1024):
+        raise RuntimeStoreError('invalid_params')
+    session = _session(conn, row['target_session_id'])
+    if (row['status'] != 'started' or row['owner_epoch'] != epoch
+            or type(generation) is not int or row['generation'] != generation
+            or session['runtime_generation'] != generation):
+        raise RuntimeStoreError('stale_generation')
+
+    pinned = row['tool_budget_max']
+    if pinned is None:
+        conn.execute('UPDATE session_admissions SET tool_budget_max=? WHERE admission_id=?',
+                     (max_tool_executions, row['admission_id']))
+        pinned = max_tool_executions
+    elif int(pinned) != max_tool_executions:
+        raise RuntimeStoreError('admission_conflict')
+
+    used = int(row['tool_budget_used'] or 0)
+    if max_tool_executions > 0 and used >= max_tool_executions:
+        return {
+            'allowed': False, 'used_tool_executions': used,
+            'max_tool_executions': max_tool_executions, 'exhausted': True,
+            'became_exhausted': False,
+        }
+
+    used += 1
+    conn.execute('UPDATE session_admissions SET tool_budget_used=? WHERE admission_id=?',
+                 (used, row['admission_id']))
+    exhausted = max_tool_executions > 0 and used >= max_tool_executions
+    return {
+        'allowed': True, 'used_tool_executions': used,
+        'max_tool_executions': max_tool_executions, 'exhausted': exhausted,
+        'became_exhausted': exhausted,
+    }
+
+
+def consume_admission_tool_execution(db, *, epoch: int, admission_id: str, generation: int,
+                                     max_tool_executions: int, tool_name: str = '',
+                                     tool_call_id: str = '') -> dict:
+    """Atomically admit one live tool execution for an authority-owned user turn."""
+    def write(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        return _consume_admission_tool_execution_row(
+            conn, row, epoch=epoch, generation=generation,
+            max_tool_executions=max_tool_executions,
+            tool_name=tool_name, tool_call_id=tool_call_id,
+        )
+    return db._execute_write(write)
+
+
+def _worker_tool_execution_budget(db, conn, session_id, payload, *,
+                                  execution_id, generation, owner_epoch):
+    if set(payload) != {'max_tool_executions', 'tool_name', 'tool_call_id'}:
+        raise RuntimeStoreError('invalid_params')
+    worker = _worker_assignment(conn, execution_id, session_id, generation)
+    if worker['owner_epoch'] != owner_epoch:
+        raise RuntimeStoreError('stale_epoch')
+    admission = _linked_worker_admission(
+        conn, session_id, generation, owner_epoch, ('started',)
+    )
+    if admission is None:
+        raise RuntimeStoreError('stale_generation')
+    return _consume_admission_tool_execution_row(
+        conn, admission, epoch=owner_epoch, generation=generation,
+        max_tool_executions=payload['max_tool_executions'],
+        tool_name=payload['tool_name'], tool_call_id=payload['tool_call_id'],
+    )
+
+
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
                          result: dict | None = None) -> dict:
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
@@ -615,6 +689,8 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
         'execution.finish': _worker_finish,
         'usage.main': _worker_usage,
         'usage.auxiliary': lambda db, conn, sid, p: _worker_usage(db, conn, sid, p, auxiliary=True),
+        'budget.tool_execution': lambda db, conn, sid, p: _worker_tool_execution_budget(
+            db, conn, sid, p, execution_id=execution_id, generation=generation, owner_epoch=epoch),
         **{name: (lambda db, conn, sid, p, op=name: _worker_turn(db, conn, sid, p, op))
            for name in ('turn.acquire', 'turn.renew', 'turn.release')},
     }

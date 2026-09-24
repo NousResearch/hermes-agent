@@ -251,6 +251,14 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self._session(session_id)
         self._apply('usage.auxiliary', dict(usage, task=task))
 
+    def consume_turn_tool_execution(self, *, max_tool_executions, tool_name, tool_call_id):
+        """Durably debit the originating admission's aggregate live-tool budget."""
+        return self._apply('budget.tool_execution', {
+            'max_tool_executions': max_tool_executions,
+            'tool_name': tool_name,
+            'tool_call_id': tool_call_id,
+        })
+
     def flush_token_counts(self, timeout=5.0):
         with self.lock:
             if self.failure:

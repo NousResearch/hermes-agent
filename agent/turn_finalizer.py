@@ -128,7 +128,52 @@ def _resolve_budget_fallback(
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
+    turn_resource_budget = getattr(agent, "turn_resource_budget", None)
+    tool_budget_exhausted = (
+        turn_resource_budget is not None
+        and turn_resource_budget.exhausted
+        and str(_turn_exit_reason) == "tool_execution_budget_exhausted"
+    )
+    tool_budget_unavailable = str(_turn_exit_reason) == "tool_execution_budget_unavailable"
     preserved_verification_fallback = False
+
+    if final_response is None and tool_budget_exhausted and not interrupted and not failed:
+        snapshot = turn_resource_budget.snapshot()
+        used = snapshot.used_tool_executions
+        maximum = snapshot.max_tool_executions
+        _turn_exit_reason = f"tool_execution_budget_exhausted({used}/{maximum})"
+        agent._emit_diagnostic_status(
+            f"⚠️ Turn tool budget exhausted ({used}/{maximum}) — asking model to synthesise "
+            "from evidence already collected"
+        )
+        if not agent.quiet_mode:
+            agent._safe_print(
+                f"\n⚠️  Turn tool budget exhausted ({used}/{maximum}) — requesting final synthesis...",
+                diagnostic=True,
+            )
+        final_response = agent._handle_max_iterations(
+            messages, api_call_count, tool_execution_budget=(used, maximum)
+        )
+
+    if final_response is None and tool_budget_unavailable and not interrupted and not failed:
+        snapshot = turn_resource_budget.snapshot() if turn_resource_budget is not None else None
+        used = getattr(snapshot, "used_tool_executions", 0)
+        maximum = getattr(snapshot, "max_tool_executions", None)
+        agent._emit_diagnostic_status(
+            "⚠️ Turn tool budget authority unavailable — live tools stopped; "
+            "asking model to synthesise from evidence already collected"
+        )
+        if not agent.quiet_mode:
+            agent._safe_print(
+                "\n⚠️  Turn tool budget authority unavailable — requesting final synthesis...",
+                diagnostic=True,
+            )
+        final_response = agent._handle_max_iterations(
+            messages, api_call_count,
+            tool_execution_budget=(used, maximum) if maximum is not None else None,
+            tool_execution_budget_unavailable=True,
+        )
+
     if (
         final_response is None and budget_exhausted and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}

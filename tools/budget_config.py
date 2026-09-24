@@ -42,6 +42,55 @@ def _configured_mcp_result_size() -> int:
     return DEFAULT_MCP_RESULT_SIZE_CHARS
 
 
+_MISSING = object()
+
+
+def configured_max_tool_executions(max_iterations: int | None) -> int | None:
+    """Resolve the aggregate live-tool cap for one user turn.
+
+    tool_budget.max_tool_executions:
+      * omitted -> reuse the existing finite max_iterations value;
+      * 0 / false / "none" / "unlimited" -> unlimited;
+      * positive integer -> explicit aggregate cap.
+
+    Invalid values fail back to max_iterations so a typo never disables the
+    safety bound. sys.maxsize-like values are treated as unlimited.
+    """
+    try:
+        import sys
+        from hermes_cli.config import load_config_readonly
+
+        data = load_config_readonly()
+        block = data.get("tool_budget") if isinstance(data, dict) else None
+        raw = block.get("max_tool_executions", _MISSING) if isinstance(block, dict) else _MISSING
+        if raw is not _MISSING:
+            if raw is None or raw is False:
+                return None
+            if isinstance(raw, str) and raw.strip().lower() in {"none", "unlimited", "inf", "infinite"}:
+                return None
+            if isinstance(raw, bool):
+                return _derived_tool_execution_cap(max_iterations)
+            value = int(raw)
+            if value == 0:
+                return None
+            if value > 0:
+                return value
+            return _derived_tool_execution_cap(max_iterations)
+        return _derived_tool_execution_cap(max_iterations)
+    except Exception:
+        return _derived_tool_execution_cap(max_iterations)
+
+
+def _derived_tool_execution_cap(max_iterations: int | None) -> int | None:
+    import sys
+
+    if isinstance(max_iterations, bool) or not isinstance(max_iterations, int):
+        return None
+    if max_iterations <= 0 or max_iterations >= sys.maxsize:
+        return None
+    return max_iterations
+
+
 @dataclass(frozen=True)
 class BudgetConfig:
     """Immutable budget constants: per-result threshold (``resolve_threshold``),

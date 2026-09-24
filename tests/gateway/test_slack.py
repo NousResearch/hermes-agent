@@ -2742,6 +2742,40 @@ class TestReactions:
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
 
+    @staticmethod
+    def _channel_event(ts: str = "1700000000.000100") -> dict:
+        return {
+            "text": "status?",
+            "user": "U_USER",
+            "channel": "C_FREE",
+            "channel_type": "channel",
+            "ts": ts,
+        }
+
+    @pytest.mark.asyncio
+    async def test_free_response_channel_reacts_without_mention(self, adapter):
+        """An assigned channel answers without an @mention, so it owes the same 👀
+        acknowledgement a mention earns — otherwise the turn is silent until the reply lands."""
+        adapter.config.extra = {"free_response_channels": "C_FREE"}
+        await adapter._handle_slack_message(self._channel_event())
+        assert "1700000000.000100" in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_require_mention_channel_still_needs_a_mention_to_react(self, adapter):
+        """``require_mention_channels`` pins a channel back to mention-only; it must not
+        inherit the free-response reaction."""
+        adapter.config.extra = {
+            "require_mention": False, "require_mention_channels": "C_FREE"}
+        await adapter._handle_slack_message(self._channel_event("1700000000.000200"))
+        assert "1700000000.000200" not in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_mention_gated_channel_does_not_react(self, adapter):
+        """Default gating is unchanged: no mention, no reaction."""
+        adapter.config.extra = {"require_mention": True}
+        await adapter._handle_slack_message(self._channel_event("1700000000.000300"))
+        assert "1700000000.000300" not in adapter._reacting_message_ids
+
 
 # ---------------------------------------------------------------------------
 # TestThreadReplyHandling

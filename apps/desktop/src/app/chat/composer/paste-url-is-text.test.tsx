@@ -46,7 +46,11 @@ const state: ChatBarState = {
   voice: { enabled: false, active: false }
 }
 
-function Harness({ onAttachPrCommentUrl }: { onAttachPrCommentUrl: (url: string) => boolean }) {
+function Harness({ onAttachPrCommentUrl, onAttachDroppedItems, onAttachImageBlob }: {
+  onAttachPrCommentUrl?: (url: string) => boolean
+  onAttachDroppedItems?: Parameters<typeof ChatBar>[0]['onAttachDroppedItems']
+  onAttachImageBlob?: Parameters<typeof ChatBar>[0]['onAttachImageBlob']
+}) {
   // The adapter's message generic infers to `never` from an empty array, so the
   // empty store is typed explicitly. The runtime itself is only here to satisfy
   // ChatBar's provider; nothing in this test reads it.
@@ -65,6 +69,8 @@ function Harness({ onAttachPrCommentUrl }: { onAttachPrCommentUrl: (url: string)
             busy={false}
             disabled={false}
             gateway={null}
+            onAttachDroppedItems={onAttachDroppedItems}
+            onAttachImageBlob={onAttachImageBlob}
             onCancel={vi.fn()}
             onSubmit={vi.fn(async () => true)}
             state={state}
@@ -122,5 +128,91 @@ describe('a pasted URL survives the paste', () => {
     // …and the interception hook was never consulted.
     expect(onAttachPrCommentUrl).not.toHaveBeenCalled()
     expect(event.defaultPrevented).toBe(true)
+  })
+})
+
+describe('a paste of OS files preserves the original paths', () => {
+  afterEach(() => {
+    mainComposerScope.clear()
+  })
+
+  it('recovers original paths for cloned paste files and keeps screenshots on the image pipeline', async () => {
+    const onAttachDroppedItems = vi.fn(async () => true)
+    const onAttachImageBlob = vi.fn(async () => { })
+    // webUtils.getPathForFile returns '' for cloned paste File objects (#118181).
+    const getPathForFile = vi.fn(() => '')
+
+    const readClipboardFilePaths = vi.fn().mockResolvedValue({
+      status: 'files',
+      files: [{ path: 'C:/original/a.pdf', isDirectory: false }]
+    })
+
+    const originalBridge = window.hermesDesktop
+    window.hermesDesktop = {
+      ...originalBridge,
+      readClipboardFilePaths,
+      getPathForFile
+    } as typeof window.hermesDesktop
+
+    try {
+      const { container } = render(
+        <Harness onAttachDroppedItems={onAttachDroppedItems} onAttachImageBlob={onAttachImageBlob} />
+      )
+
+      const editor = container.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement
+      Object.defineProperty(editor, 'isContentEditable', { configurable: true, value: true })
+      editor.focus()
+
+      // jsdom's plain arrays lack FileList.item(); coerce so extractDroppedFiles
+      // can read .item(i) the same way a real paste does.
+      const makeFileList = (files: File[]) => {
+        const list = files as unknown as FileList & File[]
+
+        list.item = (index: number) => list[index] ?? null
+
+        return list
+      }
+
+      const pasteFile = async (file: File) => {
+        const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent
+
+        Object.defineProperty(event, 'clipboardData', {
+          value: {
+            getData: () => '',
+            files: makeFileList([file]),
+            items: [{ kind: 'file', type: file.type, getAsFile: () => file }]
+          }
+        })
+
+        await act(async () => {
+          fireEvent(editor, event)
+        })
+
+        // The handler claims the event — no default insertion, no leak into the editor.
+        expect(event.defaultPrevented).toBe(true)
+      }
+
+      const pdf = new File(['pdf'], 'a.pdf', { type: 'application/pdf' })
+
+      await pasteFile(pdf)
+
+      // Original path recovered via the native clipboard read, paired with the cloned File.
+      expect(onAttachDroppedItems).toHaveBeenCalledWith([
+        { file: pdf, path: 'C:/original/a.pdf', isDirectory: false }
+      ])
+      expect(readClipboardFilePaths).toHaveBeenCalled()
+
+      // A screenshot-only paste (no native paths) falls through to the image pipeline.
+      readClipboardFilePaths.mockResolvedValue({ status: 'empty', files: [] })
+
+      const screenshot = new File(['png'], 'shot.png', { type: 'image/png' })
+
+      await pasteFile(screenshot)
+      expect(onAttachImageBlob).toHaveBeenCalledWith(screenshot)
+      // The file pipeline was not invoked for the screenshot.
+      expect(onAttachDroppedItems).toHaveBeenCalledTimes(1)
+    } finally {
+      window.hermesDesktop = originalBridge
+    }
   })
 })

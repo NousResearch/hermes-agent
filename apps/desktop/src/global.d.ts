@@ -315,6 +315,10 @@ declare global {
         title?: string
       }) => Promise<null | string>
       writeClipboard: (text: string) => Promise<boolean>
+      readClipboardFilePaths: () => Promise<{
+        status: 'files' | 'empty' | 'unsupported' | 'failed'
+        files: Array<{ path: string; isDirectory: boolean }>
+      }>
       readClipboard: () => Promise<string>
       saveGatewayFile?: (payload: {
         connectionId?: null | string

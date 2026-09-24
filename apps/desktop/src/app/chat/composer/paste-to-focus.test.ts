@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { onComposerAttachImagesRequest, onComposerFocusRequest, onComposerInsertRequest } from './focus'
+import { onComposerAttachFilesRequest, onComposerFocusRequest, onComposerInsertRequest } from './focus'
 import { handleWindowPaste, routeClipboardToComposer } from './paste-to-focus'
 
 /** Minimal DataTransfer stand-in: text/plain + optional image file items. */
@@ -54,10 +54,10 @@ describe('routeClipboardToComposer', () => {
     expect(inserts[0]).toContain('@url:')
   })
 
-  it('attaches clipboard images and pulls focus on an image-only paste', async () => {
+  it('routes OS file-manager copies to the file attach bus and pulls focus', async () => {
     const attached: Blob[][] = []
     const focused: boolean[] = []
-    const offAttach = onComposerAttachImagesRequest(({ blobs }) => attached.push(blobs))
+    const offAttach = onComposerAttachFilesRequest(({ imageBlobs }) => attached.push(imageBlobs))
     const offFocus = onComposerFocusRequest(() => focused.push(true))
 
     expect(routeClipboardToComposer(clipboard({ files: [image()] }))).toBe(true)
@@ -70,10 +70,10 @@ describe('routeClipboardToComposer', () => {
     expect(focused).toHaveLength(1)
   })
 
-  it('takes both from a mixed paste — images attach AND the text inserts', async () => {
+  it('routes a mixed OS paste (file + text) as files only — text is dropped on purpose', async () => {
     const attached: Blob[][] = []
     const inserts: string[] = []
-    const offAttach = onComposerAttachImagesRequest(({ blobs }) => attached.push(blobs))
+    const offAttach = onComposerAttachFilesRequest(({ imageBlobs }) => attached.push(imageBlobs))
     const offInsert = onComposerInsertRequest(({ text }) => inserts.push(text))
 
     routeClipboardToComposer(clipboard({ files: [image()], text: 'look at this' }))
@@ -82,7 +82,10 @@ describe('routeClipboardToComposer', () => {
     offInsert()
 
     expect(attached).toHaveLength(1)
-    expect(inserts).toEqual(['look at this'])
+    // The text payload is dropped: an OS file copy's only sensible action is
+    // attaching, and routing the text into the editor would land the path text
+    // alongside the file chip.
+    expect(inserts).toEqual([])
   })
 
   it('reports an empty clipboard as unhandled', () => {

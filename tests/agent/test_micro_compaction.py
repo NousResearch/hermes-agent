@@ -20,6 +20,8 @@ The invariants that matter:
 
 from unittest.mock import patch
 
+import pytest
+
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -861,85 +863,83 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
         db.close()
 
 
-def test_micro_compaction_skips_the_pass_when_the_watermark_read_fails(tmp_path):
-    """A watermark the store could not answer for must not become an unbounded archive. None is the
-    store saying "I have no watermark API"; a raised read is not the same answer, and treating it as
-    one archives every active row — the loss the watermark was added to prevent."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+def _held_session(tmp_path, mode: str):
+    """A real SessionDB session plus the compressor and the history it holds (as a resume restores it:
+    row ids and persisted markers included) for a prune or a micro-compaction pass."""
     from hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("s", source="cli")
-    messages = _conversation(exchanges=8)
-    for msg in messages:
-        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"])
-        msg[_DB_PERSISTED_MARKER] = True
+    cc = _compressor()
+    cc._session_db, cc._session_id = db, "s"
+    if mode == "prune":
+        cc.proactive_prune_tokens, cc.proactive_prune_min_result_chars = 48_000, 8_000
+        cc.proactive_prune_min_reclaim_tokens, cc.protect_first_n, cc.protect_last_n = 4_096, 2, 4
+        history = [{"role": "user", "content": "start"}]
+        for i in range(8):
+            history.append({"role": "assistant", "content": "", "tool_calls": [{
+                "id": f"call_{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]})
+            history.append({"role": "tool", "tool_call_id": f"call_{i}", "content": chr(65 + i) * 24_000 if i < 3 else "ok"})
+    else:
+        history = _conversation(exchanges=8)
+    db.append_messages_batch("s", history)
+    return db, cc, db.get_resume_conversations("s")[0]
+
+
+def _run_pass(cc, mode: str, held: list) -> list:
+    if mode == "prune":
+        return cc.prune_tool_results_only(held, current_tokens=120_000)[0]
+    return cc._micro_compact(held)
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_a_turn_another_surface_appended_after_load_is_kept_exactly_once(tmp_path, mode):
+    """Prune and micro-compaction rewrite the history this process holds. A turn another surface appended to
+    the same session since then (a Desktop session continued from Telegram) was archived with the rest, as
+    summarized away though no summary holds it: still displayed and searchable, gone from the model's view."""
+    db, cc, held = _held_session(tmp_path, mode)
     foreign = "[from Telegram] the vault code is 7741"
     db.append_message("s", "user", foreign)
 
-    def _boom(_session_id):
-        raise RuntimeError("transient store failure")
-    db.get_active_message_watermark = _boom
-    cc = _compressor()
-    cc._session_db, cc._session_id = db, "s"
+    result = _run_pass(cc, mode, held)
 
-    result = cc._micro_compact(messages)
-
-    assert _summary_markers(result) == []          # the pass did not run
-    live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
-    assert live[-1] == foreign                     # and nothing was archived
-    assert sum(foreign in content for content in live) == 1
-
-
-def test_micro_compaction_keeps_a_turn_another_surface_appended_after_load(tmp_path):
-    """The micro-compaction commit rewrites the history this process holds. A turn another surface appended to
-    the same session since then was archived with the rest (no watermark), as summarized away though the rolling
-    summary never saw it. The display and search still show it, but the model never sees it again."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s", source="cli")
-    messages = _conversation(exchanges=8)
-    for msg in messages:
-        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"])
-        msg[_DB_PERSISTED_MARKER] = True
-    foreign = "[from Telegram] the vault code is 7741"
-    db.append_message("s", "user", foreign)
-    cc = _compressor()
-    cc._session_db, cc._session_id = db, "s"
-
-    result = cc._micro_compact(messages)
-
-    assert len(_summary_markers(result)) == 1  # a pass ran
+    assert result is not held  # a pass ran and committed
     live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
     assert live[-1] == foreign
     assert sum(foreign in content for content in live) == 1
 
 
-def test_micro_compaction_aborts_when_another_compaction_already_committed(tmp_path):
-    """Micro-compaction holds no compression lease. Once another compaction has committed, the history this
-    process holds is a stale generation; committing it would archive the winner's rows and clone them back
-    beside a second summary. The pass must not run and the store must keep exactly the winning generation."""
+@pytest.mark.parametrize("mode,race", [("prune", "before"), ("micro", "before"), ("micro", "during_summary")])
+def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_path, mode, race):
+    """Prune and micro-compaction hold no compression lease. Once another compaction has committed (before the
+    pass, or while micro-compaction waits on its summary call), the held history is a stale generation:
+    publishing it archives the winner's rows and clones them back beside a second summary, and returning the
+    spliced list lets the finalizer's persist flush append the stale summary row as live. The pass must be a
+    true no-op: the input list, the pre-pass rolling summary, and a store holding only the winner."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from hermes_state import SessionDB
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s", source="cli")
-    messages = _conversation(exchanges=8)
-    for msg in messages:
-        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"])
-        msg[_DB_PERSISTED_MARKER] = True
+    db, cc, held = _held_session(tmp_path, mode)
     winner = [
-        {"role": "assistant", "content": "[winner summary] questions 0-7"},
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": "[winner summary] the earlier turns"},
         {"role": "user", "content": "[from Telegram] carry on"},
     ]
-    db.archive_and_compact("s", winner)  # another surface's compaction wins the race
-    cc = _compressor()
-    cc._session_db, cc._session_id = db, "s"
+    if race == "before":
+        db.archive_and_compact("s", winner)
+    else:
+        def _summary_while_another_surface_compacts(_text):
+            db.archive_and_compact("s", winner)
+            return "STALE ROLLING SUMMARY"
+        cc._micro_summarize_one = _summary_while_another_surface_compacts
+    summary = cc._micro_compact_rolling_summary
 
-    result = cc._micro_compact(messages)
+    result = _run_pass(cc, mode, held)
+    for msg in result:  # what finalize_turn's _persist_session flush appends: every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            db.append_message("s", msg["role"], msg.get("content"))
 
-    assert _summary_markers(result) == []          # the pass did not run
-    live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
+    assert result is held
+    assert cc._micro_compact_rolling_summary == summary  # the stale summary is not carried into the next pass
+    live = [m["content"] for m in db.get_messages_as_conversation("s")]
     assert live == [m["content"] for m in winner]  # exactly one live generation

@@ -1,0 +1,15 @@
+name: deepinfra-sandbox
+repo: https://github.com/deepinfra/deepinfra-hermes-sandbox
+sha: 08b7f63609825fcb536f5bd10d52cb183e50fd61
+description: Terminal backend running agent commands in isolated DeepInfra cloud sandboxes (deep_sands microVMs).
+maintainer: DeepInfra
+tier: community
+category: platform
+docs_url: https://github.com/deepinfra/deepinfra-hermes-sandbox#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEEPINFRA_API_KEY

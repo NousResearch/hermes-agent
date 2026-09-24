@@ -37,38 +37,26 @@ def _parse_memory_id(node_id: str) -> tuple[str, int, str]:
         raise ValueError(f"bad memory node id: {node_id!r}") from exc
 
 
-def _local_index_hint(gidx: int, cards: list, source: str) -> int:
-    """Where the id says the entry sits in ITS file, or -1 when the index names no such card."""
-    if not 0 <= gidx < len(cards) or cards[gidx].get("source") != source:
-        return -1
-    return gidx if source == "memory" else gidx - sum(1 for c in cards if c.get("source") == "memory")
+def _resolve_fingerprint(chunks: list[str], fingerprint: str) -> int | None:
+    """Index of the first entry in *chunks* whose text carries *fingerprint*, or None when gone.
 
-
-def _resolve_fingerprint(chunks: list[str], fingerprint: str, hint: int) -> int | None:
-    """Index of the clicked card in *chunks*, or None when its text is gone or ambiguous.
-
-    The hinted position wins while it still carries that text — identical entries are separate
-    cards, and that is the occurrence the user clicked. Otherwise the text names the entry, which
-    is what survives a list that shifted under the user (another writer prepending an entry
-    between the graph being drawn and the edit being submitted). Several copies and a moved
-    position cannot be told apart, so the caller refuses instead of editing an arbitrary one.
+    The text names the entry, so a list that shifted under the user (an earlier entry removed
+    between the graph being drawn and the edit being submitted) still resolves to the card they
+    clicked. Identical entries are one entry to the memory store (it collapses byte-identical
+    copies on every mutation), so the first match is the entry.
     """
     from agent.learning_graph import memory_fingerprint
 
-    matches = [i for i, chunk in enumerate(chunks) if memory_fingerprint(chunk) == fingerprint]
-    if hint in matches:
-        return hint
-    return matches[0] if len(matches) == 1 else None
+    return next((i for i, chunk in enumerate(chunks) if memory_fingerprint(chunk) == fingerprint), None)
 
 
 def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     """Resolve a memory node id to (file, all §-delimited entries, local index).
-    Entries come from ``MemoryStore._read_file`` — the memory tool's own parser —
-    so journey indices stay aligned with what the graph renders; a profile card's
-    local index is its global index minus the MEMORY.md card count. Read-only view:
-    mutations resolve the id again INSIDE ``_mutate_memory``'s lock."""
+    Entries come from ``MemoryStore._read_file`` — the memory tool's own parser. A
+    fingerprinted id resolves by the entry's text; a legacy id by position (a profile
+    card's local index is its global index minus the MEMORY.md card count). Read-only
+    view: mutations resolve the id again INSIDE ``_mutate_memory``'s lock."""
     from hermes_constants import get_hermes_home
-    from agent.learning_graph import _memory_cards
     from tools.memory_tool import MemoryStore
 
     source, gidx, fingerprint = _parse_memory_id(node_id)
@@ -76,14 +64,14 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     if not path.exists():
         raise ValueError(f"{path.name} not found")
     chunks = MemoryStore._read_file(path)
-    cards = _memory_cards()
     if fingerprint:
-        # The id names the card's TEXT, so a list that shifted since the graph was drawn still
-        # resolves to the entry the user clicked instead of whatever now sits at that index.
-        local = _resolve_fingerprint(chunks, fingerprint, _local_index_hint(gidx, cards, source))
+        local = _resolve_fingerprint(chunks, fingerprint)
         if local is None:
             raise ValueError("memory node id is stale — refresh the graph")
         return path, chunks, local
+    from agent.learning_graph import _memory_cards
+
+    cards = _memory_cards()
     if not 0 <= gidx < len(cards):
         raise IndexError(f"memory index {gidx} out of range")
     if cards[gidx].get("source") != source:

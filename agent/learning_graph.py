@@ -130,9 +130,10 @@ def density_stats(nodes: dict[str, SkillNode], edges: list[tuple[str, str]]) -> 
 def memory_fingerprint(entry: str) -> str:
     """Short stable digest of a memory entry's TEXT, carried in the node id.
 
-    A journey card is identified by what it says, not by where it sat: the list can be
-    prepended to (an agent ``memory_tool`` add mid-turn) between the graph being drawn and the
-    user submitting an edit, and a bare index then names somebody else's card (#119668).
+    A journey card is identified by what it says, not by where it sat: an earlier entry can be
+    removed (an agent ``memory_tool`` remove mid-turn, a Journey delete without a refetch)
+    between the graph being drawn and the user submitting an edit, and a bare index then names
+    somebody else's card (#119668).
     Cards and the mutation path both read entries through ``MemoryStore._read_file``, so the
     same entry digests the same on both sides (a BOM'd file included).
     """

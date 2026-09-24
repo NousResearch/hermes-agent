@@ -13,11 +13,13 @@ per-test token + dollar guard. Usage and estimated cost are printed per test
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.live._helpers import (
     LISTING_PROVIDERS,
     LIVE_CASES,
@@ -129,18 +131,17 @@ def _host_ok(host: str, allowed: tuple[str, ...]) -> bool:
 # /models ------------------------------------------------------------------------
 
 
+# Merge-order safe (see _pending_fixes.known_failure): only an EMPTY live listing excuses the cell,
+# so the cell simply passes once the fix lands.
 _KNOWN_LISTING_BUGS = {
-    # Native /v1beta/models rejects a Bearer AI-Studio key (401) and the picker silently
-    # falls back to the curated list. strict: flips red once the fix lands (drop the entry).
-    "gemini": "#62259 Gemini live model discovery sends Bearer auth (fix PRs #62267/#116509)",
+    # Native /v1beta/models rejects a Bearer AI-Studio key (401), so the live fetcher returns nothing
+    # and the picker silently falls back to the curated list.
+    "gemini": (r"^gemini: live /models returned nothing",
+               "#62259 Gemini live model discovery sends Bearer auth (fix PRs #62267/#116509)"),
 }
 
 
-@pytest.mark.parametrize("provider", [
-    pytest.param(p, marks=pytest.mark.xfail(reason=_KNOWN_LISTING_BUGS[p], strict=True))
-    if p in _KNOWN_LISTING_BUGS else p
-    for p in sorted(LISTING_PROVIDERS)
-])
+@pytest.mark.parametrize("provider", sorted(LISTING_PROVIDERS))
 def test_models_listing_parses(provider: str, live_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     key_env = LISTING_PROVIDERS[provider]
     secret = live_key(key_env)
@@ -154,7 +155,9 @@ def test_models_listing_parses(provider: str, live_home: Path, monkeypatch: pyte
     assert _host_ok(urlparse(runtime["base_url"]).hostname or "", case.hosts), runtime["base_url"]
 
     models = [_normalize_id(str(m)) for m in _live_listing(provider, runtime)]
-    assert models, f"{provider}: live /models returned nothing ({wire.describe(wire.records)})"
+    known = _KNOWN_LISTING_BUGS.get(provider)
+    with known_failure(*known) if known else contextlib.nullcontext():
+        assert models, f"{provider}: live /models returned nothing ({wire.describe(wire.records)})"
     assert all(isinstance(m, str) and m.strip() for m in models)
     wanted = {pref for c in LIVE_CASES if c.provider == provider for pref in c.model_prefs}
     assert wanted & set(models), f"{provider}: none of the canary models {sorted(wanted)} are listed"

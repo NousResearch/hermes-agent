@@ -102,8 +102,6 @@ def _await_cron(tenants: dict[str, H.Tenant], fires: int) -> None:
 
 # Live gaps, applied only while their probe reproduces them (see _pending_fixes).
 GAPS = (
-    Gap(120319, "#120319: session.create / the first state.db row use the launch profile's model and "
-                "model.save_key writes the launch profile's .env", raises=H.LaunchProfileBleed),
     # A race in this cell (which session first imports gateway.run), red in ~6 of 7 runs: not strict.
     Gap(120307, "#120307: gateway.run's import-time config bridge writes a secondary session's .env / "
                 "terminal.* into the process env", raises=H.TenantLeak, strict=False),

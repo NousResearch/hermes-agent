@@ -12,21 +12,28 @@ test, so it must pass. Whichever lands first, suite or fix, main stays green.
 ``strict=False`` is only for a gap the end-to-end cell reproduces probabilistically (a race);
 the probe itself is deterministic, so the mark still disappears when the fix lands.
 
-Same pattern as ``tests/e2e/core/delivery/_pending_fixes.py`` (PR #120344). When a fix has
-landed, delete its probe and every ``Gap`` naming it.
+Probes exercise behaviour only (never read source text). Same pattern as
+``tests/e2e/core/delivery/_pending_fixes.py`` (PR #120344). When a fix has landed, delete its
+probe and every ``Gap`` naming it.
+
+``known_failure`` is the probe-less form: a run-time xfail keyed on the gap's own failure
+message, so the cell XFAILs only while it fails exactly that way, fails loudly on any other
+failure, and simply passes once the fix lands (no XPASS, whichever merges first).
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple, Type
+from typing import Dict, Iterator, Tuple, Type
 
 import pytest
 
@@ -41,17 +48,6 @@ _PRELUDE = ("import json, os, sys\nfrom pathlib import Path\nsys.path.insert(0, 
 # PR -> (extra env, script). A script records ``open`` while the defect reproduces, ``fixed`` once
 # it no longer does; anything else (including a crash) fails the cell that asked.
 PROBES: Dict[int, Tuple[Dict[str, str], str]] = {
-    # Desktop backend: a secondary profile's session.create / lazy session info reported (and
-    # stored) the LAUNCH profile's configured model.
-    120319: ({}, r'''
-(HOME / "config.yaml").write_text("model:\n  default: launch-model\n")
-alpha = HOME / "profiles" / "alpha"
-alpha.mkdir(parents=True)
-(alpha / "config.yaml").write_text("model:\n  default: alpha-model\n")
-from tui_gateway import server
-model = server._lazy_resume_info(str(HOME), profile="alpha")["model"]
-verdict({"launch-model": "open", "alpha-model": "fixed"}.get(model, f"unexpected model {model!r}"))
-'''),
     # Multiplexed host: (a) the first import of gateway.run under a routed profile's home override
     # loaded THAT profile's .env into the process env; (b) session-less work (cron) for a routed
     # profile reused the shared "default" terminal environment.
@@ -66,25 +62,6 @@ bridged = os.environ.get("C7_PROBE_ROUTED_CANARY") == "alpha"
 from tools.terminal_tool import _resolve_container_task_id
 shared = _resolve_container_task_id(None) == "default"
 verdict("open" if bridged or shared else "fixed")
-'''),
-    # Credential routing: (a) with no OpenRouter key, the OpenRouter resolver fell back to an
-    # OPENAI_API_KEY that OPENAI_BASE_URL binds to another host; (b) the pre-request Anthropic
-    # credential refresh ran for provider 'anthropic' on a foreign (alias) host.
-    120299: ({"OPENAI_API_KEY": "sk-probe-bound-elsewhere", "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}, r'''
-(HOME / "config.yaml").write_text("model:\n  provider: custom\n  default: m\n")
-from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
-openrouter_leak = _resolve_openrouter_runtime(requested_provider="openrouter").get("api_key") == "sk-probe-bound-elsewhere"
-from types import SimpleNamespace
-from unittest.mock import MagicMock
-import agent.anthropic_credentials as creds
-from agent.client_lifecycle import ClientLifecycleMixin
-creds.resolve_anthropic_token = lambda **_kw: "sk-ant-probe-refreshed"
-agent = SimpleNamespace(api_mode="anthropic_messages", provider="anthropic", model="claude-probe",
-                        _anthropic_api_key="", _anthropic_base_url="http://127.0.0.1:9",
-                        _anthropic_client=MagicMock(), _build_direct_anthropic_client=lambda *a: MagicMock(),
-                        _anthropic_oauth_flag=lambda _t: False)
-refresh_leak = ClientLifecycleMixin._try_refresh_anthropic_client_credentials(agent) is True
-verdict("open" if openrouter_leak or refresh_leak else "fixed")
 '''),
     # /model <id> --provider X adopted another provider's alias (its base_url and key) that
     # exposes the same model id.
@@ -105,17 +82,6 @@ r = ms.switch_model("shared-model", "provider-a", "old-model", current_base_url=
                     user_providers=load_config()["providers"])
 assert r.success, r.error_message
 verdict("fixed" if (r.base_url, r.api_key) == ("https://api-b.example.com/v1", "sk-provider-b") else "open")
-'''),
-    # tui_gateway: when the approval wait had already ended by the time the settle hook was
-    # attached (answered by RPC, resolved on another surface), the sent request was never
-    # withdrawn and stayed in open_requests.
-    120374: ({}, r'''
-from tui_gateway import server, server_requests
-settled = []
-server_requests.send_async = lambda method, sid, params, on_result: settled.append
-server._sessions["probe"] = {"session_key": "probe-key"}
-server._emit_approval_request("probe", {"request_id": "already-resolved", "description": "probe"})
-verdict("fixed" if settled else "open")
 '''),
 }
 
@@ -168,3 +134,18 @@ def expect_gaps(request: pytest.FixtureRequest, *gaps: Gap) -> None:
     request.applymarker(pytest.mark.xfail(
         strict=any(g.strict for g in open_gaps), raises=tuple(dict.fromkeys(raises)),
         reason=" | ".join(g.reason for g in open_gaps)))
+
+
+@contextlib.contextmanager
+def known_failure(pattern: str, reason: str,
+                  raises: Type[BaseException] | Tuple[Type[BaseException], ...] = AssertionError) -> Iterator[None]:
+    """Run-time xfail for a live gap: an exception of type ``raises`` raised inside the block whose
+    message matches ``pattern`` (``re.search``) XFAILs the cell; any other failure propagates, and a
+    clean pass stays a pass. Wrap only the final assertions, after every wait has settled, so a lost
+    reply, a failed boot or a timeout can never be mistaken for the gap."""
+    try:
+        yield
+    except raises as exc:
+        if not re.search(pattern, str(exc)):
+            raise
+        pytest.xfail(f"{reason} [observed: {str(exc).splitlines()[0][:240]}]")

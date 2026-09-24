@@ -29,7 +29,6 @@ import threading
 
 import pytest
 
-from tests.e2e.core._pending_fixes import Gap, expect_gaps
 from tests.e2e.core.terminal._gateway_client import Backend, WSClient, etype, poll_until
 from tests.fakes.fake_llm_provider import Text, ToolCall
 
@@ -214,22 +213,10 @@ CASES = [
 ]
 
 
-# Applied only while the probe reproduces it (see _pending_fixes). A race in this cell, so not strict: the RPC
-# answer can end the approval wait before the gateway attaches the hook that withdraws the sent request, which
-# then stays in ``open_requests`` (red in about 1 in 4 loaded runs). Only ``PromptLeftPending`` is excused.
-GAPS = {("approval_deny", "rpc"): Gap(
-    120374, "#120374: an approval answered by RPC before the settle hook attaches stays in open_requests",
-    raises=PromptLeftPending, strict=False)}
-
-
 @pytest.mark.parametrize(("kind", "how"), [pytest.param(k, h, id=f"{k}-{h}") for k, h in CASES])
-def test_interactive_roundtrip(backend: Backend, script: Script, kind: str, how: str,
-                               request: pytest.FixtureRequest) -> None:
-    if gap := GAPS.get((kind, how)):
-        expect_gaps(request, gap)
+def test_interactive_roundtrip(backend: Backend, script: Script, kind: str, how: str) -> None:
     tag = f"{kind}_{how}".lower()
     try:
         _drive(backend, script, kind, how, tag)
     except AssertionError as exc:
-        # Keep the class: the gap's xfail excuses only PromptLeftPending.
         raise type(exc)(f"{kind}/{how}: {exc}\n{backend.logs(25)}") from None

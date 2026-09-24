@@ -301,17 +301,12 @@ def cli_outcomes(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 
 
 # Live gaps, applied only while their probe reproduces them (see _pending_fixes).
-GAP_120299 = Gap(120299, "#120299: bare `provider: custom` with no endpoint falls through to OpenRouter and ships the "
-                         "OPENAI_BASE_URL-bound OPENAI_API_KEY there; the pre-request Anthropic credential refresh "
-                         "puts ANTHROPIC_API_KEY on an alias's foreign host", raises=RoutingLeak)
 GAP_120295 = Gap(120295, "#120295: `/model <id> --provider X` adopts another provider's alias (endpoint + key) "
                          "for the same model id", raises=RoutingLeak)
-KNOWN_GAPS = {"bare_custom_without_base_url_fails_fast": (GAP_120299,)}
 
 
 @pytest.mark.parametrize("case", [pytest.param(c, id=c.id) for c in CASES])
-def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any], request: pytest.FixtureRequest) -> None:
-    expect_gaps(request, *KNOWN_GAPS.get(case.id, ()))
+def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any]) -> None:
     fleet, outcomes = cli_outcomes[case.id].result(timeout=900)
     for i, out in enumerate(outcomes):
         leg, run = out.leg, out.run
@@ -352,8 +347,8 @@ class Switch:
 def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     """One live session walks the switch matrix; after every switch the next turn lands on
     exactly the selected host with exactly its key, and nothing reaches any other host.
-    Leg 5 is #120295's cell, leg 6 #120299's."""
-    expect_gaps(request, GAP_120295, GAP_120299)
+    Leg 5 is #120295's cell; leg 6 pins the #120299 fix."""
+    expect_gaps(request, GAP_120295)
     fleet = Fleet(ROLES).start()
     trap = EgressTrap()
     home = tmp_path / "home"

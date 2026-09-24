@@ -472,22 +472,25 @@ def test_pruned_block_sanitizes_post_hook_and_outbound_tool_input():
     )
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
-    terminal_events = []
+    lifecycle_events = []
 
-    def capture_post_hook(**kwargs):
-        terminal_events.append(kwargs)
+    def capture_lifecycle(event_name, **kwargs):
+        lifecycle_events.append((event_name, kwargs))
+        return []
 
     with (
-        patch("model_tools._emit_post_tool_call_hook", side_effect=capture_post_hook),
+        patch("hermes_cli.lifecycle.has_hook", side_effect=lambda name: name == "post_tool_call"),
+        patch("hermes_cli.lifecycle.invoke_hook", side_effect=capture_lifecycle),
         patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
     ):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     dispatch.assert_not_called()
     assert args == original, "sanitizing hook payloads must not mutate the source args"
-    assert len(terminal_events) == 1
-    event = terminal_events[0]
-    hook_args = event["function_args"]
+    assert len(lifecycle_events) == 1
+    event_name, event = lifecycle_events[0]
+    assert event_name == "post_tool_call"
+    hook_args = event["args"]
     assert hook_args["body"] == "[context-compression artifact removed]"
     assert hook_args["note"] == "safe metadata stays intact"
     assert "HERMES-CONTEXT-COMPRESSION" not in json.dumps(hook_args, ensure_ascii=False)
@@ -495,14 +498,8 @@ def test_pruned_block_sanitizes_post_hook_and_outbound_tool_input():
     from agent import outbound_webhooks
 
     body = outbound_webhooks._serialize_payload(
-        "post_tool_call",
-        {
-            "tool_name": event["function_name"],
-            "args": hook_args,
-            "session_id": event.get("session_id", ""),
-            "status": event.get("status"),
-            "error_type": event.get("error_type"),
-        },
+        event_name,
+        event,
         "did-pruned-redaction",
     )
     payload = json.loads(body)

@@ -543,6 +543,18 @@ class TestIterCacheFiles:
         assert "upload.zip" in names
         assert "report.pdf" in names
 
+    def test_nested_container_path_uses_forward_slashes(self, tmp_path, monkeypatch):
+        """Container paths are POSIX even when the host spells relative paths with backslashes."""
+        hermes_home = tmp_path / ".hermes"
+        nested = hermes_home / "cache" / "documents" / "batch"
+        nested.mkdir(parents=True)
+        (nested / "report.pdf").write_bytes(b"%PDF-1.4")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        paths = [e["container_path"] for e in iter_cache_files()]
+        assert any(p.endswith("/documents/batch/report.pdf") for p in paths), paths
+        assert not any("\\" in p for p in paths), paths
+
     def test_skips_symlinks(self, tmp_path, monkeypatch):
         """Symlinks inside cache dirs are skipped."""
         hermes_home = tmp_path / ".hermes"

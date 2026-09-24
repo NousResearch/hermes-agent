@@ -233,7 +233,7 @@ def _safe_skills_path(skills_dir: Path) -> str:
 
 def iter_skills_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
     """Per-file entries for all skills files (for backends that upload individually)."""
-    return [_mount(item, f"{container_root}/{item.relative_to(host_dir)}")
+    return [_mount(item, f"{container_root}/{item.relative_to(host_dir).as_posix()}")
             for host_dir, container_root in _skill_dir_roots(container_base)
             for _base, files in _walk_skill_tree(host_dir) for item in files]
 
@@ -356,7 +356,7 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
 
 def iter_cache_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
     """Per-file cache entries (Modal upload/resync); skips symlinks."""
-    return [_mount(item, f"{root}/{item.relative_to(host_dir)}")
+    return [_mount(item, f"{root}/{item.relative_to(host_dir).as_posix()}")
             for host_dir, root in _cache_dir_roots(container_base, create_missing=False)
             for item in host_dir.rglob("*") if not item.is_symlink() and item.is_file()]
 

@@ -6,6 +6,7 @@ import base64
 import io
 import itertools
 import logging
+import posixpath
 import shlex
 import tarfile
 import threading
@@ -216,7 +217,7 @@ class ModalEnvironment(BaseEnvironment):
 
     def _modal_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via base64 piped through stdin."""
-        cmd = f"mkdir -p {shlex.quote(str(Path(remote_path).parent))} && base64 -d > {shlex.quote(remote_path)}"
+        cmd = f"mkdir -p {shlex.quote(posixpath.dirname(remote_path))} && base64 -d > {shlex.quote(remote_path)}"
         self._exec(cmd, stdin=base64.b64encode(Path(host_path).read_bytes()).decode("ascii"), timeout=30)
 
     def _modal_bulk_upload(self, files: list[tuple[str, str]]) -> None:

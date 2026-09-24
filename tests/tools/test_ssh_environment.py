@@ -8,6 +8,19 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools.environments.ssh import SSHEnvironment
+
+
+def test_scp_upload_creates_the_posix_parent_dir(monkeypatch):
+    """The remote parent dir is derived with POSIX rules, also on a Windows host."""
+    env = SSHEnvironment.__new__(SSHEnvironment)
+    env.control_socket, env.user, env.host, env.port, env.key_path = "sock", "u", "h", 22, None
+    sent = []
+    monkeypatch.setattr(env, "_run_ssh", lambda cmd, timeout=None: sent.append(cmd), raising=False)
+    monkeypatch.setattr(
+        "tools.environments.ssh.run_capture",
+        lambda cmd, timeout=None: subprocess.CompletedProcess(cmd, 0, "", ""))
+    env._scp_upload(__file__, "/root/.hermes/skills/cat/SKILL.md")
+    assert sent == ["mkdir -p /root/.hermes/skills/cat"]
 from tools.environments import ssh as ssh_env
 
 _SSH_HOST = os.getenv("TERMINAL_SSH_HOST", "")

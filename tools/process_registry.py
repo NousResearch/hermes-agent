@@ -1702,7 +1702,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
             pending = [
                 s for store in (self._running, self._finished) for s in store.values()
-                if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
+                if s.notify_on_complete and not s._completion_event.is_set()
+                and (task_id is None or (s.owner_task_id or s.task_id) == task_id)
             ]
         if not pending or timeout <= 0:
             return result

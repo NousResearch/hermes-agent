@@ -21,6 +21,21 @@ interface Exposed {
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
+// Poll until cond holds instead of asserting after a fixed sleep: under CI
+// load the Ink render -> Yoga layout -> ref(null) unmount-measurement chain
+// can take longer than any fixed delay, which flakes timing-sensitive tests.
+const waitFor = async (cond: () => boolean, debug: () => string, timeoutMs = 2000) => {
+  const started = Date.now()
+
+  while (!cond()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`waitFor timed out: ${debug()}`)
+    }
+
+    await delay(5)
+  }
+}
+
 const makeStreams = () => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
@@ -514,7 +529,7 @@ describe('useVirtualHistory offset cache reuse', () => {
     }
   })
 
-  it('corrects and compensates a same-layout row measured at unmount', async () => {
+  it('corrects and compensates a same-layout row measured at unmount', { timeout: 20000 }, async () => {
     const items = Array.from({ length: 20 }, (_, index) => ({ height: 2, key: `item-${index}` }))
     const expose = { current: null as Exposed | null }
     const streams = makeStreams()
@@ -532,18 +547,40 @@ describe('useVirtualHistory offset cache reuse', () => {
       const scroll = expose.current!.scroll!
 
       scroll.scrollTo(0)
-      await delay(20)
-      scroll.scrollTo(5)
+      await waitFor(
+        () => scroll.getScrollTop() === 0 && scroll.isSticky() === false,
+        () => `after scrollTo(0): top=${scroll.getScrollTop()} sticky=${scroll.isSticky()}`
+      )
+      // Scroll to 3 (not 5): with settled heights of 2 the mounted range is
+      // deterministically [0..16), so item-0 is still mounted (with its bottom
+      // recorded) and unmounts exactly in the rerender commit below. At 5 the
+      // settled start is already 1, so item-0 may unmount early carrying the
+      // correct height and no compensation fires (flaky 0 calls).
+      scroll.scrollTo(3)
+      await waitFor(
+        () => scroll.getScrollTop() === 3 && expose.current!.virtualHistory.start === 0,
+        () =>
+          `after scrollTo(3): top=${scroll.getScrollTop()} sticky=${scroll.isSticky()} start=${expose.current!.virtualHistory.start} end=${expose.current!.virtualHistory.end} offsets1=${expose.current!.virtualHistory.offsets[1]}`
+      )
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
       const staleHeights = new Map(initialHeights)
 
       staleHeights.set(items[0]!.key, 1)
       instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
-      await delay(40)
+      // Wait for the full compensation chain (unmount measurement ->
+      // adjustScrollTop -> offsets rebuild) instead of a fixed sleep.
+      await waitFor(
+        () =>
+          adjustScrollTop.mock.calls.length > 0 &&
+          scroll.getScrollTop() === 4 &&
+          expose.current!.virtualHistory.offsets[1] === 2,
+        () =>
+          `after rerender: calls=${JSON.stringify(adjustScrollTop.mock.calls)} top=${scroll.getScrollTop()} sticky=${scroll.isSticky()} start=${expose.current!.virtualHistory.start} offsets1=${expose.current!.virtualHistory.offsets[1]}`
+      )
 
       expect(adjustScrollTop).toHaveBeenCalledOnce()
       expect(adjustScrollTop).toHaveBeenCalledWith(1)
-      expect(scroll.getScrollTop()).toBe(6)
+      expect(scroll.getScrollTop()).toBe(4)
       expect(scroll.isSticky()).toBe(false)
       expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
       expect(expose.current!.virtualHistory.offsets[1]).toBe(2)

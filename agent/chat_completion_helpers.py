@@ -3853,8 +3853,8 @@ class _StreamingCall(StreamingWaitMonitor):
             if self.agent._warning_presentation_enabled():
                 self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
             logger.warning(
-                "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
-                _partial_names, len(_partial_text or ""), error)
+                "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user",
+                _partial_names, len(_partial_text or ""))
         # Classify the error before it is swallowed into the stub: the loop reads the
         # content-filter tag and falls back; a context overflow must not be continued at all.
         _cls = None
@@ -3870,8 +3870,8 @@ class _StreamingCall(StreamingWaitMonitor):
         if _cls is not None and _cls.reason == FailoverReason.context_overflow:
             logger.warning(
                 "Partial stream ended on a context-overflow error after %s chars; "
-                "NOT seeding a continuation stub (transcript is already over budget): %s",
-                len(_partial_text or ""), error,
+                "NOT seeding a continuation stub (transcript is already over budget)",
+                len(_partial_text or ""),
             )
             return _build_partial_stream_stub(
                 "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
@@ -3881,8 +3881,8 @@ class _StreamingCall(StreamingWaitMonitor):
         if not _partial_names:
             logger.warning(
                 "Partial stream delivered before error; returning length-truncated stub with %s chars of "
-                "recovered content so the loop can continue from where the stream died: %s",
-                len(_partial_text or ""), error)
+                "recovered content so the loop can continue from where the stream died",
+                len(_partial_text or ""))
         _stub = _build_partial_stream_stub("assistant", _partial_text, None,
             getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names,
             api_mode=getattr(self.agent, "api_mode", None))

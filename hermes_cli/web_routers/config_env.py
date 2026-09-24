@@ -527,6 +527,30 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
+def _validate_endpoint_base_url(base_url: str) -> None:
+    """Reject URL components that can change where an appended API route is sent.
+
+    Local and LAN hosts are intentional model endpoints; only the URL shape is
+    constrained here. In particular, ``?`` or ``#`` can swallow ``/models``
+    when the probe appends it to a user-entered base URL.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        valid = (parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+                 and parsed.username is None and parsed.password is None
+                 and "?" not in base_url and "#" not in base_url
+                 and not any(ch in base_url for ch in "\\\r\n\t"))
+        if valid:
+            parsed.port  # Reject a malformed port before httpx sees the URL.
+    except ValueError:
+        valid = False
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail="base_url must be an http(s) URL with a host and no credentials, query, or fragment",
+        )
+
+
 def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
@@ -536,9 +560,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         raise HTTPException(status_code=400, detail="name required")
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url required")
-    parsed = urllib.parse.urlparse(base_url)
-    if not parsed.scheme or not parsed.netloc:
-        raise HTTPException(status_code=400, detail="base_url must include scheme and host")
+    _validate_endpoint_base_url(base_url)
     if not model:
         raise HTTPException(status_code=400, detail="model required")
 
@@ -818,6 +840,7 @@ async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]
     URL verbatim, so a bare host root that only "detected" via ``/v1/models`` would 404 every chat
     (#65488). ``response`` is None when no candidate could be reached at all."""
     base = base_url.rstrip("/")
+    _validate_endpoint_base_url(base)
     alternate = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
     resolved, resp = base, None
     async with _endpoint_probe_client(base, 8.0) as client:

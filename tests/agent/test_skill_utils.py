@@ -207,6 +207,41 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
 
 
+def test_iter_skill_index_files_prunes_internal_dirs_of_skill_packages(tmp_path):
+    """A skill package cloned whole ships vendored copies under plugins/,
+    skills/ and meta-generator/ — their SKILL.md files must not surface as
+    standalone top-level routing candidates or duplicate a top-level name."""
+    umbrella = tmp_path / "umbrella"
+    umbrella.mkdir()
+    (umbrella / "SKILL.md").write_text("---\nname: umbrella\n---\n", encoding="utf-8")
+
+    vendored_plugin = umbrella / "plugins" / "copy"
+    vendored_plugin.mkdir(parents=True)
+    (vendored_plugin / "SKILL.md").write_text("---\nname: copy\n---\n", encoding="utf-8")
+    subskill = umbrella / "skills" / "per-style"
+    subskill.mkdir(parents=True)
+    (subskill / "SKILL.md").write_text("---\nname: per-style\n---\n", encoding="utf-8")
+    generator = umbrella / "meta-generator" / "boilerplate"
+    generator.mkdir(parents=True)
+    (generator / "SKILL.md").write_text("---\nname: boilerplate\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [umbrella / "SKILL.md"]
+
+
+def test_iter_skill_index_files_keeps_internal_named_dirs_outside_package(tmp_path):
+    """plugins/ or skills/ is a regular category when it is NOT inside a skill
+    package that ships its own SKILL.md."""
+    plugins_skill = tmp_path / "plugins" / "official"
+    plugins_skill.mkdir(parents=True)
+    (plugins_skill / "SKILL.md").write_text("---\nname: official\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [plugins_skill / "SKILL.md"]
+
+
 def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monkeypatch):
     discovery_root = tmp_path / "site-packages" / "skills"
     umbrella = discovery_root / "category" / "umbrella"

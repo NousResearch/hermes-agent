@@ -30,6 +30,15 @@ EXCLUDED_SKILL_DIRS = frozenset((
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
+# Internal artifact dirs of a skill package that itself ships a SKILL.md. When a
+# directory already IS a skill root, these children hold vendored/nested copies
+# (e.g. an upstream-style repo cloned whole under the skills root with its own
+# `plugins/` copy, or per-style sub-skills under `skills/` / `meta-generator/`).
+# Their SKILL.md files stay usable through the parent skill's relative paths but
+# must never surface as standalone top-level routing candidates or duplicate
+# a top-level skill name.
+SKILL_INTERNAL_DIR_NAMES = frozenset(("plugins", "skills", "meta-generator"))
+
 # Org mirrors live under skills/_org/<org_id>/ and are TOKEN-GATED: the sync
 # client writes the marker after verifying the token; no marker => no org skills
 # load. The marker persists offline so already-pulled org skills keep working.
@@ -782,7 +791,8 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
 
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*; prunes
-    EXCLUDED_SKILL_DIRS and support dirs of skill roots. Org mirrors are
+    EXCLUDED_SKILL_DIRS, the support dirs of skill roots, and the internal
+    artifacts of a skill package that ships its own SKILL.md. Org mirrors are
     TOKEN-GATED: only the active org's subdir is walked, so leaving an org
     stops its skills resolving without manual cleanup."""
     skills_dir_str = str(skills_dir)
@@ -795,7 +805,12 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        dirs[:] = [
+            d for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS
+            and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
+            and not (has_skill_md and d in SKILL_INTERNAL_DIR_NAMES)
+        ]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

@@ -20,6 +20,8 @@ import path from 'path'
 
 import tailwindcss from '@tailwindcss/vite'
 
+import { stripVendorSourcesContentFile } from './scripts/sourcemap-vendor-content.mjs'
+
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
 // the worktree root and 404. Whitelist the real node_modules locations.
@@ -112,9 +114,29 @@ const emojibaseAssets = () => ({
   }
 })
 
+// Maps are written to disk by the time writeBundle runs; rewrite each one so
+// vendor sources keep their mappings but drop their embedded text.
+const vendorSourcemapContent = () => ({
+  name: 'hermes:vendor-sourcemap-content',
+  apply: 'build' as const,
+  writeBundle(options: { dir?: string }, bundle: Record<string, { type: string; sourcemapFileName?: string | null }>) {
+    for (const output of Object.values(bundle)) {
+      if (output.type === 'chunk' && output.sourcemapFileName && options.dir) {
+        stripVendorSourcesContentFile(path.join(options.dir, output.sourcemapFileName))
+      }
+    }
+  }
+})
+
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
+  plugins: [
+    react(),
+    babel({ presets: [compilerPreset()] }),
+    tailwindcss(),
+    emojibaseAssets(),
+    vendorSourcemapContent()
+  ],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
@@ -129,6 +151,9 @@ export default defineConfig(({ command }) => ({
     postcss: { plugins: [] }
   },
   build: {
+    // Shipped so DevTools shows app source in the packaged app; vendor text is
+    // stripped by vendorSourcemapContent() to keep the install small.
+    sourcemap: true,
     // Validate the packaged generation with metadata checks at launch, without
     // reading every lazy vendor chunk (and triggering on-access AV scans).
     manifest: 'renderer-manifest.json',

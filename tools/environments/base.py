@@ -421,9 +421,15 @@ class BaseEnvironment(ABC):
 
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
-        """Redirect stdin_data to the complete command with a shell heredoc (SDK backends)."""
+        """Redirect stdin_data to the complete command with a shell heredoc (SDK backends).
+        A heredoc body always ends in a newline stdin_data may lack, and write_file verifies a
+        byte-exact hash, so a process substitution re-emits the body minus that last character.
+        Redirections apply left to right, so the substitution inherits the heredoc as its stdin;
+        the heredoc stays outside ``<( )`` because bash 3.2 mis-parses bodies inside it. ``|| :``
+        keeps an inherited ``set -e`` from killing the reader on read's EOF status."""
         delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
-        return f"{{\n{command}\n}} << '{delimiter}'\n{stdin_data}\n{delimiter}"
+        return (f"{{\n{command}\n}} << '{delimiter}' < <(IFS= read -r -d '' s || :; printf '%s' \"${{s%?}}\")\n"
+                f"{stdin_data}\n{delimiter}")
 
     # --- Process lifecycle ---
     def _wait_for_process(

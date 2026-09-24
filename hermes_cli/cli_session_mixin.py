@@ -11,6 +11,7 @@ import contextlib
 import os
 import shutil
 import sys
+from urllib.parse import urlsplit
 
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
@@ -127,6 +128,8 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
             # (constructor's lazy inputs — never a stored secret, never the
             # replaced session/provider key). Otherwise fail closed to the
             # switch result, whose endpoint + key are at least consistent.
+            # Log the host only: raw base URLs can carry sensitive query params.
+            _startup_host = urlsplit(_startup_base_url).hostname or "(unknown host)"
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider as _resolve_rt
                 _startup_rt = _resolve_rt(
@@ -134,9 +137,6 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                     explicit_base_url=_startup_base_url) or {}
             except Exception:
                 _startup_rt = {}
-                logger.debug(
-                    "Could not re-resolve the credential for the startup alias endpoint %s; keeping %s route",
-                    _startup_base_url, r.target_provider, exc_info=True)
             if _startup_rt.get("api_key"):
                 r.base_url = _startup_base_url
                 r.api_key = _startup_rt["api_key"]
@@ -144,8 +144,8 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                     r.api_mode = _startup_rt["api_mode"]
             else:
                 logger.debug(
-                    "Could not re-resolve the credential for the startup alias endpoint %s; keeping %s route",
-                    _startup_base_url, r.target_provider)
+                    "Could not re-resolve the credential for startup alias host %s; keeping %s route",
+                    _startup_host, r.target_provider)
         if cli.agent:
             cli.agent.switch_model(
                 new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,

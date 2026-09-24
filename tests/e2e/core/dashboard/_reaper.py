@@ -65,7 +65,7 @@ def release_orphans() -> None:
 def stat(pid: int) -> list[str] | None:
     """``/proc/<pid>/stat`` fields after ``comm`` (state is index 0, ppid 1, sid 3, start 19)."""
     try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()
     except (OSError, IndexError):
         return None
 
@@ -130,7 +130,7 @@ def kill_identified(idents: dict[Identity, str]) -> list[str]:
         if start_time(pid) != started:
             continue
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only suite, never reached on Windows
         except ProcessLookupError:
             continue
         killed.append(f"{pid}: {cmd[:160]}")

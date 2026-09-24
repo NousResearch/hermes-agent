@@ -30,6 +30,7 @@ import yaml
 from tests.e2e.core.dashboard._helpers import Sandbox, make_sandbox
 from tests.e2e.core.dashboard._issue_helpers import Issue120527, PtyDashboard, xfail_known
 
+pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="pty stdin + /proc reaper")
 INSTALL_DEADLINE_S = 30.0  # a healthy install (write config + spawn/probe a local server) takes ~2 s
 FOLLOWUP_DEADLINE_S = 5.0
 FIXTURE = Path(__file__).with_name("fixture_catalog_mcp.py")

@@ -14,6 +14,7 @@ Controls (enforced, separate test): a 60,000-char message through the same ``/ch
 from __future__ import annotations
 
 import secrets
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -23,6 +24,7 @@ import pytest
 from tests.e2e.core.dashboard._helpers import Sandbox, make_sandbox
 from tests.e2e.core.dashboard._issue_helpers import GatewayApiServer, Issue120937, xfail_known
 
+pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reaper reads /proc")
 TURN_TIMEOUT = 90.0
 
 KNOWN: dict[str, tuple[str, type]] = {

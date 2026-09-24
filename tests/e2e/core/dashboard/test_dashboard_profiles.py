@@ -99,7 +99,7 @@ def test_profile_walk_reads_and_writes_only_the_selected_profile(fleet) -> None:
             problems.append(f"step {step} ({name}): writes changed {sorted(changed)}")
         if p.config().get("dash_canary", {}).get("step") != f"{name}-{step}":
             problems.append(f"step {step} ({name}): config write did not land in {name}/config.yaml")
-        if f"DASH_EXTRA=extra-{name}-{p.tag}-{step}" not in (p.home / ".env").read_text():
+        if f"DASH_EXTRA=extra-{name}-{p.tag}-{step}" not in (p.home / ".env").read_text(encoding="utf-8"):
             problems.append(f"step {step} ({name}): env write did not land in {name}/.env")
     assert not problems, "profile crossing during the A->B->A walk:\n  " + "\n  ".join(problems)
 

@@ -6,6 +6,7 @@ hrr_dim (1024), hrr_weight (0.3)."""
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -67,6 +68,10 @@ FACT_FEEDBACK_SCHEMA = {
         "required": ["action", "fact_id"],
     },
 }
+
+_READ_ONLY_FACT_ACTIONS = frozenset({
+    "search", "probe", "related", "reason", "contradict", "list",
+})
 
 # Auto-extraction (on_session_end): (patterns, category) — user preferences -> user_pref, decisions -> project.
 _EXTRACT_CATEGORIES = (
@@ -175,6 +180,21 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
+
+    def get_read_only_tool_schemas(self) -> List[Dict[str, Any]]:
+        schema = copy.deepcopy(FACT_STORE_SCHEMA)
+        schema["description"] = (
+            "Read-only structured-memory queries. Use search for keywords, probe/related for an entity, "
+            "reason across entities, contradict for conflicts, or list for inventory."
+        )
+        properties = schema["parameters"]["properties"]
+        properties["action"]["enum"] = sorted(_READ_ONLY_FACT_ACTIONS)
+        for field in ("content", "fact_id", "tags", "trust_delta"):
+            properties.pop(field, None)
+        return [schema]
+
+    def is_read_only_tool_call(self, tool_name: str, args: Dict[str, Any]) -> bool:
+        return tool_name == "fact_store" and args.get("action") in _READ_ONLY_FACT_ACTIONS
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if tool_name not in self._TOOL_HANDLERS:

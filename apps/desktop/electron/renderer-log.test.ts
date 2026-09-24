@@ -68,11 +68,4 @@ describe('formatRendererBoundaryReport', () => {
     expect(report).toContain('[renderer crash:unknown] [error-boundary:unknown]')
     expect(report.length).toBeLessThan(7_000)
   })
-
-  it('omits the stack block when there is no component stack', () => {
-    const report = formatRendererBoundaryReport('main', 'root', 'boom', '')
-
-    expect(report).toBe('[renderer crash:main] [error-boundary:root] boom')
-    expect(report).not.toContain('\n')
-  })
 })

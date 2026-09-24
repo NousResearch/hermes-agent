@@ -39,7 +39,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
-from agent.message_metadata import append_message, stamp_message_timestamp
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
     sanitize_outbound_kwargs, strip_images_for_rejecting_model,
@@ -1681,6 +1681,11 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     and has_replayable_native_compaction_checkpoint(agent, [msg])
                 ):
                     note_checkpoint()
+                    # The response priced the pre-checkpoint input, not the next
+                    # compacted request. A matching durable prefix is now stale.
+                    from agent.usage_anchor import set_usage_anchor
+
+                    set_usage_anchor(agent, None)
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
@@ -2124,8 +2129,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
 # Keys outside the Chat Completions schema that strict gateways (Fireworks-backed OpenCode
 # Go, Mistral, Moonshot/Kimi) reject with 422. The transport's convert_messages() drops them
 # in the main loop; the summary path calls chat.completions.create() directly, so mirror it.
-_SUMMARY_FOREIGN_MESSAGE_KEYS = ("reasoning", "finish_reason", "tool_name", "codex_reasoning_items",
-    "codex_message_items", "timestamp", "platform_message_id")
+_SUMMARY_FOREIGN_MESSAGE_KEYS = PERSISTENCE_ONLY_MESSAGE_FIELDS | {"reasoning", "finish_reason", "tool_name",
+    "codex_reasoning_items", "codex_message_items", "platform_message_id"}
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
 
 

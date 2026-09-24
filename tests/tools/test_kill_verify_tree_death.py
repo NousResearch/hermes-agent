@@ -124,3 +124,46 @@ def test_escalated_kill_of_sigterm_ignoring_child_reports_killed(tmp_path, monke
     assert result["status"] == "killed", result
     assert s.completion_reason == "killed"
     assert s.id in reg._finished
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal escalation; Windows uses taskkill")
+@pytest.mark.live_system_guard_bypass  # the late children are SIGKILLed after their shell dies
+def test_kill_reaps_children_spawned_during_the_grace_window(tmp_path, monkeypatch):
+    """The interactive ``bash -lic`` wrapper ignores SIGTERM and keeps running its script
+    through the grace window. Children it starts after the kill began must die with it,
+    not be reparented to init when the shell is finally SIGKILLed."""
+    import psutil
+
+    def _alive(pid):
+        try:
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds", staticmethod(lambda: 1.5))
+    monkeypatch.setattr(ProcessRegistry, "_write_checkpoint", lambda self: None)
+    started, pid_file = tmp_path / "started", tmp_path / "late_pids"
+    reg = ProcessRegistry()
+    s = reg.spawn_local(
+        f"touch {started}; sleep 0.5; for i in 1 2 3; do sleep 30 & echo $! >> {pid_file}; done; wait",
+        cwd=str(tmp_path),
+    )
+    late = []
+    try:
+        deadline = time.monotonic() + 15  # login-shell startup can be slow under load
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        # Kill once the script runs but before the late children exist.
+        result = reg.kill_process(s.id)
+        late = [int(p) for p in pid_file.read_text(encoding="utf-8").split()] if pid_file.exists() else []
+        settle = time.monotonic() + 5  # SIGKILL lands asynchronously on a loaded box
+        while (survivors := [p for p in late if _alive(p)]) and time.monotonic() < settle:
+            time.sleep(0.05)
+    finally:
+        for p in late:
+            with suppress(Exception):
+                psutil.Process(p).kill()
+    assert len(late) == 3, "the shell never spawned its late children"
+    assert survivors == [], f"late children orphaned by the kill: {survivors}"
+    assert result["status"] == "killed", result

@@ -234,3 +234,103 @@ def test_legacy_main_rekey_adopts_a_standalone_gateways_history(homes, monkeypat
     finally:
         acme.close()
     assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
+
+
+def test_move_into_a_store_that_already_holds_the_title(homes, monkeypatch):
+    """Titles are unique per store only. A stranded row whose title an unrelated session of the
+    target profile already holds used to raise on the unique-title index, fail every row of the
+    batch, and leave the rows copied before it in both stores, on every run. The clash is the
+    FIRST row of the batch and its title is at the length cap, so the suffix must still fit."""
+    title = "G" * SessionDB.MAX_TITLE_LENGTH
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    root = SessionDB(homes["default"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        _session(root, "s-a", "agent:acme:telegram:dm:210", profile="acme")
+        _session(root, "s-b", "agent:acme:telegram:dm:211", profile="acme", messages=3)
+        _session(acme, "w-1", ACME_KEY, profile="acme")
+        clash, other = "s-a", "s-b"
+        root.set_session_title(clash, title)
+        root.set_session_title(other, "Weekend plans")
+        acme.set_session_title("w-1", title)
+    finally:
+        root.close()
+        acme.close()
+
+    assert _run(apply=True) == 0
+
+    root = SessionDB(homes["default"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        assert root.get_session("s-a") is None and root.get_session("s-b") is None
+        assert len(acme.get_messages("s-a")) == 2 and len(acme.get_messages("s-b")) == 3
+        assert acme.get_session(other)["title"] == "Weekend plans"
+        # the resident row keeps the name, so resolving it by title still finds it
+        assert acme.get_session("w-1")["title"] == title
+        assert acme.resolve_session_by_title(title) == "w-1"
+        moved = acme.get_session(clash)["title"]
+        assert moved not in (None, title) and len(moved) <= SessionDB.MAX_TITLE_LENGTH
+    finally:
+        root.close()
+        acme.close()
+    assert not any(f["kind"] == "wrong_store" for f in _report()["findings"])
+
+
+def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypatch, capsys):
+    """One row that cannot move is that row's failure: an unrelated row of the same batch still
+    moves, the batch is not re-run per finding, and the failed row's lineage stays linked so the
+    next run moves it whole. The failure is at import (the shape a unique-index clash takes)."""
+    stage = "import"
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    root = SessionDB(homes["default"] / "state.db")
+    try:
+        _session(root, "gp", "agent:acme:telegram:dm:220", profile="acme")
+        _session(root, "par", "agent:acme:telegram:dm:220", profile="acme", parent="gp")
+        _session(root, "kid", "agent:acme:telegram:dm:220", profile="acme", parent="par")
+        _session(root, "lone", "agent:acme:telegram:dm:221", profile="acme")
+    finally:
+        root.close()
+
+    method = "import_moved_session" if stage == "import" else "delete_moved_session"
+    real = getattr(SessionDB, method)
+    calls = []
+
+    def flaky(self, arg, **kw):
+        sid = arg["session"]["id"] if stage == "import" else arg
+        calls.append(sid)
+        if sid == "par":
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(self, arg, **kw)
+
+    monkeypatch.setattr(SessionDB, method, flaky)
+    assert _run(apply=True) == 1
+    out = capsys.readouterr().out
+    assert "wrong_store par: OperationalError: disk I/O error" in out
+    assert sorted(calls) == sorted(set(calls)), "the batch was re-run for a later finding"
+
+    root = SessionDB(homes["default"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        assert root.get_session("lone") is None and acme.get_session("lone") is not None
+        if stage == "import":
+            assert "wrong_store kid:" in out
+            # the child never lands parentless; the grandparent stays for the parent that points at it
+            assert acme.get_session("kid") is None and acme.get_session("par") is None
+            assert root.get_session("kid")["parent_session_id"] == "par"
+            assert root.get_session("par")["parent_session_id"] == "gp"
+    finally:
+        root.close()
+        acme.close()
+
+    monkeypatch.setattr(SessionDB, method, real)
+    assert _run(apply=True) == 0
+    root = SessionDB(homes["default"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        assert all(root.get_session(sid) is None for sid in ("gp", "par", "kid", "lone"))
+        assert acme.get_session("par")["parent_session_id"] == "gp"
+        assert acme.get_session("kid")["parent_session_id"] == "par"
+    finally:
+        root.close()
+        acme.close()
+    assert not any(f["kind"] == "wrong_store" for f in _report()["findings"])

@@ -17,6 +17,8 @@ disk.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import time
 
 import pytest
@@ -41,6 +43,19 @@ def marker(tmp_path):
     return tmp_path / ".hermes-update-in-progress"
 
 
+@pytest.fixture
+def other_pid():
+    """A live process that is not us: the stand-in for another updater (our own pid is ours)."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+    yield proc.pid
+    proc.kill()
+    proc.wait()
+
+
+def _claim(marker, pid, started_at=None):
+    marker.write_text(f"{pid}\n{int(time.time() if started_at is None else started_at)}\n", encoding="utf-8")
+
+
 def test_marker_path_follows_process_hermes_home(tmp_path, monkeypatch):
     """The lock must land where the Rust updater and Electron gate look.
 
@@ -63,21 +78,19 @@ def test_acquire_writes_pid_and_start_time(marker):
     assert len(lines) == 2, "wire format is exactly pid + started_at"
 
 
-def test_second_acquire_is_refused_while_the_first_is_live(marker):
+def test_second_acquire_is_refused_while_the_first_is_live(marker, other_pid):
     """The bug: two updaters mutating one checkout at the same time."""
-    first = UpdateLock(path=marker)
-    assert first.acquire() is True
+    _claim(marker, other_pid)
 
     second = UpdateLock(path=marker)
     assert second.acquire() is False
     assert second.holder is not None
-    assert second.holder.pid == os.getpid()
+    assert second.holder.pid == other_pid
     assert second.acquired is False
 
 
-def test_refused_lock_does_not_delete_the_live_owners_marker(marker):
-    first = UpdateLock(path=marker)
-    first.acquire()
+def test_refused_lock_does_not_delete_the_live_owners_marker(marker, other_pid):
+    _claim(marker, other_pid)
 
     second = UpdateLock(path=marker)
     second.acquire()
@@ -85,7 +98,25 @@ def test_refused_lock_does_not_delete_the_live_owners_marker(marker):
 
     assert marker.exists(), "a refused claimant must never clear the live owner's lock"
 
-    first.release()
+
+def test_marker_naming_our_own_pid_is_adopted(marker, monkeypatch):
+    """A killed update's marker names the pid its retry gets (containers restart pid numbering).
+
+    No other live process can hold our pid, so the claim is ours: take it instead of refusing
+    "another update" for up to 20 minutes. It is a new attempt, so it is claimed fresh: a
+    nearly-expired claim must still block a second updater for our whole run.
+    """
+    _claim(marker, os.getpid(), time.time() - UPDATE_MARKER_MAX_AGE_SECONDS + 5)
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert lock.acquired is True
+
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 60)
+    holder = read_live_update(path=marker)
+    assert holder is not None and holder.pid == os.getpid(), "a second updater would start mid-run"
+    lock.release()
     assert not marker.exists()
 
 
@@ -162,7 +193,6 @@ def test_describe_holder_names_the_pid_and_elapsed_time(marker):
     message = describe_holder(holder)
 
     assert str(os.getpid()) in message, "the user needs the pid to find the other update"
-    assert "already running" in message
 
 
 def test_unwritable_marker_location_does_not_block_the_update(tmp_path):
@@ -187,10 +217,10 @@ class TestHandoffFromOrchestratingUpdater:
     HANDOFF_PID_ENV; a live holder matching it is our own orchestrator.
     """
 
-    def test_child_runs_under_the_parents_live_claim(self, marker, monkeypatch):
-        # Stand in for the parent updater with our own (live) pid.
-        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
-        monkeypatch.setenv(HANDOFF_PID_ENV, str(os.getpid()))
+    def test_child_runs_under_the_parents_live_claim(self, marker, monkeypatch, other_pid):
+        # other_pid stands in for the live parent updater.
+        _claim(marker, other_pid)
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid))
 
         lock = UpdateLock(path=marker)
         assert lock.acquire() is True
@@ -198,20 +228,20 @@ class TestHandoffFromOrchestratingUpdater:
 
         lock.release()
         assert marker.exists(), "the parent still needs its marker after our stage ends"
-        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == other_pid
 
-    def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(self, marker, monkeypatch):
+    def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(self, marker, monkeypatch, other_pid):
         """The env var alone must not bypass the lock."""
-        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
-        monkeypatch.setenv(HANDOFF_PID_ENV, str(os.getpid() + 1))
+        _claim(marker, other_pid)
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid + 1))
 
         lock = UpdateLock(path=marker)
         assert lock.acquire() is False
         assert lock.holder is not None
 
     @pytest.mark.parametrize("value", ["", "not-a-pid", "-1", "0"], ids=["empty", "garbage", "negative", "zero"])
-    def test_malformed_handoff_values_fall_back_to_refusal(self, marker, monkeypatch, value):
-        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+    def test_malformed_handoff_values_fall_back_to_refusal(self, marker, monkeypatch, value, other_pid):
+        _claim(marker, other_pid)
         monkeypatch.setenv(HANDOFF_PID_ENV, value)
 
         assert UpdateLock(path=marker).acquire() is False

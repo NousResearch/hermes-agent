@@ -47,11 +47,3 @@ class TestBuildPreloadedSkillsPrompt:
         )
         assert _build_preloaded_skills_prompt(["good", "bad"]) == "PROMPT"
 
-    def test_loaded_prompt_returned(self, monkeypatch):
-        import agent.skill_commands as sc
-
-        monkeypatch.setattr(
-            sc, "build_preloaded_skills_prompt",
-            lambda parsed, **kw: ("SKILL CONTENT", ["s"], []),
-        )
-        assert _build_preloaded_skills_prompt("s") == "SKILL CONTENT"

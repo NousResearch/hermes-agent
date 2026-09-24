@@ -708,7 +708,8 @@ class GatewaySessionCommandsMixin:
         """Handle /save — export the current session and send it as a document."""
         import tempfile
         from hermes_cli.session_export import (
-            SAVE_USAGE, default_save_filename, normalize_save_format, render_session_for_save)
+            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, default_save_filename, normalize_save_format,
+            render_session_for_save)
 
         parts = event.get_command_args().split()
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -729,7 +730,7 @@ class GatewaySessionCommandsMixin:
         # Never trust path separators from chat input; the filename is only echoed to the platform.
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
-        export_data = await self._session_db.export_session(session_id)
+        export_data = await self._session_db.export_session(session_id, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
         if not export_data:
             return f"No stored messages found for this session ({session_id})."
         if redact:
@@ -898,6 +899,10 @@ class GatewaySessionCommandsMixin:
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")
+        # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary,
+        # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
+        # the next turn's _rehydrate_session_model_override resurrects the pin it just cleared.
+        await self.async_session_store.set_model_override(session_key, None)
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
@@ -1095,5 +1100,5 @@ class GatewaySessionCommandsMixin:
         # Discord only answers un-mentioned follow-ups in threads it has participated in.
         threads = getattr(adapter, "_threads", None)
         if threads is not None:
-            threads.mark(str(thread_id))
+            await threads.mark_async(str(thread_id))
         return branch_dest_source(source, parent_id=parent_id, thread_id=str(thread_id), title=title)

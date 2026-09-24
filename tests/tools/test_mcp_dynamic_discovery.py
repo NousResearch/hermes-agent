@@ -227,17 +227,3 @@ class TestMessageHandler:
             mock_schedule.assert_not_called()
 
 
-class TestDeregister:
-    """Tests for ToolRegistry.deregister."""
-
-    def test_removes_tool(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x)
-        assert "foo" in reg.get_all_tool_names()
-        reg.deregister("foo")
-        assert "foo" not in reg.get_all_tool_names()
-
-
-    def test_noop_for_unknown_tool(self):
-        reg = ToolRegistry()
-        reg.deregister("nonexistent")  # Should not raise

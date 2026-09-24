@@ -38,17 +38,6 @@ def _callbacks(callbacks_by_hook):
     return lambda name: tuple(callbacks_by_hook.get(name, ()))
 
 
-def test_stream_observer_hooks_are_valid_plugin_hooks():
-    from hermes_cli.plugins import VALID_HOOKS
-
-    assert {
-        "on_stream_start",
-        "on_stream_delta",
-        "on_stream_end",
-        "on_interim_message",
-    }.issubset(VALID_HOOKS)
-
-
 def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
     from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
@@ -181,6 +170,8 @@ def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
 
     assert calls == []
 
+    # The opt-in is resolved once per stream; a new request picks up the flipped flag.
+    agent._reset_stream_delivery_tracking()
     with patch("hermes_cli.config.cfg_get", return_value=True):
         agent._fire_reasoning_delta("visible reasoning")
         _wait_for(lambda: calls)

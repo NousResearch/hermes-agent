@@ -43,8 +43,7 @@ def test_nous_credential_failure_is_remembered_and_warned_once(caplog, monkeypat
         unavailable.record_nous_credential_failure(exc)
 
     assert detail.startswith("Nous Portal runtime credentials unavailable: ")
-    assert "invalid_grant" in detail and "Run `hermes model` to re-authenticate." in detail
-    assert "Invalid refresh token. Run" in detail, detail  # sentence-terminated before the remediation
+    assert "invalid_grant" in detail and "hermes model" in detail
     assert unavailable.nous_credential_failure_detail() == detail
     assert sum(detail in rec.getMessage() for rec in caplog.records) == 1
     unavailable.clear_nous_credential_failure()

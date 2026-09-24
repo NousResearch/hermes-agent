@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n/runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
@@ -611,7 +612,19 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+  const canonical = canonicalDesktopSlashCommand(command)
+  const key = `composer.commandDescs.${canonical}`
+  const translated = translateNow(key)
+  const description = translated !== key ? translated : SPEC_BY_NAME.get(canonical)?.description
+
+  if (!description) {
+    return fallback
+  }
+
+  // Keep backend-owned flags and placeholders verbatim when replacing prose.
+  const usage = fallback.match(/\s+\(usage:\s+(.+)\)$/s)?.[0] ?? ''
+
+  return `${description}${usage}`
 }
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {

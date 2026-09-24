@@ -308,11 +308,24 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
-    void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
+    // The draft is already cleared, so a refused or failed redirect must keep
+    // the only copy: queue it for the next turn, or restore it when there is no
+    // queue yet (a new chat is busy before its first session exists).
+    const keep = () => {
+      if (activeQueueSessionKey) {
         enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      } else {
+        loadIntoComposer(text, [])
       }
-    })
+    }
+
+    void Promise.resolve(onSteer(text))
+      .then(accepted => {
+        if (!accepted) {
+          keep()
+        }
+      })
+      .catch(keep)
   }
 
   const queueDraft = () => {

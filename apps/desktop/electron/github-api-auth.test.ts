@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { beforeEach, test } from 'vitest'
 
 import {
-  describeGitHubCredentialSource,
   findGhCli,
   forgetGhCliToken,
   GH_CLI_TIMEOUT_MS,
@@ -87,6 +86,7 @@ test('gh is found in the GUI-safe install locations a minimal launch PATH omits'
   assert.equal(macos, brewGh)
 
   const winGh = 'C:\\Program Files\\GitHub CLI\\gh.exe'
+
   const windows = findGhCli(
     { Path: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' },
     'win32',
@@ -165,9 +165,4 @@ test('gh rung: argv-only spawn, stdin closed, bounded, cached for the process, a
     null
   )
   assert.equal(logged.calls.length, 1)
-})
-
-test('the rejected-credential log line names the source, never the token', () => {
-  assert.match(describeGitHubCredentialSource('env'), /GITHUB_TOKEN \/ GH_TOKEN/)
-  assert.match(describeGitHubCredentialSource('gh-cli'), /gh auth token/)
 })

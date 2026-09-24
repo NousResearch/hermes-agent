@@ -13,14 +13,13 @@ import queue
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 
 import pytest
 
+from hermes_platform.host import runtime as host_runtime
 from hermes_cli.clipboard import (
-    save_clipboard_image,
     has_clipboard_image,
-    _is_wsl,
     _linux_save,
     _macos_pngpaste,
     _macos_osascript,
@@ -48,14 +47,6 @@ FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
 # Level 1: Clipboard module — platform dispatch + tool interactions
 # ═════════════════════════════════════════════════════════════════════════
 
-class TestSaveClipboardImage:
-    def test_creates_parent_dirs(self, tmp_path):
-        dest = tmp_path / "deep" / "nested" / "out.png"
-        with patch("hermes_cli.clipboard.sys") as mock_sys:
-            mock_sys.platform = "linux"
-            with patch("hermes_cli.clipboard._linux_save", return_value=False):
-                save_clipboard_image(dest)
-        assert dest.parent.exists()
 
 
 class TestClipboardChildStdin:
@@ -171,41 +162,6 @@ class TestMacosClipboardFileUrl:
 
 # ── WSL detection ────────────────────────────────────────────────────────
 
-class TestIsWsl:
-    def setup_method(self):
-        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
-        # globals so this stays stable even if hermes_constants was imported
-        # through a different module object earlier in a large xdist run.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
-        _is_wsl.__globals__["_wsl_detected"] = None
-
-    def teardown_method(self):
-        # Reset again after the test so we don't leak a cached value
-        # (True/False) into whichever test the xdist worker runs next.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
-        _is_wsl.__globals__["_wsl_detected"] = None
-
-    @pytest.mark.parametrize("content, expected", [
-        ("Linux version 5.15.0 (microsoft-standard-WSL2)", True),
-        # GHA hosted runners are Azure VMs whose real /proc/version often
-        # contains "microsoft", so the patched `open` must actually be reached
-        # (setup_method clears the cache that would short-circuit it).
-        ("Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)", False),
-    ])
-    def test_detection_from_proc_version(self, content, expected):
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
-            assert _is_wsl() is expected
-
-
-    def test_result_is_cached(self):
-        content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        opener = mock_open(read_data=content)
-        with patch.dict(_is_wsl.__globals__, {"open": opener}):
-            assert _is_wsl() is True
-            assert _is_wsl() is True
-            opener.assert_called_once()  # only read once
 
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────
@@ -343,8 +299,7 @@ class TestLinuxSave:
     """Test that _linux_save dispatches correctly to WSL → Wayland → X11."""
 
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
     def test_wsl_tried_first(self, tmp_path):
         dest = tmp_path / "out.png"
@@ -419,18 +374,6 @@ class TestWindowsSave:
 # ── BMP conversion ──────────────────────────────────────────────────────
 
 class TestConvertToPng:
-    def test_pillow_conversion(self, tmp_path):
-        dest = tmp_path / "img.png"
-        dest.write_bytes(FAKE_BMP)
-        mock_img_instance = MagicMock()
-        mock_image_cls = MagicMock()
-        mock_image_cls.open.return_value = mock_img_instance
-        # `from PIL import Image` fetches PIL.Image from the PIL module
-        mock_pil_module = MagicMock()
-        mock_pil_module.Image = mock_image_cls
-        with patch.dict(sys.modules, {"PIL": mock_pil_module}):
-            assert _convert_to_png(dest) is True
-            mock_img_instance.save.assert_called_once_with(dest, "PNG")
 
 
     @pytest.mark.parametrize("failure", ["nonzero-exit", "timeout"])
@@ -458,8 +401,7 @@ class TestConvertToPng:
 
 class TestHasClipboardImage:
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
     @pytest.mark.macos_only
     def test_macos_dispatch(self):

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import sqlite3
 import time
 from typing import Any, Callable, Dict, Optional
@@ -116,6 +117,36 @@ def require(value: Optional[str], detail: str) -> str:
     if not stripped:
         raise HTTPException(status_code=400, detail=detail)
     return stripped
+
+
+REDACTED_CREDENTIAL_WRITE_DETAIL = (
+    "Refusing to save a redacted credential preview; re-enter the full secret to replace it."
+)
+
+
+def redacted_credential_preview(value: Any) -> Optional[str]:
+    """Return a display-only credential sentinel that can never gain write authority."""
+    if not value:
+        return None
+    from hermes_cli.config import redact_key
+    return f"«redacted:{redact_key(str(value))}»"
+
+
+# Legacy bare masks (pre-sentinel pages, older Desktop builds) are recognised by the
+# producer shape of ``agent.redact.mask_secret`` — never by equality to the current
+# secret, which would authorise a stale preview after a rotation (#121002).
+_LEGACY_MASK_RE = re.compile(r".{4}\.\.\..{4}")
+
+
+def is_redacted_credential_preview(submitted: Any) -> bool:
+    """Recognize current, stale and legacy dashboard previews by shape alone."""
+    value = str(submitted or "")
+    # Any ``«redacted…`` value is already-masked output (the same test agent.redact uses
+    # to skip re-masking): our ``«redacted:…»`` sentinel, ``«redacted-secret»`` and the
+    # vault marker ``«redacted-vault-secret»``. Then the legacy bare mask shapes.
+    if value.startswith("«redacted"):
+        return True
+    return value == "***" or _LEGACY_MASK_RE.fullmatch(value) is not None
 
 
 # Corrupt-store reporting for polled read endpoints. The dashboard polls analytics every few

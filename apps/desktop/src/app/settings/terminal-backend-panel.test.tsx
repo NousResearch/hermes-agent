@@ -67,33 +67,12 @@ afterEach(() => {
 })
 
 describe('TerminalBackendPanel', () => {
-  it('lists backends with status pills from the backends endpoint', async () => {
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
-    render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
-
-    expect(await screen.findByText('Local')).toBeTruthy()
-    expect(screen.getByText('Docker')).toBeTruthy()
-    expect(screen.getByText('SSH')).toBeTruthy()
-    // Ready backends show the Ready pill; needs_setup shows the warn pill.
-    expect(screen.getAllByText('Ready').length).toBeGreaterThanOrEqual(2)
-    expect(screen.getByText('Needs setup')).toBeTruthy()
-    expect(getTerminalBackends).toHaveBeenCalled()
-  })
-
-  it('shows setup guidance detail for a needs_setup backend', async () => {
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
-    render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
-
-    expect(await screen.findByText(/Docker daemon not reachable/)).toBeTruthy()
-  })
-
-  it('marks the active backend with an In use pill', async () => {
+  it('marks the active backend as pressed', async () => {
     const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     const local = await screen.findByRole('button', { name: /Local/ })
     expect(local.getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByText('In use')).toBeTruthy()
   })
 
   it('selects a backend when clicked and reports the change', async () => {

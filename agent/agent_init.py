@@ -26,6 +26,7 @@ from agent.context_compressor import ContextCompressor
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
+from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint, query_ollama_num_ctx
@@ -36,7 +37,7 @@ from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
-from hermes_cli.config import cfg_get
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
@@ -656,8 +657,8 @@ def _init_prompt_cache_config(agent):
         agent._anthropic_prompt_cache_policy()
     )
     agent._cache_disabled = False
-    # cache_ttl: "5m" (default) or "1h" (2x write cost; pays off with >5-minute pauses);
-    # unknown values keep "5m". A falsy/off value disables caching entirely (OAuth plans
+    # cache_ttl: "5m" (default), "1h" (2x write cost; pays off with >5-minute pauses) or "auto"
+    # (1h when a person paces the session, 5m when a machine does); unknown values keep "5m". A falsy/off value disables caching entirely (OAuth plans
     # billing cache writes, proxies adding their own cache_control); the disable survives
     # /model switches and fallback re-derivation.
     # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from config.yaml under
@@ -669,10 +670,16 @@ def _init_prompt_cache_config(agent):
     with suppress(Exception):
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
         from agent.agent_runtime_helpers import cache_ttl_means_disabled
+        from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
+        elif _ttl == AUTO_CACHE_TTL:
+            # Decided once per session from its source (a delegated child is clamped to 5m again
+            # in delegate_tool regardless).
+            from run_agent import _session_source_for_agent  # late: run_agent imports this module
+            agent._cache_ttl = auto_cache_ttl_for_source(_session_source_for_agent(getattr(agent, "platform", None)))
         elif cache_ttl_means_disabled(_ttl):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
@@ -1073,6 +1080,10 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
     from agent.oneshot_footprint import prune_oneshot_tools
     agent.tools = prune_oneshot_tools(agent.tools or [])
+    from tools.connectors.turn import side_agent_tool_drops
+    drops = side_agent_tool_drops(agent)
+    if drops:
+        agent.tools = [t for t in agent.tools if t["function"]["name"] not in drops]
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
@@ -1245,7 +1256,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     return kwargs
 
 
-def _init_memory(agent, _agent_cfg, skip_memory, platform):
+def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
     agent._memory_enabled = False
@@ -1286,10 +1297,15 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
-    if not skip_memory:
+    if memory_manager is not None and not skip_memory:
+        # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's
+        # already-initialized manager: providers keep their prefetch/retain state across turns instead
+        # of being re-initialized (#120116). No initialize_all — the providers are already bound.
+        agent._memory_manager = memory_manager
+    elif not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
-            if _mem_provider_name and _mem_provider_name.strip():
+            if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
@@ -1471,9 +1487,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     max_attempts = _parse_config_int(cfg.get("max_attempts", 3), 3)
     if max_attempts < 1:
         max_attempts = 3
-    # threshold_tokens: absolute cap (lower of ratio threshold and this); clamped to the
-    # window at apply-time.
-    threshold_tokens = cfg.get("threshold_tokens")
+    # threshold_tokens: absolute cap (lower of ratio threshold and this); clamped to the window at
+    # apply-time. Explicit null is the ratio-only opt-out and stays None.
+    threshold_tokens = cfg.get("threshold_tokens", cfg_get(DEFAULT_CONFIG, "compression", "threshold_tokens"))
     if threshold_tokens is not None:
         threshold_tokens = _positive_int(threshold_tokens)
     # Non-system head messages to protect (system prompt is always protected); 0 is a
@@ -1863,22 +1879,20 @@ def _select_context_engine(_agent_cfg):
         except Exception:
             _candidate = None
         if _candidate is not None and _candidate.name == _engine_name:
-            # Deep-copy the shared singleton so a child's update_model() can't mutate the
-            # parent's. Uncopyable state (locks, DB conns) → built-in with an ACCURATE message.
-            import copy
+            # The plugin system holds ONE shared instance; each agent gets its own so a child's
+            # update_model() can't mutate the parent's (#42449). clone_for_agent() defaults to
+            # deepcopy; engines with uncopyable state (locks, DB conns) override it. A failure
+            # falls back to the built-in compressor with an ACCURATE message, not "not found".
             try:
-                # Copy can fail for engines holding uncopyable state (locks, DB connections, clients); in
-                # that case fall back to the built-in compressor with an ACCURATE message rather than
-                # silently mislabelling it "not found". See #42449.
-                _selected_engine = copy.deepcopy(_candidate)
+                _selected_engine = _candidate.clone_for_agent()
             except Exception as _copy_err:
                 _copy_failed = True
                 _ra().logger.warning(
                     "Context engine '%s' could not be safely copied for this "
                     "agent (%s) — falling back to built-in compressor. Plugin "
                     "engines that hold uncopyable state (locks, DB connections) "
-                    "should implement __deepcopy__ to copy only mutable budget "
-                    "state.",
+                    "should override clone_for_agent() (or __deepcopy__) to copy "
+                    "only mutable budget state.",
                     _engine_name, _copy_err,
                 )
 
@@ -2185,7 +2199,8 @@ def _emit_compression_summary(agent, cs):
             _pct = getattr(_cc, "threshold_percent", cs.threshold)
             _cap = getattr(_cc, "threshold_tokens_cap", None)
             # Name the cap only when it is what set the trigger; on small windows the ratio already sits below it.
-            _cap_binds = bool(_cap) and _cap > 0 and _cc.threshold_tokens == min(_cap, _cc.context_length)
+            _eff_cap = getattr(_cc, "_effective_threshold_cap", lambda _ctx: None)(_cc.context_length)
+            _cap_binds = _eff_cap is not None and _cc.threshold_tokens == _eff_cap
             _cap_note = f" (capped at {_cap:,} tokens)" if _cap_binds else ""
             print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
         else:
@@ -2281,6 +2296,7 @@ _PASSTHROUGH_PARAMS = (
     "enabled_toolsets", "disabled_toolsets",
     # Model response configuration (None = provider/model default)
     "max_tokens", "reasoning_config", "service_tier",
+    "side_agent",
 )
 # Gateway identity params stored as ``agent._<name>``. gateway_session_key is the stable
 # per-chat key (e.g. agent:main:telegram:dm:123).
@@ -2290,6 +2306,7 @@ _GATEWAY_IDENTITY_PARAMS = (
 )
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
+    "tool_result_metadata_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "connection_callback", "tour_callback",
@@ -2334,22 +2351,9 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
+    side_agent: bool = False, memory_manager=None,
+    tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
-    """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
-
-    Non-obvious parameters:
-      max_iterations: default unlimited (sys.maxsize); the budget is shared with subagents.
-      requested_provider: provider identity before runtime canonicalization.
-      cwd: logical session workspace, available to memory providers during construction;
-        None or empty leaves the runtime cwd resolver unpinned.
-      openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
-      clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
-      reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
-      prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing
-        assistant message — use structured outputs there instead.
-      skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
-        load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
-    """
     _install_safe_stdio()
 
     _params = locals()
@@ -2406,6 +2410,9 @@ def init_agent(
     # Every (provider, model) that rejected image content this session. build_api_request strips
     # images from requests to those models only, so history keeps them for any model that can see.
     agent._image_rejecting_models = set()
+    # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
+    # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
+    agent._fast_mode_unavailable_models = set()
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)
@@ -2427,7 +2434,7 @@ def init_agent(
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)
-    _init_memory(agent, _agent_cfg, skip_memory, platform)
+    _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(

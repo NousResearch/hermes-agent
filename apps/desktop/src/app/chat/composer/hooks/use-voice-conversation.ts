@@ -13,6 +13,7 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $bargeInThresholdMultiplier } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -393,6 +394,7 @@ export function useVoiceConversation({
 
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
+      thresholdMultiplier: $bargeInThresholdMultiplier.get(),
       onSpeech: () => {
         bargeCapturePendingRef.current = true
         bargedRef.current = true

@@ -26,6 +26,7 @@ import queue
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,10 @@ _IS_WINDOWS = sys.platform == "win32"
 
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
+
+# Read bound for a cell spill file: the runner writes at most the 5MB spill cap plus a
+# short marker, so anything larger at that name is a swapped-in file, not our spill.
+_CELL_SPILL_READ_CAP = 5_000_000 + 4096
 
 # Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
@@ -186,7 +191,16 @@ def _spill(text, spill_name):
         return ""
     try:
         spill_path = os.path.join(_SPILL_DIR, spill_name)
-        with open(spill_path, "w", encoding="utf-8", errors="replace") as f:
+        # Exclusive create: cell code shares this dir and could squat the spill name
+        # with a symlink; refuse to follow it onto a host file rather than overwrite.
+        fd = os.open(spill_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8", errors="replace")
+        except Exception:
+            os.close(fd)
+            raise
+        with f:
             f.write(text[:_SPILL_CAP])
             if len(text) > _SPILL_CAP:
                 f.write("\\n\\n[... spill capped ...]")
@@ -777,15 +791,75 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
 
+def _sanitize_cell_spill(kernel: "SessionKernel", cell_spill: str) -> str:
+    """Re-publish a runner-side stdout spill through the host spill writer: read the raw
+    file (confined to the kernel tmpdir, non-blocking, regular files only, size-capped),
+    hand it to ``_spill_full_stdout`` for the same ANSI-strip + redaction the inline
+    result gets plus a digest path under cache/exec, then drop the raw tmpdir copy on
+    every outcome so unredacted bytes do not linger for the kernel's remaining life.
+    Returns the published path, or "" on any failure.
+
+    Publishing under cache/exec instead of reusing the tmpdir path keeps the advertised
+    path valid after kernel teardown and out of the directory cells can write."""
+    try:
+        path = Path(cell_spill)
+        tmpdir = getattr(kernel, "tmpdir", "")
+        # Cell code runs arbitrary Python in this kernel and the reply frame itself is
+        # forgeable, so the leaf must RESOLVE to a direct child of the resolved tmpdir:
+        # '..' or a symlinked intermediate (tmpdir/link/../victim) must not redirect
+        # the open or the cleanup unlink onto a host file.
+        real_tmp = os.path.realpath(tmpdir) if tmpdir else ""
+        if not real_tmp or os.path.realpath(path) != os.path.join(real_tmp, path.name):
+            return ""
+        try:
+            dfd = os.open(real_tmp, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        except (AttributeError, NotImplementedError, OSError):
+            dfd = -1  # Windows lacks dir_fd; the realpath gate above still applies
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(path.name, flags, dir_fd=dfd) if dfd >= 0 else os.open(path, flags)
+            try:
+                # This runs under kernel.lock outside the cell timeout: a swapped-in
+                # FIFO would park the tool thread at open/read forever, and a huge file
+                # would OOM the redaction regexes, so only a bounded regular file reads.
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_size > _CELL_SPILL_READ_CAP:
+                    return ""
+                fh = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+                fd = -1  # fh owns the descriptor from here
+                with fh:
+                    raw = fh.read(_CELL_SPILL_READ_CAP + 1)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            from tools.code_execution_tool import _spill_full_stdout
+            return _spill_full_stdout(raw) or ""
+        finally:
+            # Drop the raw tmpdir copy either way; through dir_fd when we have one so
+            # the unlink cannot escape tmpdir even if a cell replanted an intermediate
+            # link between the realpath check and now.
+            try:
+                if dfd >= 0:
+                    os.unlink(path.name, dir_fd=dfd)
+                else:
+                    os.unlink(path)
+            except OSError:
+                pass
+            if dfd >= 0:
+                os.close(dfd)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[str, Any], *,
                  timeout: int, sandbox_tools: frozenset, reused: bool,
                  state_reset: bool, exec_start: float) -> Dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
-    from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
-    from agent.redact import redact_sensitive_text
-    from tools.ansi_strip import strip_ansi
+    from tools.code_execution_tool import (
+        _sandbox_failure_hint, _sanitize_output_text, _truncate_stdout_text,
+    )
     def clean(text: str) -> str:
-        return redact_sensitive_text(strip_ansi(text), code_file=True)
+        return _sanitize_output_text(text)
     if status in ("timeout", "interrupted"):
         # No safe way to interrupt one cell in place: kill the kernel, report the loss, respawn next call.
         _REGISTRY.discard(key, kernel)
@@ -802,15 +876,34 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
     result.update(stdout_metadata)
-    # Cell-side spill (runner clipped before replying): same read_file recipe as the host-side spill.
+    # Cell-side spill (runner clipped before replying): the runner writes raw stdout, so
+    # _sanitize_cell_spill re-publishes it sanitized under cache/exec before the path is
+    # advertised. When it fails the host-side spill of the clipped head (set above by
+    # _truncate_stdout_text) is still a valid, sanitized page target; say so rather than
+    # leaving a path the warning never mentions.
     cell_spill = str(payload.get("stdout_spill_path", "") or "")
     if cell_spill and payload.get("stdout_clipped"):
-        result["stdout_spill_path"] = cell_spill
-        result["warning"] = (
-            f"Cell stdout exceeded the inline cap; head shown. FULL output saved to {cell_spill} "
-            f'— page it with read_file(path="{cell_spill}", offset=...) instead of re-running. '
-            "(Kernel state persists: printing a narrower slice next call is often cheaper.)"
-        )
+        published = _sanitize_cell_spill(kernel, cell_spill)
+        if published:
+            result["stdout_spill_path"] = published
+            result["warning"] = (
+                f"Cell stdout exceeded the inline cap; head shown. FULL output saved to {published} "
+                f'; page it with read_file(path="{published}", offset=...) instead of re-running. '
+                "(Kernel state persists: printing a narrower slice next call is often cheaper.)"
+            )
+        elif result.get("stdout_spill_path"):
+            host_spill = result["stdout_spill_path"]
+            result["warning"] = (
+                "Cell stdout exceeded the inline cap; head shown. Only the first part of "
+                f'the output was saved to {host_spill}; page it with '
+                f'read_file(path="{host_spill}", offset=...) and re-run with a narrower '
+                "output slice for the omitted middle."
+            )
+        else:
+            result["warning"] = (
+                "Cell stdout exceeded the inline cap; head shown. "
+                "Re-run with a narrower output slice for the omitted middle."
+            )
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "
                    "state was lost. The next execute_code call starts a fresh kernel.")

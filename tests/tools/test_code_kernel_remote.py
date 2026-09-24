@@ -13,6 +13,8 @@ import os
 import sys
 import time
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -338,6 +340,43 @@ class TestDispatchIntegration(unittest.TestCase):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")
         self.assertIn("per-call ran", result["output"])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="owner-only modes are POSIX semantics")
+class TestRemotePerCallSpillE2E(RemoteKernelBase):
+    """Real-transport end-to-end for the stdout spill emitter: LocalEnvironment is
+    a real local bash transport, so _run_remote_per_call exercises the actual
+    ship/execute/capture pipeline a remote backend uses."""
+
+    def test_per_call_stdout_spill_is_sanitized_on_real_fs(self):
+        """A remote script's oversized stdout spills to cache/exec, and the
+        on-disk file must carry the same redaction and ANSI strip the inline
+        result got; the warning sends the model to read it."""
+        self._ship.stop()
+        self._poll.stop()
+        from tools.environments.local import LocalEnvironment
+        from tools.code_execution_tool import _run_remote_per_call
+        env = LocalEnvironment(cwd="/", timeout=60)
+        secret = "ghp_" + "0123456789abcdef"
+        code = ("import sys\n"
+                f"sys.stdout.write('\\x1b[31m{secret}\\x1b[0m\\n' "
+                "+ 'x' * 80_000 + '\\nTAIL\\n')\n")
+        out = json.loads(_run_remote_per_call(
+            env, "local", code, "t-e2e-spill", frozenset(),
+            timeout=60, max_tool_calls=5, exec_start=time.monotonic()))
+        self.assertEqual(out["status"], "success", out)
+        self.assertNotIn(secret, out["output"])  # inline copy is masked
+        spill = out.get("stdout_spill_path", "")
+        self.assertTrue(spill, out)
+        with open(spill, encoding="utf-8") as f:
+            body = f.read()
+        from agent.redact import redact_sensitive_text
+        self.assertNotIn(secret, body)
+        # Masked remnant proves the pipeline ran; derive it so the mask format is not frozen.
+        self.assertIn(redact_sensitive_text(secret, code_file=True), body)
+        self.assertNotIn("\x1b[", body)
+        self.assertEqual(os.stat(spill).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(spill)).st_mode & 0o777, 0o700)
 
 
 if __name__ == "__main__":

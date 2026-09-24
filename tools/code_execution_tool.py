@@ -80,21 +80,24 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
 
 
 def _spill_full_stdout(stdout_text: str) -> Optional[str]:
-    """Write full stdout to cache/exec; return its path (None on failure — best-effort,
+    """Write full stdout to cache/exec; return its path (None on failure, best-effort;
     the truncated inline output is still returned). Keyed by content digest so identical
-    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files)."""
+    reruns coalesce. The spill is a second emitter of the same output that the warning
+    tells the model to page with read_file, so it gets the same ANSI-strip + secret
+    redaction the inline text gets: a raw copy would keep on disk the credentials the
+    result masked."""
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
-        from tools.spill_safety import write_text_exclusive
+        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
             stdout_text = (stdout_text[:MAX_SPILLED_STDOUT_BYTES]
                            + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]")
-        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        stdout_text = _sanitize_output_text(stdout_text)
+        cache_dir = ensure_spill_dir(get_hermes_dir("cache/exec", "exec_spill"))
         digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
         path = cache_dir / f"stdout-{digest}.txt"
-        write_text_exclusive(path, stdout_text, private=False, overwrite=True)
+        write_text_exclusive(path, stdout_text, overwrite=True)
         return str(path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to spill execute_code stdout: %s", exc)
@@ -480,13 +483,18 @@ def _format_interrupted_output(stdout_text: str) -> str:
     return f"{stdout_text}\n{marker}" if stdout_text else marker
 
 
-def _clean_output(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
-    """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
-    output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
+def _sanitize_output_text(text: str) -> str:
+    """ANSI strip + secret redaction for tool-bound output text. code_file=True: output
+    often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
     from tools.ansi_strip import strip_ansi
     from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(strip_ansi(text), code_file=True)
+
+
+def _clean_output(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
+    """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction."""
     stdout_text, metadata = _truncate_stdout_text(stdout_text)
-    return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
+    return _sanitize_output_text(stdout_text), metadata
 
 
 def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:

@@ -1,5 +1,5 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
@@ -90,6 +90,78 @@ describe('ThemeProvider ← backend skin sync', () => {
 
     expect(cssVar('--theme-background-seed')).toBe('#000000')
     expect(skinPref.resolve('default')).toBe('bloomberg')
+  })
+
+  it('uses the local bridge skin when a remote gateway has not connected yet', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const [{ ThemeProvider: FreshThemeProvider }, freshSync] = await Promise.all([
+        import('./context'),
+        import('./backend-sync')
+      ])
+
+      expect(freshSync.$backendThemes.get().bloomberg?.name).toBe('bloomberg')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(cssVar('--theme-background-seed')).toBe('#000000')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
+  })
+
+  it('keeps a saved desktop appearance ahead of the local bridge fallback', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
+
+    try {
+      window.localStorage.setItem('hermes-desktop-theme-v2', 'everforest')
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
+      })
+      vi.resetModules()
+
+      const { ThemeProvider: FreshThemeProvider } = await import('./context')
+
+      render(
+        <FreshThemeProvider>
+          <div />
+        </FreshThemeProvider>
+      )
+
+      expect(window.document.documentElement.dataset.hermesTheme).toBe('everforest')
+    } finally {
+      cleanup()
+      window.localStorage.clear()
+
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', previous)
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+
+      vi.resetModules()
+    }
   })
 })
 

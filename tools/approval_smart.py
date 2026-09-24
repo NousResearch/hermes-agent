@@ -89,14 +89,16 @@ def _strip_shell_comments(command: str) -> str:
 
     This is a word/quote-aware heuristic, not a full shell or heredoc parser.
     Quote state carries across lines. Commands containing process-substitution
-    markers or a heredoc are preserved verbatim: the shared scanner cannot
-    establish word boundaries for the former, and a heredoc body is data
-    (``execute_code`` wraps its Python script as one).
+    or arithmetic-expansion markers, or a heredoc, are preserved verbatim: the
+    shared scanner cannot establish word boundaries for those substitutions,
+    and a heredoc body is data (``execute_code`` wraps its Python script as one).
     """
     # Even quoted/escaped markers take this conservative path. Trying to classify
     # them here could miss nested or multiline substitutions and hide executable
     # suffixes. The guardian's untrusted-input instructions still apply to comments.
-    if "<(" in command or ">(" in command:
+    # The scanner treats $((...)) as $(...) ending at the first closing paren;
+    # the remaining ')' can make a literal suffix hash look like a comment.
+    if "<(" in command or ">(" in command or "$((" in command:
         return command
 
     spans = _comment_spans(command)

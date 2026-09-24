@@ -1162,8 +1162,8 @@ class TestRouterRewriteTruncationMessageIsHonest:
             "output-length limit (#91717)."
         )
         assert "output length limit" not in error
-        # The honest message names the real suspect and surfaces finish_reason.
-        assert "finish_reason='tool_calls'" in final
+        # The honest message names the real suspect (raw finish_reason stays in the diagnostic log).
+        assert "finish_reason" not in final
         assert (
             "transport" in final or "router" in final
         ), "Honest message must point at transport/router corruption."

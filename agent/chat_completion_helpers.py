@@ -2942,6 +2942,12 @@ class _StreamingCall(StreamingWaitMonitor):
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
 
+    @staticmethod
+    def _mark_finish_seen(diag, finish_reason) -> None:
+        """Record that this attempt saw a terminal finish/stop reason (#102766)."""
+        if finish_reason and isinstance(diag, dict) and not diag.get("finish_reason_seen"):
+            diag["finish_reason_seen"] = True
+
     # ── chat_completions wire ───────────────────────────────────────────
 
     def _stream_timeouts(self) -> tuple[float, float, float]:
@@ -3136,8 +3142,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
-                if finish_reason and isinstance(self.clients.diag, dict):
-                    self.clients.diag["finish_reason_seen"] = True  # #102766
+                self._mark_finish_seen(_diag, finish_reason)
                 continue
 
             choice = chunk.choices[0]
@@ -3145,8 +3150,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
             finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
-            if finish_reason and isinstance(self.clients.diag, dict):
-                self.clients.diag["finish_reason_seen"] = True  # #102766
+            self._mark_finish_seen(_diag, finish_reason)
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
@@ -3305,8 +3309,8 @@ class _StreamingCall(StreamingWaitMonitor):
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
             logger.warning(
                 "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a tool "
-                "call's arguments were still incomplete (tools=%s). Not a network drop and not an "
-                "output-length truncation.",
+                "call's arguments were still incomplete (tools=%s). The server or a proxy closed the stream "
+                "cleanly; not an output-length truncation.",
                 _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
@@ -3318,7 +3322,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # A usage object proves the provider finished (include_usage's final chunk).
             logger.warning(
                 "Clean EOF, no finish_reason: server ended the stream (no transport exception) after delivering "
-                "text with no tool calls. Not a network drop.")
+                "text with no tool calls. The server or a proxy closed the stream cleanly.")
             return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, clean_eof=True)
         effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
         provider_stream_error = _provider_stream_error_from_text(
@@ -3414,7 +3418,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 event_type = getattr(event, "type", None)
                 if event_type == "message_stop":
                     saw_message_stop = True
-                if event_type == "content_block_start":
+                elif event_type == "message_delta":
+                    self._mark_finish_seen(_diag, getattr(getattr(event, "delta", None), "stop_reason", None))
+                elif event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True

@@ -124,6 +124,7 @@ def test_retry_after_drop_reports_the_attempt_that_dropped():
         agent=agent,
         clients=SimpleNamespace(diag=None, close_once=lambda reason: None),
         _cancel_current_stream_attempt=lambda reason: None,
+        last_chunk_time={"t": 0.0},
     )
     _StreamingCall._retry_after_drop(fake, ConnectionError("drop"), 0, 2, mid_tool_call=False, reason="t")
     assert agent._emit_stream_drop.call_args.kwargs["attempt"] == 1

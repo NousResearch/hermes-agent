@@ -164,7 +164,7 @@ def emit_stream_drop(
     try:
         agent._buffer_diagnostic_status(
             f"⚠️ {provider} stream {kind} ({type(error).__name__}){_suffix} "
-            f"— reconnecting, retry {attempt}/{max_attempts}"
+            f"— attempt {attempt}/{max_attempts} dropped, reconnecting"
         )
         agent._touch_activity(f"stream retry {attempt}/{max_attempts} after {type(error).__name__}")
     except Exception:

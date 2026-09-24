@@ -163,10 +163,56 @@ def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
     return p.resolve()
 
 
+def _ssh_remote_anchor(task_id: str) -> str:
+    """Working directory on the SSH target, never the Hermes host's home.
+
+    A recorded ``~`` stays ``~``. A recorded copy of the container subprocess
+    home (the host path ``get_subprocess_home()`` returns) is the same idea
+    written out by mistake, so it collapses back to ``~`` for the remote shell.
+    """
+    from tools.terminal_tool_config import coerce_ssh_remote_cwd
+
+    raw = _authoritative_workspace_root(task_id) or "~"
+    return coerce_ssh_remote_cwd(raw, "ssh") or "~"
+
+
+def _resolve_ssh_path(filepath: str, task_id: str) -> PurePosixPath:
+    """Resolve *filepath* in the SSH target's namespace.
+
+    Do not ``Path.resolve()`` or expand ``~`` with ``get_subprocess_home()``:
+    both name directories on the Hermes host (``/opt/data/home`` in Docker),
+    which the remote ``cd`` then rejects.
+    """
+    text = str(filepath or "").strip()
+    if text == "~" or text.startswith("~/"):
+        return PurePosixPath(text)
+    if posixpath.isabs(text):
+        return _normalize_without_host_deref(text)
+    anchor = _ssh_remote_anchor(task_id)
+    if anchor == "~":
+        joined = f"~/{text}"
+    elif anchor.startswith("~/"):
+        joined = f"{anchor.rstrip('/')}/{text}"
+    else:
+        joined = posixpath.normpath(posixpath.join(anchor, text))
+    if joined == "~" or joined.startswith("~/"):
+        return PurePosixPath(joined)
+    return _normalize_without_host_deref(joined)
+
+
 def _resolve_base_dir(
     task_id: str = "default", *, container_paths: bool | None = None) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths:
-    ``_authoritative_workspace_root``, else the process cwd as a last resort."""
+    ``_authoritative_workspace_root``, else the process cwd as a last resort.
+
+    SSH is the exception: the anchor is a remote path (often ``~``), and the
+    process cwd is the Hermes host.
+    """
+    if _terminal_env_type_for_task(task_id) == "ssh":
+        anchor = _ssh_remote_anchor(task_id)
+        if anchor == "~" or anchor.startswith("~/"):
+            return PurePosixPath(anchor)
+        return _normalize_without_host_deref(anchor)
     root = _authoritative_workspace_root(task_id)
     if container_paths is None:
         container_paths = _uses_container_paths(task_id)
@@ -177,6 +223,8 @@ def _resolve_base_dir(
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
     (absolute inputs are returned resolved-but-unanchored)."""
+    if _terminal_env_type_for_task(task_id) == "ssh":
+        return _resolve_ssh_path(filepath, task_id)
     container_paths = _uses_container_paths(task_id)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)

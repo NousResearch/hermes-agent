@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { cutSentences, sanitizeTextForSpeech } from './speech-text'
+import { cutSentences, IncrementalSpeechSentenceBuffer, sanitizeTextForSpeech } from './speech-text'
 
 describe('sanitizeTextForSpeech', () => {
   it('does not speak placeholders for fenced code blocks', () => {
@@ -268,5 +268,19 @@ describe('cutSentences', () => {
       '记得，叫团团。',
       '然后我们再说第二句话，这一句要长一些才行。'
     ])
+  })
+})
+
+describe('IncrementalSpeechSentenceBuffer', () => {
+  it('does not hold later sentences when prose mentions a <thinking tag', () => {
+    const buffer = new IncrementalSpeechSentenceBuffer()
+
+    expect(buffer.append('Wrap the plan in a <thinking> tag first. ')).toEqual([
+      'Wrap the plan in a <thinking> tag first.'
+    ])
+    expect(buffer.append('Then the answer follows here in prose. And a tail')).toEqual([
+      'Then the answer follows here in prose.'
+    ])
+    expect(buffer.flush()).toEqual(['And a tail'])
   })
 })

@@ -17,7 +17,6 @@ const THINKING_PREFIX_RE =
   /^\s*(?:\([^)\n]{1,48}\)\s*)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
 
 const URL_RE = /\bhttps?:\/\/\S+/gi
-const CLOSED_THINK_BLOCK_RE = /<think[\s>][\s\S]*?<\/think>/g
 
 const MARKDOWN_TABLE_DELIMITER_CELL_RE = /^:?-{3,}:?$/
 
@@ -236,28 +235,22 @@ export function cutSentences(
   return { sentences, rest }
 }
 
-/** Incremental wrapper over cutSentences() that also hides <think> blocks
- *  split across deltas. Used by the sync (non-streaming provider) fallback. */
+/** Incremental wrapper over cutSentences() for the sync (non-streaming
+ *  provider) fallback. Deliberately a pure accumulator — like the streaming
+ *  session's ingest (voice-playback.ts) — because the reply text it is fed is
+ *  already text-parts-only (reasoning lives in separate parts). */
 export class IncrementalSpeechSentenceBuffer {
   private buffer = ''
 
-  constructor(private readonly minSentenceChars?: null | number) {}
-
   append(delta: string): string[] {
-    this.buffer = (this.buffer + delta).replace(CLOSED_THINK_BLOCK_RE, '')
-
-    if (this.buffer.includes('<think') && !this.buffer.includes('</think>')) {
-      return []
-    }
-
-    const { sentences, rest } = cutSentences(this.buffer, false, this.minSentenceChars)
+    const { sentences, rest } = cutSentences(this.buffer + delta, false)
     this.buffer = rest
 
     return sentences
   }
 
   flush(): string[] {
-    const { sentences } = cutSentences(this.buffer.replace(CLOSED_THINK_BLOCK_RE, ''), true, this.minSentenceChars)
+    const { sentences } = cutSentences(this.buffer, true)
     this.buffer = ''
 
     return sentences

@@ -243,7 +243,7 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     if author is not None:
         record['author'] = dict(author)
     _write(path, record)
-    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
+    receipt = await authority.admit_automation(authority.runner._delivery_adapter_for(live.source), event, 'bot:' + key)
     record.update(status='canonical', admission_id=receipt.admission_id)
     _write(path, record)
     if receipt.status in {'queued', 'started'}:

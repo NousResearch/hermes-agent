@@ -124,9 +124,10 @@ async def recover_webhook_finalizations(authority):
             entry = authority.runner.session_store.lookup_by_session_key(envelope['route'])
             if entry is None or authority.logical_owner(entry.session_id) != sid:
                 raise RuntimeStoreError('admission_conflict')
-            adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
+            source = authority.runner._restored_source(entry)
+            adapter = authority.runner._delivery_adapter_for(source)
             target = authority.physical_target(SessionRef(authority.profile_id, sid))
-            await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
+            await check_native_route(authority.runner, row['payload'], target, source, adapter)
             results[sid] = 'finalized' if finalize_webhook(
                 authority, authority._receipt(row)) else 'unchanged'
         except (KeyError, RuntimeStoreError):

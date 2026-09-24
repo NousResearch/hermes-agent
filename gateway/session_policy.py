@@ -258,7 +258,7 @@ def policy_for_source(runner, source):
     from gateway.config import Platform
     if source.platform != Platform.LOCAL:
         return None
-    adapter = runner._adapter_for_source(source)
+    adapter = runner._delivery_adapter_for(source)
     if isinstance(adapter, LocalSessionAdapter) and adapter.authorize_source(source):
         policy = adapter.policies.get(source.chat_id)
         if policy is None:

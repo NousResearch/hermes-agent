@@ -3410,12 +3410,6 @@ class GatewayRunner(
     GatewayAgentCacheMixin, GatewayRuntimeInitMixin, GatewayProfileReconcileMixin, GatewayPluginRewireMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
-    def _adapter_for_source(self, source):
-        """The adapter that owns *source* for the session authority (admission checks, canonical
-        automation, native route checks, recovery bindings). Main split the old resolver into the
-        intake and delivery seams; the authority needs the answering adapter, so this is the
-        delivery seam under its historical name."""
-        return self._delivery_adapter_for(source)
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
     _busy_input_mode: str = "interrupt"

@@ -128,7 +128,7 @@ async def execute_admission(authority, ref, row):
             # before the completion event exists in the replay ring.
             authority.pending_results[row['admission_id']] = {'result': result, 'usage': captured.get('usage', {})}
             if not native and not is_api and response:
-                adapter = authority.runner._adapter_for_source(event.source)
+                adapter = authority.runner._delivery_adapter_for(event.source)
                 if adapter is not None:
                     await deliver_response(adapter, event, live.route, response)
             return response

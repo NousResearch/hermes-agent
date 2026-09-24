@@ -5,6 +5,7 @@ Multiplex callbacks bind current connector ownership; roles require fresh prefli
 Relay snapshots bind the authenticated connector and exact source; replay rechecks both.
 """
 from copy import copy, deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 
 from gateway.platforms.event import MessageEvent, MessageType
@@ -58,8 +59,8 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
     restored_source.is_bot = source.is_bot
     if provenance is not None:
         restore_provenance(runner, restored_source, provenance)
-    adapter = runner._adapter_for_source(source)
-    if adapter is None or runner._adapter_for_source(restored_source) is not adapter:
+    adapter = runner._intake_adapter_for(source)
+    if adapter is None or runner._intake_adapter_for(restored_source) is not adapter:
         raise RuntimeStoreError('not_found')
     return encoded_source
 
@@ -90,7 +91,7 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False):
                 'timestamp': event.timestamp.isoformat()}
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
-        adapter = runner._adapter_for_source(event.source)
+        adapter = runner._intake_adapter_for(event.source)
         if provenance is None:
             raise RuntimeStoreError('permission_denied')
         delivery = snapshot_destination(adapter, adapter._delivery_info.get(event.source.chat_id))
@@ -154,16 +155,48 @@ def restore_native(payload, runner=None):
     return event
 
 
-async def check_native_route(runner, payload, session_id, available_source, adapter):
-    """Read-only preflight: route/auth rejection must never consume a queued row."""
+@dataclass(frozen=True)
+class _NativeRouteReceipt:
+    # In-process result of THIS preflight, not a durable role authorization.
+    payload: dict
+    fresh_roles: bool
+    direct_only: bool
+
+
+async def _preflight_native_route(runner, payload, session_id, available_source, adapter):
+    """Read-only preflight plus a short-lived local validation receipt."""
     if 'automation' in payload['native_text_v1']:
         from gateway.session_automation import check_automation_route
-        return check_automation_route(runner, payload, session_id, available_source, adapter)
+        result = check_automation_route(runner, payload, session_id, available_source, adapter)
+        return result, _NativeRouteReceipt(deepcopy(payload), False, False)
     event = restore_native(payload, runner)
     # Validate the stored sender without recapturing files or trusting the binding caller.
     from gateway.session_ingress_context import reauthorize_roles
     provenance = payload['native_text_v1'].get('provenance')
+    # A direct allowlist verdict cannot be promoted into a reusable role grant.
+    # If it later disappears, only an actually awaited connector role check can
+    # justify adapter delegation at the whole-batch fence.
+    direct_only = (event.source.role_authorized and
+                   runner._is_user_authorized_for_source(event.source, allow_adapter_delegation=False))
     fresh_roles = await reauthorize_roles(runner, event.source, provenance)
+    receipt = _NativeRouteReceipt(deepcopy(payload), fresh_roles, direct_only)
+    result = _validate_native_route(runner, payload, session_id, available_source, adapter, receipt)
+    return result, receipt
+
+
+def _validate_native_route(runner, payload, session_id, available_source, adapter, receipt):
+    """Synchronous local fence after a real role check; no I/O or persisted grant."""
+    if payload != receipt.payload:
+        raise RuntimeStoreError('admission_conflict')
+    if 'automation' in payload['native_text_v1']:
+        from gateway.session_automation import check_automation_route
+        return check_automation_route(runner, payload, session_id, available_source, adapter)
+    event = restore_native(payload, runner)
+    provenance = payload['native_text_v1'].get('provenance')
+    if (receipt.direct_only and not runner._is_user_authorized_for_source(
+            event.source, allow_adapter_delegation=False)):
+        raise RuntimeStoreError('permission_denied')
+    fresh_roles = receipt.fresh_roles
     _validate_native(runner, event, provenance, fresh_roles)
     route = payload['native_text_v1']['route']
     store = runner.session_store
@@ -173,7 +206,7 @@ async def check_native_route(runner, payload, session_id, available_source, adap
     entry = store.lookup_by_session_key(route)
     if entry is None or entry.session_id != session_id:
         raise RuntimeStoreError('admission_conflict')
-    if adapter is None or runner._adapter_for_source(event.source) is not adapter:
+    if adapter is None or runner._intake_adapter_for(event.source) is not adapter:
         raise RuntimeStoreError('not_found')
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, validate_destination
@@ -182,3 +215,9 @@ async def check_native_route(runner, payload, session_id, available_source, adap
         if envelope.get('webhook_route') != route_digest(adapter, event.source.chat_id):
             raise RuntimeStoreError('admission_conflict')
     return event.source, route
+
+
+async def check_native_route(runner, payload, session_id, available_source, adapter):
+    """Read-only claim preflight: always obtain fresh role authorization."""
+    result, _ = await _preflight_native_route(runner, payload, session_id, available_source, adapter)
+    return result

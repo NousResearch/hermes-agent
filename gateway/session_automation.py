@@ -77,7 +77,7 @@ def snapshot_automation(authority, adapter, event, identity):
     # committed source's private proof, revalidated against the live connector.
     restored = restore_native({'text': event.text, 'native_text_v1': envelope}, runner)
     if (restored.source.to_dict() != event.source.to_dict()
-            or runner._adapter_for_source(restored.source) is not adapter):
+            or runner._intake_adapter_for(restored.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
@@ -102,7 +102,7 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
     entry = _owner(runner, event)
     if (entry.session_id != session_id or envelope['automation']['owner'] != session_id
             or runner.session_store._generate_session_key(available_source) != entry.session_key
-            or adapter is None or runner._adapter_for_source(event.source) is not adapter):
+            or adapter is None or runner._intake_adapter_for(event.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
     return event.source, entry.session_key
 
@@ -112,7 +112,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     ref = restore_local_session(authority, event.source.chat_id)
     live = authority.sessions[ref.session_id]
     if (live.source is not event.source or not adapter.authorize_source(event.source)
-            or authority.runner._adapter_for_source(live.source) is not adapter):
+            or authority.runner._delivery_adapter_for(live.source) is not adapter):
         raise RuntimeStoreError('permission_denied')
     descriptor = {'identity': identity, 'owner': ref.session_id,
                   'route': entry.session_key, 'target': entry.session_id}

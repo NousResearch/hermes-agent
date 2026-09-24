@@ -11,7 +11,7 @@ import itertools
 import logging
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from typing import Any, Optional
 
 import pytest
@@ -710,6 +710,44 @@ class TestServerRequestRouting:
             auto_approve_exec=True))
         s.run_turn("hi", turn_timeout=0.2)
         assert ("r1", {"decision": "accept"}) in client.responses
+
+    @pytest.mark.parametrize(
+        ("method", "request_id", "params", "routing_kwargs"),
+        [
+            (
+                "item/commandExecution/requestApproval",
+                "exec-deny",
+                {"command": "rm -rf /tmp/example", "cwd": "/tmp"},
+                {"auto_decline_exec": True},
+            ),
+            (
+                "item/fileChange/requestApproval",
+                "patch-deny",
+                {"itemId": "change-1", "reason": "edit a file"},
+                {"auto_decline_apply_patch": True},
+            ),
+        ],
+    )
+    def test_routing_auto_decline_skips_interactive_callback(
+        self, method, request_id, params, routing_kwargs
+    ):
+        """Unattended policy denials must not wait on an installed CLI callback."""
+        client = FakeClient()
+        client.queue_server_request(method, request_id=request_id, **params)
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        callback = Mock(return_value="once")
+        s = make_session(
+            client,
+            approval_callback=callback,
+            request_routing=_ServerRequestRouting(**routing_kwargs),
+        )
+        s.run_turn("hi", turn_timeout=0.2)
+
+        assert (request_id, {"decision": "decline"}) in client.responses
+        callback.assert_not_called()
 
 
 

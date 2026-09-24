@@ -454,6 +454,30 @@ class TestRunConversationCodexPath:
         assert routing.auto_approve_exec is False
         assert routing.auto_approve_apply_patch is False
 
+    @pytest.mark.parametrize(
+        ("single_query_mode", "expected_approve", "expected_decline"),
+        [("approve", True, False), ("deny", False, True)],
+    )
+    def test_single_query_policy_resolves_codex_server_requests_without_callback(
+        self, monkeypatch, single_query_mode, expected_approve, expected_decline
+    ):
+        """The -q policy must reach both Codex approval request types directly."""
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        captured = self._capture_routing_agent(monkeypatch)
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"approvals": {"mode": "manual", "single_query_mode": single_query_mode}},
+        ):
+            agent = _make_codex_agent()
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                agent.run_conversation("write something")
+
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is expected_approve
+        assert routing.auto_approve_apply_patch is expected_approve
+        assert routing.auto_decline_exec is expected_decline
+        assert routing.auto_decline_apply_patch is expected_decline
+
     def test_frozen_yolo_env_auto_approves_codex_server_requests(
         self, monkeypatch
     ):

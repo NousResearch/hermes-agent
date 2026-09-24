@@ -526,11 +526,21 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
     # explicit approval bypass (approvals.mode: off, /yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
     auto_approve_requests = False
+    auto_decline_requests = False
     try:
         from tools.approval import is_approval_bypass_active
         auto_approve_requests = is_approval_bypass_active()
     except Exception:
         logger.debug("codex app-server: approval-bypass lookup failed; keeping fail-closed default", exc_info=True)
+    # ``hermes chat -q`` has no user to answer the CLI callback. Match the native terminal tool's
+    # single-query policy so app-server requests resolve immediately instead of waiting for approvals.timeout.
+    try:
+        from tools.approval_context import _get_single_query_approval_mode, _is_single_query_approval_context
+        if _is_single_query_approval_context() and not auto_approve_requests:
+            auto_approve_requests = _get_single_query_approval_mode() == "approve"
+            auto_decline_requests = not auto_approve_requests
+    except Exception:
+        logger.debug("codex app-server: single-query approval lookup failed; keeping existing routing", exc_info=True)
     # Bridge codex JSON-RPC notifications (item/started, item/completed, item/agentMessage/delta, ...) into
     # Hermes' gateway UI callbacks (tool_progress_callback, _fire_stream_delta,
     # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
@@ -555,7 +565,10 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         codex_bin=get_configured_codex_binary(load_config()),
-        request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
+        request_routing=_ServerRequestRouting(
+            auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests,
+            auto_decline_exec=auto_decline_requests, auto_decline_apply_patch=auto_decline_requests,
+        ),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
         model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,

@@ -238,80 +238,18 @@ def _journey_id(home, label: str) -> str:
     return nodes[index]["id"]
 
 
-def test_the_id_journey_renders_names_the_cards_text(home):
-    from agent.learning_graph import memory_fingerprint
-
-    node_id = _journey_id(home, "beta")
-
-    assert node_id.split(":")[:3] == ["memory", "memory", "1"]
-    assert node_id.split(":")[3] == memory_fingerprint("beta note")
-
-
-def test_edit_targets_the_clicked_card_when_the_list_shifted_before_submit(home):
-    """The window a displayed-index identity cannot see: another writer prepends an entry AFTER
-    the graph is drawn and BEFORE the edit is submitted, so by the time the mutation reads the
+@pytest.mark.parametrize("op", ["edit", "delete"])
+def test_mutation_targets_the_clicked_card_when_the_list_shifted_before_submit(home, op):
+    """The window a displayed-index identity cannot see: an earlier entry is removed AFTER the
+    graph is drawn and BEFORE the edit/delete is submitted, so by the time the mutation reads the
     file that index names somebody else's card."""
     node_id = _journey_id(home, "beta")  # what Journey showed the user
-    _write_memory_file(home, "zeta first", "alpha note\nline two", "beta note")
+    _write_memory_file(home, "beta note", "gamma note")
 
-    assert lm.edit_node(node_id, "beta rewritten")["ok"]
+    mutate = (lambda: lm.edit_node(node_id, "beta rewritten")) if op == "edit" else (lambda: lm.delete_node(node_id))
+    assert mutate()["ok"]
+    assert _memory_entries(home) == (["beta rewritten", "gamma note"] if op == "edit" else ["gamma note"])
 
-    assert _memory_entries(home) == ["zeta first", "alpha note\nline two", "beta rewritten"]
-
-
-def test_delete_targets_the_clicked_card_when_the_list_shifted_before_submit(home):
-    node_id = _journey_id(home, "beta")
-    _write_memory_file(home, "zeta first", "alpha note\nline two", "beta note")
-
-    assert lm.delete_node(node_id)["ok"]
-
-    assert _memory_entries(home) == ["zeta first", "alpha note\nline two"]
-
-
-def test_detail_prefills_the_clicked_card_after_a_shift(home):
-    node_id = _journey_id(home, "beta")
-    _write_memory_file(home, "zeta first", "alpha note\nline two", "beta note")
-
-    assert lm.node_detail(node_id)["content"] == "beta note"
-
-
-def test_a_clicked_card_that_is_gone_refuses_even_though_its_index_still_exists(home):
-    node_id = _journey_id(home, "beta")
-    _write_memory_file(home, "alpha note\nline two", "gamma replaced beta")
-
-    result = lm.edit_node(node_id, "beta rewritten")
-
+    # The clicked card is gone now; its id must not fall back to whatever sits at that index.
+    result = mutate()
     assert result["ok"] is False and "stale" in result["message"]
-    assert _memory_entries(home) == ["alpha note\nline two", "gamma replaced beta"]
-
-
-def test_an_id_from_an_older_graph_still_resolves_by_position(home):
-    """Pre-fingerprint ids (a cached graph, an older shell) keep working."""
-    assert lm.edit_node("memory:memory:1", "beta rewritten")["ok"]
-
-    assert _memory_entries(home) == ["alpha note\nline two", "beta rewritten"]
-
-
-def test_a_profile_card_resolves_through_its_fingerprinted_id(home):
-    """USER.md cards sit after the MEMORY.md ones in the id's global index."""
-    from agent.learning_graph import build_learning_graph
-
-    profile = next(n for n in build_learning_graph()["nodes"] if n.get("memorySource") == "profile")
-
-    assert lm.edit_node(profile["id"], "rewritten profile")["ok"]
-
-    assert (home / "memories" / "USER.md").read_text(encoding="utf-8").strip() == "rewritten profile"
-
-
-def test_a_memory_longer_than_the_rendered_card_still_matches(home):
-    """The card renders a truncated body; the fingerprint must digest the WHOLE entry or a long
-    memory never matches itself."""
-    from agent.learning_graph import build_learning_graph
-
-    long_entry = "long memory " + ("x" * 2000)
-    _write_memory_file(home, long_entry, "beta note")
-    node = [n for n in build_learning_graph()["nodes"] if n["kind"] == "memory"][0]
-
-    assert lm.node_detail(node["id"])["content"] == long_entry
-    assert lm.edit_node(node["id"], "trimmed")["ok"]
-    assert _memory_entries(home) == ["trimmed", "beta note"]

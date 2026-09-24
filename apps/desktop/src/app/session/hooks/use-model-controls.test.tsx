@@ -21,6 +21,7 @@ import { deferred } from '../../../test/deferred'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
+const confirmMock = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
 const dismissNotification = vi.fn()
@@ -40,17 +41,21 @@ vi.mock('@/store/session-states', async importOriginal => {
   }
 })
 
-vi.mock('@/i18n', () => ({
+vi.mock('@/i18n', async importOriginal => ({
+  // Keep the real module so the applier's `translateNow` copy is the shipped
+  // string — the assertions below pin the labels a user actually sees.
+  ...(await importOriginal<Record<string, unknown>>()),
   useI18n: () => ({
     t: {
-      common: {
-        confirm: 'Confirm'
-      },
       desktop: {
         modelSwitchFailed: 'Model switch failed'
       }
     }
   })
+}))
+
+vi.mock('@/store/confirm', () => ({
+  confirm: (...args: Parameters<typeof confirmMock>) => confirmMock(...args)
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -80,6 +85,8 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    confirmMock.mockReset()
+    notifyError.mockReset()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
@@ -119,26 +126,6 @@ describe('useModelControls', () => {
     })
     expect(queryClient.getQueryData(modelOptionsQueryKey('beta'))).toBeUndefined()
     expect(queryClient.getQueryData(modelOptionsQueryKey('beta', null, 'source-b'))).toBeUndefined()
-  })
-
-  it('applies the global model when there is no active runtime session', async () => {
-    vi.mocked(getGlobalModelInfo).mockResolvedValue({
-      model: 'openai/gpt-5.5',
-      provider: 'openai-codex'
-    })
-
-    const { result } = renderHook(() =>
-      useModelControls({
-        queryClient: new QueryClient(),
-        requestGateway: vi.fn()
-      })
-    )
-
-    await result.current.refreshCurrentModel()
-
-    expect($currentModel.get()).toBe('openai/gpt-5.5')
-    expect($currentProvider.get()).toBe('openai-codex')
-    expect(getCurrentModelSource()).toBe('default')
   })
 
   it('does not clobber the active session footer state with global model info', async () => {
@@ -332,7 +319,7 @@ describe('useModelControls', () => {
     expect(invalidate).toHaveBeenCalled()
   })
 
-  it('confirms a guarded model switch before retrying it', async () => {
+  it('asks in a dialog before retrying a guarded model switch, then applies the confirmed one', async () => {
     $activeSessionId.set('session-1')
     setCurrentModel('gpt-5.6-sol')
     setCurrentProvider('openai-codex')
@@ -347,6 +334,12 @@ describe('useModelControls', () => {
       })
       .mockResolvedValueOnce({ key: 'model', scope: 'global', value: 'muse-spark-1.2-contributor' })
 
+    // Hold the answer open: nothing may be applied or resent until the user
+    // actually answers the dialog.
+    const answer = deferred<boolean>()
+
+    confirmMock.mockReturnValueOnce(answer.promise)
+
     let controls!: Controls
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
@@ -357,18 +350,16 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('gpt-5.6-sol')
     expect($currentProvider.get()).toBe('openai-codex')
-    expect(notify).toHaveBeenCalledWith(
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(confirmMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: expect.objectContaining({ label: 'Confirm' }),
-        kind: 'warning',
-        message: 'This contributor model trains on your data.'
+        description: 'This contributor model trains on your data.',
+        destructive: true
       })
     )
 
-    const action = notify.mock.calls.at(-1)?.[0]?.action
-
     await act(async () => {
-      await action?.onClick()
+      answer.resolve(true)
     })
 
     await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
@@ -380,6 +371,37 @@ describe('useModelControls', () => {
     })
     expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
     expect($currentProvider.get()).toBe('opencode-go')
+  })
+
+  it('keeps the current model when the guarded switch is declined (#112458)', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+
+    const requestGateway = vi.fn().mockResolvedValueOnce({
+      confirm_message: 'This contributor model trains on your data.',
+      confirm_required: true,
+      key: 'model',
+      value: 'muse-spark-1.2-contributor'
+    })
+
+    confirmMock.mockResolvedValueOnce(false)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })).resolves.toBe(
+      false
+    )
+
+    // Declining is free and silent: no resend, no error toast, the pick is gone.
+    await act(async () => {})
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect($currentModel.get()).toBe('gpt-5.6-sol')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('keeps the pick when an OLDER gateway refuses a mid-turn switch', async () => {
@@ -553,26 +575,6 @@ describe('useModelControls', () => {
     await result.current.refreshCurrentModel()
 
     expect($currentModel.get()).toBe('deepseek-v4.1-flash')
-    expect(getCurrentModelSource()).toBe('manual')
-  })
-
-  it('keeps a sticky manual pick that is still in the catalog', async () => {
-    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
-
-    const queryClient = new QueryClient()
-    queryClient.setQueryData(modelOptionsQueryKey('default'), {
-      providers: [{ models: ['openrouter/glm-4.7', 'openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
-    })
-
-    setCurrentModel('openrouter/glm-4.7')
-    setCurrentProvider('openrouter')
-    setCurrentModelSource('manual')
-
-    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
-
-    await result.current.refreshCurrentModel()
-
-    expect($currentModel.get()).toBe('openrouter/glm-4.7')
     expect(getCurrentModelSource()).toBe('manual')
   })
 

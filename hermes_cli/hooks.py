@@ -151,12 +151,30 @@ _DEFAULT_PAYLOADS = {
         # response, so without this an observer cannot see or price the fan-out.
         "moa_references": None,
     },
+    "pre_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "message_count": 2,
+        "tool_count": 0, "approx_input_tokens": 256, "request_char_count": 1024, "max_tokens": 64,
+    },
+    "post_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "api_duration": 0.42,
+        "started_at": 1756000000.0, "ended_at": 1756000000.42, "finish_reason": "stop",
+        "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
+        "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",
         "tool_call_history": [{
             "tool_name": "write_file",
-            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "/tmp/report.txt"}},
+            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "notes/report.txt"}},
             "input_bytes": 128, "output_bytes": 32, "status": "ok",
         }],
         "duration_ms": 1234,
@@ -210,15 +228,17 @@ def _cmd_test(args) -> None:
 def _print_run_result(result: Dict[str, Any]) -> None:
     if result.get("error"):
         print(f"      ✗ error: {result['error']}")
-        return
-    if result.get("timed_out"):
+    elif result.get("timed_out"):
         print(f"      ✗ timed out after {result['elapsed_seconds']}s")
-        return
-    print(f"      exit={result.get('returncode')}  elapsed={result.get('elapsed_seconds', 0)}s")
-    for stream in ("stdout", "stderr"):
-        text = (result.get(stream) or "").strip()
-        if text:
-            print(f"      {stream}: {_truncate(text, 400)}")
+    else:
+        print(f"      exit={result.get('returncode')}  elapsed={result.get('elapsed_seconds', 0)}s")
+        for stream in ("stdout", "stderr"):
+            text = (result.get(stream) or "").strip()
+            if text:
+                print(f"      {stream}: {_truncate(text, 400)}")
+    # run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so it is available even
+    # when the hook errored or timed out. A failing hook's decision is the one thing `hooks test` exists
+    # to show — failed-open and failed-closed must not render identically (#115968).
     parsed = result.get("parsed")
     if parsed:
         print(f"      parsed (Hermes wire shape): {json.dumps(parsed)}")

@@ -392,11 +392,14 @@ def test_native_gateway_runtime_live(harness):
                 raise AssertionError('second gateway did not refuse while the first owns gateway.lock')
             log.flush(); log.seek(0)
             text = log.read()
-        assert code != 0, text
-        # The refusal is logged before the stderr handler exists (gap: silent on the console);
-        # the durable errors.log carries the ownership refusal.
+        # One gateway per host: a second `gateway run` for a profile the live owner already serves
+        # ATTACHES (exit 0, spawns nothing) rather than starting a second process; only a launch the
+        # owner cannot serve is refused non-zero. Either way the owner keeps the lock and its identity.
         errors = (home / 'logs' / 'errors.log').read_text(encoding='utf-8', errors='replace')
-        assert 'already running' in text + errors or 'Cannot reserve gateway profiles' in text + errors, (text, errors[-2000:])
+        attached = code == 0 and 'already serves' in text
+        refused = code != 0 and ('already running' in text + errors or 'Cannot reserve gateway profiles' in text + errors
+                                 or 'Another gateway already owns this host' in text + errors)
+        assert attached or refused, (code, text, errors[-2000:])
         assert owner.poll() is None
         assert control(home, 'identify')['instance_id'] == desc['instance_id']
         return code

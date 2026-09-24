@@ -287,13 +287,34 @@ def _profiles(authority, actor, home, params):
         if latest:
             row['last_session'] = summary(authority.db.get_session(latest[0]))
     profiles = [row]
+    seen = {home.resolve()}
+
+    def discovered(configured, target):
+        # Discovery metadata only: never a licence to read another owner's state/configuration.
+        if target.resolve() in seen:
+            return
+        seen.add(target.resolve())
+        entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
+                 'model': '', 'provider': '', 'description': '', 'display_name': configured,
+                 'skill_count': 0}
+        meta_path = target / 'profile.yaml'
+        try:
+            meta = yaml.safe_load(meta_path.read_text(encoding='utf-8')) if meta_path.is_file() else {}
+        except (OSError, yaml.YAMLError):
+            meta = {}
+        if isinstance(meta, dict):
+            entry['display_name'] = str(meta.get('display_name') or configured)
+            if isinstance(meta.get('ui_meta'), dict):
+                entry['ui_meta'] = meta['ui_meta']
+        profiles.append(entry)
+
+    # Sibling profiles this process multiplexes: the roster lists them with the same
+    # standing as a hosted-room destination, and the client routes their sessions by name.
+    registry = getattr(getattr(authority, 'runner', None), 'session_authorities', None)
+    for sibling in (registry or ()):
+        discovered(served_profile_name(Path(sibling.profile_id)), Path(sibling.profile_id))
     service = getattr(authority, 'hosted_room_service', None)
     if service is not None:
         for configured, target in service.profile_homes().items():
-            if target != home:
-                # Configured execution destinations are discovery metadata, not
-                # permission to read another owner's state/configuration.
-                profiles.append({'name': configured, 'path': str(target), 'is_default': False,
-                                 'model': '', 'provider': '', 'description': '',
-                                 'display_name': configured, 'skill_count': 0})
+            discovered(configured, target)
     return {'profiles': profiles, 'bot_mode_protocol': True}

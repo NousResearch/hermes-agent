@@ -58,6 +58,8 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     try:
         if gw._is_service_running():
             return True
+        if gw._served_profile_needs_no_service():
+            return True
         if not gw._is_service_installed():
             if context == "import" or not wants_service_install(
                 interactive=interactive, install=install, config=config

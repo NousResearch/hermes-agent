@@ -9,6 +9,7 @@ import {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   JsonRpcRequestChannel,
+  type ServerRequest,
   wireFrameText
 } from '@hermes/shared/json-rpc-channel'
 import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
@@ -136,12 +137,24 @@ export class GatewayClient extends EventEmitter {
   // only owns the two transports (child stdio, attached socket) and the
   // buffered-event replay that Ink's mount order needs.
   private readonly channel = new JsonRpcRequestChannel({
+    // A mid-turn socket streams deltas every second; killing the only
+    // transport that carried live traffic split sessions that completed
+    // server-side (#115251). Count any inbound frame as liveness, exactly
+    // like the desktop/web client; a silent drop still trips the deadline.
+    heartbeatLiveness: 'any-inbound',
     onEvent: ev => this.publishWire(ev as AnyGatewayEvent),
     onHeartbeatFailure: () => this.onHeartbeatFailure(),
+    onRequestHandlerError: (error, req) =>
+      this.pushLog(`[protocol] server request handler crashed: ${req.method} (${error.message})`),
+    onUnhandledRequest: req => this.pushLog(`[protocol] unhandled server request: ${req.method}`),
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     unrefTimers: true
   })
   private bufferedEvents = new CircularBuffer<AnyGatewayEvent>(MAX_BUFFERED_EVENTS)
+  // Server→client requests (clarify, approval, sudo, …) follow the same
+  // mount-order contract as events: an attached session mid-turn can send one
+  // the instant the socket opens, before the Ink handler is registered.
+  private bufferedRequests: ServerRequest[] = []
   private pendingExit: number | null | undefined
   private ready = false
   private readyTimer: ReturnType<typeof setTimeout> | null = null
@@ -164,6 +177,17 @@ export class GatewayClient extends EventEmitter {
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
     this.setMaxListeners(0)
+    this.channel.onRequest(request => {
+      if (this.subscribed) {
+        this.emit('request', request)
+      } else {
+        this.bufferedRequests.push(request)
+      }
+    })
+  }
+
+  get attached(): boolean {
+    return this.attachUrl !== null
   }
 
   /** Frames off the socket. On a canonical gateway the owner's execution stamp rides on
@@ -192,6 +216,8 @@ export class GatewayClient extends EventEmitter {
   private publish(ev: AnyGatewayEvent) {
     if (ev.type === 'gateway.ready') {
       this.ready = true
+      this.clearReconnect()
+      this.reconnectAttempts = 0
 
       if (this.readyTimer) {
         clearTimeout(this.readyTimer)
@@ -296,8 +322,6 @@ export class GatewayClient extends EventEmitter {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-
-    this.reconnectAttempts = 0
   }
 
   private resetStartupState() {
@@ -308,11 +332,14 @@ export class GatewayClient extends EventEmitter {
     // attached to a discarded child / socket.
     this.channel.detach(new Error('gateway restarting'))
     this.ready = false
-    this.subscribed = false
+    // `subscribed` is NOT reset here: the renderer drain()s once on mount, so a
+    // reset would strand every post-reconnect event (gateway.ready included) in
+    // the buffer forever (#111594).
     // Invalidate any pending deferred drain() flush from a prior transport so
     // its queued microtask becomes a no-op (it captured the old generation).
     this.drainGeneration += 1
     this.bufferedEvents.clear()
+    this.bufferedRequests = []
     this.pendingExit = undefined
     this.clearReadyTimer()
   }
@@ -340,6 +367,7 @@ export class GatewayClient extends EventEmitter {
 
   private handleTransportExit(code: null | number, reason?: string) {
     this.clearReadyTimer()
+    this.ready = false
     this.closeSidecarSocket()
     this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
     this.channel.detach(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
@@ -347,9 +375,10 @@ export class GatewayClient extends EventEmitter {
     // Self-heal: a dropped transport (real close OR silent drop caught by the
     // heartbeat) should reconnect instead of stranding the UI on a dead socket
     // (issue #32997). Intentional shutdown sets `disposed` and skips this.
-    // Schedule before the synchronous 'exit' emission: useMainApp's existing
+    // Schedule before the synchronous 'exit' emission: in spawn mode useMainApp's
     // recovery subscriber may call start() immediately, and start() cancels this
-    // timer so there is only one recovery owner.
+    // timer so there is only one recovery owner; the attempt counter survives
+    // until gateway.ready so backoff keeps growing across failed restarts.
     this.scheduleReconnect()
 
     if (this.subscribed) {
@@ -503,19 +532,25 @@ export class GatewayClient extends EventEmitter {
         ws.addEventListener(
           'open',
           () => {
+            if (this.ws !== ws) {
+              return
+            }
+
             if (!settled) {
               settled = true
               resolve()
             }
 
-            this.clearReconnect()
             this.connectSidecarMirror()
 
             if (this.isCanonical) {
               void this.requestOverWebSocket<{session_create: CreationContract}>('runtime.describe').then(description => {
                 this.creationContract = description.session_create
 
-                if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: {} }) }
+                // The canonical gateway has no ready frame (readiness is the discovery
+                // grant + runtime.describe); publish a client-local ready with no skin so
+                // the renderer boots on its default theme.
+                if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: {} } as unknown as AnyGatewayEvent) }
               }).catch(error => {
                 this.publish({ type: 'gateway.start_timeout', payload: {
                   python: 'runtime.describe', cwd: '', stderr_tail: String(error)
@@ -558,7 +593,11 @@ export class GatewayClient extends EventEmitter {
       connectPromise.catch(() => {})
       this.wsConnectPromise = connectPromise
 
-      ws.addEventListener('message', ev => this.handleWebSocketFrame(ev.data))
+      ws.addEventListener('message', ev => {
+        if (this.ws === ws) {
+          this.handleWebSocketFrame(ev.data)
+        }
+      })
       ws.addEventListener('close', ev => {
         // Skip close events from sockets that have already been
         // replaced — start() / closeGatewaySocket() can swap `this.ws`
@@ -589,6 +628,18 @@ export class GatewayClient extends EventEmitter {
   }
 
   start() {
+    if (this.disposed) {
+      // kill() is terminal: every caller (die / dieWithCode /
+      // graceful-exit-cleanup / dead-output-stream) exits the Node process
+      // right after, so there is no legitimate kill-then-start flow. A
+      // start() arriving here is a recovery subscriber reacting to the
+      // killed child's late `exit` — respawning now would recreate the
+      // gateway on a PTY that is already gone.
+      this.pushLog('[lifecycle] start() ignored after kill()')
+
+      return
+    }
+
     this.disposed = false
     this.clearReconnect()
 
@@ -598,7 +649,6 @@ export class GatewayClient extends EventEmitter {
     this.attachUrl = attachUrl
     this.sidecarUrl = sidecarUrl
     this.resetStartupState()
-    this.clearReconnect()
 
     this.closeGatewaySocket()
     this.closeSidecarSocket()
@@ -614,6 +664,11 @@ export class GatewayClient extends EventEmitter {
 
   private pushLog(line: string) {
     this.logs.push(truncateLine(line))
+  }
+
+  /** Record a client-side diagnostic line in the /logs tail (raw wire text the UI replaced with plain copy). */
+  recordLog(line: string) {
+    this.pushLog(line)
   }
 
   // Death-explaining breadcrumbs (spawn / exit / kill / replace) — kept in the
@@ -659,6 +714,10 @@ export class GatewayClient extends EventEmitter {
       // the gap before this microtask ran — all in chronological order.
       for (const ev of this.bufferedEvents.drain()) {
         this.emit('event', ev)
+      }
+
+      for (const request of this.bufferedRequests.splice(0)) {
+        this.emit('request', request)
       }
 
       if (this.pendingExit !== undefined) {
@@ -738,6 +797,7 @@ export class GatewayClient extends EventEmitter {
     this.disposed = true
     this.localGeneration++
     this.clearReconnect()
+    this.reconnectAttempts = 0
     this.channel.stopHeartbeat()
     this.lifecycle(`[lifecycle] GatewayClient.kill reason=${reason} (detach only)`)
     this.closeGatewaySocket()

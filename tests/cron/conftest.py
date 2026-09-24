@@ -113,7 +113,10 @@ def cron_owner(monkeypatch):
                     raise
             assert current_execution() is previous
             assert not authority._cron_cancellations
-            return tuple(authority.pending_results[identity]["result"]["cron_result"])
+            saved = authority.pending_results[identity]["result"]
+            # The transport carries run-side verdicts back like run_canonical_job's status poll.
+            job.update(saved.get("cron_job_flags") or {})
+            return tuple(saved["cron_result"])
 
         try:
             return asyncio.run(execute_job())

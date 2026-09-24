@@ -98,6 +98,12 @@ def _create(authority, actor, params):
     return restore_local_session(authority, sid), request_id
 
 
+# Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
+# (cron/quota_hold.py parks past a closed usage window; cron/unreachable_retry.py re-runs a
+# never-reached model). They cross the authority boundary inside the cron result.
+RUN_JOB_FLAGS = ('_model_unreachable', '_quota_hold_seconds')
+
+
 async def operation(authority, name, params, actor=None):
     actor = _actor(authority, actor)
     authority._require_admission_open()
@@ -151,14 +157,15 @@ async def operation(authority, name, params, actor=None):
             # cancellation on the admission here means that window cannot lose it.
             _cancellations(authority).setdefault(row['admission_id'], threading.Event()).set()
         return {'ok': True}
-    result = None
+    result, flags = None, {}
     if row['status'] == 'terminal':
         from gateway.session_results import admission_result
         saved = admission_result(authority.db, row['admission_id'])
         result = saved['result'].get('cron_result') if saved else None
+        flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
             result = [False, '', '', row.get('outcome') or 'unknown_execution']
-    return {'status': row['status'], 'result': result}
+    return {'status': row['status'], 'result': result, 'job_flags': flags}
 
 
 def _cancellations(authority):
@@ -184,11 +191,15 @@ async def execute(authority, ref, row, policy):
     cancel = cancellations.setdefault(row['admission_id'], threading.Event())
     token = _execution.set((authority, ref.session_id, data['cron_job']['id'], row['admission_id']))
     try:
+        job = data['cron_job']
         with _profile_runtime_scope(Path(authority.db.db_path).resolve().parent):
-            result = await asyncio.to_thread(run_job, data['cron_job'], extra_prompt=data['extra_prompt'],
+            result = await asyncio.to_thread(run_job, job, extra_prompt=data['extra_prompt'],
                                              execution_id=row['admission_id'], cancel_event=cancel)
+        # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
+        # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.
+        flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}
         authority.pending_results[row['admission_id']] = {
-            'result': {'final_response': result[2], 'cron_result': list(result),
+            'result': {'final_response': result[2], 'cron_result': list(result), 'cron_job_flags': flags,
                        'failed': not result[0], 'completed': result[0]}, 'usage': {}}
         if not result[0]:
             raise RuntimeError(result[3] or 'cron execution failed')

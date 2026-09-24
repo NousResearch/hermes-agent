@@ -17,6 +17,7 @@ from typing import Any
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
+from tui_gateway.transport import serialize_frame
 
 _log = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ class WSTransport:
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
-        line = json.dumps(obj, ensure_ascii=False)
+        line = serialize_frame(obj, self._peer, _log)
         try:
             on_loop = asyncio.get_running_loop() is self._loop
         except RuntimeError:
@@ -177,7 +178,7 @@ class WSTransport:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(json.dumps(obj, ensure_ascii=False))
+            batch.append(serialize_frame(obj, self._peer, _log))
         await self._safe_send_many(batch)
         return not self._closed
 
@@ -234,6 +235,11 @@ def _ws_peer_label(ws: Any) -> str:
         return "unknown"
     host, port = getattr(client, "host", None) or "unknown", getattr(client, "port", None)
     return f"{host}:{port}" if port is not None else host
+
+
+def _is_unknown_method(resp) -> bool:
+    error = resp.get("error") if isinstance(resp, dict) else None
+    return isinstance(error, dict) and error.get("code") == -32601
 
 
 def _disable_nagle(ws: Any) -> None:
@@ -312,6 +318,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
+            server._ensure_lease_watcher()  # cross-process lease moves → display.lease
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
@@ -365,6 +372,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             try:
                 if authority_connection is not None:
                     resp = await authority_connection.dispatch(req)
+                    if _is_unknown_method(resp) and req_method in server._methods:
+                        # Session verbs live on the authority; everything else the sidecar still
+                        # registers (pet, wake word, active-session list, connectors) keeps its
+                        # legacy handler. A real -32601 reaches the client only for methods
+                        # neither side knows, which is what its version-skew notice keys on.
+                        resp = await asyncio.to_thread(server.dispatch, req, transport)
                 else:
                     resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:

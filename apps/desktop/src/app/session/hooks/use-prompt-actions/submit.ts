@@ -1,3 +1,4 @@
+import type { PromptSubmitResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -25,6 +26,7 @@ import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/sto
 import { trackPendingSubmission } from '@/store/pending-submissions'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
+  $activeSessionId,
   $sessions,
   resolveComposerSessionKey,
   setActiveSessionId,
@@ -109,6 +111,14 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
 }
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
+/** Canonical admission receipt; `user_row_id` binds the optimistic bubble to its durable row. */
+type SubmitReceipt = Pick<PromptSubmitResult, 'user_row_id'> & {
+  admission_id?: string
+  submission_id?: string
+  session_id?: string
+  status?: string
+}
+
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
   const {
     activeSessionIdRef,
@@ -141,6 +151,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const attachments = (options?.attachments ?? scope.readAttachments()).filter((a): a is ComposerAttachment =>
         Boolean(a)
       )
+
+      const titlePreview = attachments.find(
+        a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
+      )?.titlePreview
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -429,6 +443,36 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
+      // Point the pane at a runtime this submit just resumed for its stored
+      // session. ChatView renders the `$sessionStates` slice named by
+      // `$activeSessionId`, while the optimistic row and every stream event
+      // land in the resumed runtime's slice — pinning only the ref left the
+      // chat painting the dead runtime, so the prompt, its reply, and every
+      // later turn stayed invisible until a relaunch (#71733, #117867).
+      // `session.resume` omits messages, so carry the transcript the pane is
+      // showing into the empty slice (same conversation only — lineage-
+      // matched, since compression rotates the tip id) instead of collapsing
+      // the thread to the new prompt until the next refresh.
+      const rebindPaneToResumedRuntime = (sid: string, storedId: string) => {
+        const paneRuntimeId = $activeSessionId.get()
+        const paneState = paneRuntimeId && paneRuntimeId !== sid ? $sessionStates.get()[paneRuntimeId] : undefined
+        const sessions = $sessions.get()
+
+        if (
+          paneState?.messages.length &&
+          paneState.storedSessionId &&
+          resolveComposerSessionKey(paneState.storedSessionId, sessions) ===
+            resolveComposerSessionKey(storedId, sessions)
+        ) {
+          const carried = paneState.messages
+
+          updateSessionState(sid, state => (state.messages.length ? state : { ...state, messages: carried }), storedId)
+        }
+
+        activeSessionIdRef.current = sid
+        setActiveSessionId(sid)
+      }
+
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {
@@ -674,7 +718,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             sessionId = resumed.session_id
 
             if (targetIsCurrentView()) {
-              activeSessionIdRef.current = sessionId
+              rebindPaneToResumedRuntime(sessionId, targetStoredSessionId)
             }
           }
         } catch {
@@ -833,7 +877,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // the next turn untouched — without it, losing the settle race
           // (client saw idle, server still unwinding) redirects or interrupts
           // the live turn with text the user explicitly queued.
-          ...((options?.fromQueue || queueAdmission) && { queued: true })
+          ...((options?.fromQueue || queueAdmission) && { queued: true }),
+          ...(titlePreview && { title_preview: titlePreview })
         })
 
         // A fresh draft had no session owner at entry. Adopt its published
@@ -868,7 +913,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         try {
           const recoverStoredSessionId = targetStoredSessionId
 
-          const { result, sessionId: receiptSessionId } = await withSessionNotFoundResume<{ admission_id?: string; submission_id?: string; session_id?: string; status?: string }>(
+          const { result, sessionId: receiptSessionId } = await withSessionNotFoundResume<SubmitReceipt>(
             sessionId,
             recoverStoredSessionId,
             liveId =>
@@ -882,7 +927,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
 
                 try {
-                  return await requestGateway<{ admission_id?: string; submission_id?: string; session_id?: string; status?: string }>(
+                  return await requestGateway<SubmitReceipt>(
                     'prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
                   )
                 } catch (error) {
@@ -896,7 +941,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   await writePreparedSubmission(retryKey, prepared)
                   const { submission_id: _id, ...legacyParams } = params
 
-                  const result = await requestGateway<{ admission_id?: string; submission_id?: string; session_id?: string; status?: string }>(
+                  const result = await requestGateway<SubmitReceipt>(
                     'prompt.submit', legacyParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
                   )
 
@@ -973,6 +1018,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
               if (!next.busy && !next.awaitingResponse) {releaseBusy()}
             }
+          }
+
+          const rowId = result?.user_row_id
+
+          if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
+            // The worker may finish before this acknowledgement arrives. Bind
+            // only this send's optimistic occurrence; never reset live state or
+            // assume the newest user row still belongs to this RPC.
+            updateSessionState(receiptSessionId, state => {
+              const index = state.messages.findIndex(message => message.id === optimisticId && message.role === 'user')
+
+              if (index < 0 || state.messages[index].rowId === rowId) {
+                return state
+              }
+
+              return {
+                ...state,
+                messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
+              }
+            })
           }
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {

@@ -319,9 +319,10 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_hygiene_notify(self, source, meta, message, what):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
         try:
-            _adapter = self._adapter_for_source(source)
+            _adapter = self._delivery_adapter_for(source)
             if _adapter and source.chat_id:
-                await _adapter.send(source.chat_id, message, metadata=meta)
+                await _adapter.emit_warning(source.chat_id, message, metadata=meta,
+                                            logical_platform=source.platform)
         except Exception as _werr:
             logger.warning("Failed to deliver %s to user: %s", what, _werr)
 
@@ -505,6 +506,7 @@ class GatewayTurnHygieneMixin:
         old rows and rewrite_transcript() would DELETE them; neither rotation nor in-place signals
         FAILURE and an unconditional rewrite would leave only the summary. Write-before-repoint:
         a repoint-then-failed-rewrite would point the live entry at an empty session."""
+        from gateway.run_turn import hygiene_no_commit_reason
         from agent.model_metadata import estimate_messages_tokens_rough
         _hyg_agent = attempt.agent
         # _compress_context rotates to a NEW session_id so the old transcript stays intact/searchable.
@@ -566,9 +568,9 @@ class GatewayTurnHygieneMixin:
             _new_count = plan.msg_count
             _new_tokens = plan.approx_tokens
             logger.warning(
-                "Gateway hygiene compression for session %s did not rotate or compact in place (no "
-                "session_db on the hygiene agent) — preserving the original transcript instead "
-                "of overwriting it with the summary (#21301).", session_entry.session_id,
+                "Gateway hygiene compression for session %s did not rotate or compact in place (%s) — "
+                "preserving the original transcript instead of overwriting it with the summary (#21301).",
+                session_entry.session_id, hygiene_no_commit_reason(_hyg_agent),
             )
 
         logger.info(
@@ -622,11 +624,12 @@ class GatewayTurnHygieneMixin:
                 # Force-redact: provider exception text may contain credentials; this reaches users.
                 from agent.redact import redact_sensitive_text
                 _err = redact_sensitive_text(getattr(_comp, "_last_summary_error", None) or "unknown error", force=True)
+                logger.warning("Session hygiene compression aborted: %s", _err)
                 await self._hmwa_hygiene_notify(
-                    source, attempt.meta, "⚠️ Context compression aborted "
-                    f"({_err}). No messages were dropped — "
-                    "conversation is unchanged. Run /compress to retry, /reset for a clean "
-                    "session, or check your auxiliary.compression model configuration.",
+                    source, attempt.meta,
+                    "⚠️ Shortening the conversation history failed, so I kept everything as-is. "
+                    "Run /compress to try again or /new to start fresh. If this keeps happening, "
+                    "run `hermes doctor` on the host.",
                     "compression-failure warning",
                 )
         # Configured aux model failed, recovered on the main model: only the user can fix that config.
@@ -730,8 +733,10 @@ class GatewayTurnHygieneMixin:
                 # fails closed (UnscopedSecretError) and every hygiene compaction silently degrades to a
                 # lossy truncation (#100849 bundle).
                 copy_context().run,
+                # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
                 lambda: _hyg_agent._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
+                    task_id=session_entry.session_id or "default",
                 ),
             )
             attempt.wait_started = time.monotonic()
@@ -767,11 +772,14 @@ class GatewayTurnHygieneMixin:
             return history
 
         hs = await self._hmwa_hygiene_settings(source, session_key)
+        # Hygiene can never land with compression disabled; a sub-limit transcript is the identity (#111988).
         if not hs.compression_enabled:
-            return history
+            return self._bound_hygiene_payload(history, hs, session_entry)
         plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
+        # No compression this turn (under both thresholds, cooldown, or one already in flight): without
+        # the bound the model would get the full uncompressed transcript.
         if not plan.needs_compress:
-            return history
+            return self._bound_hygiene_payload(history, hs, session_entry)
 
         attempt = self._HygieneAttempt(agent=None, meta=self._event_thread_metadata(event, source), history=history)
         try:
@@ -797,4 +805,23 @@ class GatewayTurnHygieneMixin:
             pass
         except Exception as e:
             logger.warning("Session hygiene auto-compress failed: %s", e)
+        # A landed compression published a NEW transcript on attempt.history: leave it byte-identical.
+        # Anything else (turn-hold, timeout, unwind, codex path) left the FULL uncompressed transcript
+        # there — that is the fail-closed case (#111988).
+        if attempt.history is history:
+            return self._bound_hygiene_payload(history, hs, session_entry)
         return attempt.history
+
+    @staticmethod
+    def _bound_hygiene_payload(history, hs, session_entry):
+        """``bound_model_input_without_hygiene`` over ``hs.hard_msg_limit``, with one INFO line when the
+        cut is real. Below the limit this is the identity — no allocation, no behaviour change."""
+        from gateway.run_turn import bound_model_input_without_hygiene
+        bounded = bound_model_input_without_hygiene(history, hs.hard_msg_limit)
+        if bounded is not history:
+            logger.info(
+                "Session hygiene did not land for %s: bounding the model payload to %s of %s "
+                "messages (hard limit %s) — the stored transcript is unchanged",
+                session_entry.session_id, len(bounded), len(history), hs.hard_msg_limit,
+            )
+        return bounded

@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.21.2"
+version = "0.21.5"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -74,8 +74,8 @@ dependencies = [
   # ``packaging`` is imported directly on three production paths but was never
   # declared, so it only reached users transitively (pip/uv pull it for other
   # tools). The slim official Docker image ships without it, where the
-  # try/except-ImportError fallbacks silently degrade: Hindsight's
-  # ``_meets_minimum_version`` disables update_mode='append' (#40503),
+  # try/except-ImportError fallbacks silently degrade: memory plugins'
+  # version compares disable features (#40503),
   # tools/lazy_deps.py treats every version constraint as satisfied, and
   # hermes_cli/main.py drops to naive requirement parsing. Pure-Python
   # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
@@ -127,7 +127,13 @@ dependencies = [
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   # CIDR-aware forwarded_allow_ips requires uvicorn >=0.31.0.
-  "uvicorn[standard]>=0.31.0,<1",
+  # uvicorn's [standard] extra bundles uvloop, httptools, and watchfiles.
+  # uvloop cannot build on Android/Termux (libuv's ./configure fails), so
+  # we declare the working components inline and gate uvloop behind the
+  # [uvloop] optional extra — desktop/server profiles pull it via [all].
+  "uvicorn>=0.31.0,<1",
+  "httptools>=0.6.3,<0.9",
+  "watchfiles>=0.20,<2",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
@@ -187,6 +193,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# High-performance event loop — uvloop replaces the stdlib asyncio loop with
+# a libuv-backed implementation for ~2-4x throughput on uvicorn.  Gated as an
+# optional extra because libuv's ./configure does not run on Android/Termux
+# (bionic libc, non-FHS layout).  Desktop and server installs pull this via
+# [all]; the [termux] / [termux-all] profiles intentionally omit it.
+uvloop = [
+  "uvloop>=0.15.1,<0.24; sys_platform != 'win32' and sys_platform != 'cygwin' and sys_platform != 'android' and platform_python_implementation != 'PyPy'",
+]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
@@ -203,7 +217,6 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
-hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.2", "slack-bolt==1.30.0", "slack-sdk==3.44.1", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
@@ -244,10 +257,12 @@ wake = [
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
-# (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the
-# LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately
-# excluded from [all] like honcho/hindsight so a quarantined upstream release
-# can't break fresh installs.
+# (memory.supermemory / memory.mem0) at first use. Where BOTH pin exactly the
+# versions MUST match (enforced by tests/test_project_metadata.py); LAZY_DEPS
+# entries that mirror a plugin.yaml range (mem0ai) keep the
+# extra as the floor install and never downgrade a newer compatible release.
+# Deliberately excluded from [all] like honcho so a quarantined
+# upstream release can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
 mem0 = ["mem0ai==2.0.10"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
@@ -344,6 +359,19 @@ google = [
   "httplib2==0.32.0",
   "pyasn1==0.6.4",
 ]
+google-chat = [
+  # Google Chat adapter (Pub/Sub inbound + Chat REST). Kept out of [all] so a
+  # quarantined google-cloud-pubsub cannot break every fresh install; Docker
+  # bakes `--extra google-chat` and lazy_deps installs into
+  # HERMES_LAZY_INSTALL_TARGET on sealed hosted images.
+  "google-cloud-pubsub==2.39.0",
+  "google-api-python-client==2.194.0",
+  "google-auth==2.55.1",
+  "google-auth-oauthlib==1.3.1",
+  "google-auth-httplib2==0.3.1",
+  "httplib2==0.32.0",
+  "pyasn1==0.6.4",
+]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
@@ -354,7 +382,10 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.3.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1", "python-multipart==0.0.32"]
+# uvicorn pin without [standard] — httptools / watchfiles are now core deps,
+# and uvloop is gated behind the [uvloop] extra.  This keeps [web] safe for
+# termux-all which includes it.
+web = ["fastapi==0.133.1", "uvicorn==0.41.0", "starlette==1.3.1", "python-multipart==0.0.32"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
@@ -380,6 +411,7 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
+  "hermes-agent[uvloop]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
@@ -398,7 +430,7 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
-hermes-agent = "run_agent:main"
+hermes-agent = "agent.legacy_cli:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.uv]
@@ -498,8 +530,8 @@ google-api-python-client = false
 google-auth = false
 google-auth-httplib2 = false
 google-auth-oauthlib = false
+google-cloud-pubsub = false
 h2 = false
-hindsight-client = false
 honcho-ai = false
 httplib2 = false
 httpx = false
@@ -572,7 +604,7 @@ youtube-transcript-api = false
 # and the drift broke installed wheels. Do not add the list back.
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hermes_platform", "hermes_platform.*"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
@@ -586,12 +618,17 @@ gateway = ["assets/**/*"]
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
 plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# Bot Desktop starts Xvnc + Xfce through a shell launcher and seeds the wallpaper; both are read
+# via Path(__file__).parent in tools/bot_desktop/runtime.py and vanish from sealed wheels otherwise.
+tools = ["bot_desktop/launcher.sh", "bot_desktop/wallpaper.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "live: secrets-gated canaries against REAL LLM provider APIs (spends money; select with -m live)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
+    "real_post_swap_handoff: opt out of the autouse stub that runs the update post-swap tail in-process",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
     "real_retry_backoff: opt out of the tests/agent autouse stub that zeroes jittered_backoff",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
@@ -602,7 +639,7 @@ markers = [
     "windows_only: exercises native-Windows behaviour; skipped on other hosts",
 ]
 # integration tests take way too long to run in the normal CI environments
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not live'"
 
 [tool.ty.environment]
 python-version = "3.13"

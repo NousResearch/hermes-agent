@@ -66,6 +66,10 @@ export class CanonicalDesktopProtocol {
   wire(method: string, prepared: Record<string, unknown> = {}): string {
     if (MUTATION_METHODS.has(method)) { return 'session.mutate' }
 
+    // The warm-cache re-attach: canonical attach is `session.resume`, which
+    // rebinds the live event transport and returns the same snapshot shape.
+    if (method === 'session.activate') { return 'session.resume' }
+
     return method === 'slash.exec' && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
@@ -109,16 +113,22 @@ export class CanonicalDesktopProtocol {
     }
 
     if (method === 'session.create') {
-      const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols'])
+      const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
       const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
 
       if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
-      const result = Object.fromEntries(Object.entries(params).filter(([key]) => ['request_id', 'cwd', 'model', 'toolsets'].includes(key)))
+      // The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
+      const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
+        ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden'].includes(key) || (key === 'profile' && value && value !== 'default')))
       const key = JSON.stringify(result)
       const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
       this.creates.set(key, String(requestId))
 
       return { ...result, request_id: requestId, source: 'gui' }
+    }
+
+    if (method === 'session.activate') {
+      return { session_id: params.session_id, source: 'desktop', ...(params.profile ? { profile: params.profile } : {}) }
     }
 
     if (method === 'session.interrupt' || method === 'session.redirect' || method === 'session.steer') {
@@ -238,7 +248,7 @@ export class CanonicalDesktopProtocol {
       return { ...value, session_id: value.ref.session_id }
     }
 
-    if (method === 'session.resume' || method === 'session.create') {
+    if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
       const sid = value.session_id
       this.event({ type: 'session.info', session_id: sid, payload: value })
 

@@ -5,25 +5,6 @@ from __future__ import annotations
 from hermes_cli.main import _resolve_last_session
 
 
-class _FakeDB:
-    def __init__(self, rows):
-        self._rows = rows
-        self.closed = False
-
-    def search_sessions(self, source=None, limit=20, **_kw):
-        rows = [r for r in self._rows if r.get("source") == source] if source else list(self._rows)
-        rows.sort(
-            key=lambda r: float(r.get("last_active") or r.get("started_at") or 0),
-            reverse=True,
-        )
-        return rows[:limit]
-
-    def close(self):
-        self.closed = True
-
-
-
-
 def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
     # End-to-end: SessionDB must surface last_active and order by MRU.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -69,37 +50,6 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class _WorkspaceAwareDB:
-    """Fake SessionDB whose ``search_sessions`` honors ``workspace_key`` the
-    same way the real ``_workspace_key_clause`` does: a row matches the key
-    when its ``git_repo_root`` equals it, or (no repo root recorded) when its
-    ``cwd`` is at or under it."""
-
-    def __init__(self, rows):
-        self._rows = rows
-        self.closed = False
-
-    def search_sessions(self, source=None, limit=20, workspace_key=None, **_kw):
-        rows = [r for r in self._rows if r.get("source") == source] if source else list(self._rows)
-        if workspace_key:
-            key = workspace_key.rstrip("/")
-            def _in_ws(r):
-                grr = (r.get("git_repo_root") or "").rstrip("/")
-                if grr:
-                    return grr == key
-                cwd = (r.get("cwd") or "").rstrip("/")
-                return cwd == key or cwd.startswith(key + "/")
-            rows = [r for r in rows if _in_ws(r)]
-        rows.sort(
-            key=lambda r: float(r.get("last_active") or r.get("started_at") or 0),
-            reverse=True,
-        )
-        return rows[:limit]
-
-    def close(self):
-        self.closed = True
-
-
 def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
     # End-to-end through the real SessionDB + _resolve_last_session: -c from
     # repo A picks repo A's session even though repo B is globally newer.
@@ -133,3 +83,32 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
     assert _resolve_last_session("cli") == "repo_a"
+
+
+def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
+    """`hermes -z … --resume latest` / `hermes -c` chain on the previous one-shot: its distinct `oneshot`
+    source hides it from pickers but it is still CLI history (#112550)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    import hermes_state
+    from pathlib import Path
+
+    db = hermes_state.SessionDB(db_path=Path(tmp_path / "state.db"))
+    try:
+        db.create_session("interactive", source="cli")
+        db.create_session("oneshot_run", source="oneshot")
+        db.create_session("tui_chat", source="tui")
+        with db._lock:
+            for sid, started in (("interactive", 100.0), ("oneshot_run", 200.0), ("tui_chat", 300.0)):
+                db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started, sid))
+            db._conn.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
+    # The lookup opens the active home's store by explicit path (a served-profile process has no
+    # single default home), so the home is the seam — same as the workspace test above.
+    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
+    assert _resolve_last_session("cli") == "oneshot_run"
+    assert _resolve_last_session("tui") == "tui_chat"

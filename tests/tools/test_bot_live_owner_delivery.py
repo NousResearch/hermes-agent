@@ -117,7 +117,9 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
     try:
         db.create_session(session_id="scratch", source="cli")
         db.set_session_title("scratch", "Scratch")
-        assert mailbox.find_canonical_live_owner(tmp_path) is None  # no Bot Chat
+        # No Bot Chat yet is still a deliverable owner: the authority creates the chat on
+        # first delivery (create-if-missing), so discovery reports an empty tip, not None.
+        assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == ""
         db.create_session(session_id="chat", source="cli")
         db.set_session_title("chat", "Bot Chat")
         owner = mailbox.find_canonical_live_owner(tmp_path)
@@ -145,3 +147,15 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
         mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
     mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
     assert "author" not in authority.calls[-1][1]
+
+
+def test_non_dict_ticket_fails_exact_id_reads_closed(tmp_path):
+    """Malformed is not absent: an exact-id receipt read raises instead of reporting "no record"."""
+    from tools import bot_live_delivery as mailbox
+
+    bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
+    with pytest.raises(ValueError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
+    assert bad.read_text(encoding="utf-8") == '"oops"'

@@ -1,31 +1,37 @@
 """Shared helpers for the per-profile MCP lifecycle RPCs (mcp.servers.*).
 
-Published onto ``tui_gateway.server`` as ``_mcp_reset_profile`` /
-``_mcp_summarize_server`` so the rebound handler bodies in methods_tools resolve them.
+Published onto ``tui_gateway.server`` as ``_mcp_summarize_server`` so the rebound handler
+bodies in methods_tools resolve it.
 """
 
 from __future__ import annotations
 
-import contextlib
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 
-def reset_profile(token) -> None:
-    if token is None:
-        return
-    with contextlib.suppress(Exception):
-        from hermes_constants import reset_hermes_home_override
+def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dict[str, dict], Dict[str, str | None]]:
+    servers = {name: dict(cfg) for name, cfg in config_servers.items() if isinstance(cfg, dict)}
+    plugins: Dict[str, str | None] = {name: None for name in servers}
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from tools.mcp_tool_config import _filter_suspicious_mcp_servers
 
-        reset_hermes_home_override(token)
+        discover_plugins()
+        manager = get_plugin_manager()
+        portable = _filter_suspicious_mcp_servers(manager.get_portable_mcp_servers())
+        owners = manager.get_portable_mcp_server_plugins()
+        for name, cfg in portable.items():
+            if name not in servers:
+                servers[name] = dict(cfg)
+                plugins[name] = owners.get(name)
+    except Exception:
+        pass
+    return servers, plugins
 
 
-def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
-    """Serialize one server's config for a UI (no secret values).
-
-    Mirrors web_server._mcp_server_summary plus ``oauth_tokens_present`` so a UI can
-    tell an OAuth server that still needs authentication from one already authenticated.
-    """
+def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
+    from tools.mcp_tool_common import mcp_server_enabled
 
     cfg = cfg if isinstance(cfg, dict) else {}
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
@@ -42,8 +48,10 @@ def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
         "env": sorted(str(k) for k in (cfg.get("env") or {})),
         "auth": auth,
         "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
-        "enabled": cfg.get("enabled", True) is not False,
-        "tools": cfg.get("tools")}
+        "enabled": mcp_server_enabled(cfg),
+        "tools": cfg.get("tools"),
+        "source": "plugin" if plugin is not None else "config",
+        "plugin": plugin}
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

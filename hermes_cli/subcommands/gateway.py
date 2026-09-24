@@ -163,15 +163,15 @@ def build_gateway_parser(
     _flag(gateway_migrate_legacy, "-y", "--yes", dest="yes", help="Skip the confirmation prompt")
 
     gateway_migrate = gateway_subparsers.add_parser(
-        "migrate", help="Move per-profile gateways onto one multiplexed default gateway (or back)",
-        description="Stop and uninstall each secondary profile's standalone gateway, turn on "
-            "gateway.multiplex_profiles on the default profile and restart its gateway so it serves "
-            "every profile. Runs a preflight first (duplicate bot tokens, port-binding platforms "
-            "without a /p/<profile>/ ingress) and changes nothing when blocked. "
-            "--standalone rolls the recorded migration back.")
-    mode = gateway_migrate.add_mutually_exclusive_group()
-    _flag(mode, "--multiplex", dest="multiplex", help="Migrate to one multiplexed gateway (default)")
-    _flag(mode, "--standalone", dest="standalone", help="Roll back to per-profile gateways from the recorded manifest")
+        "migrate", help="Converge every per-profile gateway onto the ONE host gateway",
+        description="Converge this host onto the one-gateway-per-host model: stop and uninstall "
+            "each secondary profile's gateway and its supervisor unit (systemd, launchd, Windows "
+            "Scheduled Task), then restart the default profile's gateway so it serves every "
+            "profile. Runs a preflight first (duplicate bot tokens, port-binding platforms "
+            "without a /p/<profile>/ ingress) and changes nothing when blocked. Safe to re-run: a "
+            "half-migrated host converges on the next run. Per-profile gateways are not a "
+            "supported topology any more, so there is no rollback command.")
+    _flag(gateway_migrate, "--multiplex", dest="multiplex", help="Converge onto the one host gateway (default)")
     _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
     _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
 

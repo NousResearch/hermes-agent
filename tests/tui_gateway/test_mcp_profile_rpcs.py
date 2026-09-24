@@ -136,6 +136,8 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
             "connected": False,
             "disabled": False,
             "status": "configured",
+            "source": "config",
+            "plugin": None,
         }
     ]
     assert "error" not in str(payload)
@@ -345,6 +347,138 @@ def test_add_requires_transport(hermes_root):
     assert resp["error"]["code"] == 4063
 
 
+def _catalog_http_entry(*, auth: str | None = None):
+    """A real HTTP catalog entry. Assertions compare the saved block to this manifest."""
+    from hermes_cli.mcp_catalog import list_catalog
+
+    for entry in list_catalog():
+        if entry.transport.type != "http" or not entry.transport.url:
+            continue
+        if auth is not None and entry.auth.type != auth:
+            continue
+        return entry
+    raise AssertionError(f"catalog has no http entry with auth={auth!r}")
+
+
+def _saved_server(root: Path, profile: str, name: str) -> dict:
+    path = root / "profiles" / profile / "config.yaml" if profile else root / "config.yaml"
+    return (_read_yaml(path).get("mcp_servers") or {}).get(name) or {}
+
+
+def test_add_catalog_id_in_profile_param_saves_manifest_in_that_profile(hermes_root):
+    """Desktop add-from-catalog sends {profile, name, preset} with a catalog id."""
+    entry = _catalog_http_entry()
+    result = _result(
+        _call(
+            "mcp.servers.add",
+            {"profile": "work", "name": entry.name, "preset": entry.name},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["server"]["transport"] == "http"
+    saved = _saved_server(hermes_root, "work", entry.name)
+    assert saved["url"] == entry.transport.url
+    assert entry.name not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
+    other = _read_yaml(hermes_root / "profiles" / "other" / "config.yaml").get("mcp_servers") or {}
+    assert entry.name not in other
+
+
+def test_oauth_catalog_add_follows_routed_profile_not_payload(hermes_root):
+    """OAuth add sends {name, preset} only. requestGatewayForAgent carries the
+    profile as routing metadata, so the write follows the bound scope."""
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    entry = _catalog_http_entry(auth="oauth")
+    routed = hermes_root / "profiles" / "work"
+    previous = is_multiplex_active()
+    set_multiplex_active(False)
+    token = set_hermes_home_override(routed)
+    try:
+        result = _result(
+            _call("mcp.servers.add", {"name": entry.name, "preset": entry.name})
+        )
+    finally:
+        reset_hermes_home_override(token)
+        set_multiplex_active(previous)
+
+    assert result["server"]["transport"] == "http"
+    assert result["server"]["auth"] == "oauth"
+    saved = _saved_server(hermes_root, "work", entry.name)
+    assert saved["url"] == entry.transport.url
+    assert saved["auth"] == "oauth"
+    assert entry.auth.type == "oauth"
+    assert entry.name not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
+    assert not _saved_server(hermes_root, "other", entry.name)
+
+
+def test_explicit_transport_wins_over_catalog_or_unknown_preset(hermes_root):
+    entry = _catalog_http_entry()
+    catalog = _result(
+        _call(
+            "mcp.servers.add",
+            {
+                "profile": "work",
+                "name": "kept-catalog",
+                "preset": entry.name,
+                "config": {"command": "explicit-bin"},
+            },
+        )
+    )
+    unknown = _result(
+        _call(
+            "mcp.servers.add",
+            {
+                "profile": "work",
+                "name": "kept-unknown",
+                "preset": "not-a-catalog-entry",
+                "config": {"url": "https://override.example/mcp"},
+            },
+        )
+    )
+
+    assert catalog["server"]["command"] == "explicit-bin"
+    assert catalog["server"]["url"] != entry.transport.url
+    saved_catalog = _saved_server(hermes_root, "work", "kept-catalog")
+    assert saved_catalog["command"] == "explicit-bin"
+    assert saved_catalog.get("url") != entry.transport.url
+    assert unknown["server"]["url"] == "https://override.example/mcp"
+    assert _saved_server(hermes_root, "work", "kept-unknown")["url"] == "https://override.example/mcp"
+
+
+def test_unknown_preset_returns_4063_and_writes_nothing(hermes_root):
+    resp = _call(
+        "mcp.servers.add",
+        {"profile": "work", "name": "unknown", "preset": "not-a-catalog-entry"},
+    )
+
+    assert resp["error"]["code"] == 4063
+    assert not _saved_server(hermes_root, "work", "unknown")
+    assert "unknown" not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
+
+
+def test_cli_preset_still_fills_transport_when_not_in_catalog(hermes_root):
+    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli.mcp_catalog import get_entry
+
+    preset_name = next(
+        name for name in mcp_config._MCP_PRESETS if get_entry(name) is None
+    )
+    expected = mcp_config._MCP_PRESETS[preset_name]
+    result = _result(
+        _call(
+            "mcp.servers.add",
+            {"profile": "work", "name": "cli-preset", "preset": preset_name},
+        )
+    )
+
+    saved = _saved_server(hermes_root, "work", "cli-preset")
+    assert result["server"]["command"] == expected["command"]
+    assert saved["command"] == expected["command"]
+    assert saved.get("args") == list(expected.get("args") or [])
+
+
 def test_default_profile_add_when_profile_omitted(hermes_root):
     root = hermes_root
     _result(
@@ -360,3 +494,31 @@ def test_default_profile_add_when_profile_omitted(hermes_root):
     assert "rootsvc" not in _read_yaml(root / "profiles" / "work" / "config.yaml").get(
         "mcp_servers", {}
     )
+
+
+def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root, monkeypatch):
+    """``mcp.servers.test`` for a secondary must expand its ``${VAR}`` header from THAT profile's
+    secret scope, not the launch process's ``os.environ`` (the default profile's value) — the
+    Desktop MCP setup "Test connection" otherwise reports green against the wrong credential.
+    ``os.environ`` is never mutated by the scope."""
+    import hermes_cli.mcp_config as mcp_config
+
+    work = hermes_root / "profiles" / "work"
+    (work / ".env").write_text("ALPHA_ONLY_TOKEN=work-token\n", encoding="utf-8")
+    (work / "config.yaml").write_text(
+        "mcp_servers:\n  srv:\n    url: http://x/mcp\n"
+        "    headers:\n      Authorization: Bearer ${ALPHA_ONLY_TOKEN}\n", encoding="utf-8")
+    monkeypatch.setenv("ALPHA_ONLY_TOKEN", "default-process-token")
+
+    resolved = {}
+
+    def fake_probe(name, config, connect_timeout=30, details=None):
+        resolved.update(mcp_config._resolve_mcp_server_config(config).get("headers", {}))
+        return [("tool-a", "desc")]
+
+    monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+    result = _result(_call("mcp.servers.test", {"profile": "work", "name": "srv"}))
+
+    assert result["ok"] is True
+    assert resolved["Authorization"] == "Bearer work-token"
+    assert os.environ["ALPHA_ONLY_TOKEN"] == "default-process-token"

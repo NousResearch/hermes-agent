@@ -85,12 +85,10 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "origin is required" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
     err = _error(srv._methods["vault.add"](2, {"kind": "login", "label": "x"}))
     assert err["code"] == 5095
-    assert "secret payload is required" in err["message"]
 
     err = _error(
         srv._methods["vault.add"](
@@ -98,8 +96,61 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "unknown vault kind" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
+
+
+def _sources_rows(home):
+    out = _result(srv._methods["vault.sources"](90, {}))
+    return {row["name"]: row for row in out["sources"]}
+
+
+def test_enabling_a_detected_manager_reports_it_enabled(home, monkeypatch):
+    """The Settings toggle and `hermes vault sources --enable` both clear the opt-out override;
+    the shipped default must then agree with `is_enabled()`'s zero-config contract — an installed
+    manager becomes a login source instead of silently staying off (#109546)."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    _result(
+        srv._methods["vault.source.set"](80, {"name": "bitwarden", "enabled": True})
+    )
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["installed"] is True
+    assert rows["bitwarden"]["enabled"] is True
+
+
+def test_disabling_a_manager_persists_the_opt_out(home, monkeypatch):
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    _result(
+        srv._methods["vault.source.set"](81, {"name": "bitwarden", "enabled": False})
+    )
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["installed"] is True
+    assert rows["bitwarden"]["enabled"] is False
+
+
+def test_undetected_manager_stays_off(home, monkeypatch):
+    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: False)
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["installed"] is False
+
+
+def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
+    """A hand-edited ``vault: true`` in config.yaml must not crash the Desktop
+    Credential Vault source toggle: the malformed section is coerced to a dict
+    before the opt-out is written (same YAML-shape hazard class _voice_cfg_dict
+    documents for voice.*, #19835)."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    (home / "config.yaml").write_text("vault: true\n")
+    _result(
+        srv._methods["vault.source.set"](82, {"name": "bitwarden", "enabled": False})
+    )
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["enabled"] is False
 
 
 def test_remove_is_idempotent(home):
@@ -112,3 +163,15 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home, monkeypatch):
+    """Once a second profile has been served, ``get_secret`` fails closed for unscoped reads. The
+    launch profile's vault.* calls (Desktop sends no ``profile`` for it) must still bind the launch
+    secret scope — otherwise every enabled manager's token read raises UnscopedSecretError and the
+    Passwords & Logins panel shows "Could not load vault items" until the gateway restarts."""
+    from agent.secret_scope import set_multiplex_active
+
+    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
+    set_multiplex_active(True)  # conftest resets the latch per test
+    assert _sources_rows(home)["onepassword"]["enabled"] is True

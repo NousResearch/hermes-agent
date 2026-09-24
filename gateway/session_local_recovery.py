@@ -119,6 +119,25 @@ def local_history(authority, ref):
     return authority.db.get_messages_as_conversation(target)
 
 
+def reopen_local_session(authority, ref):
+    """An explicit resume makes a local session live again.
+
+    A TUI shutdown / WS disconnect / idle eviction stamps ``end_reason`` on the physical row.
+    ``SessionStore`` reads any stamped row as a stale route (#54878) and, since those reasons are
+    not recoverable, answers the next submit with a FRESH session — the resumed client keeps waiting
+    on an id that never emits again. The classic resumes clear the stamp (``oneshot._load_resume_target``,
+    tui_gateway ``_resume_cold``); the authority must too. Only the lineage tip is reopened: a
+    compression parent or reset predecessor is never the physical target.
+    """
+    live = authority.sessions.get(ref.session_id)
+    if live is None or live.source is None or live.source.platform != Platform.LOCAL:
+        return
+    target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
+    row = authority.db.get_session(target)
+    if row is not None and row.get('end_reason') is not None:
+        authority.db.reopen_session(target)
+
+
 def reset_local_session(store, old_entry, session_id, now, display_name):
     from hermes_state_local_lineage import reset_local_target
     entry = SessionEntry(old_entry.session_key, session_id, now, now,

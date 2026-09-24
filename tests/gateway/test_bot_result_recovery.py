@@ -84,3 +84,28 @@ def test_cancelled_queued_admission_is_a_terminal_cancelled_receipt_not_ambiguou
         assert _result(authority, records['a' * 32])['status'] == 'failed'
     finally:
         db.close()
+
+
+def test_settled_bot_receipt_relays_empty_reply_for_a_bare_silence_marker(tmp_path):
+    """#110782: the authority receipt applies the gateway's silence rule — a successful bare
+    marker reaches the sender as "", prose that merely mentions one is relayed verbatim."""
+    path = tmp_path / 'state.db'
+    db = SessionDB(path)
+    try:
+        db.create_session('bot', source='gui')
+        epoch = begin_runtime_epoch(db, instance_id='first')
+        records = []
+        for key, reply in [('quiet', ' *NO_REPLY* '), ('prose', 'The NO_REPLY marker means do not answer.')]:
+            admission = admit_session_input(db, epoch=epoch, principal_id='owner', session_id='bot',
+                                           request_id=key, payload={'text': key})
+            row = claim_session_input(db, epoch=epoch, session_id='bot')
+            retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': reply}, 'usage': {}})
+            records.append(dict(status='canonical', admission_id=admission['admission_id'],
+                                delivery_id=key, profile_home=str(tmp_path), session_id='bot', message=key))
+        authority = SimpleNamespace(db=db)
+        quiet, prose = (_result(authority, record) for record in records)
+        assert quiet['status'] == prose['status'] == 'settled'
+        assert quiet['reply'] == ''
+        assert prose['reply'] == 'The NO_REPLY marker means do not answer.'
+    finally:
+        db.close()

@@ -1,6 +1,20 @@
 import { expect, test } from 'vitest'
 
-import { createLocalGatewayDials, ensureLocalGateway } from './local-gateway'
+import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+
+test('the ensure client inherits the caller-scrubbed parent env, not the raw Desktop env', async () => {
+  // #68367: a sibling profile's `gateway ensure` must not see the launch profile's dotenv
+  // credentials. The parent env passed in IS the environment; only HERMES_HOME and the
+  // backend's own entries are layered on top.
+  const printEnv = ['-e', 'process.stdout.write(JSON.stringify({ leak: process.env.LEAK ?? null, home: process.env.HERMES_HOME, own: process.env.OWN }))']
+  const result = await runGatewayEnsure(
+    { command: process.execPath, args: printEnv, env: { OWN: '1' }, shell: false },
+    process.cwd(),
+    '/home/x/.hermes',
+    { PATH: process.env.PATH ?? '', OWN: '0' }
+  )
+  expect(JSON.parse(result.stdout)).toEqual({ leak: null, home: '/home/x/.hermes', own: '1' })
+})
 
 test('canonical ensure cannot cross a rejected update or profile lifecycle gate', async () => {
   let ran = false
@@ -18,7 +32,9 @@ test.skipIf(process.platform === 'win32')('native HTTP mints fresh purpose-bound
   const path = await import('node:path')
   const net = await import('node:net')
   const { nativeGatewayHttpHeaders } = await import('./local-gateway')
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-http-'))
+  // macOS: os.tmpdir() is /var/..., a symlink to /private/var; the gateway canonicalises
+  // profile_id, so the endpoint must carry the realpath or identities never match.
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-http-')))
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
   const requests: any[] = []
 
@@ -46,6 +62,39 @@ test.skipIf(process.platform === 'win32')('native HTTP mints fresh purpose-bound
   }
 })
 
+test.skipIf(process.platform === 'win32')('a served secondary mints its ticket through the multiplexer control socket, bound to its own profile', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const net = await import('node:net')
+  const { mintLocalGatewayTicket } = await import('./local-gateway')
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-mux-')))
+  const secondary = path.join(root, 'profiles', 'cold')
+  await fs.mkdir(secondary, { recursive: true, mode: 0o700 })
+  await fs.chmod(root, 0o700)
+  // Only the multiplexer root has a control socket; profiles/cold has none (it is served).
+  const requests: any[] = []
+
+  const server = net.createServer(socket => socket.once('data', chunk => {
+    requests.push(JSON.parse(chunk.toString()).params)
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: secondary, instance_id: 'mux', ticket: 'served-grant' } }) + '\n')
+  }))
+
+  await new Promise<void>(resolve => server.listen(path.join(root, 'gateway.sock'), resolve))
+  await fs.chmod(path.join(root, 'gateway.sock'), 0o600)
+  const endpoint = { profile_id: secondary, instance_id: 'mux', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+
+  try {
+    // Without control_home the secondary's own (absent) socket is probed: stale owner, not a grant.
+    await expect(mintLocalGatewayTicket(endpoint, 'native-http')).rejects.toThrow('Gateway ticket control socket missing')
+    expect(await mintLocalGatewayTicket({ ...endpoint, control_home: root }, 'native-http')).toBe('served-grant')
+    expect(requests).toEqual([{ profile_id: secondary, instance_id: 'mux', purpose: 'native-http' }])
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
 test('ensure consumes structured readiness without acquiring a child owner', async () => {
   const endpoint = { profile_id: '/private/profile', instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
   const connection = await ensureLocalGateway(async () => ({ code: 0, stdout: JSON.stringify({ state: 'ready', endpoint }) }))
@@ -54,6 +103,17 @@ test('ensure consumes structured readiness without acquiring a child owner', asy
   expect(connection).not.toHaveProperty('process')
   expect(connection.token).toBe('')
   await expect(ensureLocalGateway(async () => ({ code: 5, stdout: JSON.stringify({ state: 'starting', reason_code: 'deadline' }) }))).rejects.toThrow('starting')
+})
+
+test('an ensure child that never reached the protocol boundary is diagnosed from stderr, not as a JSON parse error', async () => {
+  // `main`'s hermes has no `gateway ensure` subcommand: argparse usage on stderr, nothing on stdout.
+  const legacy = { code: 2, stdout: '', stderr: "usage: hermes gateway [-h] ...\nhermes gateway: 'ensure' is not a `hermes gateway` command.\nRun `hermes gateway --help` to see all commands.\n" }
+  await expect(ensureLocalGateway(async () => legacy)).rejects.toThrow(/produced no result \(exit 2\): Run `hermes gateway --help`/)
+  // A missing profile: the CLI exits 1 before the ensure command runs.
+  await expect(ensureLocalGateway(async () => ({ code: 1, stdout: '', stderr: "Error: Profile 'gone' does not exist.\n" }))).rejects.toThrow(/exit 1\): Error: Profile 'gone' does not exist\./)
+  // A protocol outcome is never re-diagnosed: `incompatible` stays the gateway's own verdict.
+  await expect(ensureLocalGateway(async () => ({ code: 3, stdout: '{"endpoint":null,"reason_code":"runtime_protocol","state":"incompatible"}', stderr: 'noise' }))).rejects.toThrow('Gateway incompatible (runtime_protocol)')
+  await expect(ensureLocalGateway(async () => ({ code: 0, stdout: '', stderr: '' }))).rejects.toThrow(/produced no result \(exit 0\)\. Update Hermes/)
 })
 
 test('private dial credential is one-use and bound to the requesting native window', () => {
@@ -65,7 +125,9 @@ test('private dial credential is one-use and bound to the requesting native wind
   expect(url).not.toContain('private-ticket')
   const details = { url, webContentsId: 8, resourceType: 'webSocket', requestHeaders: { Origin: 'http://renderer', 'Sec-WebSocket-Protocol': 'hermes-gateway-v1, hermes-gateway-ticket.private-ticket' } }
   expect(dials.headers(details)).toBeNull()
-  const headers = dials.headers({ ...details, webContentsId: 7 })!
+  // The dial may cross a loopback proxy that rewrites host:port but keeps the nonce.
+  const proxied = url.replace('127.0.0.1:1234', '127.0.0.1:4321')
+  const headers = dials.headers({ ...details, url: proxied, webContentsId: 7 })!
   expect(headers).not.toHaveProperty('Origin')
   expect(headers['Sec-WebSocket-Protocol']).toBe('hermes-gateway-v1, hermes-gateway-ticket.private-ticket')
   expect(dials.headers({ ...details, webContentsId: 7 })).toBeNull()
@@ -113,7 +175,9 @@ test.skipIf(process.platform === 'win32')('a stopped gateway that unlinked its c
   const path = await import('node:path')
   const net = await import('node:net')
   const { mintLocalGatewayTicket, redialLocalGateway } = await import('./local-gateway')
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-redial-'))
+  // macOS: os.tmpdir() is /var/..., a symlink to /private/var; the gateway canonicalises
+  // profile_id, so the endpoint must carry the realpath or identities never match.
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-redial-')))
   const socketPath = path.join(home, 'gateway.sock')
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
 
@@ -170,7 +234,9 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
   const path = await import('node:path')
   const net = await import('node:net')
   const { isStaleLocalGatewayError, mintLocalGatewayTicket } = await import('./local-gateway')
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-unsafe-'))
+  // macOS: os.tmpdir() is /var/..., a symlink to /private/var; the gateway canonicalises
+  // profile_id, so the endpoint must carry the realpath or identities never match.
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-unsafe-')))
   const socketPath = path.join(home, 'gateway.sock')
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
   const server = net.createServer(socket => socket.end())
@@ -187,4 +253,12 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })
   }
+})
+
+test('a ?profile= request on the shared host descriptor mints for the sibling profile home', () => {
+  const endpoint = { profile_id: '/h/.hermes', instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=p2', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' })
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=default', '/h/.hermes')).toBe(endpoint)
+  expect(routedGatewayEndpoint({ ...endpoint, profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' }, 'http://127.0.0.1:1/x?profile=default', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes' })
+  expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', '/h/.hermes')).toThrow('Invalid profile route')
 })

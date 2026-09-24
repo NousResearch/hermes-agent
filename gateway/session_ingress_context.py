@@ -138,7 +138,12 @@ def _binding(runner, source, profile):
     if relay:
         transport, connector = _relay_connector(adapter, source)
     else:
-        connector = runner._adapter_credential_fingerprint(adapter)
+        # The connector pins "the same credential still serves this route" across a restart. A
+        # plugin platform with no discoverable credential (in-memory / socket-only adapters) is
+        # still one registered adapter; it binds by platform + owning profile rather than being
+        # refused as not_found.
+        connector = (runner._adapter_credential_fingerprint(adapter)
+                     or f'adapter:{source.platform.value}:{profile or ""}')
     if connector is None:
         raise RuntimeStoreError('not_found')
     provenance = {'transport_home': str(home), 'runtime_home': str(runtime_home),

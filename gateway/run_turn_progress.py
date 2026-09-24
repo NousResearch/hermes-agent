@@ -29,6 +29,19 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
+    """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
+    plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
+    from agent.display import build_tool_preview, tool_labels_for_call
+    name = str(tool_name or "tool")
+    args = args if isinstance(args, dict) else {}
+    payload = {"tool_id": str(call_id or ""), "name": name, "context": build_tool_preview(name, args, max_len=80) or "",
+               "tool_call_id": str(call_id or ""), "tool_name": name, "args": args}
+    if labels := [label.as_payload() for label in tool_labels_for_call(name, args)]:
+        payload["labels"] = labels
+    return payload
+
+
 class GatewayTurnProgressMixin:
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -130,15 +143,18 @@ class GatewayTurnProgressMixin:
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
+        from gateway.warning_notifications import render_notification
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
                 line = format_subagent_failure_line(
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
-                    duration_seconds=kwargs.get("duration_seconds"),
+                    duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
-                self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error")
+                render_notification(
+                    lambda: self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error"),
+                    platform=ctx.source.platform, user_config=ctx.user_config)
         except Exception:
             logger.debug("subagent failure notice failed", exc_info=True)
 
@@ -212,7 +228,7 @@ class GatewayTurnProgressMixin:
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
-            adapter = self._runner._adapter_for_source(ctx.source)
+            adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
@@ -276,11 +292,13 @@ class GatewayTurnProgressMixin:
         task_order: List[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
-        # TERMINAL authorization refusal, distinct from native_failed: the
-        # connector refused this destination, so no later publication in this
-        # turn may re-deliver the task text through the text fallback. Declared
-        # rather than set dynamically so the state is visible where it lives.
-        egress_declined: bool = False
+        # TERMINAL for the turn, distinct from native_failed: no later publication
+        # in this turn may deliver task text through the native lane OR the text
+        # fallback. Two causes, both properties of the destination rather than of
+        # one attempt: the connector's egress guard refused the chat, or the chat
+        # cannot host a card (no thread anchor). Declared rather than set
+        # dynamically so the state is visible where it lives.
+        publication_suppressed: bool = False
         anonymous_seq: int = 0
 
         @staticmethod
@@ -326,7 +344,7 @@ class GatewayTurnProgressMixin:
         text = st.fallback_text()
         from gateway.relay.egress import declined_send
 
-        if getattr(st, "egress_declined", False):
+        if st.publication_suppressed:
             return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
@@ -344,7 +362,7 @@ class GatewayTurnProgressMixin:
                     "guard; suppressing progress delivery for the rest of this "
                     "turn (the destination is not approved)"
                 )
-                st.egress_declined = True
+                st.publication_suppressed = True
                 return
         result = await self._send_progress_text(st, text)
         if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -354,10 +372,21 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         if not st.tasks:
             return
-        if getattr(st, "egress_declined", False):
-            # The connector refused this destination earlier in the turn; every
-            # later publication would re-deliver the same task text there.
+        if st.publication_suppressed:
+            # Publication was suppressed earlier in the turn (egress refusal or a chat
+            # that cannot host a card); every later publication would re-deliver the
+            # same task text there.
             return
+        # Resolve eligibility in the owning adapter BEFORE transport I/O: a first
+        # timeout/disconnect must not turn an un-cardable chat into text fallback.
+        # Optional for older adapters; only an explicit False refuses publication.
+        destination_supported = getattr(st.adapter, "native_task_card_destination_supported", None)
+        if callable(destination_supported) and destination_supported(
+            ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+        ) is False:
+            self._task_card_uncardable_destination(st)
+            if st.publication_suppressed:
+                return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
@@ -377,7 +406,7 @@ class GatewayTurnProgressMixin:
                 # event skipped this branch (the lane is already "failed") and
                 # went straight to the text fallback. A refusal does not expire
                 # after one tick.
-                st.egress_declined = True
+                st.publication_suppressed = True
                 st.native_failed = True
                 logger.warning(
                     "Slack native task-card progress DECLINED by the connector's "
@@ -386,12 +415,37 @@ class GatewayTurnProgressMixin:
                 )
                 return
             st.native_failed = True
-            logger.warning(
-                "Slack native task-card progress failed; falling back "
-                "to an editable text update: %s", getattr(result, "error", "unknown error"),
-            )
+            from gateway.run_turn_runner import _CARD_DESTINATION_REFUSALS
+            if getattr(result, "error", None) in _CARD_DESTINATION_REFUSALS:
+                self._task_card_uncardable_destination(st, getattr(result, "error", "unknown error"))
+                if st.publication_suppressed:
+                    return
+            else:
+                logger.warning(
+                    "Slack native task-card progress failed; falling back "
+                    "to an editable text update: %s", getattr(result, "error", "unknown error"),
+                )
         # Once the native rail fails, every later lifecycle event edits the same fallback message.
         await self._task_card_send_or_edit_fallback(st)
+
+    def _task_card_uncardable_destination(self, st, reason: str = "no thread anchor") -> None:
+        """The chat cannot host a card (flat DM: no thread anchor) — a property of the destination,
+        not a transient outage. The text fallback exists to keep a WORKING card lane live through a
+        transient failure, not to invent text bubbles the operator never asked for: with Slack's tier
+        default (``tool_progress: off``) the lane goes silent for the turn. An operator who WROTE
+        ``new``/``all`` asked for text progress, so the editable fallback carries it instead."""
+        if self._ctx.tool_progress_enabled:
+            st.native_failed = True
+            logger.info(
+                "Slack native task cards are unsupported for this destination (%s); "
+                "tool progress continues as an editable text update", reason,
+            )
+            return
+        st.publication_suppressed = True
+        logger.info(
+            "Slack native task cards are unsupported for this destination (%s); "
+            "tool progress stays off for this turn", reason,
+        )
 
     def _task_card_drain(self, st) -> bool:
         changed = False
@@ -405,8 +459,8 @@ class GatewayTurnProgressMixin:
         return changed
 
     async def _send_native_task_card_progress(self, adapter) -> None:
-        """Drain the progress queue into Slack-native plan/task cards; on any native failure, fall
-        back to an editable in-thread message so progress stays live.
+        """Drain progress into native cards; supported destinations retain editable fallback.
+        Unsupported destinations and egress refusals suppress publication, never finalization.
 
         See #29483.
         """
@@ -615,7 +669,7 @@ class GatewayTurnProgressMixin:
 
     async def send_progress_messages(self):
         ctx = self._ctx
-        adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
+        adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
@@ -723,9 +777,7 @@ class GatewayTurnProgressMixin:
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
-        self._publish_execution("tool.start", {
-            "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool"),
-            "args": args if isinstance(args, dict) else {}})
+        self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
@@ -736,8 +788,7 @@ class GatewayTurnProgressMixin:
         from agent.display import _detect_tool_failure
         is_error, _ = _detect_tool_failure(tool_name, result)
         self._publish_execution("tool.complete", {
-            "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool"),
-            "is_error": bool(is_error), "args": args if isinstance(args, dict) else {},
+            **_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
             "result": result if isinstance(result, str) else str(result)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
@@ -812,8 +863,9 @@ class GatewayTurnProgressMixin:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
-        if not self._status_live():
+        if ctx.mute_notification_reply or not self._status_live():
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -823,9 +875,12 @@ class GatewayTurnProgressMixin:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
-        fut = self._schedule(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
-            f"status_callback ({event_type}) scheduling error",
-        )
-        if fut is not None and ctx._cleanup_progress:
-            fut.add_done_callback(self._track_future_cleanup_id)
+        def present():
+            fut = self._schedule(
+                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+                f"status_callback ({event_type}) scheduling error",
+            )
+            if fut is not None and ctx._cleanup_progress:
+                fut.add_done_callback(self._track_future_cleanup_id)
+        render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
+                            diagnostic=is_warning_status(event_type, message))

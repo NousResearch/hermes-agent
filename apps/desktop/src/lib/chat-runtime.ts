@@ -1,5 +1,5 @@
 import type { ThreadMessage } from '@assistant-ui/react'
-import type { ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionsResult } from '@hermes/shared'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
@@ -29,6 +29,7 @@ export function createClientSessionState(
     model: '',
     provider: '',
     reasoningEffort: '',
+    reasoningEffortWire: '',
     serviceTier: '',
     fast: false,
     yolo: false,
@@ -46,6 +47,17 @@ export function createClientSessionState(
     turnLive: false,
     usage: null
   }
+}
+
+/**
+ * Mark a freshly resumed slice's effort as not-yet-known. The deferred-build
+ * resume reply has no `reasoning_effort`, and falling through to the profile
+ * default would paint a level the built agent's `session.info` then replaces
+ * (#79807). A slice whose effort was already reported (a fast build can beat
+ * the resume reply) keeps it.
+ */
+export function markReasoningEffortPending(state: ClientSessionState): ClientSessionState {
+  return state.reasoningEffortPending === false ? state : { ...state, reasoningEffortPending: true }
 }
 
 export function sessionTitle(session: SessionInfo): string {
@@ -173,31 +185,6 @@ export function attachmentId(kind: ComposerAttachment['kind'], value: string): s
   return `${kind}:${normalizeAttachmentValue(kind, value)}`
 }
 
-/** A GitHub PR review-thread (`#discussion_r<id>`) or conversation
- *  (`#issuecomment-<id>`) deep link — the one paste shape that can resolve to
- *  a structured review attachment instead of a plain `@url:` chip. */
-export const PR_COMMENT_URL_RE =
-  /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(?:\/[^#\s]*)?#(?:discussion_r|issuecomment-)\d+$/
-
-/** The send-time expansion of a `review` attachment. `detail` holds the
- *  resolved comment as JSON (HermesPrComment shape); a malformed payload falls
- *  back to the attachment's URL ref so the send never throws. */
-export function reviewCommentBlock(detail: string): null | string {
-  try {
-    const c = JSON.parse(detail)
-
-    const anchor = c.path
-      ? `${c.path}${c.line ? `:${c.startLine && c.startLine !== c.line ? `${c.startLine}-` : ''}${c.line}` : ''}`
-      : `PR #${c.prNumber}`
-
-    const hunk = c.diffHunk ? `\n--- diff hunk ---\n${String(c.diffHunk).trim()}` : ''
-
-    return `\`\`\`review-comment ${anchor}\n@${c.author} on ${c.url}\n\n${String(c.body).trim()}${hunk}\n\`\`\``
-  } catch {
-    return null
-  }
-}
-
 export function pathLabel(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
@@ -212,18 +199,6 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
-  }
-
-  // A resolved PR review comment: expand to a fenced block carrying the
-  // anchor (file:line), author, body, and — when present — the diff hunk the
-  // comment sits on, so "address this" needs no re-explaining what "this" is.
-  // A malformed payload falls through to the refText (the pasted URL).
-  if (attachment.kind === 'review' && attachment.detail) {
-    const block = reviewCommentBlock(attachment.detail)
-
-    if (block) {
-      return block
-    }
   }
 
   if (attachment.refText) {
@@ -296,7 +271,7 @@ export function normalizePersonalityValue(value: string): string {
 }
 
 export function quickModelOptions(
-  data: ModelOptionsResponse | undefined,
+  data: ModelOptionsResult | undefined,
   currentProvider: string,
   currentModel: string
 ): QuickModelOption[] {
@@ -413,7 +388,13 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       role,
       content: [textPart(text)],
       createdAt,
-      metadata: { custom: { ...timelineMeta, ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}) } }
+      metadata: {
+        custom: {
+          ...timelineMeta,
+          ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
+          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+        }
+      }
     } as ThreadMessage
   }
 

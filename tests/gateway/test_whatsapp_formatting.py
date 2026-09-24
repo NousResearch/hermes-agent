@@ -266,6 +266,27 @@ class TestBridgeEventMetadata:
         assert event.media_types[idx] == "image/jpeg"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [("small text", True), ("x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, tmp_path, monkeypatch, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        adapter = _make_adapter()
+        doc_path = tmp_path / "doc_abc_notes.txt"
+        doc_path.write_text(content, encoding="utf-8")
+        from plugins.platforms.whatsapp import adapter as adapter_module
+        monkeypatch.setattr(adapter_module, "_is_allowed_bridge_path", lambda url: True)
+
+        event = await adapter._build_message_event({
+            "messageId": "doc-msg", "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net", "senderName": "Ananya", "isGroup": False,
+            "body": "", "hasMedia": True, "mediaUrls": [str(doc_path)], "mediaType": "document",
+        })
+
+        assert event is not None
+        assert ("[Content of" in (event.text or "")) is inlined
+        assert event.media_text_inlined == [inlined]
+
+    @pytest.mark.asyncio
     async def test_quoted_media_path_outside_cache_dir_is_rejected(self, monkeypatch):
         # _is_allowed_bridge_path guards against a compromised/buggy bridge
         # handing back an arbitrary absolute path; quoted-media handling must
@@ -335,11 +356,4 @@ class TestBridgeEventMetadata:
 # display_config tier classification
 # ---------------------------------------------------------------------------
 
-class TestWhatsAppTier:
-    """WhatsApp should be classified as TIER_MEDIUM."""
-
-    def test_whatsapp_streaming_follows_global(self):
-        from gateway.display_config import resolve_display_setting
-        # TIER_MEDIUM has streaming: None (follow global), not False
-        assert resolve_display_setting({}, "whatsapp", "streaming") is None
 

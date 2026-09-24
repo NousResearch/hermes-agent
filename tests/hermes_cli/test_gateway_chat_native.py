@@ -103,7 +103,7 @@ finally:
                 time.sleep(.1)
             assert descriptor.get("state") == "ready", log_path.read_text()
             launch("--cli", "chat")
-            first = until("You>")
+            first = until("Welcome to Hermes Agent")
             sid = next(line.split("Session: ", 1)[1].strip() for line in first.splitlines() if "Session: " in line)
             tmux("send-keys", "-t", "chat", "WS_SHARED", "Enter")
             fresh = until("LOCAL_ACK_WS_SHARED")

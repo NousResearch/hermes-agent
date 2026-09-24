@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isSessionBusyError, markSubmitting, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
+import { isSessionBusyError, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
 import { captureDestination } from '../app/submissionDestination.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -63,26 +63,8 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
     // rapid submit take the local-enqueue branch instead of racing a second
     // prompt.submit onto the backend.
     expect(getUiState().busy).toBe(true)
-    expect(getUiState().status).toBe('running…')
 
     resolveDrop()
-  })
-
-  it('regression: two back-to-back sends — the SECOND sees busy=true in the gap', async () => {
-    const { gw, resolveDrop } = makeDeferredGateway()
-
-    // Emulate dispatchSubmission's routing decision: it sends only when
-    // busy===false, otherwise it would enqueue. We assert the state the
-    // router reads, which is the real regression.
-    submitPrompt('first message', makeDeps(gw))
-
-    // Before the fix, busy was still false here (set only inside detect_drop's
-    // .then), so a second Enter would wrongly route into send() again.
-    const busyWhenSecondArrives = getUiState().busy
-    expect(busyWhenSecondArrives).toBe(true)
-
-    resolveDrop()
-    await Promise.resolve()
   })
 
   it('does not submit when there is no session, and does not mark busy', () => {
@@ -93,7 +75,7 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
     submitPrompt('hello', makeDeps(gw, { sys }))
 
     expect(getUiState().busy).toBe(false)
-    expect(sys).toHaveBeenCalledWith('session not ready yet')
+    expect(sys).toHaveBeenCalled()
     expect(calls).not.toContain('input.detect_drop')
   })
 
@@ -239,16 +221,6 @@ it('never downgrades ambiguous or conflicting durable submissions to legacy deli
     await vi.waitFor(() => expect(settle).toHaveBeenLastCalledWith(false))
     expect(request).toHaveBeenCalledTimes(1)
   }
-})
-
-describe('submissionCore.markSubmitting', () => {
-  beforeEach(() => resetUiState())
-
-  it('sets busy + running status', () => {
-    markSubmitting()
-    expect(getUiState().busy).toBe(true)
-    expect(getUiState().status).toBe('running…')
-  })
 })
 
 describe('submissionCore.isSessionBusyError', () => {

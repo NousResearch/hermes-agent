@@ -18,6 +18,15 @@ an unexpired one-use dial bound to the requesting window. No public dashboard to
 scraped or added to the public connection descriptor. SSH/URL intent retains its existing
 remote resolution and exposure lifecycle; a remote failure must never start a local owner.
 
+The gateway `gateway ensure` attaches to is **one multiplexing owner per home**: `HERMES_DESKTOP=1`
+is not how the app finds it, and no per-profile `hermes serve --port 0` child is spawned. One
+gateway process serves sessions from several homes (`tui_gateway/AGENTS.md` § Profile scope); a
+served secondary answers through the multiplexer's control socket (`GatewayEndpoint.multiplex_home`).
+Remote connections (SSH, URL+token, Cloud) likewise reach a backend that may serve several profiles
+from one process. Every lifecycle/status/settings REST call carries `?profile=` (or the `profile`
+param) and every new-session tile records an owner route; a backend-side scope fix is probed twice —
+with the profile as the gateway's own launch home and as a secondary served by one process.
+
 This migration requires the runtime's canonical GUI creation policy and a private HTTP
 API credential path. Do not bypass missing runtime capabilities by relabeling GUI sessions
 as CLI, dropping launch options, or falling back to an independent local serve owner.
@@ -91,7 +100,8 @@ reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-ch
 
 `$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a
 sign-in). `deriveBillingView` branches on `billing.free_tier` BEFORE `logged_in` (status
-`free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows). The
-sign-in dialog is a single claimed owner (first mount wins, like the real-profile consent prompt);
-its states map 1:1 to the poll route's `status` + `reason`. Copy is the ruled free-tier copy: never
+`free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows); the
+`logged_out` notice's Sign in opens the same dialog, never a portal link (a link writes no
+credential). The sign-in dialog is a single claimed owner (first mount wins, like the
+real-profile consent prompt); its states map 1:1 to the poll route's `status` + `reason`. Copy is the ruled free-tier copy: never
 "guest", "anonymous", "claim" or "Nous Portal" in user-facing text.

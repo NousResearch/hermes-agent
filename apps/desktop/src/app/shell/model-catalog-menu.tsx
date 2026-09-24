@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -23,12 +23,14 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
@@ -38,6 +40,7 @@ import {
   effectiveVisibleKeys,
   type ModelFamily,
   modelVisibilityKey,
+  seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
@@ -56,6 +59,10 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
 export interface ModelChoice {
   effort: string
+  /** `effort` is not reported yet, so '' is unknown rather than the default (#79807). */
+  effortPending?: boolean
+  /** Level the route actually sends for `effort` (`session.info.reasoning_effort_wire`); '' = unknown. */
+  effortWire?: string
   fast: boolean
   model: string
   provider: string
@@ -135,6 +142,11 @@ export function ModelCatalogMenu({
   const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
+  // "Add custom model…" turns the search box into slug entry: the catalog
+  // steps aside until something is typed, and the placeholder says what to
+  // type. Typing a slug without this works too; the row just makes it findable.
+  const [slugEntry, setSlugEntry] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
   const collapsedProviders = useStoreCollapsed()
   const defaultEffort = useDefaultEffort()
   // Which models the user curated in Edit Models. Read HERE rather than taken
@@ -142,13 +154,14 @@ export function ModelCatalogMenu({
   // catalog must show the same shortlist. A per-caller opt-in is how the board
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
+  const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, profile, request, sessionId })
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId })
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -242,14 +255,17 @@ export function ModelCatalogMenu({
 
   const pickerProviders = useMemo(
     () =>
-      providers?.filter(
-        provider =>
-          provider.slug.toLowerCase() !== 'moa' &&
-          // Strict --local gate: staged local models exist on disk, but
-          // without the flag the GUI doesn't offer them.
-          (localModelsEnabled || provider.slug !== LOCAL_PROVIDER_SLUG)
-      ) ?? [],
-    [providers, localModelsEnabled]
+      withCustomModels(
+        providers?.filter(
+          provider =>
+            provider.slug.toLowerCase() !== 'moa' &&
+            // Strict --local gate: staged local models exist on disk, but
+            // without the flag the GUI doesn't offer them.
+            (localModelsEnabled || provider.slug !== LOCAL_PROVIDER_SLUG)
+        ) ?? [],
+        customModels
+      ),
+    [providers, localModelsEnabled, customModels]
   )
 
   const current = controller.current
@@ -265,6 +281,8 @@ export function ModelCatalogMenu({
   // Resolve visibility HERE, against the catalog we actually fetched: an empty
   // provider list would otherwise resolve to an empty key set that reads as
   // "user hid everything" and blanks the menu on first open.
+  useEffect(() => seedKnownModels(pickerProviders), [pickerProviders])
+
   const shownKeys = useMemo(
     () => effectiveVisibleKeys(visibleModels, pickerProviders),
     [visibleModels, pickerProviders]
@@ -283,7 +301,35 @@ export function ModelCatalogMenu({
     [moaPresets, q]
   )
 
-  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
+  const hideCatalog = slugEntry && !search
+
+  // The scrolling catalog list only mounts when it has rows; otherwise a
+  // section below it (MoA, custom slug) would sit under two separators.
+  const hasList = !hideCatalog && (groups.length > 0 || shownDownloads.length > 0)
+
+  // A typed id no provider lists is still a model to the backend. Offer it as
+  // a row per configured provider (the current one first) so a slug the
+  // catalog lacks is one Enter away, then remember it as a normal row. While
+  // the query still matches catalog rows the section stays out of the way
+  // unless the user asked for it via "Add custom model…".
+  const customSlug =
+    slugEntry || (!hasList && shownMoaPresets.length === 0) ? customModelCandidate(search, pickerProviders) : null
+
+  const customProviders = useMemo(
+    () =>
+      customSlug
+        ? pickerProviders
+            .filter(provider => (provider.models ?? []).length > 0)
+            .sort(
+              (a, b) =>
+                Number(catalogProviderMatches(b, current.provider)) -
+                Number(catalogProviderMatches(a, current.provider))
+            )
+        : [],
+    [customSlug, pickerProviders, current.provider]
+  )
+
+  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider): Promise<boolean> => {
     const caps = provider.capabilities?.[family.id]
     const preset = controller.presetFor(provider.slug, family.id)
 
@@ -294,7 +340,7 @@ export function ModelCatalogMenu({
     const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
 
     if ((await controller.select(targetId, provider.slug)) === false) {
-      return
+      return false
     }
 
     controller.applyPreset(
@@ -304,6 +350,8 @@ export function ModelCatalogMenu({
       },
       { model: family.id, provider: provider.slug }
     )
+
+    return true
   }
 
   const selectMoaPreset = async (preset: string) => {
@@ -314,10 +362,20 @@ export function ModelCatalogMenu({
     closeMenu()
   }
 
+  const selectCustom = async (slug: string, provider: ModelOptionProvider) => {
+    if (!(await selectFamily({ fastId: null, id: slug }, provider))) {
+      return
+    }
+
+    addCustomModel(provider.slug, slug, provider)
+    closeMenu()
+  }
+
   // ── Keyboard selection (cmdk semantics on a Radix menu) ───────────────────
   // One flat list mirroring EXACTLY what's rendered (collapse, filter, presets),
   // so the selection can never sit on a hidden row.
   type KbRow =
+    | { key: string; kind: 'custom'; provider: ModelOptionProvider; slug: string }
     | { family: ModelFamily; key: string; kind: 'family'; provider: ModelOptionProvider }
     | { key: string; kind: 'moa'; preset: string }
 
@@ -333,9 +391,17 @@ export function ModelCatalogMenu({
               provider: group.provider
             }))
       ),
-      ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
+      ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset })),
+      ...(customSlug
+        ? customProviders.map((provider): KbRow => ({
+            key: `custom:${provider.slug}`,
+            kind: 'custom',
+            provider,
+            slug: customSlug
+          }))
+        : [])
     ],
-    [groups, collapsedProviders, search, shownMoaPresets]
+    [groups, collapsedProviders, search, shownMoaPresets, customSlug, customProviders]
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
@@ -346,8 +412,10 @@ export function ModelCatalogMenu({
   const rowIsCurrent = (row: KbRow) =>
     row.kind === 'moa'
       ? current.provider === 'moa' && row.preset === current.model
-      : catalogProviderMatches(row.provider, current.provider) &&
-        (row.family.id === current.model || row.family.fastId === current.model)
+      : row.kind === 'custom'
+        ? false
+        : catalogProviderMatches(row.provider, current.provider) &&
+          (row.family.id === current.model || row.family.fastId === current.model)
 
   const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
@@ -373,6 +441,12 @@ export function ModelCatalogMenu({
 
     if (row.kind === 'moa') {
       void selectMoaPreset(row.preset)
+
+      return
+    }
+
+    if (row.kind === 'custom') {
+      void selectCustom(row.slug, row.provider)
 
       return
     }
@@ -414,7 +488,7 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             stepKb(event.key === 'ArrowDown' ? 1 : -1)
-          } else if (event.key === 'Enter') {
+          } else if (isSubmitEnter(event)) {
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
@@ -424,13 +498,14 @@ export function ModelCatalogMenu({
           setSearch(value)
           setKbOverride(null)
         }}
-        placeholder={copy.search}
+        placeholder={slugEntry ? copyPicker.customModelPlaceholder : copy.search}
+        ref={searchRef}
         value={search}
       />
 
-      <DropdownMenuSeparator className="mx-0" />
+      {!hideCatalog && <DropdownMenuSeparator className="mx-0" />}
 
-      {loading ? (
+      {hideCatalog ? null : loading ? (
         <DropdownMenuGroup className="py-1">
           {Array.from({ length: 4 }, (_, index) => (
             <DropdownMenuItem
@@ -447,11 +522,11 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 && shownDownloads.length === 0 ? (
+      ) : groups.length === 0 && moaPresets.length === 0 && shownDownloads.length === 0 && !customSlug ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
-      ) : (
+      ) : hasList ? (
         <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
@@ -490,7 +565,7 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -514,8 +589,11 @@ export function ModelCatalogMenu({
                     )
 
                     const meta = [
+                      tag || null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
+                      (caps?.reasoning ?? true) && !(isCurrent && current.effortPending)
+                        ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
+                        : null
                     ]
                       .filter(Boolean)
                       .join(' ')
@@ -572,9 +650,10 @@ export function ModelCatalogMenu({
                           ) : null}
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
-                          canDisableReasoning={caps?.can_disable_reasoning}
+                          canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
+                          effortWire={isCurrent ? current.effortWire : undefined}
                           fastControl={fastControl}
                           isActive={isCurrent}
                           model={family.id}
@@ -611,11 +690,11 @@ export function ModelCatalogMenu({
             </DropdownMenuGroup>
           )}
         </div>
-      )}
+      ) : null}
 
-      {shownMoaPresets.length > 0 ? (
+      {!hideCatalog && shownMoaPresets.length > 0 ? (
         <div className={cn(quietRows)}>
-          <DropdownMenuSeparator className="mx-0" />
+          {hasList ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
             const isCurrentMoa = current.provider === 'moa' && current.model === preset
@@ -639,6 +718,28 @@ export function ModelCatalogMenu({
         </div>
       ) : null}
 
+      {customSlug && customProviders.length > 0 ? (
+        <div className={cn(quietRows)}>
+          {hasList || shownMoaPresets.length > 0 ? <DropdownMenuSeparator className="mx-0" /> : null}
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copyPicker.customModel}</DropdownMenuLabel>
+          {customProviders.map(provider => (
+            <DropdownMenuItem
+              key={`custom:${provider.slug}`}
+              onSelect={event => {
+                event.preventDefault()
+                void selectCustom(customSlug, provider)
+              }}
+              {...kbRowProps(`custom:${provider.slug}`)}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {customSlug}
+                <span className="text-(--ui-text-tertiary)"> {provider.name}</span>
+              </span>
+            </DropdownMenuItem>
+          ))}
+        </div>
+      ) : null}
+
       {/* Curation belongs to the catalog, not to one host: wherever you can
           pick a model you can say which models you want, and the shortlist is
           the same everywhere because it's one stored preference. It shares the
@@ -647,6 +748,20 @@ export function ModelCatalogMenu({
           trailing block it has always rendered. */}
       <DropdownMenuSeparator className="mx-0" />
       {footer}
+      <DropdownMenuItem
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)', slugEntry && 'text-foreground')}
+        onSelect={event => {
+          event.preventDefault()
+          setSearch('')
+          setKbOverride(null)
+          setSlugEntry(true)
+          // Radix hands focus back to the row after onSelect; refocus after.
+          window.setTimeout(() => searchRef.current?.focus(), 0)
+        }}
+      >
+        <Codicon name="add" size="0.75rem" />
+        {copyPicker.addCustomModelAction}
+      </DropdownMenuItem>
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
@@ -703,7 +818,7 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
 // spans every available model so anything is reachable past the cut. A search
 // is itself a narrowing action, so we do NOT cap per-provider matches.
 function groupModels(
-  providers: ModelOptionProvider[],
+  providers: readonly ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null

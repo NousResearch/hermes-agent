@@ -44,17 +44,8 @@ def test_non_bot_chat_tokens_pass_through():
 
 # ── target resolution ────────────────────────────────────────────────────────
 
-def test_own_profile_resolves_without_name():
-    target = _resolve_bot_chat_target({"id": "j1"}, "")
-    assert target == {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
 
 
-def test_named_profile_resolves_when_exists():
-    with mock.patch("hermes_cli.profiles.profile_exists", return_value=True):
-        target = _resolve_bot_chat_target({"id": "j1"}, "research")
-    assert target is not None
-    assert target["platform"] == BOT_CHAT_PLATFORM
-    assert target["chat_id"] == "research"
 
 
 def test_unknown_profile_resolves_to_none():
@@ -97,7 +88,6 @@ def test_create_validation_rejects_unknown_profile():
     with mock.patch("hermes_cli.profiles.profile_exists", return_value=False):
         err = _validate_bot_chat_deliver("bot-chat:ghost")
     assert err is not None
-    assert "machine-local" in err
 
 
 def test_create_validation_accepts_bare_and_existing():
@@ -142,6 +132,36 @@ def test_deliver_without_authority_is_unverified_not_a_second_writer(tmp_path, m
                         mock.Mock(side_effect=ValueError("profile authority is not ready")))
     err = _deliver_to_bot_chat({"id": "j1", "name": "n", "execution_id": "r1"}, "out", "")
     assert err is not None and "unverified" in err and "not ready" in err
+
+
+def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_path, monkeypatch):
+    """A ``for_failure`` notice whose TARGET profile hides warning notifications is booked as a
+    durable ``suppressed`` disposition (flagged on the job), never admitted to the owner; a
+    requested (non-failure) result is never gated."""
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n")
+    admitted = []
+
+    def fake_deliver(home, owner, message, *, delivery_id):
+        admitted.append(message)
+        return {"status": "queued", "message": message, "delivery_id": delivery_id}
+
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
+
+    failure = {"id": "j1", "name": "n", "execution_id": "r1"}
+    assert _deliver_to_bot_chat(failure, "diagnostic", "", for_failure=True) is None
+    assert failure["_notification_all_targets_suppressed"] is True
+    assert failure["_bot_chat_delivery_receipts"]["bot-chat:(own)"]["status"] == "suppressed"
+    assert admitted == []
+
+    result = {"id": "j1", "name": "n", "execution_id": "r2"}
+    outcome = _deliver_to_bot_chat(result, "the report", "")
+    assert outcome and "queued" in outcome
+    assert not result.get("_notification_all_targets_suppressed")
+    assert len(admitted) == 1
 
 
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────

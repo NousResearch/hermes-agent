@@ -109,5 +109,5 @@ def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monk
             for method in ('profiles.list', 'groups.list'):
                 denied = await call(method, {'profile': 'foreign'})
                 assert denied['error']['message'] == 'profile_mismatch', denied
-            assert (await call('profiles.delete'))['error']['message'] == 'invalid_params'
+            assert (await call('profiles.delete'))['error']['code'] == -32601  # unknown method, not a bad argument
         asyncio.run(probe())

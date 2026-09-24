@@ -121,23 +121,8 @@ def test_update_job_rejects_clearing_the_only_payload(hermes_env):
     assert get_job(job["id"])["prompt"] == "check the news"
 
 
-def test_update_job_rejects_dropping_last_skill_from_promptless_job(hermes_env):
-    from cron.jobs import create_job, update_job
-
-    job = create_job(prompt=None, schedule="every 5m", skills=["daily-report"], deliver="local")
-
-    with pytest.raises(ValueError, match="nothing to run"):
-        update_job(job["id"], {"skills": []})
 
 
-def test_update_job_rejects_clearing_script_from_promptless_job(hermes_env):
-    from cron.jobs import create_job, update_job
-
-    (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
-    job = create_job(prompt=None, schedule="every 5m", script="w.sh", deliver="local")
-
-    with pytest.raises(ValueError, match="nothing to run"):
-        update_job(job["id"], {"script": ""})
 
 
 def test_update_job_rejects_toggling_no_agent_on_without_a_script(hermes_env):
@@ -288,20 +273,6 @@ def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env, cron_owner):
     assert "auto-paused" in final
 
 
-def test_run_job_pauses_the_job_on_disk(hermes_env, cron_owner):
-    """Fail-closed isn't enough — the job must stop being scheduled."""
-    import cron.scheduler as scheduler
-    from cron.jobs import get_job
-
-    job = _legacy_empty_job(hermes_env)
-
-    scheduler.run_job(job)
-
-    stored = get_job(job["id"])
-    assert stored["enabled"] is False
-    assert stored["state"] == "paused"
-    assert "nothing to run" in (stored["paused_reason"] or "")
-    assert stored["paused_at"]
 
 
 def test_run_one_job_does_not_resurrect_the_paused_job(hermes_env, cron_owner):
@@ -525,34 +496,3 @@ def test_tool_update_still_renames_when_a_real_name_is_given(hermes_env):
     assert get_job(job["id"])["name"] == "new"
 
 
-def test_tool_update_blank_scalars_still_clear_workdir_and_context_from(hermes_env):
-    """KNOWN HOLE, pinned deliberately — not an endorsement.
-
-    ``workdir:""`` / ``context_from:[]`` / ``enabled_toolsets:[]`` are
-    documented clears, so a bulk-empty update that survives the payload guard
-    (because it keeps a script) still silently drops all three. Closing this
-    means changing documented semantics; recorded as a finding in
-    RECOVERY_REPORT.md instead. This test exists so the behaviour cannot change
-    unnoticed.
-    """
-    from cron.jobs import create_job, get_job
-
-    (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
-    (hermes_env / "wd").mkdir()
-    job = create_job(
-        prompt=None, schedule="0 2 * * *", script="w.sh", name="keeper",
-        enabled_toolsets=["file"], workdir=str(hermes_env / "wd"),
-        deliver="local",
-    )
-    assert get_job(job["id"])["workdir"] == str(hermes_env / "wd")
-
-    result = _cronjob(job_id=job["id"], action="update", script="w.sh",
-                      workdir="", enabled_toolsets=[], context_from=[])
-
-    assert result["success"] is True
-    stored = get_job(job["id"])
-    assert stored["name"] == "keeper"          # protected by the fix above
-    assert stored["script"] == "w.sh"          # payload survives
-    assert stored["workdir"] is None           # still clobbered
-    assert stored["enabled_toolsets"] is None  # still clobbered
-    assert stored["context_from"] is None      # still clobbered

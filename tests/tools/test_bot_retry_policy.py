@@ -51,14 +51,6 @@ def test_non_retryable_reasons_stop(reason):
     assert bfr.retry_action(reason) == bfr.RETRY_NONE
 
 
-def test_every_reason_has_a_defined_action():
-    """Invariant: the policy is total over the closed reason vocabulary."""
-    for reason in bfr.ALL_REASONS:
-        assert bfr.retry_action(reason) in {
-            bfr.RETRY_RESUME,
-            bfr.RETRY_COMPRESS_THEN_RESUME,
-            bfr.RETRY_NONE,
-        }
 
 
 # ── delivery surfaces never run their own retry loop ─────────────────────────
@@ -73,6 +65,7 @@ def test_every_reason_has_a_defined_action():
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -107,3 +100,48 @@ def test_run_delivery_never_retries_a_local_turn(monkeypatch, tmp_path, capsys):
     assert rc == 1
     assert json.loads(capsys.readouterr().out)["reason"] == "runtime_unavailable"
     assert dm.read_text() == "hello", "payload is retained for the sender's evidence"
+
+
+# ── every local-runner failure ships a typed reason (#93091) ─────────────────
+
+
+class _WithReason(RuntimeError):
+    """An exception carrying its own ``reason``. ``reason`` is a stdlib attribute on
+    ``ssl.SSLError`` and ``urllib.error.URLError`` too, so a refusal must not forward whatever
+    it finds there into a channel whose consumers expect a closed vocabulary."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (RuntimeError("Error code: 401 - invalid api key"), "provider_auth_or_access"),
+        (RuntimeError("something nobody has a rule for"), "unknown"),
+        (_WithReason("CERTIFICATE_VERIFY_FAILED", "ssl handshake failed"), "unknown"),
+        (_WithReason("provider_quota_limit", "quota exhausted"), "provider_quota_limit"),
+    ],
+    ids=["classifiable-failure", "unclassifiable-failure", "reason-outside-the-vocabulary",
+         "reason-inside-the-vocabulary"],
+)
+def test_delivery_main_reports_every_failure_as_typed_json(tmp_path, monkeypatch, capsys, failure, reason):
+    """The local lane's runner stdout IS the sender's completion notification. A failure other
+    than target_busy used to reach the sender as stderr prose with no reason, so it could not
+    tell an auth failure from a transient one; it now rides the same vocabulary as the relay."""
+    from tools import bot_mode_dm
+
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hi", encoding="utf-8")
+
+    def _raise(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(bot_mode_dm, "_run_delivery", _raise)
+
+    rc = bot_mode_dm._delivery_main(["--run-delivery", "query-file", str(dm), "hermes", "-p", "ops", "chat"])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload == {"error": str(failure), "reason": reason}

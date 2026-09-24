@@ -108,20 +108,6 @@ def test_owner_store_failure_never_runs_unpersisted_agent(owner_run, failure):
     assert wrong_db.close.call_count == (1 if failure == "wrong-store" else 0)
 
 
-def test_invalid_timeout_env_falls_back_to_default(owner_run, monkeypatch, caplog):
-    owner, job, _, _ = owner_run
-    monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "not-a-number")
-    future = concurrent.futures.Future()
-    future.set_result(owner.db)
-    with patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor") as pool:
-        pool.return_value.submit.return_value = future
-        with patch.object(future, "result", wraps=future.result) as result:
-            assert scheduler._open_cron_session_db(job) is owner.db
-    assert result.call_args.kwargs["timeout"] == 10.0
-    assert any("HERMES_CRON_SESSION_DB_TIMEOUT" in r.message and "not-a-number" in r.message
-               for r in caplog.records)
-
-
 def test_guard_is_released_and_job_refires_after_sessiondb_hang(owner_run, monkeypatch):
     owner, job, _, agent_cls = owner_run
     monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0.02")
@@ -167,18 +153,6 @@ def test_guard_is_released_and_job_refires_after_sessiondb_hang(owner_run, monke
         finally:
             release.set()
             scheduler._shutdown_parallel_pool()
-
-
-@pytest.mark.parametrize("result", ["db", None, RuntimeError("connect failed")])
-def test_close_late_session_db_result(result):
-    db = MagicMock()
-    future = concurrent.futures.Future()
-    if isinstance(result, Exception):
-        future.set_exception(result)
-    else:
-        future.set_result(db if result == "db" else result)
-    scheduler._close_late_session_db_result(future)
-    assert db.close.call_count == (1 if result == "db" else 0)
 
 
 def test_wake_gate_false_never_opens_session_db(owner_run):

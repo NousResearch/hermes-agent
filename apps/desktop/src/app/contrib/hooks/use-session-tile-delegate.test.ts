@@ -1,7 +1,10 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { reasoningEffortPending } from '@/app/chat/session-view'
+import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeSessionId, setSessionOwnerHint, setSessions } from '@/store/session'
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
@@ -510,7 +513,27 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(next.model).toBe('gpt-5')
     expect(next.provider).toBe('openai')
     expect(next.reasoningEffort).toBe('high')
+    expect(next.reasoningEffortPending).toBe(false)
     expect(next.fast).toBe(true)
+  })
+
+  it("keeps the tile's effort pending when the deferred-build resume has not reported it (#79807)", async () => {
+    setSessions([row({ id: 'stored-lazy', profile: 'default' })])
+
+    const updateSessionState = vi.fn()
+
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      info: { lazy: true, model: 'gpt-5', running: false },
+      session_id: 'runtime-lazy'
+    } as never)
+
+    renderTile(vi.fn(), { updateSessionState })
+    await sessionTileDelegate()!.resumeTile('stored-lazy')
+
+    const updater = updateSessionState.mock.calls[0][1] as (state: ClientSessionState) => ClientSessionState
+    const next = updater(createClientSessionState('stored-lazy'))
+
+    expect(reasoningEffortPending(next)).toBe(true)
   })
 
   it('invalidateRuntimeBindings clears the stored→runtime map so tiles re-resume after reconnect', async () => {

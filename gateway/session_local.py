@@ -111,7 +111,10 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     elif any(params.get(name) is True for name in BYPASS_FIELDS):
         policy = _bypass_policy(params, private_secrets=private_secrets)
     else:
-        policy = build_policy(params, _load_gateway_config(), private_secrets=private_secrets)
+        from gateway.session_local_route import resolve_launch_route
+        config = _load_gateway_config()
+        params = resolve_launch_route(params, config)
+        policy = build_policy(params, config, private_secrets=private_secrets)
         if policy.model is None:
             policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     request_id = params.get('request_id', uuid.uuid4().hex)

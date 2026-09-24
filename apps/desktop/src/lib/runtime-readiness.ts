@@ -7,6 +7,13 @@ export interface SetupStatusSnapshot {
   free_tier?: boolean
   other_providers?: boolean
   inference_provider?: string
+  /** Present only when the boot bootstrap could not create the free-tier
+   *  identity: the failure code, its sentence, and whether / when a retry can
+   *  succeed. Same shape as `free_tier.status`. */
+  error?: string
+  error_code?: string
+  retryable?: boolean
+  retry_after?: number
 }
 
 export interface RuntimeCheckSnapshot {

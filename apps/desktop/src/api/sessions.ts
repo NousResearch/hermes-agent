@@ -30,13 +30,30 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
     return {}
   }
 
-  const scoped = capabilityScoped(scope)
+  // Session reads keep the ambient dial default (main's background): the
+  // cross-profile probe that resolves a remembered/404'd session id walks every
+  // other profile (resolveStoredSession) and must not cold-start each one on the
+  // pool's reserved foreground slot. The tag belongs to the scope selectors
+  // (Settings, Capabilities, Messaging), not to session lookups.
+  const { priority: _priority, ...scoped } = capabilityScoped(scope)
 
   if (typeof scope === 'object' && scope.connectionId?.trim() === 'local') {
     return { ...scoped, connectionId: 'local' }
   }
 
   return scoped
+}
+
+/**
+ * The profile a session WRITE must name in its body. The PATCH handler reads
+ * its target DB from `body.profile` alone (`_with_db(body.profile, ...)`), and
+ * under multiplex-only there is no per-profile backend whose HERMES_HOME could
+ * stand in for it: an unnamed owner lands the rename/pin/archive/mark-read on
+ * the shared backend's own state.db. "Unnamed" therefore means "the profile I
+ * am looking at", not "whatever home the backend was launched in".
+ */
+function sessionWriteProfile(profile?: null | string): string | undefined {
+  return String(profile ?? '').trim() || getApiRequestProfile() || undefined
 }
 
 function sessionScopeQuery(scope?: ProfileScope): string {
@@ -168,16 +185,17 @@ export interface SidebarSessionSlice {
 
 /** Which profiles filled their per-profile window in a returned page. The
  *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. Pinned rows are
- *  discounted — they're back-filled past the LIMIT, so counting them fakes a
- *  full page and leaves a "Load more" that can never resolve. */
+ *  a profile at (or over) the cap still has more on disk. Pinned rows count
+ *  like any other: they occupy LIMIT slots, and a short list has nothing past
+ *  the page for the pin back-fill to add, so pins cannot fake a full page
+ *  (#81484). */
 function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
     const key = session.profile || 'default'
 
-    counts.set(key, (counts.get(key) ?? 0) + (session.pinned ? 0 : 1))
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
   return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
@@ -188,6 +206,9 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
+   *  structurally damaged. Absent from older backends. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SidebarSessionsRequest {
@@ -236,7 +257,10 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
 
+  const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
+
   return {
+    ...(Object.keys(storage).length ? { storage } : {}),
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -327,7 +351,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
-    errors: result.errors
+    errors: result.errors,
+    storage: result.storage
   }
 }
 
@@ -357,15 +382,15 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
 }
 
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived }, profile)
+  return mutateSessionHttp(id, 'PATCH', { archived }, sessionWriteProfile(profile))
 }
 
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { pinned }, profile)
+  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteProfile(profile))
 }
 
 export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { unread }, profile)
+  return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteProfile(profile))
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
@@ -594,5 +619,5 @@ export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok:
 }
 
 export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
-  return mutateSessionHttp(id, 'PATCH', { title }, profile)
+  return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
 }

@@ -9,7 +9,7 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Iterator
@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +436,16 @@ def _preview_skill_view(args: dict, max_len: int) -> str | None:
     return _tail_trunc(label, max_len) or None
 
 
+def _preview_bridge_call(tool_name: str):
+    def _build(args: dict, max_len: int) -> str | None:
+        labels = bridge_tool_labels(tool_name, args)
+        if not labels:
+            return _primary_arg_preview(tool_name, args, max_len)
+        extra = f" +{len(labels) - 1}" if len(labels) > 1 else ""
+        return _tail_trunc(f"{labels[0].text}{extra}", max_len) or None
+    return _build
+
+
 # Tool-specific preview builders: f(args, max_len) -> preview. Tools not listed
 # fall through to the primary-argument lookup in build_tool_preview.
 _PREVIEW_BUILDERS = {
@@ -445,6 +455,9 @@ _PREVIEW_BUILDERS = {
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
     "skill_view": _preview_skill_view,
     "session_search": lambda args, _m: f"recall: \"{_clip(_oneline(args.get('query', '')), 25)}\"",
+    "tool_call": _preview_bridge_call("tool_call"),
+    "tool_search": _preview_bridge_call("tool_search"),
+    "tool_describe": _preview_bridge_call("tool_describe"),
 }
 
 
@@ -461,6 +474,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     builder = _PREVIEW_BUILDERS.get(tool_name)
     if builder is not None:
         return builder(args, max_len)
+    return _primary_arg_preview(tool_name, args, max_len)
+
+
+def _primary_arg_preview(tool_name: str, args: dict, max_len: int) -> str | None:
     key = _PRIMARY_ARGS.get(tool_name) or next((k for k in _FALLBACK_PREVIEW_KEYS if k in args), None)
     if not key or key not in args:
         return None
@@ -500,6 +517,37 @@ _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({"skills_list", "session_sear
 # Verbs joined to the preview with " for " (search-style phrasing).
 _TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({"web_search", "search_files"})
 
+_BRIDGE_GENERATING = {
+    "tool_call": "a tool call", "tool_search": "a tool search", "tool_describe": "tool details",
+}
+
+
+def bridge_generating_phrase(tool_name: str) -> str | None:
+    return _BRIDGE_GENERATING.get(tool_name) if _friendly_tool_labels else None
+
+
+def tool_labels_for_call(tool_name: str, args: dict | None) -> list:
+    try:
+        from tools.tool_labels import labels_for_call
+        labels = labels_for_call(tool_name, args or {})
+    except Exception as exc:  # noqa: BLE001 — display must never abort a turn
+        logger.debug("bridge labels failed for %s: %s", tool_name, exc)
+        return []
+    skin = _get_skin()
+    overrides = (skin.tool_emojis if skin and skin.tool_emojis else None) or {}
+    return [replace(label, emoji=overrides[label.name]) if label.name in overrides else label
+            for label in labels]
+
+
+def bridge_tool_labels(tool_name: str, args: dict | None) -> list:
+    return tool_labels_for_call(tool_name, args) if _friendly_tool_labels else []
+
+
+def tool_row_emoji(tool_name: str, args: dict | None = None, default: str = "⚡") -> str:
+    labels = bridge_tool_labels(tool_name, args) if args else []
+    return labels[0].emoji if labels else get_tool_emoji(tool_name, default)
+
+
 def get_tool_verb(tool_name: str) -> str | None:
     """Friendly verb for a built-in tool, or None (labels disabled / no curated verb);
     callers compose ``f"{verb}{tool_verb_connector(tool)}{preview}"`` themselves."""
@@ -535,8 +583,12 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
 
 
 def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
-    """Human-phrased label ("Searching the web for ...") for curated built-ins; other
-    tools (or labels disabled) get the raw preview, so it is a drop-in for build_tool_preview."""
+    labels = bridge_tool_labels(tool_name, args)
+    if labels:
+        label = labels[0]
+        preview = _tail_trunc(label.preview, max_len if max_len is not None else _tool_preview_max_len)
+        extra = f" +{len(labels) - 1}" if len(labels) > 1 else ""
+        return f"{label.text}{f' {preview}' if preview else ''}{extra}"
     verb = get_tool_verb(tool_name)
     if verb and tool_name in _TOOL_VERBS_NO_PREVIEW:
         return verb
@@ -591,19 +643,29 @@ def _resolve_skill_manage_paths(args: dict) -> list[Path]:
     return [skill_dir / "SKILL.md"] if action in {"edit", "patch"} else []
 
 
-def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:
+def _resolve_local_edit_paths(tool_name: str, function_args: dict | None, task_id: str | None = None) -> list[Path]:
     """Resolve local filesystem targets for write-capable tools."""
     if not isinstance(function_args, dict):
         return []
     if tool_name == "skill_manage":
         return _resolve_skill_manage_paths(function_args)
     path = function_args.get("path") if tool_name in {"write_file", "patch"} else None
+    if path and task_id is not None:
+        from tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
+
+        # A remote target may happen to exist on this host too. Never persist a
+        # preview of that unrelated file; patch can still supply its own diff.
+        if _terminal_env_type_for_task(task_id) != "local":
+            return []
+        return [Path(_resolve_path_for_task(path, task_id))]
     return [_resolved_path(path)] if path else []
 
 
-def capture_local_edit_snapshot(tool_name: str, function_args: dict | None) -> LocalEditSnapshot | None:
+def capture_local_edit_snapshot(
+    tool_name: str, function_args: dict | None, *, task_id: str | None = None,
+) -> LocalEditSnapshot | None:
     """Capture before-state for local write previews."""
-    paths = _resolve_local_edit_paths(tool_name, function_args)
+    paths = _resolve_local_edit_paths(tool_name, function_args, task_id)
     if not paths:
         return None
     return LocalEditSnapshot(paths=paths, before={str(path): _snapshot_text(path) for path in paths})
@@ -888,6 +950,8 @@ class KawaiiSpinner:
 # ── Cute tool message (completion line that replaces the spinner) ─────────
 
 _ERROR_SUFFIX_MAX_LEN = 48
+# A degraded backend (Docker down, SSH host unreachable) needs the whole reason plus the fix hint.
+_DEGRADED_SUFFIX_MAX_LEN = 200
 
 
 def _trim_error(msg: str) -> str:
@@ -900,17 +964,37 @@ def _trim_error(msg: str) -> str:
     return _tail_trunc(msg, _ERROR_SUFFIX_MAX_LEN)
 
 
-def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def _degraded_suffix(data: dict) -> str:
+    """`` [<reason> — <retry_hint>]`` for a ``status: degraded`` terminal result (hint omitted when empty)."""
+    reason = str(data.get("reason") or data.get("error") or "terminal backend unavailable").strip()
+    hint = str(data.get("retry_hint") or "").strip()
+    text = f"{reason} — {hint}" if hint else reason
+    return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
+
+
+def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
-    data = safe_json_loads(result)
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    # A harness REFUSAL of a redundant call (repeated identical read/search) is not a
+    # failed call. This is the ``failed`` the executor hands the loop guardrail, so
+    # counting it would escalate refusals into ``repeated_exact_failure_block``.
+    if is_guardrail_refusal(data):
+        return False, ""
+
+    # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
+    # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
+    if isinstance(data, dict) and data.get("user_summary"):
+        return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         if exit_code is None or exit_code == 0:
             return False, ""
+        if data.get("status") == "degraded":
+            return True, _degraded_suffix(data)
         err_msg = data.get("error")
         return True, f" [{_trim_error(str(err_msg))}]" if err_msg else f" [exit {exit_code}]"
 
@@ -1063,15 +1147,59 @@ _CUTE_LINES = {
 }
 
 
+def _cute_bridge_rows(tool_name: str, args: dict) -> list[str] | None:
+    labels = bridge_tool_labels(tool_name, args)
+    if not labels:
+        return None
+    return [f"┊ {label.emoji} {_cute_trunc(label.text)}"
+            f"{f'  {_cute_trunc(label.preview)}' if label.preview else ''}" for label in labels]
+
+
+_BRIDGE_CALL_INDEX_RE = re.compile(r"calls\[(\d+)\]")
+
+
+def _entry_failure_suffix(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    error = entry.get("error")
+    if isinstance(error, dict):
+        return f" [{_trim_error(str(error.get('message') or error.get('code') or 'error'))}]"
+    if not (error or entry.get("success") is False):
+        return ""
+    return _detect_tool_failure(str(entry.get("name") or ""), entry)[1]
+
+
+def _bridge_row_suffixes(rows: int, result: Any, call_suffix: str) -> list[str]:
+    suffixes = [""] * rows
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    entries = data.get("results") if isinstance(data, dict) else None
+    if isinstance(entries, list):
+        for position, entry in enumerate(entries[:rows]):
+            suffix = _entry_failure_suffix(entry)
+            if not suffix:
+                continue
+            index = entry.get("index")
+            suffixes[index if isinstance(index, int) and 0 <= index < rows else position] = suffix
+    if call_suffix and not any(suffixes):
+        match = _BRIDGE_CALL_INDEX_RE.search(call_suffix)
+        named = int(match.group(1)) if match else rows - 1
+        suffixes[named if 0 <= named < rows else rows - 1] = call_suffix
+    return suffixes
+
+
 def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
-    """Tool completion line for CLI quiet mode: ``| {emoji} {verb:9} {detail}  {duration}``, plus a
-    failure suffix from :func:`_detect_tool_failure`; the leading ``┊`` becomes the skin's tool prefix."""
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     render = _CUTE_LINES.get(tool_name)
-    body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
-    line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
-    return f"{line}{failure_suffix}" if is_failure else line
+    rows = _cute_bridge_rows(tool_name, args)
+    if rows is None:
+        body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
+        rows, suffixes = [body], [failure_suffix if is_failure else ""]
+    else:
+        suffixes = _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else "")
+    rows = [*rows[:-1], f"{rows[-1]}  {duration:.1f}s"]
+    prefix = get_skin_tool_prefix()
+    return "\n  ".join(f"{row}{suffix}".replace("┊", prefix, 1) for row, suffix in zip(rows, suffixes))
 
 
 def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:

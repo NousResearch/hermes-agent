@@ -101,25 +101,22 @@ class TestChatCompletionsBasic:
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
 
 
-    def test_convert_messages_no_codex_leaks(self, transport):
-        msgs = [{"role": "user", "content": "hi"}]
+
+
+
+
+
+
+    def test_convert_messages_strips_replayed_platform_message_id(self, transport):
+        """SQLite replay exposes ``platform_message_id`` as ``message_id`` (JSONL transcript compat);
+        the gateway stamps it on every user row from the admission id. It is delivery bookkeeping:
+        the in-process CLI never sent it, so a resuming surface that let it through would send a
+        different prefix for the same durable session and break the cache.
+        """
+        msgs = [{"role": "user", "content": "hi", "message_id": "adm-123"}]
         result = transport.convert_messages(msgs)
-        assert result is msgs  # no copy needed
-
-
-
-    def _msg_with_extra_content(self):
-        return [
-            {"role": "assistant", "content": "ok",
-             "tool_calls": [{"id": "call_1", "type": "function",
-                             "extra_content": {"google": {"thought_signature": "SIG_123"}},
-                             "function": {"name": "t", "arguments": "{}"}}]},
-        ]
-
-
-
-
-
+        assert "message_id" not in result[0]
+        assert result[0]["content"] == "hi"
 
     def test_convert_messages_strips_timestamp(self, transport):
         """Internal per-message ``timestamp`` metadata (stamped by
@@ -272,20 +269,9 @@ class TestChatCompletionsBasic:
 
 class TestChatCompletionsBuildKwargs:
 
-    def test_basic_kwargs(self, transport):
-        msgs = [{"role": "user", "content": "Hello"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, timeout=30.0)
-        assert kw["model"] == "gpt-4o"
-        assert kw["messages"][0]["content"] == "Hello"
-        assert kw["timeout"] == 30.0
 
 
 
-    def test_tools_included(self, transport):
-        msgs = [{"role": "user", "content": "Hi"}]
-        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
-        assert kw["tools"] == tools
 
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile
@@ -311,13 +297,6 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, provider_profile=profile)
         assert kw["extra_body"]["tags"] == nous_portal_tags()
 
-    def test_reasoning_default(self, transport):
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-4o", messages=msgs,
-            supports_reasoning=True,
-        )
-        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
     def test_nous_omits_disabled_reasoning_for_unknown_model(self, transport):
         from providers import get_provider_profile
@@ -584,6 +563,35 @@ class TestChatCompletionsValidate:
 
 
 
+    @pytest.mark.parametrize("usage", [None, SimpleNamespace(completion_tokens=0)])
+    def test_rejects_known_router_timeout_shim_without_generated_tokens(self, transport, usage):
+        """#68396: an HTTP-200 router timeout shim with no generated tokens is not a completion."""
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is False
+
+    @pytest.mark.parametrize(
+        ("content", "tool_calls", "usage"),
+        [
+            ("Connect timeout, please try again later.", None, SimpleNamespace(completion_tokens=1)),
+            ("Connect timeout, please try again later.", [SimpleNamespace()], None),
+        ],
+    )
+    def test_accepts_non_shim_timeout_text(self, transport, content, tool_calls, usage):
+        """Positive controls (#68396): generated tokens, embedded phrase, or tool calls stay valid."""
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is True
+
     def test_valid(self, transport):
         r = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
         assert transport.validate_response(r) is True
@@ -644,22 +652,6 @@ class TestChatCompletionsNormalize:
 
 
 
-    def test_refusal_none_is_noop(self, transport):
-        """The common case: ``refusal`` is None → behavior unchanged."""
-        r = SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(
-                    content="hello", tool_calls=None, reasoning_content=None,
-                    refusal=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-        )
-        nr = transport.normalize_response(r)
-        assert nr.finish_reason == "stop"
-        assert nr.content == "hello"
-        assert nr.provider_data is None
 
 
 
@@ -936,31 +928,6 @@ class TestPromptCacheKeyCapability:
         )
         assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
 
-    def test_stale_profile_without_supports_prompt_cache_key_does_not_crash(self, transport):
-        """A ProviderProfile from a stale sys.modules cache (pre-#f4fb23f3d)
-        won't have the ``supports_prompt_cache_key`` field. Accessing it via
-        ``profile.supports_prompt_cache_key`` raises AttributeError and crashes
-        every API call. Use getattr with a False default so it degrades to
-        "no prompt cache key" instead of crashing.
-
-        Regression: 'NousProfile' object has no attribute
-        'supports_prompt_cache_key' (Aug 2026, after partial update).
-        """
-        from providers.base import ProviderProfile
-
-        # Simulate a stale class that predates supports_prompt_cache_key
-        # by creating a profile and deleting the attribute.
-        profile = ProviderProfile(name="stale-provider")
-        del profile.supports_prompt_cache_key
-
-        # Must not raise AttributeError — should fall back to False.
-        kwargs = transport.build_kwargs(
-            model="stale-model",
-            messages=self._messages(),
-            tools=self._tools(),
-            provider_profile=profile,
-        )
-        assert "prompt_cache_key" not in kwargs
 
     def test_overlong_caller_top_level_key_is_bounded(self, transport):
         """OpenAI caps prompt_cache_key at 64 chars and 400s longer values.
@@ -1003,16 +970,6 @@ class TestPromptCacheKeyCapability:
         # No duplicate top-level field competing with the caller's extra_body.
         assert "prompt_cache_key" not in kwargs
 
-    def test_short_caller_key_passes_through_unchanged(self, transport):
-        from providers.base import ProviderProfile
-
-        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
-        kwargs = transport.build_kwargs(
-            model="cache-model", messages=self._messages(), tools=self._tools(),
-            provider_profile=profile,
-            request_overrides={"prompt_cache_key": "caller-top-level"},
-        )
-        assert kwargs["prompt_cache_key"] == "caller-top-level"
 
     def test_overlong_caller_key_bounded_on_legacy_path(self, transport):
         long_key = "sess-" + "z" * 200

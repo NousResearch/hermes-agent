@@ -57,6 +57,40 @@ def _snapshot(conn, owner):
     }
 
 
+def test_legacy_import_keeps_passive_and_retired_room_reservations(tmp_path):
+    source = tmp_path / "state.db"
+    with rooms._transaction(source, immediate=True) as conn:
+        authority_bytes = _seed(conn, "authority", "authoritative")
+        replica_bytes = _seed(conn, "replica", "passive")
+        conn.execute("INSERT INTO hosted_room_id_reservations VALUES ('retired', 'replica', 1)")
+    target = tmp_path / "shared-state.db"
+    assert [room["room_id"] for room in rooms.list_rooms(target, include_disbanded=True)] == ["authoritative"]
+    with closing(rooms._read_connection(target)) as conn:
+        assert conn.execute("SELECT room_id FROM hosted_room_replicas").fetchone()[0] == "passive"
+        assert {row[0]: row[1] for row in conn.execute(
+            "SELECT room_id, owner_kind FROM hosted_room_id_reservations"
+        )} == {"authoritative": "authority", "passive": "replica", "retired": "replica"}
+        assert conn.execute(
+            "SELECT event_bytes FROM hosted_room_event_budget WHERE singleton=1"
+        ).fetchone()[0] == authority_bytes + replica_bytes
+        assert conn.execute("SELECT rooms FROM hosted_room_legacy_imports").fetchone()[0] == 1
+    with pytest.raises(rooms.RoomConflictError):
+        rooms.create_room(target, room_id="retired", name="Reuse", members=[],
+                          authority_gateway_id="imported-owner")
+
+
+def test_legacy_import_refuses_conflicting_reservation_owner(tmp_path):
+    source = tmp_path / "state.db"
+    with rooms._transaction(source, immediate=True) as conn:
+        _seed(conn, "authority", "authoritative")
+        conn.execute("UPDATE hosted_room_id_reservations SET owner_kind='replica'")
+    target = tmp_path / "shared-state.db"
+    assert rooms.list_rooms(target) == []
+    with closing(rooms._read_connection(target)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_rooms").fetchone()[0] == 0
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='hosted_room_legacy_imports'").fetchone() is None
+
+
 @pytest.mark.parametrize("owner", ["authority", "replica"])
 @pytest.mark.parametrize("pressure", ["age", "count", "bytes", "unreclaimable_bytes"])
 def test_pruning_keeps_quarantine_and_reclaims_only_terminal_history(tmp_path, monkeypatch, owner, pressure):

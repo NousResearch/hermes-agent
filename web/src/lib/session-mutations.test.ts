@@ -19,7 +19,7 @@ it('prepares import and delete from snapshots and retries unchanged after a lost
     if (lost) { lost = false; throw new TypeError('Failed to fetch'); }
     return Response.json({ ok: true });
   }));
-  await expect(api.deleteSession('existing')).rejects.toThrow('Failed to fetch');
+  await expect(api.deleteSession('existing')).rejects.toThrow('cannot reach');
   await api.deleteSession('existing');
   expect(writes[1]).toEqual(writes[0]);
   const query = new URL(writes[0].path, 'http://localhost').searchParams;

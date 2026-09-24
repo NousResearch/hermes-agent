@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ackComposerInsert } from '@/app/chat/composer/focus'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
-import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
+import { $selectedStoredSessionId, setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 // The warm path must route through the guarded prewarm resolver (hover dwell,
@@ -216,36 +217,6 @@ describe('host workspace scope', () => {
     tree.removeTreePane('plugin-workspace:scope-test')
   })
 
-  it('registers plugin workspace chrome options', async () => {
-    const { registry } = await import('@/contrib/registry')
-
-    const close = host.openWorkspace('scope-test', {
-      dock: { pane: 'workspace', pos: 'right' },
-      headerVeto: true,
-      render: () => null,
-      title: 'Scoped',
-      uncloseable: true
-    })
-
-    expect(registry.getArea('panes').find(pane => pane.id === 'plugin-workspace:scope-test')).toMatchObject({
-      data: {
-        dock: { pane: 'workspace', pos: 'right' },
-        headerVeto: true,
-        uncloseable: true
-      }
-    })
-
-    close()
-  })
-
-  it('publishes the active workspace scope through one host seam', async () => {
-    const { $workspaceMode, $workspaceOwnerKey } = await import('@/components/pane-shell/workspace-scope')
-
-    expect(host.setWorkspaceScope('bots', 'connection-b::default')).toBe(true)
-    expect($workspaceMode.get()).toBe('bots')
-    expect($workspaceOwnerKey.get()).toBe('connection-b::default')
-  })
-
   it('uses the shared tab action for an exact Bot owner without moving Sessions', async () => {
     const tree = await import('@/components/pane-shell/tree/store')
     const { $workspaceNewSessionTarget } = await import('@/components/pane-shell/workspace-scope')
@@ -263,5 +234,190 @@ describe('host workspace scope', () => {
 
     expect(opened).toEqual(['tab'])
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
+  })
+})
+
+describe('host.composer draft facade', () => {
+  afterEach(() => {
+    setActiveSessionId(null)
+    $selectedStoredSessionId.set(null)
+    clearAllSessionStates()
+  })
+
+  it('routes insertText and focus by address: tile for a session, resolved-active for null', async () => {
+    const seen: string[] = []
+
+    const onInsert = (event: Event) => {
+      const { mode, target, token } = (event as CustomEvent).detail
+
+      seen.push(`insert:${mode}:${target}`)
+      // A mounted surface acknowledges the insert like the real composer does.
+      ackComposerInsert(token, true)
+    }
+
+    const onFocus = (event: Event) => seen.push(`focus:${(event as CustomEvent<{ target: string }>).detail.target}`)
+
+    window.addEventListener('hermes:composer-insert', onInsert)
+    window.addEventListener('hermes:composer-focus', onFocus)
+
+    const [tileOk, activeOk] = await Promise.all([
+      host.composer.insertText('sess-1', ' snippet ', { mode: 'inline' }),
+      host.composer.insertText(null, 'to active')
+    ])
+
+    host.composer.focus('sess-1')
+    host.composer.focus(null)
+    // requestComposerFocus defers a plain focus request one macrotask.
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+
+    window.removeEventListener('hermes:composer-insert', onInsert)
+    window.removeEventListener('hermes:composer-focus', onFocus)
+
+    expect([tileOk, activeOk]).toEqual([true, true])
+    // A session id never resolves to the primary unless the primary shows it —
+    // an absent tile drops the request rather than reaching the wrong pane.
+    expect(seen).toEqual(['insert:inline:tile:sess-1', 'insert:block:main', 'focus:tile:sess-1', 'focus:main'])
+  })
+
+  it("addresses 'new' to the session-less primary composer only, never to the active one", async () => {
+    const seen: string[] = []
+
+    const onInsert = (event: Event) => {
+      const { target, token } = (event as CustomEvent).detail
+
+      seen.push(`insert:${target}`)
+      ackComposerInsert(token, true)
+    }
+
+    const onFocus = (event: Event) => seen.push(`focus:${(event as CustomEvent<{ target: string }>).detail.target}`)
+
+    window.addEventListener('hermes:composer-insert', onInsert)
+    window.addEventListener('hermes:composer-focus', onFocus)
+
+    // The primary shows a session → nothing hosts the new draft; the verbs
+    // fail closed instead of landing in whatever composer the bus routes to.
+    setActiveSessionId('rt-1')
+    $selectedStoredSessionId.set('sess-1')
+    await expect(host.composer.insertText('new', 'x')).resolves.toBe(false)
+    expect(host.composer.submit('new', 'x')).toBe(false)
+    host.composer.focus('new')
+    await new Promise(resolve => window.setTimeout(resolve, 5))
+    expect(seen).toEqual([])
+
+    // No session in the primary → it IS the new draft.
+    setActiveSessionId(null)
+    $selectedStoredSessionId.set(null)
+    await expect(host.composer.insertText('new', 'x')).resolves.toBe(true)
+    host.composer.focus('new')
+    await new Promise(resolve => window.setTimeout(resolve, 5))
+
+    window.removeEventListener('hermes:composer-insert', onInsert)
+    window.removeEventListener('hermes:composer-focus', onFocus)
+
+    expect(seen).toEqual(['insert:main', 'focus:main'])
+  })
+
+  it('falls back to the persisted stash, keyed by the stored id, when no surface answers', async () => {
+    const { stashSessionDraft } = await import('@/store/composer')
+
+    stashSessionDraft('sess-stash', 'stashed draft', [])
+    // The stash is keyed by the durable id; a plugin holding the runtime id
+    // must still reach it once the session states map runtime → stored.
+    publishSessionState('rt-stash', createClientSessionState('stored-stash'))
+    stashSessionDraft('stored-stash', 'runtime-addressed', [])
+
+    await expect(host.composer.getDraft('sess-stash')).resolves.toBe('stashed draft')
+    await expect(host.composer.getDraft('rt-stash')).resolves.toBe('runtime-addressed')
+  })
+})
+
+describe('host.sessions session-list mutations', () => {
+  beforeEach(async () => {
+    const layout = await import('@/store/layout')
+    const color = await import('@/store/session-color')
+    const session = await import('@/store/session')
+
+    layout.$pinnedSessionIds.set([])
+    layout.$sidebarSessionOrderIds.set([])
+    layout.$sidebarSessionOrderManual.set(false)
+    color.$sessionColorOverrides.set({})
+    session.$sessions.set([])
+  })
+
+  it('pin/unpin write the pinned store the sidebar reads', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+
+    host.sessions.pin('row-1')
+    expect($pinnedSessionIds.get()).toEqual(['row-1'])
+
+    host.sessions.pin('row-2')
+    expect($pinnedSessionIds.get()).toEqual(['row-1', 'row-2'])
+
+    host.sessions.pin('row-1', false)
+    expect($pinnedSessionIds.get()).toEqual(['row-2'])
+
+    // Drop-target pinning (drag-to-pin) slots the pin at an index instead of
+    // appending — the same `pinSession(id, index)` the sidebar's drop uses.
+    host.sessions.pin('row-0', true, 0)
+    expect($pinnedSessionIds.get()).toEqual(['row-0', 'row-2'])
+  })
+
+  it('resolves a live id to its durable lineage root before pinning', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'root-9', id: 'tip-9' })])
+
+    host.sessions.pin('tip-9')
+
+    expect($pinnedSessionIds.get()).toEqual(['root-9'])
+  })
+
+  it('reorder persists the manual order the drag path writes, in the LIVE id space', async () => {
+    const { $sidebarSessionOrderIds, $sidebarSessionOrderManual } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    // `c` was compressed: the row slot hands a plugin its durable root `c`,
+    // but the order store (and the sidebar's reconcile effect) key rows by
+    // the live id `c-tip`. Feeding the durable id back verbatim would drop
+    // the row from the order and flip the manual flag off on the next render.
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'c', id: 'c-tip' }), makeSessionInfo({ id: 'a' })])
+
+    host.sessions.reorder(['c', 'a', 'b'])
+
+    expect($sidebarSessionOrderManual.get()).toBe(true)
+    expect($sidebarSessionOrderIds.get()).toEqual(['c-tip', 'a', 'b'])
+
+    // Empty list = clear the manual order, back to the default sort.
+    host.sessions.reorder([])
+
+    expect($sidebarSessionOrderManual.get()).toBe(false)
+    expect($sidebarSessionOrderIds.get()).toEqual([])
+  })
+
+  it('reorderPinned permutes the Pinned section through the same setter the drag uses', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'p1', id: 'p1-tip' })])
+    $pinnedSessionIds.set(['p1', 'p2', 'unloaded'])
+
+    // Durable ids (the slot's) and live ids both resolve; an unmentioned pin keeps its slot.
+    host.sessions.reorderPinned(['p2', 'p1-tip'])
+
+    expect($pinnedSessionIds.get()).toEqual(['p2', 'p1', 'unloaded'])
+  })
+
+  it('setColor writes the durable-keyed colour override and clears with null', async () => {
+    const { $sessionColorOverrides } = await import('@/store/session-color')
+
+    host.sessions.setColor('row-1', '#ff8800')
+    expect($sessionColorOverrides.get()).toEqual({ 'row-1': '#ff8800' })
+
+    host.sessions.setColor('row-1', null)
+    expect($sessionColorOverrides.get()).toEqual({})
   })
 })

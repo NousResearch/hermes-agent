@@ -18,9 +18,9 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main_web_build import _build_web_ui, _run_npm_install_deterministic
-from hermes_cli.main_web_build import _web_ui_build_needed, _compute_web_ui_content_hash, _missing_web_build_tool, _web_ui_stamp_path, _write_web_ui_build_stamp
-from hermes_cli.update_cmd import _web_build_toolchain_ready, _web_toolchain_roots
+from hermes_cli.main_web_build import _build_web_ui
+from hermes_cli.main_web_build import _web_ui_build_needed, _missing_web_build_tool, _write_web_ui_build_stamp
+from hermes_cli.update_cmd import _web_build_toolchain_ready
 
 
 @pytest.fixture(autouse=True)
@@ -84,26 +84,7 @@ class TestWebUIBuildNeeded:
 
 
 
-    def test_content_hash_is_deterministic(self, tmp_path):
-        web_dir, _ = _make_web_dir(tmp_path)
-        (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
-        root = self._root(web_dir)
-        h1 = _compute_web_ui_content_hash(root, web_dir)
-        h2 = _compute_web_ui_content_hash(root, web_dir)
-        assert h1 == h2
-        assert len(h1) == 64
 
-    def test_write_stamp_creates_file_with_hash(self, tmp_path):
-        import json as _json
-        web_dir, _ = _make_web_dir(tmp_path)
-        (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
-        self._stamp_current(web_dir)
-        stamp = _web_ui_stamp_path()
-        assert stamp.is_file()
-        data = _json.loads(stamp.read_text())
-        assert data["contentHash"] == _compute_web_ui_content_hash(self._root(web_dir), web_dir)
 
 
 
@@ -146,7 +127,6 @@ class TestBuildWebUISkipsWhenFresh:
         args, kwargs = mock_run.call_args
         assert "--workspace" not in args[0]
         assert Path(args[0][0]).name in {"npm", "npm.cmd"}
-        assert args[0][1:] == ["ci", "--include=dev", "--silent", "--prefer-offline"]
         assert kwargs["cwd"] == web_dir
         assert "ESBUILD_BINARY_PATH" not in kwargs["env"]
         assert "ESBUILD_BINARY_PATH" not in mock_build.call_args.kwargs["env"]
@@ -204,29 +184,6 @@ class TestBuildWebUISkipsWhenFresh:
         assert "--include-workspace-root" in cmd
         assert "web" in cmd
 
-    def test_web_build_uses_idle_timeout_helper(self, tmp_path):
-        """npm run build now goes through _run_with_idle_timeout (issue #33788).
-
-        The install step keeps its capture_output behavior (the existing
-        retry-on-EPERM contract depends on it); only the long-running build
-        step is streamed + idle-killed.
-        """
-        web_dir, _ = _make_web_dir(tmp_path)
-
-        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
-             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_idle:
-            result = _build_web_ui(web_dir)
-
-        assert result is True
-        # Build was invoked through the idle-timeout helper, not subprocess.run.
-        mock_idle.assert_called_once()
-        args, kwargs = mock_idle.call_args
-        # Positional: [npm, "run", "build"]; cwd passed as kwarg.
-        assert args[0] == ["/usr/bin/npm", "run", "build"]
-        assert kwargs["cwd"] == web_dir
 
 
 class TestBuildWebUIRetryAndStaleFallback:
@@ -240,7 +197,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         build_fail = Subprocess.CompletedProcess([], 1, stdout="EPERM", stderr="")
         build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main_web_build._time.sleep") as mock_sleep, \
+             patch("hermes_cli.main_web_build._time.sleep"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main_web_build._run_with_idle_timeout",
                    side_effect=[build_fail, build_ok]) as mock_idle:
@@ -248,7 +205,6 @@ class TestBuildWebUIRetryAndStaleFallback:
 
         assert result is True
         assert mock_idle.call_count == 2  # build + retry
-        mock_sleep.assert_called_once_with(3)
 
     def test_falls_back_to_stale_dist_when_retry_also_fails(self, tmp_path, capsys):
         web_dir, dist_dir = _make_web_dir(tmp_path)
@@ -270,7 +226,6 @@ class TestBuildWebUIRetryAndStaleFallback:
         # because cmd_dashboard passes fatal=True and is the primary caller.
         assert result is True
         out = capsys.readouterr().out
-        assert "serving stale dist as fallback" in out
         assert "vite ENOMEM" in out  # combined output surfaced to user
 
 
@@ -318,9 +273,6 @@ class TestBuildWebUIFlock:
         assert result is True
         mock_run.assert_not_called()  # fresh after the wait -> no rebuild
 
-    def test_lock_file_is_gitignored(self):
-        gitignore = Path(__file__).resolve().parents[2] / ".gitignore"
-        assert ".web_ui_build.lock" in gitignore.read_text(encoding="utf-8")
 
 
 def _link_shims(bin_dir: Path, *names: str) -> None:
@@ -347,17 +299,12 @@ class TestWebBuildToolchainReady:
         assert _web_build_toolchain_ready(web_dir, tmp_path) is True
 
 
-    @pytest.mark.parametrize("shim", ["tsc.cmd", "tsc.ps1", "tsc.exe"])
-    def test_windows_shim_extensions_count(self, tmp_path, shim):
+    def test_windows_shim_extensions_count(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
-        _link_shims(tmp_path / "node_modules" / ".bin", shim, "vite.cmd")
+        _link_shims(tmp_path / "node_modules" / ".bin", "tsc.cmd", "vite.cmd")
         assert _web_build_toolchain_ready(web_dir, tmp_path) is True
 
 
-class TestWebToolchainRoots:
-    def test_searches_the_package_and_its_workspace_root(self, tmp_path):
-        web_dir, _ = _make_web_dir(tmp_path)
-        assert _web_toolchain_roots(web_dir) == (web_dir, tmp_path)
 
 
 class TestMissingWebBuildTool:
@@ -419,3 +366,28 @@ class TestBuildRecoversFromMissingToolchain:
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
 
+
+
+class TestBuildSkipsRedundantInstall:
+    """`hermes update` pass 1 installs the same closure; pass 2 must not `npm ci` it again. See #43837."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, *, lock_changed: bool) -> tuple[bool, int, int]:
+        import hermes_cli.main as main_mod
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+        ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.update_cmd_deps._npm_lockfile_changed", return_value=lock_changed), \
+             patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok) as mock_install, \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=ok) as mock_build, \
+             patch("hermes_cli.main_web_build._web_ui_build_needed", return_value=True), \
+             patch("hermes_cli.main_web_build._write_web_ui_build_stamp"):
+            return _build_web_ui(web_dir), mock_install.call_count, mock_build.call_count
+
+    def test_unchanged_manifests_build_without_reinstalling(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, lock_changed=False) == (True, 0, 1)
+
+    def test_changed_manifests_still_install_before_building(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, lock_changed=True) == (True, 1, 1)

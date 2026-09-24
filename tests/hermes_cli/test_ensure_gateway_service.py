@@ -67,7 +67,6 @@ class TestEnsureGatewayService:
         assert warned and not calls
 
 
-
     def test_never_raises_on_install_failure(self, monkeypatch, capsys):
         _patch_host(monkeypatch)
         monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)

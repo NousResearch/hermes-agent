@@ -8,6 +8,7 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -23,7 +24,7 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResponse } from '@/types/hermes'
+import type { SessionResumeResult } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
@@ -43,7 +44,7 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 function mergeTileTranscript(
   previous: ChatMessage[],
-  prefetchMessages: SessionResumeResponse['messages'] | undefined,
+  prefetchMessages: SessionResumeResult['messages'] | undefined,
   streamId?: null | string
 ): ChatMessage[] {
   const prefetched = toChatMessages(prefetchMessages ?? [])
@@ -220,6 +221,11 @@ export function useSessionTileDelegate({
           }
         }
       },
+      dropRuntimeBindings: storedSessionIds => {
+        for (const storedSessionId of storedSessionIds) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        }
+      },
       // Reconnect reconcile (#93059): retire an orphaned runtime's busy claim
       // through updateSessionState so the cache, focused view, busyRef and
       // tile mirrors settle together. A runtime this cache never held reports
@@ -353,7 +359,7 @@ export function useSessionTileDelegate({
             return singleFlightSessionResume(
               storedSessionId,
               () =>
-                requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+                requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
                   session_id: storedSessionId,
                   cols: 96,
                   omit_messages: !authoritativeSnapshot,
@@ -452,11 +458,17 @@ export function useSessionTileDelegate({
             const running = resolveResumedBusy(resumed.running ?? info?.running, busyChangedWhileResuming)
 
             return {
-              ...state,
+              // The deferred build reports the session's own effort later (#79807).
+              ...markReasoningEffortPending(state),
               ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
               ...(typeof info?.model === 'string' ? { model: info.model } : {}),
               ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-              ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+              ...(typeof info?.reasoning_effort === 'string'
+                ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+                : {}),
+              ...(typeof info?.reasoning_effort_wire === 'string'
+                ? { reasoningEffortWire: info.reasoning_effort_wire }
+                : {}),
               awaitingResponse: running && !resumed.inflight?.assistant,
               busy: running,
               messages

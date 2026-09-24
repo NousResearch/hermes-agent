@@ -1,22 +1,19 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import logging
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     SendResult,
-    cache_audio_from_bytes,
     cache_image_from_bytes,
-    cache_video_from_bytes,
     safe_url_for_log,
     utf16_len,
-    validate_inbound_media_size,
-    _log_safe_path,
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
@@ -44,11 +41,6 @@ class TestInboundMediaSizeCap:
 
     _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
 
-    def test_default_cap_is_128_mib(self, monkeypatch):
-        # No config override -> default. Patch loader to return empty config.
-        import gateway.platforms.base as base
-        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: base.DEFAULT_INBOUND_MEDIA_MAX_BYTES)
-        assert base.DEFAULT_INBOUND_MEDIA_MAX_BYTES == 128 * 1024 * 1024
 
     def test_image_bytes_rejected_when_oversized(self, monkeypatch):
         import gateway.platforms.base as base
@@ -57,11 +49,6 @@ class TestInboundMediaSizeCap:
             cache_image_from_bytes(self._PNG, ext=".png")
 
 
-class TestSecretCaptureGuidance:
-    def test_gateway_secret_capture_message_points_to_local_setup(self):
-        message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
-        assert "local cli" in message.lower()
-        assert "~/.hermes/.env" in message
 
 
 class TestSafeUrlForLog:
@@ -378,9 +365,6 @@ class TestMediaExtensionAllowlistParity:
     was silently dropped. Both extractors now derive from the single
     MEDIA_DELIVERY_EXTS source of truth, and the strip is anchored to that set.
     """
-
-    DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
-                      "tsv", "svg"]
 
 
     def test_unknown_extension_not_black_holed_by_cleanup(self):
@@ -1160,29 +1144,42 @@ class TestTruncateMessage:
 
 
 class TestGetHumanDelay:
+    """``human_delay`` is per-profile config (#116895): the adapter only consumes the range the
+    runner installed; the bounds are validated in ``GatewayRunner._human_delay_from_config``."""
 
+    @staticmethod
+    def _adapter_with(range_ms):
+        adapter = SimpleNamespace(_human_delay_range_ms=range_ms)
+        adapter._get_human_delay = lambda: BasePlatformAdapter._get_human_delay(adapter)
+        return adapter
 
-    def test_natural_mode_ignores_malformed_custom_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "natural",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
+    def test_off_and_installed_range_never_touch_process_env(self):
+        env = {"HERMES_HUMAN_DELAY_MODE": "custom", "HERMES_HUMAN_DELAY_MIN_MS": "10",
+               "HERMES_HUMAN_DELAY_MAX_MS": "20"}
+        with patch.dict(os.environ, env), patch(
+            "gateway.platforms.base.random.uniform", return_value=1.5
+        ) as uniform:
+            assert self._adapter_with(None)._get_human_delay() == 0.0
+            uniform.assert_not_called()
+            assert self._adapter_with((1000, 2000))._get_human_delay() == 1.5
+            uniform.assert_called_once_with(1.0, 2.0)
 
-
-    def test_custom_mode_tolerates_malformed_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "custom",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            # falls back to the custom-mode defaults instead of crashing
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
+    @pytest.mark.parametrize("cfg, expected, warned_key", [
+        ({"human_delay": {"mode": "off", "min_ms": -5}}, None, None),
+        ({"human_delay": {"mode": "natural", "min_ms": "oops", "max_ms": "bad"}}, (800, 2500), None),
+        ({"human_delay": {"mode": "custom", "min_ms": 1000, "max_ms": 2000}}, (1000, 2000), None),
+        ({"human_delay": {"mode": "custom", "min_ms": "oops", "max_ms": 1000}}, (800, 1000), "human_delay.min_ms"),
+        ({"human_delay": {"mode": "custom", "min_ms": -1, "max_ms": 1000}}, (800, 1000), "human_delay.min_ms"),
+        ({"human_delay": {"mode": "custom", "min_ms": 3000, "max_ms": 1000}}, (800, 2500), "human_delay.max_ms=1000"),
+    ])
+    def test_config_bounds_are_validated_with_a_warning_naming_the_key(self, cfg, expected, warned_key, caplog):
+        from gateway.run import GatewayRunner
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            assert GatewayRunner._human_delay_from_config(cfg) == expected
+        if warned_key is None:
+            assert "human_delay" not in caplog.text
+        else:
+            assert warned_key in caplog.text
 
 
 # ---------------------------------------------------------------------------

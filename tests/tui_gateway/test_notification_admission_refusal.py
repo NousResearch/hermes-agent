@@ -9,6 +9,7 @@ import pytest
 
 from tui_gateway import prompt_turn, session_notifications
 from tui_gateway.method_ctx import rebind
+from tui_gateway.session_lifecycle import _session_turn_admission
 
 
 @pytest.mark.parametrize('kind', ['async_delegation', 'completion'])
@@ -23,6 +24,7 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
     emitted = []
     namespace = dict(time=time, logger=logging.getLogger(__name__),
         _emit=lambda *args: emitted.append(args),
+        _session_turn_admission=_session_turn_admission,
         _ensure_active_session_slot=lambda *args: None,
         _notif_log_failure=lambda *args: None)
     for module, names in [(prompt_turn, ('_admit_prompt_turn', '_run_prompt_submit')),
@@ -33,6 +35,8 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
     # Also bind the retry helper when present; old code must fail on the receipt, not an absent test import.
     if hasattr(session_notifications, '_notif_defer_event'):
         namespace['_notif_defer_event'] = rebind(session_notifications._notif_defer_event, namespace)
+    # The dispatcher binds the session's DB row before admission; this session has no store.
+    namespace['_ensure_session_db_row'] = lambda _session: True
     original_queue = process_registry.completion_queue
     process_registry.completion_queue = queue.Queue()
     try:

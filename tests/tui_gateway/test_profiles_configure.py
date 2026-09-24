@@ -8,6 +8,7 @@ the editor stayed live at runtime and a server with ``enabled: false`` showed as
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -88,17 +89,62 @@ def test_configure_toggle_is_what_the_runtime_resolver_and_describe_see(profile_
     assert _described() == {"keep": True, "drop": False, "legacy": True}
 
 
-def test_describe_unpinned_toolsets_uses_the_served_profiles_secret_scope(profile_dir):
-    """An unpinned snapshot resolves tool credentials from its served profile under multiplexing."""
-    from agent.secret_scope import current_secret_scope, set_multiplex_active
+def test_describe_unpinned_toolsets_scopes_named_and_launch_profiles(profile_dir, monkeypatch):
+    """Describe preserves each multiplexed profile's own credentials and releases every scope."""
+    from agent.secret_scope import (
+        current_secret_scope, current_secret_scope_home, get_secret, is_multiplex_active,
+        set_multiplex_active,
+    )
+    from hermes_cli.config import load_config
+    from hermes_constants import get_hermes_home_override
+    from tools.terminal_scope import get_terminal_scope
+    from tui_gateway import launch_profile_policy as lpp
 
-    (profile_dir / ".env").write_text("XAI_API_KEY=profile-only-key\n", encoding="utf-8")
-    set_multiplex_active(True)
+    launch_home = profile_dir.parent.parent
+    launch_key, named_key = "launch-only-key", "named-only-key"
+    (profile_dir / ".env").write_text(f"XAI_API_KEY={named_key}\n", encoding="utf-8")
+    monkeypatch.setenv("XAI_API_KEY", launch_key)
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr(lpp, "_snapshot", None)
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+
+    def expected_enabled(profile_home):
+        scopes = server._profile_runtime_scope_tokens(profile_home, hydrate_secrets=False)
+        try:
+            toolsets, _pinned = server._describe_toolsets(load_config() or {})
+            return {toolset["name"] for toolset in toolsets if toolset["enabled"]}
+        finally:
+            server._release_profile_runtime_scope_tokens(scopes)
+
     try:
-        snapshot = _call("profiles.describe", {})
+        assert server._profile_home("bot") == profile_dir
+        assert is_multiplex_active()
+        environment_before = dict(os.environ)
+
+        named = _call("profiles.describe", {})
+        default_response = server._methods["profiles.describe"](2, {"name": "default"})
+        assert "error" not in default_response, default_response.get("error")
+        default = default_response["result"]
+
+        named_enabled = {toolset["name"] for toolset in named["toolsets"] if toolset["enabled"]}
+        default_enabled = {toolset["name"] for toolset in default["toolsets"] if toolset["enabled"]}
+        assert named_enabled == expected_enabled(str(profile_dir))
+        assert default_enabled == expected_enabled(None)
+        assert "x_search" in named_enabled
+        assert "x_search" in default_enabled
+
+        for home, key in ((str(profile_dir), named_key), (None, launch_key)):
+            scopes = server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
+            try:
+                assert get_secret("XAI_API_KEY") == key
+            finally:
+                server._release_profile_runtime_scope_tokens(scopes)
+
+        assert dict(os.environ) == environment_before
+        assert current_secret_scope() is None
+        assert current_secret_scope_home() is None
+        assert get_hermes_home_override() is None
+        assert get_terminal_scope() is None
     finally:
         set_multiplex_active(False)
-
-    enabled = {toolset["name"] for toolset in snapshot["toolsets"] if toolset["enabled"]}
-    assert enabled
-    assert current_secret_scope() is None

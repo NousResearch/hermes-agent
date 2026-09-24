@@ -58,14 +58,13 @@ def _best_effort(fn) -> bool:
 
 @contextlib.contextmanager
 def _hermes_home_scope(path):
-    """Scope config and profile secrets to ``path`` for the block."""
-    token = set_hermes_home_override(str(path))
-    secret_token = set_secret_scope(build_profile_secret_scope(path), profile_home=str(path))
+    """Scope a profile RPC to its complete runtime context."""
+    profile_home = None if Path(path).resolve() == Path(_hermes_home).resolve() else path
+    scopes = _profile_runtime_scope_tokens(profile_home, hydrate_secrets=False)
     try:
         yield
     finally:
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(token)
+        _release_profile_runtime_scope_tokens(scopes)
 
 
 def _resolve_profile(rid, params):

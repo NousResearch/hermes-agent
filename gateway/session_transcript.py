@@ -39,7 +39,7 @@ def _spool_dropped(session_id: str, message: Dict[str, Any]):
 # Message keys persisted only for assistant rows (None otherwise).
 _ASSISTANT_ONLY_KEYS = (
     "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
-    "codex_message_items",
+    "codex_message_items", "bedrock_content_blocks",
 )
 
 

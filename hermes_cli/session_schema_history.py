@@ -237,6 +237,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'display_identity', 'display_metadata'),
             ('+', 'display_order', 'display_identity'),
         )),
+        ('16 2026-09-24T09:33Z #121293', (('+', 'bedrock_content_blocks', 'codex_message_items'),)),
         ),
     ),
     "session_model_usage": _TableHistory(

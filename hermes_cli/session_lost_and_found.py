@@ -451,7 +451,7 @@ _TEXT_SHAPE_RULES: dict[str, dict[str, Callable[[str], bool]]] = {
     },
     "messages": {
         **dict.fromkeys(("effect_disposition", "finish_reason", "display_kind"), _is_token),
-        **dict.fromkeys(("tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+        **dict.fromkeys(("tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items", "bedrock_content_blocks",
                          "api_content", "display_metadata"), _blank_or(_is_json_start)),
     },
     "session_model_usage": {

@@ -60,7 +60,7 @@ behavior-affecting hooks:
 | Hook | Return behavior |
 | --- | --- |
 | `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message. |
-| `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
+| `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, `{"action": "modify", "args": {...}}` to transform the tool's input arguments, or `{"action": "approve", "message": "..."}` to require human approval. When approval and modification directives coexist, the approval request includes the final post-modifier argument snapshot (with sensitive values redacted); the human approval therefore applies to the arguments that will execute. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
 | `transform_llm_output` | May return a replacement final assistant text string. |
 

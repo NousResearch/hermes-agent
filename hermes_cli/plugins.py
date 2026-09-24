@@ -1933,7 +1933,7 @@ def resolve_pre_tool_block(
 
 def _resolve_block_from_details(
     details: "_PreToolCallDirective", tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
-    session_id: str = "",
+    session_id: str = "", final_args: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
     ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
@@ -1949,7 +1949,30 @@ def _resolve_block_from_details(
             approval_tokens = set_current_observability_context(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+            approval_reason = details.message or ""
+            if final_args is not None:
+                # The approval callback may have been produced before another hook's
+                # ``modify`` directive.  Put the post-modifier snapshot in the actual
+                # approval request so the human approves exactly what will execute.
+                from agent.redact import redact_sensitive_text
+                def _redact_argument_values(value: Any) -> Any:
+                    if isinstance(value, dict):
+                        return {
+                            key: ("[REDACTED]" if any(marker in str(key).lower() for marker in
+                                  ("secret", "password", "token", "api_key", "access_key", "private_key", "credential"))
+                                  else _redact_argument_values(item))
+                            for key, item in value.items()
+                        }
+                    if isinstance(value, list):
+                        return [_redact_argument_values(item) for item in value]
+                    return value
+                final_args_json = json.dumps(
+                    _redact_argument_values(final_args), ensure_ascii=False, sort_keys=True, default=str)
+                approval_reason = (
+                    f"{approval_reason}\n\nFinal tool arguments after all pre-tool-call modifiers "
+                    f"(secrets redacted): {redact_sensitive_text(final_args_json, force=True)}"
+                )
+            result = request_tool_approval(tool_name, approval_reason, rule_key=details.rule_key or tool_name)
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):
@@ -1970,7 +1993,9 @@ def _dispatch_pre_tool_call_hooks(
     block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     block_msg = _resolve_block_from_details(
-        details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
+        details, tool_name,
+        final_args=details.modified_args,
+        **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
     return (block_msg, details.modified_args)
 
 

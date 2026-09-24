@@ -1794,6 +1794,35 @@ class TestResolvePreToolBlock:
     directive (incl. the approve→gate escalation) to a block message."""
 
 
+    def test_approve_gate_receives_final_modified_args(self, monkeypatch):
+        """Approval must describe the post-modifier snapshot, not stale input."""
+        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "confirm write"},
+                {"action": "modify", "args": {"path": "/safe/final", "client_secret": "secret-value"}},
+            ],
+        )
+        seen = {}
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["reason"] = reason
+            return {"approved": False, "message": "declined"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe", "content": "x"}
+        )
+
+        assert block_msg == "declined"
+        assert modified == {"path": "/safe/final", "content": "x", "client_secret": "secret-value"}
+        assert "/safe/final" in seen["reason"]
+        assert "/unsafe" not in seen["reason"]
+        assert "secret-value" not in seen["reason"]
+        assert "[REDACTED]" in seen["reason"]
+
     def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         from tools import approval_context

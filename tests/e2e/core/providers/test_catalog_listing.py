@@ -5,8 +5,9 @@ provider-unique model ids at the EXACT listing path under that base; anything el
 processes per row call the real product functions:
 
 * listing — ``hermes_cli.models.provider_model_ids`` (the catalog the ``/model`` picker renders)
-  must query the CONFIGURED endpoint at its exact listing path and render the relay's models, never
-  the provider's canonical host (#120844 class): the relay's key must not be addressed to the vendor;
+  must query the CONFIGURED endpoint at an exact listing path under it, never the provider's
+  canonical host (#120844 class): the relay's key must not be addressed to the vendor; rows that
+  already do so must also render the relay's own model ids;
 * switch — ``hermes_cli.model_switch.switch_model(explicit_provider=<row>)`` must resolve to that
   provider at its configured endpoint, not to an alias on another endpoint (#120295 class);
 * listing degradation — for the rows that already list from the configured endpoint, a 404 and a
@@ -123,12 +124,19 @@ def _listing_facts(ls: dict) -> str:
 @pytest.mark.parametrize("row", [pytest.param(r, id=r.name) for r in ROWS])
 def test_listing_uses_configured_endpoint(row: Row, probes: dict) -> None:
     ls = probes[(row.name, "list")]
-    route = row.listing_route()
+    routes = row.listing_routes()
     ok = (not row.supports_model_listing) or (
-        "error" not in ls and bool(ls["listing_paths"]) and all(bare_path(p) == route for p in ls["listing_paths"])
-        and not ls["canonical_host_hit"] and ls["unique"] in (ls.get("ids") or []))
+        "error" not in ls and bool(ls["listing_paths"]) and all(bare_path(p) in routes for p in ls["listing_paths"])
+        and not ls["canonical_host_hit"])
     with known_gate(LISTING_KNOWN.get(row.name)):
-        gate(ok, f"{_listing_facts(ls)}\n{row.name}: picker did not list the configured endpoint (want {route})")
+        gate(ok, f"{_listing_facts(ls)}\n{row.name}: picker did not list the configured endpoint (want {sorted(routes)})")
+
+
+@pytest.mark.parametrize("row", [pytest.param(r, id=r.name) for r in CONTROL_ROWS])
+def test_listing_renders_relay_models(row: Row, probes: dict) -> None:
+    """The rows that list from the configured endpoint render the relay's own model ids."""
+    ls = probes[(row.name, "list")]
+    assert ls["unique"] in (ls.get("ids") or []), f"{row.name}: relay models not rendered\n{_listing_facts(ls)}"
 
 
 @pytest.mark.parametrize("row", [pytest.param(r, id=r.name) for r in ROWS])
@@ -149,10 +157,10 @@ def test_listing_failure_degrades_without_vendor_host(row: Row, kind: str, probe
     """A 404 or a hanging listing at the configured endpoint: the picker still returns (within
     ``HANG_BOUND_S``), asked the exact listing path, never crashed and never fell back to the vendor."""
     ls = probes[(row.name, kind)]
-    route = row.listing_route()
+    routes = row.listing_routes()
     assert "error" not in ls, f"{row.name} [{kind}]: listing crashed\n{_listing_facts(ls)}"
     assert ls["wall_s"] < HANG_BOUND_S, f"{row.name} [{kind}]: listing blocked the picker\n{_listing_facts(ls)}"
-    assert ls["listing_paths"] and all(bare_path(p) == route for p in ls["listing_paths"]), (
-        f"{row.name} [{kind}]: never asked {route}\n{_listing_facts(ls)}")
+    assert ls["listing_paths"] and all(bare_path(p) in routes for p in ls["listing_paths"]), (
+        f"{row.name} [{kind}]: never asked {sorted(routes)}\n{_listing_facts(ls)}")
     assert not ls["canonical_host_hit"], f"{row.name} [{kind}]: fell back to the vendor host\n{_listing_facts(ls)}"
     assert ls["unique"] not in (ls.get("ids") or []), f"{row.name} [{kind}]: fake ids without a listing?"

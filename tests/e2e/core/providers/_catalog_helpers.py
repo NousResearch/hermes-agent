@@ -134,14 +134,15 @@ class Row:
         out = {p + ENDPOINT_OF_DIALECT[self.dialect]: self.dialect}
         if self.dialect == "responses" or self.host_mandated:
             out[p + ENDPOINT_OF_DIALECT["chat"]] = "chat"
-        # Listing: an unversioned canonical base (api.anthropic.com, …/anthropic) lists at
-        # ``/v1/models`` under the Anthropic override; a versioned one (…/v1) at ``/models``.
-        versioned = re.search(r"/v\d+[a-z0-9]*/?$", urlsplit(self.base_url).path or "")
-        out[p + ("/v1/models" if self.dialect == "anthropic" and not versioned else "/models")] = "listing"
+        # Listing: ``/models`` under the configured base; under the Anthropic override also the
+        # Anthropic API's own ``/v1/models`` (the SDK's versioned path).
+        out[p + "/models"] = "listing"
+        if self.dialect == "anthropic":
+            out[p + "/v1/models"] = "listing"
         return out
 
-    def listing_route(self) -> str:
-        return next(p for p, d in self.routes().items() if d == "listing")
+    def listing_routes(self) -> set[str]:
+        return {p for p, d in self.routes().items() if d == "listing"}
 
     def vendor_host(self) -> str:
         return f"{urlsplit(self.base_url).hostname}:443" if self.base_url.startswith("https://") else ""

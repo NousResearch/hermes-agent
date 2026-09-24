@@ -78,10 +78,10 @@ class Home:
         return self.hermes_home / "auth.json"
 
     def seed_auth(self, store: dict[str, Any]) -> None:
-        self.auth_path.write_text(json.dumps(store, indent=2))
+        self.auth_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
     def auth(self) -> dict[str, Any]:
-        return json.loads(self.auth_path.read_text())
+        return json.loads(self.auth_path.read_text(encoding="utf-8"))
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items()

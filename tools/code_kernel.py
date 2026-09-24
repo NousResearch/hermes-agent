@@ -40,6 +40,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
+_BROKER_STAGING_ROOT = "/tmp"
 
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
@@ -1043,7 +1044,7 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     kernel.tmpdir = tempfile.mkdtemp(
         prefix="hermes_kernel_",
         # no-tmp: ok — a broker child under another uid must traverse the parent directory.
-        dir="/tmp" if broker_config is not None else None,
+        dir=_BROKER_STAGING_ROOT if broker_config is not None else None,
     )
     if broker_config is not None:
         # The broker child runs as a different, deliberately less-privileged uid. It needs to
@@ -1173,15 +1174,17 @@ def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
     follows symlinks, so a planted link is rejected rather than chased."""
     now = time.time() if now is None else now
     removed = 0
-    for path in glob.glob(os.path.join(tempfile.gettempdir(), "hermes_kernel_*")):
-        try:
-            if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
-                # No ignore_errors: a rejected symlink (or a half-removed dir) must not
-                # count as swept — it stays for the next pass instead.
-                shutil.rmtree(path)
-                removed += 1
-        except OSError:
-            continue
+    roots = {tempfile.gettempdir(), _BROKER_STAGING_ROOT}
+    for root in roots:
+        for path in glob.glob(os.path.join(root, "hermes_kernel_*")):
+            try:
+                if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
+                    # No ignore_errors: a rejected symlink (or a half-removed dir) must not
+                    # count as swept — it stays for the next pass instead.
+                    shutil.rmtree(path)
+                    removed += 1
+            except OSError:
+                continue
     return removed
 
 

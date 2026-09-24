@@ -1233,3 +1233,22 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+    def test_week_old_broker_dir_is_swept_when_tmpdir_differs(self):
+        import time as time_module
+
+        from tools.code_kernel import _sweep_stale_staging_dirs
+
+        with tempfile.TemporaryDirectory() as configured_tmp, tempfile.TemporaryDirectory() as broker_tmp:
+            stale = Path(broker_tmp, "hermes_kernel_broker_old")
+            stale.mkdir()
+            week_and_a_bit = time_module.time() - 8 * 86400
+            os.utime(stale, (week_and_a_bit, week_and_a_bit))
+            with (
+                patch("tools.code_kernel.tempfile.gettempdir", return_value=configured_tmp),
+                patch("tools.code_kernel._BROKER_STAGING_ROOT", broker_tmp, create=True),
+            ):
+                removed = _sweep_stale_staging_dirs()
+
+            self.assertEqual(removed, 1)
+            self.assertFalse(stale.exists())

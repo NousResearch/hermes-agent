@@ -6,8 +6,8 @@ export function textPart(text: string, timestamp?: number): ChatMessagePart {
   return { type: 'text', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-export function reasoningPart(text: string, timestamp?: number): ChatMessagePart {
-  return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
+export function reasoningPart(text: string, timestamp?: number, sourceId?: string): ChatMessagePart {
+  return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}), ...(sourceId ? { sourceId } : {}) }
 }
 
 /**
@@ -425,7 +425,28 @@ function appendStreamPart(
   return { index: next.length - 1, parts: next }
 }
 
-export function appendReasoningPart(parts: ChatMessagePart[], delta: string, timestamp?: number): ChatMessagePart[] {
+export function appendReasoningPart(
+  parts: ChatMessagePart[],
+  delta: string,
+  timestamp?: number,
+  sourceId?: string
+): ChatMessagePart[] {
+  if (sourceId) {
+    const next = [...parts]
+    const tail = next.at(-1)
+
+    if (tail?.type === 'reasoning' && tail.sourceId === sourceId && tail.completedAt === undefined) {
+      next[next.length - 1] = { ...tail, text: `${tail.text}${delta}` }
+      return next
+    }
+
+    return [...next, reasoningPart(delta, timestamp, sourceId)]
+  }
+
+  if (parts.at(-1)?.type === 'reasoning' && parts.at(-1)?.sourceId) {
+    return [...parts, reasoningPart(delta, timestamp)]
+  }
+
   return appendStreamPart(parts, 'reasoning', delta, timestamp).parts
 }
 

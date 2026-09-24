@@ -245,6 +245,28 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   return content
 }
 
+/** Only the backend may attach native summary identities. A mismatch keeps the
+ * flat reasoning view rather than recovering any extra text from replay data. */
+function nativeReasoningParts(value: unknown, expected: string, timestamp?: number): ChatMessagePart[] {
+  if (!Array.isArray(value) || !expected) return []
+  const result: ChatMessagePart[] = []
+  const groups: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (!item || item.type !== 'reasoning' || typeof item.id !== 'string' || !item.id ||
+        seen.has(item.id) || !Array.isArray(item.summary) || !item.summary.length) return []
+    seen.add(item.id)
+    const texts: string[] = []
+    for (const [index, part] of item.summary.entries()) {
+      if (!part || part.type !== 'summary_text' || typeof part.text !== 'string' || !part.text) return []
+      texts.push(part.text)
+      result.push(reasoningPart(part.text, timestamp, `${item.id}:summary:${index}`))
+    }
+    groups.push(texts.join('\n'))
+  }
+  return groups.join('\n\n') === expected ? result : []
+}
+
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
@@ -388,7 +410,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 
     if (reasoning && message.role === 'assistant') {
-      parts.push(reasoningPart(reasoning, message.timestamp))
+      const native = nativeReasoningParts(message.display_reasoning_items, reasoning, message.timestamp)
+      parts.push(...(native.length ? native : [reasoningPart(reasoning, message.timestamp)]))
     }
 
     const reply = message.display_content !== undefined ? displayContent : displayContent || codexText?.reply

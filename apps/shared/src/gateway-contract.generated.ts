@@ -4345,6 +4345,12 @@ export interface StreamDeltaPayload {
   text: string
   rendered?: string | null
   verbose?: boolean | null
+  reasoning_id?: string | null
+}
+/** Boundary for one provider-owned reasoning source in the live stream. */
+export interface ReasoningLifecyclePayload {
+  reasoning_id: string
+  text: string
 }
 /** ``prompt_turn._interim_assistant_cb`` / ``agent_callbacks`` interim_assistant_callback. */
 export interface MessageInterimPayload {
@@ -5519,6 +5525,10 @@ export interface BackendGatewayEventMap {
   'reasoning.available': StreamDeltaPayload
   /** One streamed chunk of the model's reasoning. */
   'reasoning.delta': StreamDeltaPayload
+  /** A provider-owned reasoning source finished streaming. */
+  'reasoning.end': ReasoningLifecyclePayload
+  /** A provider-owned reasoning source began streaming. */
+  'reasoning.start': ReasoningLifecyclePayload
   /** The backend withdrew an open server→client request; clear the matching card only. */
   'request.cancel': RequestCancelPayload
   /** Background review of the last turn finished. */
@@ -5625,6 +5635,8 @@ export const GATEWAY_EVENT_TYPES = [
   'reaction',
   'reasoning.available',
   'reasoning.delta',
+  'reasoning.end',
+  'reasoning.start',
   'request.cancel',
   'review.summary',
   'session.control.update',

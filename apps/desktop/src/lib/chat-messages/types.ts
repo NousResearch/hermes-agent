@@ -6,6 +6,8 @@ import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
+  /** Provider-owned reasoning source; not a cross-turn occurrence identifier. */
+  sourceId?: string
   toolResultMetadata?: ToolResultMetadata
   /** Unix seconds when this visible activity segment began. Fractional values
    * preserve the millisecond precision available on live gateway events. */
@@ -99,6 +101,7 @@ export type GatewayEventPayload = {
   revision?: number
   model?: string
   provider?: string
+  reasoning_id?: string
   reasoning_effort?: string
   reasoning_effort_wire?: string
   service_tier?: string

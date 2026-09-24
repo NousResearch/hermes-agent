@@ -115,12 +115,24 @@ class StreamDeltaPayload(Payload):
     text: str
     rendered: str | None = None
     verbose: bool | None = None
+    reasoning_id: str | None = None
 
 
 event("message.delta", StreamDeltaPayload, doc="One streamed chunk of the assistant reply.")
 event("reasoning.delta", StreamDeltaPayload, doc="One streamed chunk of the model's reasoning.")
 event("reasoning.available", StreamDeltaPayload, doc="A completed reasoning block (non-streaming providers).")
 event("thinking.delta", StreamDeltaPayload, doc="Legacy thinking-text chunk (thinking_callback).")
+
+
+class ReasoningLifecyclePayload(Payload):
+    """Boundary for one provider-owned reasoning source in the live stream."""
+
+    reasoning_id: str
+    text: str
+
+
+event("reasoning.start", ReasoningLifecyclePayload, doc="A provider-owned reasoning source began streaming.")
+event("reasoning.end", ReasoningLifecyclePayload, doc="A provider-owned reasoning source finished streaming.")
 
 
 class MessageInterimPayload(Payload):

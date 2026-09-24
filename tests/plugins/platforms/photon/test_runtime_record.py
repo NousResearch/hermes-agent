@@ -22,6 +22,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
+from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -123,7 +124,7 @@ def _patch_spawn(
     # sidecar_deps_installed() checks the dependency's own directory, not just
     # node_modules/ (9cf2046081) — mirror a real completed install.
     (sidecar_dir / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar_dir)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", sidecar_dir)
     monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
 
     async def _no_reap(self: PhotonAdapter) -> None:

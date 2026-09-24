@@ -9,17 +9,21 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef } from 'react'
 
 import { HUD_SURFACE } from '@/app/floating-hud'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { Codicon } from '@/components/ui/codicon'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
-import { readJson, writeJson } from '@/lib/storage'
+import { LAYOUT_KEYS } from '@/lib/layout-persistence'
+import { Codecs } from '@/lib/persisted'
 import { cn } from '@/lib/utils'
+import { modeLayout } from '@/store/interface-mode'
 
+import { hiddenPaneProps, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
 import { $hiddenTreePanes } from '../store'
 
 import {
@@ -31,9 +35,8 @@ import {
   type FloatingViewport,
   reflowRect
 } from './floating-rect'
+import { PaneBody } from './pane-body'
 import { paneChrome } from './track-model'
-
-const POSITIONS_KEY = 'hermes.desktop.floatingPanes.v1'
 
 const DEFAULT_SIZE = { width: 240, height: 180 }
 
@@ -43,7 +46,14 @@ interface StoredRect {
   collapsed?: boolean
 }
 
-const readStored = (): Record<string, StoredRect> => readJson<Record<string, StoredRect>>(POSITIONS_KEY) ?? {}
+const $positions = modeLayout.atom<Record<string, StoredRect>>(
+  LAYOUT_KEYS.floating,
+  () => ({}),
+  Codecs.json(value =>
+    value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, StoredRect>) : {}
+  ),
+  true
+)
 
 const viewportNow = (): FloatingViewport => ({
   width: window.innerWidth,
@@ -60,21 +70,32 @@ function FloatingPane({ pane }: { pane: Contribution }) {
     height: floatingPx(chrome.height, DEFAULT_SIZE.height)
   }
 
-  const [rect, setRect] = useState<FloatingRect>(() => {
-    const stored = readStored()[pane.id]
-    const spawned = anchoredRect(anchor, size, viewportNow())
-
-    return stored ? { ...spawned, x: stored.x, y: stored.y } : spawned
-  })
-
-  const [collapsed, setCollapsed] = useState(() => readStored()[pane.id]?.collapsed ?? false)
-
+  const stored = useStore($positions)[pane.id]
+  const rect = { ...anchoredRect(anchor, size, viewportNow()), ...stored }
+  const collapsed = stored?.collapsed ?? false
   const drag = useRef<{ x: number; y: number } | null>(null)
   const viewport = useRef<FloatingViewport>(viewportNow())
 
+  const setRect = useCallback(
+    (update: (current: FloatingRect) => FloatingRect) => {
+      const positions = $positions.get()
+      const current = positions[pane.id]
+
+      const next = update({
+        ...anchoredRect(anchor, { width: size.width, height: size.height }, viewport.current),
+        ...current
+      })
+
+      $positions.set({ ...positions, [pane.id]: { x: next.x, y: next.y, collapsed: current?.collapsed } })
+    },
+    [pane.id, anchor, size.width, size.height]
+  )
+
   const persist = useCallback(
     (next: FloatingRect, nextCollapsed: boolean) => {
-      writeJson(POSITIONS_KEY, { ...readStored(), [pane.id]: { x: next.x, y: next.y, collapsed: nextCollapsed } })
+      const positions = { ...$positions.get(), [pane.id]: { x: next.x, y: next.y, collapsed: nextCollapsed } }
+      $positions.set(positions)
+      modeLayout.write(LAYOUT_KEYS.floating, JSON.stringify(positions))
     },
     [pane.id]
   )
@@ -87,7 +108,7 @@ function FloatingPane({ pane }: { pane: Contribution }) {
 
     setRect(current => reflowRect(current, anchor, viewport.current, next))
     viewport.current = next
-  }, [anchor])
+  }, [anchor, setRect])
 
   useEffect(() => {
     window.addEventListener('resize', handleResize)
@@ -105,22 +126,25 @@ function FloatingPane({ pane }: { pane: Contribution }) {
     event.preventDefault()
   }, [])
 
-  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    const from = drag.current
+  const onPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const from = drag.current
 
-    if (!from) {
-      return
-    }
+      if (!from) {
+        return
+      }
 
-    drag.current = { x: event.clientX, y: event.clientY }
+      drag.current = { x: event.clientX, y: event.clientY }
 
-    setRect(current =>
-      clampFloatingRect(
-        { ...current, x: current.x + event.clientX - from.x, y: current.y + event.clientY - from.y },
-        viewport.current
+      setRect(current =>
+        clampFloatingRect(
+          { ...current, x: current.x + event.clientX - from.x, y: current.y + event.clientY - from.y },
+          viewport.current
+        )
       )
-    )
-  }, [])
+    },
+    [setRect]
+  )
 
   const onPointerUp = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {
@@ -130,21 +154,12 @@ function FloatingPane({ pane }: { pane: Contribution }) {
 
       drag.current = null
       event.currentTarget.releasePointerCapture?.(event.pointerId)
-      setRect(current => {
-        persist(current, collapsed)
-
-        return current
-      })
+      persist({ ...rect, ...$positions.get()[pane.id] }, collapsed)
     },
-    [collapsed, persist]
+    [pane.id, rect, collapsed, persist]
   )
 
-  const toggleCollapsed = () =>
-    setCollapsed(current => {
-      persist(rect, !current)
-
-      return !current
-    })
+  const toggleCollapsed = () => persist(rect, !collapsed)
 
   return (
     <div
@@ -176,10 +191,16 @@ function FloatingPane({ pane }: { pane: Contribution }) {
         </button>
       </header>
 
-      {!collapsed && (
-        <div className="min-h-0 flex-1 overflow-auto">
-          <ContribBoundary id={pane.id}>{pane.render && <ContribRender render={pane.render} />}</ContribBoundary>
-        </div>
+      {(!collapsed || chrome.lifecycleKeepAlive) && (
+        <PaneBody hidden={collapsed}>
+          <div className="h-full overflow-auto" inert={collapsed || undefined} {...hiddenPaneProps(collapsed)}>
+            <PaneLifecycleContext value={collapsed ? 'hot-hidden' : 'visible'}>
+              <PaneVisibleContext value={!collapsed}>
+                <ContribBoundary id={pane.id}>{pane.render && <ContribRender render={pane.render} />}</ContribBoundary>
+              </PaneVisibleContext>
+            </PaneLifecycleContext>
+          </div>
+        </PaneBody>
       )}
     </div>
   )
@@ -190,7 +211,11 @@ export function FloatingPanes() {
   const panes = useContributions('panes')
   const hidden = useStore($hiddenTreePanes)
 
-  const floating = panes.filter(pane => paneChrome(pane).placement === FLOATING_PLACEMENT && !hidden.has(pane.id))
+  const onboardingActive = useOnboardingChatActive()
+
+  const floating = onboardingActive
+    ? []
+    : panes.filter(pane => paneChrome(pane).placement === FLOATING_PLACEMENT && !hidden.has(pane.id))
 
   if (floating.length === 0) {
     return null

@@ -148,9 +148,16 @@ class TestQuickFlag:
                 tools="hermes_cli.setup.setup_tools",
             )
             from hermes_cli.setup import run_setup_wizard
+            from hermes_cli import setup as setup_mod
+
+            section_indexes = []
+            m["quick"].side_effect = lambda *_args: section_indexes.append(
+                setup_mod._SETUP_NAVIGATION.get().section_index
+            )
             run_setup_wizard(args)
 
         m["quick"].assert_called_once()
+        assert section_indexes == [0]
         # Full reconfigure sections must NOT run.
         m["model"].assert_not_called()
         m["terminal"].assert_not_called()
@@ -170,13 +177,40 @@ class TestFreshInstall:
             m = _enter_fresh_install_patches(
                 stack,
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
-                first="hermes_cli.setup._run_first_time_quick_setup",
+                first="hermes_cli.setup_quick._run_first_time_quick_setup",
             )
             from hermes_cli.setup import run_setup_wizard
+            from hermes_cli import setup as setup_mod
+
+            section_indexes = []
+            m["first"].side_effect = lambda *_args: section_indexes.append(
+                setup_mod._SETUP_NAVIGATION.get().section_index
+            )
             run_setup_wizard(args)
 
         m["prompt"].assert_called_once()
         m["first"].assert_called_once()
+        assert section_indexes == [0]
+
+    def test_blank_slate_runs_inside_navigation_step(self, fresh_install):
+        args = _make_setup_args()
+
+        with ExitStack() as stack:
+            m = _enter_fresh_install_patches(
+                stack,
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
+                blank="hermes_cli.setup_quick._run_blank_slate_setup",
+            )
+            from hermes_cli import setup as setup_mod
+
+            section_indexes = []
+            m["blank"].side_effect = lambda *_args: section_indexes.append(
+                setup_mod._SETUP_NAVIGATION.get().section_index
+            )
+            setup_mod.run_setup_wizard(args)
+
+        m["blank"].assert_called_once()
+        assert section_indexes == [0]
 
 
 class TestArgparse:
@@ -198,5 +232,3 @@ class TestArgparse:
             pass
         assert captured["args"].reconfigure is True
         assert captured["args"].quick is False
-
-

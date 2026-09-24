@@ -1,0 +1,15 @@
+name: hermes-resetwatch
+repo: https://github.com/Adolanium/hermes-resetwatch
+sha: 1bb6ec08679abc228f218b0aaf59202e0c92b2db
+version: "0.2.19"
+description: Track subscription quotas and reset times in Hermes Desktop. Disclosure — probe.py re-executes itself under the Hermes Python interpreter located via HERMES_PYTHON / VIRTUAL_ENV / the parent process.
+maintainer: Adolanium
+tier: community
+category: desktop
+docs_url: https://github.com/Adolanium/hermes-resetwatch#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+subdir: catalog

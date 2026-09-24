@@ -1,285 +1,130 @@
-"""Context engine plugin discovery.
-
-Scans ``plugins/context_engine/<name>/`` directories for context engine
-plugins.  Each subdirectory must contain ``__init__.py`` with a class
-implementing the ContextEngine ABC.
-
-Context engines are separate from the general plugin system — they live
-in the repo and are always available without user installation.  Only ONE
-can be active at a time, selected via ``context.engine`` in config.yaml.
-The default engine is ``"compressor"`` (the built-in ContextCompressor).
-
-Usage:
-    from plugins.context_engine import discover_context_engines, load_context_engine
-
-    available = discover_context_engines()   # [(name, desc, available), ...]
-    engine = load_context_engine("lcm")      # ContextEngine instance
-"""
+"""Context engine plugin discovery: bundled ``plugins/context_engine/<name>/`` then user
+``$HERMES_HOME/plugins/<name>/`` (bundled wins on collision) → ``ContextEngine``. Separate from the
+general plugin system: ``context.engine`` in config.yaml names the active engine (default
+``"compressor"``, the built-in ContextCompressor), so a user-installed engine needs no
+``plugins.enabled`` entry to be selectable."""
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import logging
-import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from plugins import plugin_loader as _loader
 
 logger = logging.getLogger(__name__)
 
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
+# Synthetic parent package for user-installed engines (keeps them out of the bundled namespace).
+_USER_NAMESPACE = "_hermes_user_context_engine"
+
+
+def _is_context_engine_dir(path: Path) -> bool:
+    """Cheap text heuristic: ``__init__.py`` mentions the context engine contract."""
+    init_file = path / "__init__.py"
+    try:
+        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+    except OSError:
+        return False
+    return "register_context_engine" in source or "ContextEngine" in source
+
+
+def _iter_engine_dirs() -> List[Tuple[str, Path]]:
+    """``(name, path)`` for bundled then user engines; bundled wins on collisions."""
+    dirs = [(child.name, child) for child in _loader.iter_plugin_dirs(_CONTEXT_ENGINE_PLUGINS_DIR)]
+    seen = {name for name, _ in dirs}
+    user_dir = _loader.user_plugins_dir()
+    if user_dir:
+        dirs.extend((child.name, child) for child in _loader.iter_plugin_dirs(user_dir)
+                    if child.name not in seen and _is_context_engine_dir(child))
+    return dirs
 
 
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
-    """Scan plugins/context_engine/ for available engines.
-
-    Returns list of (name, description, is_available) tuples.
-    Does NOT import the engines — just reads plugin.yaml for metadata
-    and does a lightweight availability check.
-    """
-    results = []
-    if not _CONTEXT_ENGINE_PLUGINS_DIR.is_dir():
-        return results
-
-    for child in sorted(_CONTEXT_ENGINE_PLUGINS_DIR.iterdir()):
-        if not child.is_dir() or child.name.startswith(("_", ".")):
-            continue
-        init_file = child / "__init__.py"
-        if not init_file.exists():
-            continue
-
-        # Read description from plugin.yaml if available
-        desc = ""
-        yaml_file = child / "plugin.yaml"
-        if yaml_file.exists():
-            try:
-                import yaml
-                with open(yaml_file, encoding="utf-8-sig") as f:
-                    meta = yaml.safe_load(f) or {}
-                desc = meta.get("description", "")
-            except Exception:
-                pass
-
-        # Quick availability check — try loading and calling is_available()
-        available = True
-        try:
-            engine = _load_engine_from_dir(child)
-            if engine is None:
-                available = False
-            elif hasattr(engine, "is_available"):
-                available = engine.is_available()
-        except Exception:
-            available = False
-
-        results.append((child.name, desc, available))
-
-    return results
+    """Return ``[(name, description, is_available), ...]`` for every bundled and user engine."""
+    return [(name, _loader.read_plugin_description(child),
+             _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
+            for name, child in _iter_engine_dirs()]
 
 
-def load_context_engine(name: str) -> Optional["ContextEngine"]:
-    """Load and return a ContextEngine instance by name.
+def find_engine_dir(name: str) -> Optional[Path]:
+    """Resolve an engine name to its directory (bundled first, then user-installed)."""
+    bundled = _CONTEXT_ENGINE_PLUGINS_DIR / name
+    if bundled.is_dir():
+        return bundled
+    user_dir = _loader.user_plugins_dir()
+    user = user_dir / name if user_dir else None
+    return user if user and user.is_dir() and _is_context_engine_dir(user) else None
 
-    Returns None if the engine is not found or fails to load.
-    """
-    engine_dir = _CONTEXT_ENGINE_PLUGINS_DIR / name
-    if not engine_dir.is_dir():
-        logger.debug("Context engine '%s' not found in %s", name, _CONTEXT_ENGINE_PLUGINS_DIR)
+
+def load_context_engine(name: str) -> Optional["ContextEngine"]:  # noqa: F821
+    """Load a ContextEngine instance by name; None if not found or it fails to load."""
+    engine_dir = find_engine_dir(name)
+    if engine_dir is None:
+        logger.debug("Context engine '%s' not found in bundled or user plugins", name)
         return None
-
-    try:
-        engine = _load_engine_from_dir(engine_dir)
-        if engine:
-            return engine
-        logger.warning("Context engine '%s' loaded but no engine instance found", name)
-        return None
-    except Exception as e:
-        logger.warning("Failed to load context engine '%s': %s", name, e)
-        return None
+    return _loader.load_named(
+        name, engine_dir, _load_engine_from_dir, kind="Context engine", noun="engine", logger=logger
+    )
 
 
-def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
-    """Import an engine module and extract the ContextEngine instance.
-
-    The module must have either:
-    - A register(ctx) function (plugin-style) — we simulate a ctx
-    - A top-level class that extends ContextEngine — we instantiate it
-    """
-    name = engine_dir.name
-    module_name = f"plugins.context_engine.{name}"
-    init_file = engine_dir / "__init__.py"
-
-    if not init_file.exists():
-        return None
-
-    # Check if already loaded
-    if module_name in sys.modules:
-        mod = sys.modules[module_name]
-    else:
-        # Handle relative imports within the plugin
-        # First ensure the parent packages are registered
-        for parent in ("plugins", "plugins.context_engine"):
-            if parent not in sys.modules:
-                parent_path = Path(__file__).parent
-                if parent == "plugins":
-                    parent_path = parent_path.parent
-                parent_init = parent_path / "__init__.py"
-                if parent_init.exists():
-                    spec = importlib.util.spec_from_file_location(
-                        parent, str(parent_init),
-                        submodule_search_locations=[str(parent_path)]
-                    )
-                    if spec:
-                        parent_mod = importlib.util.module_from_spec(spec)
-                        sys.modules[parent] = parent_mod
-                        try:
-                            spec.loader.exec_module(parent_mod)
-                        except Exception:
-                            pass
-
-        # Now load the engine module
-        spec = importlib.util.spec_from_file_location(
-            module_name, str(init_file),
-            submodule_search_locations=[str(engine_dir)]
-        )
-        if not spec:
-            return None
-
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = mod
-
-        # Register submodules so relative imports work
-        for sub_file in engine_dir.glob("*.py"):
-            if sub_file.name == "__init__.py":
-                continue
-            sub_name = sub_file.stem
-            full_sub_name = f"{module_name}.{sub_name}"
-            if full_sub_name not in sys.modules:
-                sub_spec = importlib.util.spec_from_file_location(
-                    full_sub_name, str(sub_file)
-                )
-                if sub_spec:
-                    sub_mod = importlib.util.module_from_spec(sub_spec)
-                    sys.modules[full_sub_name] = sub_mod
-                    try:
-                        sub_spec.loader.exec_module(sub_mod)
-                    except Exception as e:
-                        logger.debug("Failed to load submodule %s: %s", full_sub_name, e)
-
-        try:
-            spec.loader.exec_module(mod)
-        except Exception as e:
-            logger.debug("Failed to exec_module %s: %s", module_name, e)
-            sys.modules.pop(module_name, None)
-            return None
-
-    # Try register(ctx) pattern first (how plugins are written)
-    if hasattr(mod, "register"):
-        collector = _EngineCollector(engine_name=name)
-        try:
-            mod.register(collector)
-            if collector.engine:
-                return collector.engine
-        except Exception as e:
-            logger.debug("register() failed for %s: %s", name, e)
-
-    # Fallback: find a ContextEngine subclass and instantiate it
+def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noqa: F821
+    """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
     from agent.context_engine import ContextEngine
-    for attr_name in dir(mod):
-        attr = getattr(mod, attr_name, None)
-        if (isinstance(attr, type) and issubclass(attr, ContextEngine)
-                and attr is not ContextEngine):
-            try:
-                return attr()
-            except Exception:
-                pass
+    name = engine_dir.name
+    is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
+    module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    mod = _loader.load_plugin_module(
+        module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
+        synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+    return mod and _loader.instance_from_module(
+        mod, collector=_EngineCollector(engine_name=name), collected_attr="engine",
+        base_cls=ContextEngine, name=name, logger=logger)
 
-    return None
 
-
-class _EngineCollector:
-    """Fake plugin context that captures register_context_engine calls.
-
-    Plugin context engines using the standard ``register(ctx)`` pattern may
-    also call ``ctx.register_command(...)`` to expose slash commands (e.g.
-    ``/lcm``). Forward those to the global plugin command registry so they
-    behave identically to commands registered by normal plugins.
-    """
+class _EngineCollector(_loader.NoopPluginContext):
+    """Captures register_context_engine; forwards register_command to the global plugin command
+    registry so engine slash commands behave like plugin ones."""
 
     def __init__(self, engine_name: str = ""):
         self.engine = None
         self._engine_name = engine_name or "context_engine"
-        self._registered_commands: list[str] = []
 
     def register_context_engine(self, engine):
         self.engine = engine
 
-    def register_command(
-        self,
-        name: str,
-        handler,
-        description: str = "",
-        args_hint: str = "",
-    ) -> None:
-        """Forward to the global plugin command registry."""
+    def register_command(self, name: str, handler, description: str = "", args_hint: str = "") -> None:
         clean = (name or "").lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
-            logger.warning(
-                "Context engine '%s' tried to register a command with an empty name.",
-                self._engine_name,
-            )
+            logger.warning("Context engine '%s' tried to register a command with an empty name.",
+                           self._engine_name)
             return
-
-        # Reject conflicts with built-in commands.
+        conflict = "Context engine '%s' tried to register command '/%s' which %s Skipping."
         try:
             from hermes_cli.commands import resolve_command
             if resolve_command(clean) is not None:
-                logger.warning(
-                    "Context engine '%s' tried to register command '/%s' which conflicts "
-                    "with a built-in command. Skipping.",
-                    self._engine_name, clean,
-                )
+                logger.warning(conflict, self._engine_name, clean, "conflicts with a built-in command.")
                 return
         except Exception:
             pass
-
         try:
             from hermes_cli.plugins import get_plugin_manager
             manager = get_plugin_manager()
             if clean in manager._plugin_commands:
-                # Don't clobber a regular plugin's command — same conflict
-                # policy the plugin system uses for plugin-vs-plugin collisions.
-                logger.warning(
-                    "Context engine '%s' tried to register command '/%s' which "
-                    "is already registered by a plugin. Skipping.",
-                    self._engine_name, clean,
-                )
+                logger.warning(conflict, self._engine_name, clean, "is already registered by a plugin.")
                 return
             manager._plugin_commands[clean] = {
-                "handler": handler,
-                "description": description or "Context engine command",
-                "plugin": f"context-engine:{self._engine_name}",
-                "args_hint": (args_hint or "").strip(),
-            }
-            self._registered_commands.append(clean)
-            logger.debug(
-                "Context engine '%s' registered command: /%s",
-                self._engine_name, clean,
-            )
+                "handler": handler, "description": description or "Context engine command",
+                "plugin": f"context-engine:{self._engine_name}", "args_hint": (args_hint or "").strip()}
+            logger.debug("Context engine '%s' registered command: /%s", self._engine_name, clean)
         except Exception as exc:
-            logger.debug(
-                "Context engine '%s' could not register /%s: %s",
-                self._engine_name, clean, exc,
-            )
+            logger.debug("Context engine '%s' could not register /%s: %s", self._engine_name, clean, exc)
 
-    # No-op for other registration methods
-    def register_tool(self, *args, **kwargs):
-        pass
 
-    def register_hook(self, *args, **kwargs):
-        pass
-
-    def register_cli_command(self, *args, **kwargs):
-        pass
-
-    def register_memory_provider(self, *args, **kwargs):
-        pass
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import importlib.util  # noqa: F401,E402
+import sys  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

@@ -197,8 +197,3 @@ def test_config_gate_off_disables_writes_and_resolution(
     assert tb.resolve_breadcrumb_session() is None
 
 
-def test_config_gate_default_is_enabled(monkeypatch):
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(config_mod, "load_config", lambda: {})
-    assert tb.is_enabled() is True

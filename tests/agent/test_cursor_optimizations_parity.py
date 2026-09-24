@@ -1,22 +1,16 @@
-"""Byte-parity + benchmark harness for the per-iteration cursor optimizations.
+"""Byte-parity checks for the per-iteration cursor optimizations.
 
 Drives the pure functions directly (no AIAgent):
   1. sanitize_tool_call_arguments (with/without cursor)
   2. estimate_messages_tokens_rough (memoized) vs a reference reimplementation
   3. _flush_messages_to_session_db bounded scan — simulated via a stub agent
-
-Run: HERMES worktree venv python parity_harness.py
 """
 import copy
 import json
 import random
-import statistics
-import sys
-import time
 
-sys.path.insert(0, ".")
-
-random.seed(1234)
+# Local RNG: never reseed the global one (it would leak into other tests in the worker).
+_rng = random.Random(1234)
 
 UNI = "日本語テキスト🎉 café Ω ≈ 中文字符串"
 
@@ -26,7 +20,7 @@ def build_history(n):
     msgs = []
     i = 0
     while len(msgs) < n:
-        msgs.append({"role": "user", "content": f"question {i} {UNI} " + "x" * random.randint(10, 400)})
+        msgs.append({"role": "user", "content": f"question {i} {UNI} " + "x" * _rng.randint(10, 400)})
         if i % 3 == 0:
             args = json.dumps({"q": f"val {i}", "u": UNI, "n": i})
             if i % 9 == 0:
@@ -41,7 +35,7 @@ def build_history(n):
             msgs.append({"role": "tool", "tool_call_id": f"call_{i}",
                          "name": "web_search", "content": f"result {i} {UNI}"})
         else:
-            msgs.append({"role": "assistant", "content": f"answer {i} " + "y" * random.randint(10, 600),
+            msgs.append({"role": "assistant", "content": f"answer {i} " + "y" * _rng.randint(10, 600),
                          "reasoning_content": f"thinking {i}"})
         if i % 7 == 0 and msgs:
             msgs[-1]["content"] = [{"type": "text", "text": f"part {i}"},
@@ -140,6 +134,7 @@ def test_parity_token_memo():
 def test_parity_persist_bounded_scan():
     print("=== parity: _flush_messages_to_session_db bounded scan ===")
     import run_agent as ra
+    from agent.context_compressor import _DB_PERSISTED_MARKER
 
     class FakeDB:
         def __init__(self):
@@ -187,89 +182,13 @@ def test_parity_persist_bounded_scan():
                 for lst in (la, lb):
                     head = [dict(m) for m in lst[:3]]
                     for m in head:
-                        m.pop(ra._DB_PERSISTED_MARKER, None)
+                        m.pop(_DB_PERSISTED_MARKER, None)
                     tail = [dict(m) for m in lst[-4:]]
                     for m in tail:
-                        m.pop(ra._DB_PERSISTED_MARKER, None)
+                        m.pop(_DB_PERSISTED_MARKER, None)
                     lst[:] = head + [{"role": "user", "content": "SUMMARY"}] + tail
         A._db_flush_scan_prefix = None
         A._flush_messages_to_session_db_unlocked(la, None)
         B._flush_messages_to_session_db_unlocked(lb, None)
         assert A._session_db.rows == B._session_db.rows and la == lb
         print(f"  n={n}: OK (identical DB rows + marker stamps across 3 flushes + compression rewrite)")
-
-
-def bench():
-    print("=== benchmarks (median of 5, per call) ===")
-
-    def timeit(fn, reps=5):
-        ts = []
-        for _ in range(reps):
-            t0 = time.perf_counter()
-            fn()
-            ts.append(time.perf_counter() - t0)
-        return statistics.median(ts) * 1e3  # ms
-
-    for n in (50, 200, 500):
-        msgs = build_history(n)
-        sanitize_tool_call_arguments(msgs)  # settle repairs first
-
-        # sanitize: old (no cursor) vs new (warm cursor)
-        old_ms = timeit(lambda: sanitize_tool_call_arguments(msgs))
-        cur = {}
-        sanitize_tool_call_arguments(msgs, cursor=cur)
-        new_ms = timeit(lambda: sanitize_tool_call_arguments(msgs, cursor=cur))
-
-        # tokens: old walk vs warm memo (on fresh shallow copies, like api_messages)
-        api = [m.copy() for m in msgs]
-        told = timeit(lambda: estimate_messages_tokens_rough_OLD([m.copy() for m in msgs]))
-        _MSG_TOKENS_CACHE.clear()
-        estimate_messages_tokens_rough([m.copy() for m in msgs])  # warm
-        tnew = timeit(lambda: estimate_messages_tokens_rough([m.copy() for m in msgs]))
-
-        # persist scan: fully-flushed list, old full walk vs bounded skip
-        import run_agent as ra
-        flushed = copy.deepcopy(msgs)
-        for m in flushed:
-            if isinstance(m, dict):
-                m[ra._DB_PERSISTED_MARKER] = True
-
-        def old_scan():
-            for _idx, m in enumerate(flushed):
-                if not isinstance(m, dict):
-                    continue
-                if ra._is_ephemeral_scaffolding(m):
-                    continue
-                if m.get(ra._DB_PERSISTED_MARKER):
-                    continue
-
-        prefix = flushed[:]
-
-        def new_scan():
-            s = 0
-            lim = min(len(prefix), len(flushed))
-            while s < lim and flushed[s] is prefix[s]:
-                s += 1
-            for _idx in range(s, len(flushed)):
-                m = flushed[_idx]
-                if not isinstance(m, dict):
-                    continue
-                if ra._is_ephemeral_scaffolding(m):
-                    continue
-                if m.get(ra._DB_PERSISTED_MARKER):
-                    continue
-
-        pold = timeit(old_scan)
-        pnew = timeit(new_scan)
-
-        print(f"  n={n:3d}: sanitize {old_ms:.3f}ms -> {new_ms:.3f}ms | "
-              f"tokens {told:.3f}ms -> {tnew:.3f}ms | "
-              f"persist-scan {pold*1000:.1f}us -> {pnew*1000:.1f}us")
-
-
-if __name__ == "__main__":
-    test_parity_sanitize_cursor()
-    test_parity_token_memo()
-    test_parity_persist_bounded_scan()
-    bench()
-    print("ALL PARITY CHECKS PASSED")

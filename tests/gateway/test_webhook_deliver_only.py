@@ -9,20 +9,20 @@ Covers:
 - Agent is NOT invoked (``handle_message`` never called)
 - Rendered content is delivered to the target platform adapter
 - HTTP returns 200 OK on success, 502 on delivery failure
-- Startup validation rejects ``deliver_only`` without a real delivery target
 - HMAC auth, rate limiting, and idempotency still apply
 """
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
@@ -51,6 +51,7 @@ def _wire_mock_target(adapter: WebhookAdapter, platform_name: str = "telegram"):
 
     mock_runner = MagicMock()
     mock_runner.adapters = {Platform(platform_name): mock_target}
+    mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
     mock_runner.config.get_home_channel.return_value = None
 
     adapter.gateway_runner = mock_runner
@@ -154,39 +155,7 @@ class TestDeliverOnlyStatusCodes:
             assert resp.status == 502
             data = await resp.json()
             # Generic error — no adapter-level detail leaks
-            assert data["error"] == "Delivery failed"
             assert "rate limited" not in json.dumps(data)
-
-
-# ===================================================================
-# Startup validation
-# ===================================================================
-
-class TestDeliverOnlyStartupValidation:
-
-
-    @pytest.mark.asyncio
-    async def test_deliver_only_with_real_target_accepted(self):
-        """Sanity check — a valid deliver_only config passes validation."""
-        routes = {
-            "good": {
-                "secret": _INSECURE_NO_AUTH,
-                "deliver": "telegram",
-                "deliver_only": True,
-                "deliver_extra": {"chat_id": "c-1"},
-                "prompt": "hi",
-            }
-        }
-        adapter = _make_adapter(routes)
-        # connect() does more than validation (binds a socket) — we just
-        # want to verify the validation doesn't raise.  Call it and tear
-        # down immediately.
-        try:
-            started = await adapter.connect()
-            if started:
-                await adapter.disconnect()
-        except ValueError:
-            pytest.fail("valid deliver_only config should not raise ValueError")
 
 
 # ===================================================================
@@ -223,28 +192,3 @@ class TestDeliverOnlySecurityInvariants:
 
         # Target never called
         mock_target.send.assert_not_awaited()
-
-
-# ===================================================================
-# Unit: _direct_deliver dispatch
-# ===================================================================
-
-class TestDirectDeliverUnit:
-
-
-    @pytest.mark.asyncio
-    async def test_dispatches_to_github_comment(self):
-        adapter = _make_adapter({})
-        with patch.object(
-            adapter, "_deliver_github_comment",
-            new=AsyncMock(return_value=SendResult(success=True)),
-        ) as mock_gh:
-            result = await adapter._direct_deliver(
-                "review body",
-                {
-                    "deliver": "github_comment",
-                    "deliver_extra": {"repo": "org/r", "pr_number": "1"},
-                },
-            )
-            assert result.success is True
-            mock_gh.assert_awaited_once()

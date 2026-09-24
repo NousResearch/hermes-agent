@@ -64,10 +64,10 @@ def _reset_mcp_startup_state():
     """Ensure each test starts with a clean discovery thread state."""
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
-    mcp_startup._mcp_discovery_started = False
-    mcp_startup._mcp_discovery_thread = None
+    mcp_startup._mcp_discovery_started = set()
+    mcp_startup._mcp_discovery_thread = {}
     yield
-    thread = mcp_startup._mcp_discovery_thread
+    thread = mcp_startup._current_home_thread()
     if thread is not None and thread.is_alive():
         thread.join(timeout=2.0)
     mcp_startup._mcp_discovery_started = saved_started
@@ -101,8 +101,8 @@ def test_acp_background_discovery_does_not_block_startup(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
-        _mod("tools.mcp_tool", discover_mcp_tools=_blocking_discover),
+        "tools.mcp_tool_discovery",
+        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_blocking_discover),
     )
 
     start = time.monotonic()
@@ -113,10 +113,11 @@ def test_acp_background_discovery_does_not_block_startup(monkeypatch):
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.2, "start_background_mcp_discovery blocked for {:.3f}s".format(elapsed)
-    assert mcp_startup._mcp_discovery_thread is not None
-    assert mcp_startup._mcp_discovery_thread.is_alive()
+    thread = mcp_startup._current_home_thread()
+    assert thread is not None
+    assert thread.is_alive()
     block.set()
-    mcp_startup._mcp_discovery_thread.join(timeout=2.0)
+    thread.join(timeout=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +150,8 @@ def test_acp_late_refresh_adds_tools_when_discovery_lands_after_build(monkeypatc
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
-        _mod("tools.mcp_tool", discover_mcp_tools=_slow_discover),
+        "tools.mcp_tool_discovery",
+        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
     )
 
     mcp_startup.start_background_mcp_discovery(
@@ -178,8 +179,8 @@ def test_acp_late_refresh_adds_tools_when_discovery_lands_after_build(monkeypatc
 
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
-        _mod("tools.mcp_tool", refresh_agent_mcp_tools=_fake_refresh),
+        "tools.mcp_tool_agent",
+        _mod("tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
     )
 
     # Trigger late-refresh.
@@ -226,8 +227,8 @@ def test_acp_late_refresh_skips_after_first_turn(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
-        _mod("tools.mcp_tool", discover_mcp_tools=_slow_discover),
+        "tools.mcp_tool_discovery",
+        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
     )
 
     mcp_startup.start_background_mcp_discovery(
@@ -249,8 +250,8 @@ def test_acp_late_refresh_skips_after_first_turn(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
-        _mod("tools.mcp_tool", refresh_agent_mcp_tools=_fake_refresh),
+        "tools.mcp_tool_agent",
+        _mod("tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
     )
 
     acp_agent._schedule_mcp_late_refresh(state)
@@ -293,8 +294,8 @@ def test_acp_late_refresh_skips_while_turn_running(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
-        _mod("tools.mcp_tool", discover_mcp_tools=_slow_discover),
+        "tools.mcp_tool_discovery",
+        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
     )
 
     mcp_startup.start_background_mcp_discovery(
@@ -316,8 +317,8 @@ def test_acp_late_refresh_skips_while_turn_running(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
-        _mod("tools.mcp_tool", refresh_agent_mcp_tools=_fake_refresh),
+        "tools.mcp_tool_agent",
+        _mod("tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
     )
 
     acp_agent._schedule_mcp_late_refresh(state)

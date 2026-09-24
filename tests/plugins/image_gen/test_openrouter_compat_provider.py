@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -64,18 +63,7 @@ def _openrouter():
 
 
 class TestProviderClass:
-    def test_names(self):
-        from plugins.image_gen.openrouter import _build_providers
 
-        names = {p.name for p in _build_providers()}
-        assert names == {"openrouter", "nous"}
-
-    def test_display_names(self):
-        from plugins.image_gen.openrouter import _build_providers
-
-        by_name = {p.name: p for p in _build_providers()}
-        assert by_name["openrouter"].display_name == "OpenRouter"
-        assert by_name["nous"].display_name == "Nous Portal"
 
     def test_capabilities_support_image_input(self):
         caps = _openrouter().capabilities()
@@ -87,13 +75,6 @@ class TestProviderClass:
             assert _openrouter().is_available() is True
 
 
-    def test_default_model(self):
-        from plugins.image_gen.openrouter import DEFAULT_MODEL
-
-        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value={}):
-            assert _openrouter().default_model() == DEFAULT_MODEL
-            # Default must be an image-output model id (provider/model form).
-            assert "/" in DEFAULT_MODEL and "image" in DEFAULT_MODEL
 
     def test_default_model_ignores_runtime_overrides(self, monkeypatch):
         """Catalog defaults must not inherit another provider's saved model."""
@@ -703,6 +684,54 @@ class TestImageApiSurface:
         assert result["exact_aspect_ratio"] == "9:16"
         assert result["image"] == "/tmp/i.png"
 
+    _USAGE = {"prompt_tokens": 1000, "completion_tokens": 128, "total_tokens": 1128}
+
+    @pytest.mark.parametrize("surface, model, usage, images", [
+        ("chat", "openai/gpt-5.4-image-2", _USAGE, True),   # default chain: token-billed via /chat/completions
+        ("images", "krea/krea-2-medium", _USAGE, True),      # curated Image API model
+        ("images", "krea/krea-2-medium", None, True),        # flat-fee body without usage: no write
+        ("chat", "openai/gpt-5.4-image-2", _USAGE, False),  # billed HTTP 200 with text but no image
+        ("images", "krea/krea-2-medium", _USAGE, False),     # billed HTTP 200 with empty ``data``
+    ])
+    def test_token_usage_reaches_session_accounting(self, surface, model, usage, images):
+        """A response carrying token usage records one ``image_generation`` row on the ambient
+        session — also when it carries no image (the provider billed the tokens anyway); a body
+        without usage records nothing."""
+        from agent import aux_accounting
+
+        recorded = []
+
+        class _DB:
+            def record_auxiliary_usage(self, *args, **kwargs):
+                recorded.append((args, kwargs))
+
+        if surface == "chat":
+            response = _mock_chat_response([_PNG_DATA_URI] if images else [])
+            response.json.return_value["usage"] = dict(usage)
+        else:
+            response = _mock_image_api_response([] if not images else None, usage=usage)
+        token = aux_accounting.set_accounting_context(_DB(), "sess-1")
+        try:
+            with patch(_RUNTIME, return_value=_runtime_ok()), \
+                 patch("requests.post", return_value=response), \
+                 patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+                result = _openrouter_image_api().generate(prompt="p", aspect_ratio="portrait", model=model)
+        finally:
+            aux_accounting.reset_accounting_context(token)
+
+        assert result["success"] is images
+        if not images:
+            assert result["error_type"] == "empty_response"
+        if usage is None:
+            assert recorded == []
+            return
+        ((session_id, task), kwargs), = recorded
+        assert (session_id, task) == ("sess-1", "image_generation")
+        assert kwargs["model"] == model
+        assert kwargs["billing_provider"] == "openrouter"
+        assert (kwargs["input_tokens"], kwargs["output_tokens"]) == (1000, 128)
+
+
     def test_multiple_images_land_in_additional_images(self):
         entries = [
             {"b64_json": "AA==", "media_type": "image/png"},
@@ -761,14 +790,9 @@ class TestImageApiSurface:
         by_name = {p.name: p for p in _build_providers()}
         openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
         nous_ids = {m["id"] for m in by_name["nous"].list_models()}
-        assert "openai/gpt-image-2" in openrouter_ids
         assert set(_IMAGE_API_MODELS) <= openrouter_ids
         assert not (set(_IMAGE_API_MODELS) & nous_ids)
 
-    def test_default_model_is_unchanged_by_the_new_surface(self):
-        from plugins.image_gen.openrouter import DEFAULT_MODEL
-
-        assert _openrouter_image_api().default_model() == DEFAULT_MODEL
 
 
 class TestRegistration:

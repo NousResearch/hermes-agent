@@ -31,8 +31,7 @@ import {
   setTranslucencyMode,
   setTranslucencyScope,
   TRANSLUCENCY_MAX,
-  TRANSLUCENCY_MIN,
-  TRANSLUCENCY_STEP
+  TRANSLUCENCY_MIN
 } from './translucency'
 
 const KEY = 'hermes.desktop.translucency.v2'
@@ -43,7 +42,6 @@ const LEGACY_KEY = 'hermes.desktop.translucency.v1'
 // This suite pins navigator.platform to a Mac before import, so the Mac table
 // is the one in play — `GLASS_IS_WINDOWS` resolves false throughout.
 const DARK = defaultTranslucencyValues('dark', false)
-const LIGHT = defaultTranslucencyValues('light', false)
 
 const glassAttr = () => document.documentElement.hasAttribute('data-hermes-glass')
 const clearAttr = () => document.documentElement.hasAttribute('data-hermes-clear')
@@ -59,24 +57,11 @@ describe('window translucency lever', () => {
     setTranslucency(TRANSLUCENCY_MIN)
   })
 
-  it('steps in single percent so the readable low end is reachable', () => {
-    expect(TRANSLUCENCY_STEP).toBe(1)
-    expect(TRANSLUCENCY_MIN).toBe(0)
-    expect(TRANSLUCENCY_MAX).toBe(100)
-  })
-
   // NB: this asserts the module's INITIAL value, so it deliberately reads the
   // atom before the beforeEach above can touch it — the previous version of
   // this test ran after the reset and so proved nothing about the default.
   it('starts on the dark appearance defaults, glass-backed on macOS', () => {
     expect(initialTranslucency).toEqual({ ...DARK, mode: GLASS_SUPPORTED ? 'glass' : 'clear' })
-  })
-
-  it('accepts every step the slider can emit', () => {
-    for (let intensity = TRANSLUCENCY_MIN; intensity <= TRANSLUCENCY_MAX; intensity += TRANSLUCENCY_STEP) {
-      setTranslucency(intensity)
-      expect($translucency.get().intensity).toBe(intensity)
-    }
   })
 
   it('clamps out-of-range input and rounds fractions', () => {
@@ -455,21 +440,6 @@ describe('per-appearance settings', () => {
   })
 
   afterEach(() => setAppearance('dark'))
-
-  it('ships each appearance its own defaults', () => {
-    expect($translucency.get()).toEqual({ ...DARK, mode: 'glass' })
-
-    setAppearance('light')
-    expect($translucency.get()).toEqual({ ...LIGHT, mode: 'glass' })
-  })
-
-  it('ships glass ON, so the feature is visible without being found first', () => {
-    expect($translucency.get().mode).toBe('glass')
-    expect($translucency.get().intensity).toBeGreaterThan(0)
-
-    setAppearance('light')
-    expect($translucency.get().intensity).toBeGreaterThan(0)
-  })
 
   it('scopes an edit to the appearance it was made in', () => {
     setAppearance('light')

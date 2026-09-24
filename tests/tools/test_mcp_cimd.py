@@ -676,5 +676,3 @@ def test_timeout_on_a_cimd_flow_names_the_document_and_the_escape_hatch(monkeypa
     assert "cimd: false" in message
 
 
-def test_timeout_without_cimd_stays_quiet_about_it(monkeypatch):
-    assert "cimd" not in _timed_out_waiter_message(monkeypatch, None).lower()

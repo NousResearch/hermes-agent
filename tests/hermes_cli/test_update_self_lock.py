@@ -26,13 +26,13 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import hermes_cli.main as cli_main
-import hermes_cli.update_cmd as update_cmd
 from hermes_cli import _early_recovery
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -103,28 +103,100 @@ class TestDependencySyncWouldRewrite:
         ):
             assert cli_main._dependency_sync_would_rewrite("cryptography") is None
 
+    def test_unpinned_transitive_moves_with_its_pinned_parent(self, tmp_path):
+        """#81594: ``_cffi_backend`` belongs to cffi, which no pyproject line pins; it moves
+        only because cryptography's base pin moved and uv.lock resolves cffi elsewhere. Once the
+        parent is at its pin the transitive stays put (fail-open, #86735) — even while an
+        optional-extra parent (brotlicffi) is missing, which a skipped extra can leave forever."""
+        (tmp_path / "uv.lock").write_text(
+            textwrap.dedent(
+                """
+                version = 1
+                [[package]]
+                name = "brotlicffi"
+                version = "1.2.0.2"
+                dependencies = [{ name = "cffi" }]
+                [[package]]
+                name = "cffi"
+                version = "2.0.0"
+                [[package]]
+                name = "cryptography"
+                version = "50.0.0"
+                dependencies = [{ name = "cffi" }]
+                """
+            ),
+            encoding="utf-8",
+        )
+        pyproject = textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            dependencies = ["cryptography==50.0.0"]
+            [project.optional-dependencies]
+            messaging = ["brotlicffi==1.2.0.2"]
+            """
+        )
+        for crypto, expected in (("49.0.0", True), ("50.0.0", None)):
+            installed = {"cffi": "1.17.1", "cryptography": crypto}
+            with self._with_pyproject(tmp_path, pyproject), patch(
+                "importlib.metadata.version", side_effect=installed.__getitem__
+            ):
+                assert cli_main._dependency_sync_would_rewrite("cffi") is expected
+
 
 # ---------------------------------------------------------------------------
 # _detect_self_loaded_native_modules — version-gated detection
 # ---------------------------------------------------------------------------
 
 
-@patch.object(cli_main, "_is_windows", return_value=False)
-def test_self_lock_detection_is_noop_off_windows(_winp):
+def _native_module(site: Path, name: str, suffix: str) -> types.ModuleType:
+    module = types.ModuleType(name)
+    module.__file__ = str(site.joinpath(*name.split(".")).with_name(name.rsplit(".", 1)[-1] + suffix))
+    return module
+
+
+def test_native_extension_scan_derives_every_loaded_venv_extension(tmp_path):
+    """#81594: the report's locked file was ``_cffi_backend.pyd``, which no hand list named.
+    Every loaded extension under site-packages maps to its distribution; stdlib extensions
+    and pure-Python modules never do."""
+    from hermes_cli.update_cmd_deps import _loaded_native_extension_dists
+
+    site, stdlib = tmp_path / "site-packages", tmp_path / "DLLs"
+    modules = {
+        "_cffi_backend": _native_module(site, "_cffi_backend", ".pyd"),
+        "yaml._yaml": _native_module(site, "yaml._yaml", ".pyd"),
+        "yaml": _native_module(site, "yaml", ".py"),
+        "_ssl": _native_module(stdlib, "_ssl", ".pyd"),
+        "builtin_like": types.ModuleType("builtin_like"),
+    }
+    loaded = _loaded_native_extension_dists(
+        modules, [site], (".pyd",),
+        {"_cffi_backend": ["cffi"], "yaml": ["PyYAML"], "_ssl": ["nope"]})
+
+    assert loaded == {"cffi": ["_cffi_backend.pyd"], "PyYAML": ["_yaml.pyd"]}
+
+
+@pytest.mark.linux_only
+def test_self_lock_detection_is_noop_off_windows():
     with patch.dict(sys.modules, {"cryptography.hazmat.bindings._rust": MagicMock()}):
         assert cli_main._detect_self_loaded_native_modules() == []
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_loaded_module_with_pending_version_change_is_flagged(_winp):
+@pytest.mark.windows_only
+def test_loaded_module_with_pending_version_change_is_flagged():
+    import sysconfig
+
+    site = Path(sysconfig.get_path("purelib"))
     with patch.dict(
-        sys.modules, {"cryptography.hazmat.bindings._rust": MagicMock()}
+        sys.modules, {"_cffi_backend": _native_module(site, "_cffi_backend", ".pyd")}
+    ), patch(
+        "importlib.metadata.packages_distributions", return_value={"_cffi_backend": ["cffi"]}
     ), patch.object(cli_main, "_dependency_sync_would_rewrite", return_value=True):
-        assert "cryptography (_rust.pyd)" in cli_main._detect_self_loaded_native_modules()
+        assert "cffi (_cffi_backend.pyd)" in cli_main._detect_self_loaded_native_modules()
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_loaded_module_already_at_target_version_is_not_flagged(_winp):
+@pytest.mark.windows_only
+def test_loaded_module_already_at_target_version_is_not_flagged():
     """#86735 core fix: loaded-but-not-changing must NOT trip the deferral.
 
     Installed cryptography already satisfies the on-disk pins → the sync
@@ -136,8 +208,8 @@ def test_loaded_module_already_at_target_version_is_not_flagged(_winp):
         assert cli_main._detect_self_loaded_native_modules() == []
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_unknown_rewrite_risk_fails_open(_winp):
+@pytest.mark.windows_only
+def test_unknown_rewrite_risk_fails_open():
     """Uncertain rewrite risk must NOT defer (None → proceed).
 
     PyYAML is loaded by every CLI process; deferring on an unparseable
@@ -149,16 +221,6 @@ def test_unknown_rewrite_risk_fails_open(_winp):
         sys.modules, {"cryptography.hazmat.bindings._rust": MagicMock()}
     ), patch.object(cli_main, "_dependency_sync_would_rewrite", return_value=None):
         assert cli_main._detect_self_loaded_native_modules() == []
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_self_lock_detection_clean_when_rust_not_loaded(_winp):
-    sys.modules.pop("cryptography.hazmat.bindings._rust", None)
-    with patch.object(cli_main, "_dependency_sync_would_rewrite", return_value=True):
-        assert (
-            "cryptography (_rust.pyd)"
-            not in cli_main._detect_self_loaded_native_modules()
-        )
 
 
 def test_recovered_update_retry_builds_parser_without_native_secret_modules(
@@ -206,9 +268,7 @@ def test_abort_helper_defers_and_exits_2(capsys):
     # Deferral contract: marker dropped so the next fresh launch completes
     # the dependency install (the code swap has already happened by now).
     assert marker_writes == ["written"]
-    out = capsys.readouterr().out
-    assert "cryptography (_rust.pyd)" in out
-    assert "deferred" in out
+    assert "cryptography (_rust.pyd)" in capsys.readouterr().out
 
 
 def test_abort_helper_resumes_paused_gateways_before_exit():
@@ -230,36 +290,6 @@ def test_abort_helper_resumes_paused_gateways_before_exit():
 # ---------------------------------------------------------------------------
 # Placement: the deferral must NOT fire before the fetch (#86735 / #86780)
 # ---------------------------------------------------------------------------
-
-
-def test_pre_fetch_flow_has_no_self_lock_preflight():
-    """#86780 regression: a loaded native module must not block the git fetch.
-
-    The old preflight sat between the venv-holder sweep and the fetch, so a
-    universally-loaded module (bitwarden's module-level cryptography import)
-    deferred every update before any code was pulled — the Windows infinite
-    update loop.  The deferral now lives at the dependency-sync boundaries
-    only; the stretch of _cmd_update_impl between the venv-holder sweep and
-    the fetch must not consult the detector at all.
-    """
-    import inspect
-
-    src = inspect.getsource(update_cmd._cmd_update_impl)
-    fetch_idx = src.index("Fetching updates")
-    pre_fetch = src[:fetch_idx]
-    assert "_detect_self_loaded_native_modules()" not in pre_fetch
-    assert "_m()._abort_dependency_sync_if_self_locked" not in pre_fetch
-    # ... and it must still guard the dependency sync after the code swap.
-    post_fetch = src[fetch_idx:]
-    assert "_m()._abort_dependency_sync_if_self_locked" in post_fetch
-
-
-def test_zip_update_guards_dependency_sync():
-    import inspect
-
-    src = inspect.getsource(update_cmd._update_via_zip)
-    swap_idx = src.index("Updating Python dependencies")
-    assert "_abort_dependency_sync_if_self_locked" in src[:swap_idx]
 
 
 # ---------------------------------------------------------------------------
@@ -291,16 +321,14 @@ class TestUpdateEntrypointImportHygiene:
                 """
                 import sys
                 import hermes_cli.main
-                from hermes_cli.update_cmd import _SELF_LOCKING_NATIVE_MODULES
-                loaded = [
-                    p for p in _SELF_LOCKING_NATIVE_MODULES
-                    if p in sys.modules and not p.startswith("yaml")
-                ]
                 # PyYAML is a base dep every CLI process needs (config parsing);
-                # it is version-gated instead of import-gated. Everything else
-                # in the registry must stay lazy.
+                # it is version-gated instead of import-gated. The crypto stack
+                # (cryptography's _rust.pyd and cffi's _cffi_backend.pyd) must stay lazy.
+                loaded = [
+                    m for m in ("cryptography.hazmat.bindings._rust", "_cffi_backend")
+                    if m in sys.modules
+                ]
                 assert not loaded, f"eagerly loaded self-locking modules: {loaded}"
-                assert "cryptography.hazmat.bindings._rust" not in sys.modules
                 print("OK")
                 """
             )
@@ -308,25 +336,3 @@ class TestUpdateEntrypointImportHygiene:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "OK" in result.stdout
 
-    def test_update_dispatch_does_not_load_cryptography(self):
-        result = self._run(
-            textwrap.dedent(
-                """
-                import sys
-                from unittest.mock import patch
-                sys.argv = ["hermes", "update", "--check"]
-                import hermes_cli.main as m
-                with patch("hermes_cli.main._cmd_update_check", lambda *a, **k: 0):
-                    try:
-                        m.main()
-                    except SystemExit:
-                        pass
-                assert "cryptography.hazmat.bindings._rust" not in sys.modules, (
-                    "update dispatch eagerly loaded cryptography._rust"
-                )
-                print("OK")
-                """
-            )
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "OK" in result.stdout

@@ -38,18 +38,19 @@ _CATALOG = (
 def cold_cache(monkeypatch):
     """A freshly started process that has never mirrored a catalog to disk."""
     import hermes_cli.models as models_mod
+    from hermes_cli import models_reasoning_caps
 
     monkeypatch.setattr(models_mod, "_nous_reasoning_caps_cache", None)
     monkeypatch.setattr(models_mod, "_nous_reasoning_caps_failed_at", None)
     monkeypatch.setattr(models_mod, "_nous_caps_disk_checked", False)
     monkeypatch.setattr(models_mod, "_nous_caps_warm_started", False)
-    models_mod._reasoning_caps_disk_path().unlink(missing_ok=True)
+    models_reasoning_caps._reasoning_caps_disk_path().unlink(missing_ok=True)
     return models_mod
 
 
 class TestNousModelReasoningCapabilities:
     def test_fetch_parses_mandatory_flag(self, cold_cache, monkeypatch):
-        from hermes_cli.models import nous_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities
 
         monkeypatch.setattr(
             cold_cache, "_urlopen_model_catalog_request",
@@ -67,7 +68,7 @@ class TestNousModelReasoningCapabilities:
 
     def test_catalog_read_sends_user_agent(self, cold_cache, monkeypatch):
         """The Portal 403s an anonymous catalog read."""
-        from hermes_cli.models import nous_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities
 
         seen = []
 
@@ -89,7 +90,7 @@ class TestNousModelReasoningCapabilities:
         Pinned to production, a staging profile would take its
         reasoning-mandatory verdicts from a different deployment's catalog.
         """
-        from hermes_cli.models import nous_catalog_url
+        from hermes_cli.models_reasoning_caps import nous_catalog_url
 
         monkeypatch.setenv(
             "NOUS_INFERENCE_BASE_URL", "https://staging.nousresearch.com/v1"
@@ -100,7 +101,7 @@ class TestNousModelReasoningCapabilities:
         assert nous_catalog_url().endswith("/v1/models")
 
     def test_unlisted_and_empty_models_return_none(self, cold_cache, monkeypatch):
-        from hermes_cli.models import nous_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities
 
         monkeypatch.setattr(
             cold_cache, "_urlopen_model_catalog_request",
@@ -111,7 +112,7 @@ class TestNousModelReasoningCapabilities:
         assert nous_model_reasoning_capabilities(None) is None
 
     def test_cache_only_by_default_never_fetches(self, cold_cache, monkeypatch):
-        from hermes_cli.models import nous_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities
 
         def _boom(req, *, timeout):
             raise AssertionError("hot path must not fetch")
@@ -120,7 +121,7 @@ class TestNousModelReasoningCapabilities:
         assert nous_model_reasoning_capabilities("deepseek/deepseek-v4-pro") is None
 
     def test_unreachable_catalog_rate_limits_refetch(self, cold_cache, monkeypatch):
-        from hermes_cli.models import nous_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities
 
         calls = {"n": 0}
 
@@ -136,10 +137,7 @@ class TestNousModelReasoningCapabilities:
 
     def test_openrouter_cache_is_independent(self, cold_cache, monkeypatch):
         """Two catalogs, two caches — a Portal fetch must not answer for OpenRouter."""
-        from hermes_cli.models import (
-            nous_model_reasoning_capabilities,
-            openrouter_model_reasoning_capabilities,
-        )
+        from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities, openrouter_model_reasoning_capabilities
 
         monkeypatch.setattr(cold_cache, "_openrouter_reasoning_caps_cache", None)
         monkeypatch.setattr(cold_cache, "_openrouter_reasoning_caps_failed_at", None)

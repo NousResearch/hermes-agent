@@ -6,23 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.think_scrubber import THINK_TAG_NAMES
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
-def test_stream_send_metadata_carries_original_reply_anchor():
-    consumer = GatewayStreamConsumer(
-        adapter=MagicMock(),
-        chat_id="123",
-        initial_reply_to_id="456",
-    )
-
-    assert consumer._metadata_for_send(final=False) == {
-        "reply_to_message_id": "456",
-    }
-    assert consumer._metadata_for_send(final=True) == {
-        "reply_to_message_id": "456",
-        "notify": True,
-    }
 
 
 # ── _clean_for_display unit tests ────────────────────────────────────────
@@ -594,6 +581,38 @@ class TestFinalResponseDeliveryGuard:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_failed_first_send_leaves_no_uneditable_partial_preview(self):
+        """A failed first send disables edits: a preview sent after it could never be updated and
+        would stay on screen truncated next to the final. Only the complete reply reaches the chat."""
+        delivered = []
+        results = iter([SimpleNamespace(success=False, error="timeout")])
+
+        async def send(**kw):
+            result = next(results, None) or SimpleNamespace(success=True, message_id=f"m{len(delivered) + 1}")
+            if result.success:
+                delivered.append(kw["content"])
+            return result
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=send)
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("preview never landed ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta("and more streamed text ")
+        await asyncio.sleep(0.08)
+        consumer.on_delta("then the end.")
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=10)
+
+        assert delivered == ["preview never landed and more streamed text then the end."]
+
+
 class TestFinalContentDeliveredGuard:
     """Regression coverage for #25010 — _final_content_delivered must only be
     set when the final response is actually confirmed delivered to the user,
@@ -749,7 +768,12 @@ class TestInitialOverflowRollingEdit:
         assert all(text.count("```") % 2 == 0 for text in sent_texts + edited_texts)
         assert len(sent_texts) == len(expected_chunks)
         assert sent_texts[:-1] == expected_chunks[:-1]
-        assert sent_texts[-1].startswith(expected_chunks[-1])
+        # The tail is the live preview later deltas extend: it drops the " (n/n)" indicator, which
+        # would otherwise end up embedded mid-reply ("``` (2/2)\nTail after ...").
+        indicator = f" ({len(expected_chunks)}/{len(expected_chunks)})"
+        assert expected_chunks[-1].endswith(indicator)
+        assert sent_texts[-1].startswith(expected_chunks[-1][: -len(indicator)])
+        assert not any(indicator in text for text in edited_texts)
         assert any("Tail after the fenced stream." in text for text in edited_texts)
         assert all(utf16_len(text) <= safe_limit for text in sent_texts)
 
@@ -930,6 +954,16 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate(f"<{tag}>hidden reasoning</{tag}>Visible answer")
         assert c._accumulated == "Visible answer"
         assert "hidden reasoning" not in c._accumulated
+
+
+    @pytest.mark.parametrize("name", THINK_TAG_NAMES)
+    def test_every_scrubber_tag_is_filtered_when_streamed(self, name):
+        """A tag added to the shared list is automatically hidden by the gateway stream filter."""
+        c = _make_consumer()
+        for chunk in (f"<{name}>", "hidden", f"</{name}>", "visible"):
+            c._filter_and_accumulate(chunk)
+        c._flush_think_buffer()
+        assert c._accumulated == "visible"
 
     def test_prose_mention_not_stripped(self):
         """<think> mentioned mid-line in prose should NOT trigger filtering."""
@@ -1123,22 +1157,6 @@ class TestOnNewMessageCallback:
         assert events == ["reset", "reset", "reset"]
 
 
-    @pytest.mark.asyncio
-    async def test_no_callback_when_none(self):
-        """Consumer works correctly when on_new_message is None (default)."""
-        adapter = MagicMock()
-        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
-        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
-        adapter.MAX_MESSAGE_LENGTH = 4096
-
-        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1)
-        consumer = GatewayStreamConsumer(adapter, "chat", config)  # no callback
-
-        consumer.on_delta("Hello")
-        consumer.finish()
-        await consumer.run()
-
-        assert consumer.already_sent is True
 
 
 class TestUtf16OverflowDetection:
@@ -1373,8 +1391,66 @@ class TestStripOrphanCloseTags:
         text = "Just normal text with no tags."
         assert GatewayStreamConsumer._strip_orphan_close_tags(text) == text
 
-    def test_empty_string(self):
-        assert GatewayStreamConsumer._strip_orphan_close_tags("") == ""
+
+
+class TestConfirmedFinalDeliveryConsultsCommentaryRecord:
+    """The gateway's final-send predicate must recognise a final reply the consumer already
+    delivered through the commentary path even when the runtime never set ``response_previewed``
+    (codex app-server final agentMessage, #74248 / #80519) — and must still send a distinct final.
+    Only DURABLE deliveries count: a draft frame followed by a failed finalize send must leave the
+    fallback final send armed (#51828 / #33793 failed-finalize family)."""
+
+    @staticmethod
+    def _consumer_after_commentary(text):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        c = GatewayStreamConsumer(adapter=adapter, chat_id="c1")
+        assert asyncio.run(c._send_commentary(text)) is True
+        return c
+
+    @staticmethod
+    def _mark_streamed_delivery(consumer, final_text):
+        """Drive the production gateway boundary that decides ``already_sent`` for the normal final send."""
+        from gateway.run_turn import GatewayTurnMixin
+        response = {"final_response": final_text}
+        turn_ctx = SimpleNamespace(
+            stream_consumer_holder=[consumer], source=SimpleNamespace(platform="telegram"), session_key="s1",
+        )
+        asyncio.run(GatewayTurnMixin()._run_agent_mark_streamed_delivery(response, turn_ctx))
+        return response
+
+    def test_same_text_delivered_as_commentary_suppresses_normal_final_send_without_previewed_flag(self):
+        c = self._consumer_after_commentary("Native compaction is active.")
+        response = self._mark_streamed_delivery(c, "Native compaction is active.")
+        assert response.get("already_sent") is True
+
+    def test_distinct_final_after_commentary_is_still_sent(self):
+        from gateway.run_turn import GatewayTurnMixin
+        c = self._consumer_after_commentary("Checking the compaction config first.")
+        assert GatewayTurnMixin._run_agent_stream_confirmed_final_delivery(
+            c, "Native compaction is active.", previewed=False) is False
+
+    def test_draft_streamed_text_with_failed_finalize_send_keeps_fallback_final_send(self):
+        """Drafts set ``_last_sent_text`` but are ephemeral: when the finalize send then fails
+        (429/flood), the reply is NOT on screen — ``already_sent`` must stay unset so the gateway's
+        fallback final send fires instead of silently losing the reply."""
+        adapter = MagicMock()
+        adapter.send_draft = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=False, message_id=None, error="429"))
+        c = GatewayStreamConsumer(adapter=adapter, chat_id="c1")
+        c._use_draft_streaming, c._draft_id = True, "d1"
+        text = "Native compaction is active."
+
+        async def stream_then_finalize():
+            assert await c._send_or_edit(text, finalize=False) is True
+            assert await c._send_or_edit(text, finalize=True) is False
+
+        asyncio.run(stream_then_finalize())
+        assert adapter.send_draft.await_count == 1 and adapter.send.await_count >= 1
+        assert c.already_sent is False and c.final_response_sent is False
+        assert c.has_delivered_text(text) is True  # draft-only visibility, not durable
+        response = self._mark_streamed_delivery(c, text)
+        assert not response.get("already_sent")
 
 
 class TestHasDeliveredTextAfterSegmentBreak:

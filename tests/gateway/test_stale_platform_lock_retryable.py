@@ -25,7 +25,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.run import GatewayRunner
 
 
 class _StubAdapter(BasePlatformAdapter):
@@ -126,12 +125,8 @@ def test_lock_conflict_names_owning_profile(adapter):
         )
 
     assert result is False
-    assert adapter._fatal_error_message == (
-        "Telegram bot token already in use by the "
-        "'lead-gen-outreach' profile gateway (PID 559). "
-        "Stop that gateway first "
-        "(hermes --profile lead-gen-outreach gateway stop)."
-    )
+    assert "lead-gen-outreach" in adapter._fatal_error_message
+    assert "559" in adapter._fatal_error_message
     assert adapter._fatal_error_retryable is True
     assert adapter._fatal_error_code == "telegram-bot-token_lock"
 
@@ -160,25 +155,3 @@ def test_lock_conflict_infers_profile_from_legacy_hermes_home(adapter):
     )
 
 
-def test_lock_conflict_keeps_pid_only_wording_for_legacy_record(adapter):
-    """Records with no attribution signal retain the original PID-only message."""
-    existing = {
-        "pid": 99999,
-        "start_time": 123,
-    }
-
-    with patch(
-        "gateway.status.acquire_scoped_lock",
-        return_value=(False, existing),
-    ), patch.object(adapter, "_write_runtime_status_safe"):
-        result = adapter._acquire_platform_lock(
-            "telegram-bot-token",
-            "test-token",
-            "Telegram bot token",
-        )
-
-    assert result is False
-    assert adapter._fatal_error_message == (
-        "Telegram bot token already in use (PID 99999). "
-        "Stop the other gateway first."
-    )

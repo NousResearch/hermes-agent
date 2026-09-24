@@ -435,6 +435,70 @@ class TestValidationPhase:
         assert result.success is False
         assert "hunk 2" in result.error.lower()
 
+    def test_add_onto_existing_file_fails_and_preserves_contents(self):
+        """An Add targeting a path that already exists must fail validation and
+        leave the original bytes untouched (no silent overwrite)."""
+        patch = """\
+*** Begin Patch
+*** Add File: exists.py
++brand new
++content
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        original = "def keep_me():\n    return 1\n"
+        written = {}
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                if path == "exists.py":
+                    return SimpleNamespace(content=original, error=None)
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
+            def write_file(self, path, content):
+                written[path] = content
+                return SimpleNamespace(error=None)
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert written == {}, f"No file should have been written, got: {list(written.keys())}"
+        assert "already exists" in result.error
+        assert "validation failed" in result.error.lower()
+
+    def test_delete_then_add_same_path_still_validates(self):
+        """A patch that deletes a file and re-adds the same path (a legitimate
+        rewrite idiom) must not trip the Add-onto-existing guard: the earlier
+        DELETE frees the path in the validation overlay."""
+        patch = """\
+*** Begin Patch
+*** Delete File: rewrite.py
+*** Add File: rewrite.py
++fresh = True
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        state = {"rewrite.py": "old = True\n"}
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                if path in state:
+                    return SimpleNamespace(content=state[path], error=None)
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
+            def delete_file(self, path):
+                state.pop(path, None)
+                return SimpleNamespace(error=None)
+
+            def write_file(self, path, content, pre_content=None):
+                state[path] = content
+                return SimpleNamespace(error=None)
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is True, result.error
+        assert state["rewrite.py"] == "fresh = True"
+
 
 class TestApplyDelete:
     """Tests for _apply_delete producing a real unified diff."""
@@ -569,6 +633,9 @@ class TestV4ALspDiagnosticsPropagation:
         )
 
         class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
             def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
@@ -621,6 +688,9 @@ class TestV4ALspDiagnosticsPropagation:
         ops = self._build_ops_writing("foo.py", "x = 1\n")
 
         class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
             def write_file(self, path, content, pre_content=None):
                 # lsp_diagnostics omitted entirely (older WriteResult shape).
                 return SimpleNamespace(error=None)
@@ -654,6 +724,9 @@ class TestV4ALspDiagnosticsPropagation:
         }
 
         class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=None, error=f"File not found: {path}")
+
             def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=per_file[path])
 

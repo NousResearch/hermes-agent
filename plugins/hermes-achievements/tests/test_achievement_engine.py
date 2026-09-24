@@ -1,6 +1,8 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "dashboard" / "plugin_api.py"
 spec = importlib.util.spec_from_file_location("plugin_api", MODULE_PATH)
@@ -57,6 +59,27 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertEqual(result["state"], "discovered")
         self.assertEqual(result["progress"], 12)
         self.assertEqual(result["next_threshold"], 50)
+
+    def test_finished_rescan_keeps_persisted_unlock_when_live_metric_shrinks(self):
+        definition = {
+            "id": "durable_unlock",
+            "name": "Durable Unlock",
+            "threshold_metric": "total_terminal_calls",
+            "tiers": [{"name": "Copper", "threshold": 40}],
+        }
+        with TemporaryDirectory() as data_dir, patch.object(plugin_api, "ACHIEVEMENTS", [definition]), patch.object(plugin_api, "_data_dir", return_value=Path(data_dir)), patch.object(plugin_api, "get_hermes_home", return_value=Path(data_dir)):
+            unlocked = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 40}, "sessions": []})
+            rescanned = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 39}, "sessions": []})
+            partial = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 39}, "sessions": []}, is_partial=True)
+            persisted = plugin_api.load_state()["unlocks"]
+
+        self.assertTrue(unlocked["achievements"][0]["unlocked"])
+        self.assertTrue(rescanned["achievements"][0]["unlocked"])
+        self.assertEqual(rescanned["achievements"][0]["state"], "unlocked")
+        # In-flight snapshots are published to the cache during rescans: the floor applies there too.
+        self.assertTrue(partial["achievements"][0]["unlocked"])
+        self.assertEqual(partial["unlocked_count"], 1)
+        self.assertEqual(list(persisted), ["durable_unlock"])
 
     def test_secret_achievement_stays_hidden_without_progress(self):
         definition = {
@@ -169,3 +192,30 @@ class AchievementEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompactionScanTests(unittest.TestCase):
+    def test_scan_stats_survive_compaction_and_v1_checkpoint_is_rescanned(self):
+        """#112273: compaction archives the active rows (active=0, compacted=1); the scan must
+        keep counting them, and a schema-1 (active-only) checkpoint must not be reused."""
+        import hermes_state
+        from hermes_state import SessionDB
+
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)):
+            db = SessionDB(Path(tmp) / "state.db")
+            try:
+                db.create_session("s1", "cli", model="m")
+                for i in range(20):
+                    db.append_message("s1", "assistant", tool_calls=[{"function": {"name": f"tool_{i}", "arguments": "{}"}}])
+                    db.append_message("s1", "tool", content="ok", tool_name=f"tool_{i}")
+                db.archive_and_compact("s1", [{"role": "user", "content": "[summary]"}])
+            finally:
+                db.close()
+            # A schema-1 (active-only) checkpoint for this session must be ignored, not reused.
+            stale = {"fingerprint": None, "stats": {"tool_call_count": 0}}
+            plugin_api._write_json(plugin_api.CHECKPOINT_FILE, {"schema_version": 1, "generated_at": 1, "sessions": {"s1": stale}})
+            with patch.object(hermes_state, "SessionDB", lambda read_only=True: SessionDB(Path(tmp) / "state.db", read_only=read_only)):
+                scan = plugin_api.scan_sessions()
+
+        self.assertEqual(scan["aggregate"]["max_distinct_tools_in_session"], 20)
+        self.assertEqual(scan["scan_meta"]["sessions_reused"], 0)

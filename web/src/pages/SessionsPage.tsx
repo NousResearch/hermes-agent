@@ -74,6 +74,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -90,6 +91,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     sms: { icon: MessageCircle, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
     tool: { icon: Play, color: "text-warning" },
+    oneshot: { icon: Terminal, color: "text-warning" },
     api_server: { icon: Globe, color: "text-muted-foreground" },
     acp: { icon: Database, color: "text-muted-foreground" },
     hermes_flow: { icon: Play, color: "text-warning" },
@@ -100,6 +102,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
 const AUTOMATION_SESSION_SOURCES = [
   "cron",
   "tool",
+  "oneshot",
   "api_server",
   "acp",
   "hermes_flow",
@@ -487,17 +490,17 @@ function SessionRow({
     if (!isExpanded || messages !== null) return;
     let cancelled = false;
     api
-      .getSessionMessages(session.id)
+      .getSessionMessages(session.id, session.profile)
       .then((resp) => {
         if (!cancelled) setMessages(resp.messages);
       })
       .catch((err) => {
-        if (!cancelled) setError(String(err));
+        if (!cancelled) setError(errorMessage(err));
       });
     return () => {
       cancelled = true;
     };
-  }, [isExpanded, session.id, messages]);
+  }, [isExpanded, session.id, session.profile, messages]);
 
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source
@@ -1084,7 +1087,7 @@ export default function SessionsPage() {
         loadStats();
         refreshEmptyCount();
       } catch (error) {
-        showToast(`Import failed: ${error}`, "error");
+        showToast(`Import failed: ${errorMessage(error)}`, "error");
       } finally {
         setImportingSessions(false);
         if (importInputRef.current) importInputRef.current.value = "";
@@ -1274,11 +1277,23 @@ export default function SessionsPage() {
     };
   }, [search, sessionQueryOptions]);
 
+  // The profile a listed row was read from — the store that owns it. Every
+  // per-row request (delete, rename, export, messages) must go there, not to
+  // the global management profile, which lags the row (it stays "" while the
+  // sticky active profile equals the dashboard process's own, so the request
+  // hits the process store — a delete then "succeeds" as already_absent).
+  // Current search rows carry the same stamp; an unstamped row from an older
+  // backend still falls back to the management profile.
+  const rowProfile = useCallback(
+    (id: string) => (searchResults ?? sessions).find((s) => s.id === id)?.profile,
+    [searchResults, sessions],
+  );
+
   const sessionDelete = useConfirmDelete({
     onDelete: useCallback(
       async (id: string) => {
         try {
-          await api.deleteSession(id);
+          await api.deleteSession(id, rowProfile(id));
           setSessions((prev) => prev.filter((s) => s.id !== id));
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
@@ -1304,6 +1319,7 @@ export default function SessionsPage() {
       [
         expandedId,
         refreshEmptyCount,
+        rowProfile,
         showToast,
         loadStats,
         t.sessions.sessionDeleted,
@@ -1373,7 +1389,13 @@ export default function SessionsPage() {
     }
     setDeletingSelected(true);
     try {
-      const resp = await api.bulkDeleteSessions(ids);
+      // The selection comes from one listed page, so its rows share one
+      // owning profile; a mixed selection falls back to the management profile.
+      const owners = new Set(ids.map(rowProfile));
+      const resp = await api.bulkDeleteSessions(
+        ids,
+        owners.size === 1 ? [...owners][0] : undefined,
+      );
       showToast(
         t.sessions.selectedSessionsDeleted.replace(
           "{count}",
@@ -1404,6 +1426,7 @@ export default function SessionsPage() {
     loadSessions,
     page,
     refreshEmptyCount,
+    rowProfile,
     selectedIds,
     showToast,
     t.sessions.failedToDeleteSelected,
@@ -1449,7 +1472,7 @@ export default function SessionsPage() {
   const handleRename = useCallback(
     async (id: string, title: string) => {
       try {
-        await api.renameSession(id, title);
+        await api.renameSession(id, title, rowProfile(id));
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
@@ -1462,13 +1485,13 @@ export default function SessionsPage() {
         showToast("Failed to rename session", "error");
       }
     },
-    [showToast, loadStats],
+    [rowProfile, showToast, loadStats],
   );
 
   const handleExport = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(api.exportSessionUrl(id), {
+        const res = await fetch(api.exportSessionUrl(id, rowProfile(id)), {
           credentials: "include",
           headers: {
             "X-Hermes-Session-Token":
@@ -1476,7 +1499,9 @@ export default function SessionsPage() {
                 .__HERMES_SESSION_TOKEN__ ?? "",
           },
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+        }
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -1488,7 +1513,7 @@ export default function SessionsPage() {
         showToast("Failed to export session", "error");
       }
     },
-    [showToast],
+    [rowProfile, showToast],
   );
 
   const handlePrune = useCallback(async () => {

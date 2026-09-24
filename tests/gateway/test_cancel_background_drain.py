@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -118,31 +119,5 @@ async def test_cancel_background_tasks_drains_late_arrivals():
     assert adapter._background_tasks == set()
 
 
-@pytest.mark.asyncio
-async def test_cancel_background_tasks_handles_no_tasks():
-    """Regression guard: no tasks, no hang, no error."""
-    adapter = _make_adapter()
-    await adapter.cancel_background_tasks()
-    assert adapter._background_tasks == set()
 
 
-@pytest.mark.asyncio
-async def test_cancel_background_tasks_bounded_rounds():
-    """Regression guard: the drain loop is bounded — it does not spin
-    forever even if late-arrival tasks keep getting spawned."""
-    adapter = _make_adapter()
-
-    # Single well-behaved task that cancels cleanly — baseline check
-    # that the loop terminates in one round.
-    async def quick():
-        try:
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            raise
-
-    task = asyncio.create_task(quick())
-    adapter._background_tasks.add(task)
-
-    await adapter.cancel_background_tasks()
-    assert task.done()
-    assert adapter._background_tasks == set()

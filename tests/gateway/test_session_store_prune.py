@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 
-from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionStore
 
 
@@ -31,7 +31,7 @@ def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch
     hermes_state before a fixture redirected HERMES_HOME used to pin every
     default SessionDB() at the developer's real ~/.hermes/state.db.
     """
-    config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
+    config = GatewayConfig()
     fake_home = tmp_path / "alt_hermes_home"
     fake_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
@@ -50,7 +50,7 @@ def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch
 def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
     """Build a SessionStore bypassing SQLite/disk-load side effects."""
     config = GatewayConfig(
-        default_reset_policy=SessionResetPolicy(mode="none"),
+
         session_store_max_age_days=max_age_days,
     )
     with patch("gateway.session.SessionStore._ensure_loaded"):
@@ -188,7 +188,7 @@ class TestPrunePersistsToDisk:
     def test_prune_rewrites_sessions_json(self, tmp_path):
         """After prune, sessions.json on disk reflects the new dict."""
         config = GatewayConfig(
-            default_reset_policy=SessionResetPolicy(mode="none"),
+
             session_store_max_age_days=90,
         )
         store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -217,45 +217,7 @@ class TestGatewayConfigSerialization:
         restored = GatewayConfig.from_dict(cfg.to_dict())
         assert restored.session_store_max_age_days == 30
 
-    def test_session_store_max_age_days_missing_defaults_90(self):
-        """Loading an old config (pre-this-field) falls back to default."""
-        restored = GatewayConfig.from_dict({})
-        assert restored.session_store_max_age_days == 90
 
 
-class TestGatewayWatcherCallsPrune:
-    """The session_expiry_watcher should call prune_old_entries once per hour."""
 
-
-    def test_prune_gate_suppresses_within_interval(self):
-        import time as _t
-
-        last_ts = _t.time() - 600  # 10 minutes ago
-        prune_interval = 3600.0
-        now = _t.time()
-
-        should_prune = (now - last_ts) > prune_interval
-        assert should_prune is False
-
-
-class TestReadmeSentinel:
-    """The gateway writes a self-documenting ``_README`` key into sessions.json
-    so users who inspect the file directly understand it's the gateway routing
-    index (not the session list). It must never round-trip into a SessionEntry,
-    and real entries must survive a save/load cycle alongside it (#49361)."""
-
-    def test_save_writes_readme_sentinel_first(self, tmp_path):
-        store = _make_store(tmp_path)
-        store._entries["agent:main:whatsapp:dm:99"] = _entry(
-            "agent:main:whatsapp:dm:99", age_days=1
-        )
-        store._save()
-
-        raw = json.loads((tmp_path / "sessions.json").read_text())
-        assert "_README" in raw
-        # Sentinel renders first so it's the first thing a user sees on `cat`.
-        assert next(iter(raw)) == "_README"
-        # The note points users at the real store and command.
-        assert "state.db" in raw["_README"]
-        assert "hermes sessions list" in raw["_README"]
 

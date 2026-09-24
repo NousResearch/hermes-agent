@@ -12,6 +12,20 @@ profile 是一个独立的 Hermes 主目录。每个 profile 拥有自己的目�
 
 创建 profile 后，它会自动成为独立的命令。创建名为 `coder` 的 profile，你立即就拥有了 `coder chat`、`coder setup`、`coder gateway start` 等命令。
 
+### Profile、agent 与 bot
+
+这几个术语描述的是 Hermes 的不同部分：
+
+- **Profile** 是一个助手的配置和数据的持久化主目录。它在多次对话和重启之间保持同一份状态。
+
+- **Agent** 是使用该配置和状态运行中的 Hermes 助手。"Hermes Agent" 同时也是产品的名称。
+
+- **Bot 模式中的 Bot** 是以具名条目出现在桌面应用 [Bot 模式](./bot-mode)花名册中的 profile，带有头像和一个持久的 Bot Chat。同一个 profile 仍然可以从 CLI 访问。每个 Bot 都是一个 profile，但并非每个 profile 都是 Bot：当 Bot 模式把它的花名册展示信息（标题、头像、分区、隐藏状态）写入该 profile 的元数据并固定其规范 Bot Chat 时，这个 profile 才成为 Bot。一个只在 CLI、Docker 或 gateway 中使用、从未加入花名册的 profile 仍然只是普通 profile。
+
+- **消息平台 bot** 是 Telegram、Discord、Slack 等平台上的一个账号，通过 gateway 连接到 Hermes。它的 [bot token](#不同的-bot-token) 标识的是那个平台账号。
+
+- **子 agent（subagent）** 是由 [`delegate_task`](./features/delegation.md) 为某个任务派生出的子助手，拥有全新的对话。独立的对话不等于独立的 profile。
+
 ## 快速开始
 
 ```bash
@@ -46,7 +60,7 @@ hermes profile create researcher --description "Reads source code and external d
 hermes profile create work --clone
 ```
 
-将当前 profile 的 `config.yaml`、`.env`、`SOUL.md` 和 skills 复制到新 profile。API 密钥、模型和能力相同，但会话和记忆是全新的。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
+将当前 profile 的 `config.yaml`、`.env`、`SOUL.md`、skills 以及精选记忆文件 `memories/MEMORY.md` 和 `memories/USER.md` 复制到新 profile——记忆与 `SOUL.md` 一样被视为 agent 身份的一部分。会话、`state.db`、cron 任务及其他内容均从空白开始。若也想要空白记忆，请不加 `--clone` 创建 profile，或在创建后删除这两个文件；文件不存在时 agent 不会回退读取其他 profile 的记忆。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
 
 ### 克隆全部内容（`--clone-all`）
 
@@ -179,7 +193,7 @@ assistant gateway install     # 创建 hermes-gateway-assistant 服务
 每个 profile 拥有独立的服务名称，各自独立运行。
 
 :::note 在官方 Docker 镜像中
-各 profile 的 gateway 由 [s6-overlay](https://github.com/just-containers/s6-overlay)（容器中的 PID 1）监管，因此 `hermes profile create <name>` 会自动在 `/run/service/gateway-<name>/` 注册 s6 服务槽。`hermes -p <name> gateway start/stop/restart` 会调度到 `s6-svc` 而非直接启动裸进程——崩溃后自动重启，`docker restart` 会保留之前运行的 gateway 集合。详见 [各 profile gateway 监管](/user-guide/docker#per-profile-gateway-supervision)。
+各 profile 的 gateway 由 [s6-overlay](https://github.com/just-containers/s6-overlay)（容器中的 PID 1）监管，因此 `hermes profile create <name>` 会自动在 `/run/service/gateway-<name>/` 注册 s6 服务槽。`hermes -p <name> gateway start/stop/restart` 会调度到 `s6-svc` 而非直接启动裸进程——崩溃后自动重启，`docker restart` 会保留之前运行的 gateway 集合。详见 [各 profile gateway 监管](./docker.md#per-profile-gateway-supervision)。
 :::
 
 ## 配置 profile

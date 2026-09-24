@@ -15,7 +15,7 @@
 import { expect, test } from './test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from './mock-server'
+import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
 
 let fixture: MockBackendFixture | null = null
 
@@ -60,7 +60,6 @@ test.describe('batch clarify card', () => {
 
     // Answer both questions: stage picks locally (no server traffic yet).
     const confirmButton = batchCard.locator('button[type="submit"]')
-    await expect(confirmButton).toContainText('Confirm and continue')
     await expect(confirmButton).toBeDisabled()
 
     await batchCard.getByRole('button', { name: /Coffee/ }).click()

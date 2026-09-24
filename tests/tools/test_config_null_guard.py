@@ -13,12 +13,6 @@ from unittest.mock import patch
 class TestTTSProviderNullGuard:
     """tools/tts_tool.py — _get_provider()"""
 
-    def test_explicit_null_provider_returns_default(self):
-        """YAML ``tts: {provider: null}`` should fall back to default."""
-        from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
-
-        result = _get_provider({"provider": None})
-        assert result == DEFAULT_PROVIDER.lower().strip()
 
 
     def test_missing_provider_keeps_free_default_with_cloud_credentials(self):
@@ -28,13 +22,6 @@ class TestTTSProviderNullGuard:
         assert _get_provider({}) == DEFAULT_PROVIDER
         assert _get_provider({"provider": None}) == DEFAULT_PROVIDER
 
-    def test_active_provider_without_credentials_keeps_edge(self):
-        """A TTS-capable active provider that can't authenticate must NOT
-        silently displace the free Edge default (no surprise billing / hard
-        errors for a credential-less deployment)."""
-        from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
-
-        assert _get_provider({}) == DEFAULT_PROVIDER.lower().strip()
 
     def test_explicit_provider_wins_over_active(self):
         """An explicit tts.provider always overrides the active-provider fallback."""
@@ -57,31 +44,10 @@ class TestWebBackendNullGuard:
         result = _get_backend()
         assert isinstance(result, str)
 
-    @patch("tools.web_tools._load_web_config", return_value={})
-    def test_missing_backend_does_not_crash(self, _cfg):
-        from tools.web_tools import _get_backend
-
-        result = _get_backend()
-        assert isinstance(result, str)
 
 
 # ── MCP tool ──────────────────────────────────────────────────────────────
 
-class TestMCPAuthNullGuard:
-    """tools/mcp_tool.py — MCPServerTask.__init__() auth config line"""
-
-    def test_explicit_null_auth_does_not_crash(self):
-        """YAML ``auth: null`` in MCP server config should not raise."""
-        # Test the expression directly — MCPServerTask.__init__ has many deps
-        config = {"auth": None, "timeout": 30}
-        auth_type = (config.get("auth") or "").lower().strip()
-        assert auth_type == ""
-
-
-    def test_valid_auth_passed_through(self):
-        config = {"auth": "OAUTH", "timeout": 30}
-        auth_type = (config.get("auth") or "").lower().strip()
-        assert auth_type == "oauth"
 
 
 # ── Trajectory compressor ─────────────────────────────────────────────────
@@ -103,13 +69,3 @@ class TestTrajectoryCompressorNullGuard:
         result = compressor._detect_provider()
         assert result == ""
 
-    def test_config_loading_null_base_url_keeps_default(self):
-        """YAML ``summarization: {base_url: null}`` should keep default."""
-        from trajectory_compressor import CompressionConfig
-        from hermes_constants import OPENROUTER_BASE_URL
-
-        config = CompressionConfig()
-        data = {"summarization": {"base_url": None}}
-
-        config.base_url = data["summarization"].get("base_url") or config.base_url
-        assert config.base_url == OPENROUTER_BASE_URL

@@ -104,6 +104,11 @@ def test_compression_attempt_telemetry_is_metadata_only(caplog):
     assert payload["split_status"] == "not_applicable"
     assert payload["fallback_used"] is False
     assert isinstance(payload["total_duration_ms"], int)
+    assert isinstance(payload["commit_ms"], int)
+    assert payload["queue_wait_ms"] is None
+    assert payload["prompt_build_ms"] is None
+    assert payload["time_to_first_progress_ms"] is None
+    assert payload["summary_generation_ms"] is None
 
     raw_log = json.dumps(payload)
     assert "TOPSECRET_TRANSCRIPT_TEXT" not in raw_log
@@ -149,3 +154,47 @@ def test_aux_call_telemetry_records_durations_without_content(caplog):
     raw_log = json.dumps(payload)
     assert "TOPSECRET_TRANSCRIPT_TEXT" not in raw_log
     assert "SANITIZED SUMMARY" not in raw_log
+
+
+def test_aux_call_telemetry_records_content_free_phase_timings():
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model",
+            provider="test-provider",
+            threshold_percent=0.50,
+            quiet_mode=True,
+            config_context_length=100_000,
+        )
+    compressor._begin_compression_telemetry(current_tokens=75_000)
+
+    compressor._record_aux_compression_call(
+        prompt_messages=[{"role": "user", "content": "TOPSECRET_TRANSCRIPT_TEXT"}],
+        max_tokens=1400,
+        duration_ms=22,
+        aux_provider="ollama",
+        aux_model="qwen3:8b",
+        phase_timings={
+            "queue_wait_ms": 3,
+            "prompt_build_ms": 5,
+            "time_to_first_progress_ms": 7,
+            "summary_generation_ms": 19,
+            "commit_ms": 11,
+        },
+    )
+
+    payload = compressor._last_compression_telemetry
+    assert payload is not None
+    assert {key: payload[key] for key in (
+        "queue_wait_ms",
+        "prompt_build_ms",
+        "time_to_first_progress_ms",
+        "summary_generation_ms",
+        "commit_ms",
+    )} == {
+        "queue_wait_ms": 3,
+        "prompt_build_ms": 5,
+        "time_to_first_progress_ms": 7,
+        "summary_generation_ms": 19,
+        "commit_ms": 11,
+    }
+    assert "TOPSECRET_TRANSCRIPT_TEXT" not in json.dumps(payload)

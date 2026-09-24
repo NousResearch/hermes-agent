@@ -27,6 +27,10 @@ vi.mock('@/i18n', () => ({
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
         newProfile: 'New profile',
+        remoteOverride: {
+          badge: (host: string) => `Runs on ${host}`,
+          menuItem: 'Connect to a remote host…'
+        },
         saveSoul: 'Save',
         saving: 'Saving…',
         showAllProfiles: 'Show all profiles',
@@ -57,7 +61,12 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
-vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))
+vi.mock('@/store/connections', () => ({
+  $activeConnectionId: atom(null),
+  $connectionsRegistry: atom(null),
+  $hasMultipleConnections: atom(false),
+  selectConnection: vi.fn()
+}))
 
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),
@@ -65,7 +74,7 @@ vi.mock('@/store/profile-share', () => ({
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 vi.mock('@/hermes', () => ({
@@ -115,37 +124,5 @@ describe('ProfileRail multi-gateway entry point', () => {
     expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
-  })
-
-  it('keeps thirteen profiles direct and condenses the fourteenth', () => {
-    profiles.set([
-      { is_default: true, name: 'default' },
-      ...Array.from({ length: 12 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
-    ])
-    const { unmount } = render(<ProfileRail />)
-
-    expect(screen.queryByRole('button', { name: 'Profiles' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Profile 12' })).toBeTruthy()
-    unmount()
-
-    profiles.set([
-      { is_default: true, name: 'default' },
-      ...Array.from({ length: 13 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
-    ])
-    render(<ProfileRail />)
-
-    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
-  })
-
-  it('stays shrinkable with many profiles and multiple gateways', () => {
-    hasMultipleConnections.set(true)
-    profiles.set([
-      { is_default: true, name: 'default' },
-      ...Array.from({ length: 13 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
-    ])
-    render(<ProfileRail />)
-
-    expect(screen.getByRole('group', { name: 'Profiles' }).className).toContain('min-w-0')
-    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
   })
 })

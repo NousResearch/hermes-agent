@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: context7
+description: Up-to-date, version-specific library docs and code examples.
+source: https://context7.com/docs/resources/all-clients
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://mcp.context7.com/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - context7
+    - library docs
+  hosts:
+    - context7.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Works anonymously with rate limits; for higher limits create an API key
+  at context7.com/dashboard and add it as a Bearer header via
+  mcp_servers.context7.headers in config.yaml.

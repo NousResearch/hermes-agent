@@ -57,7 +57,7 @@ def _run_opencode_switch(
             },
         ),
         patch(
-            "hermes_cli.models.validate_requested_model",
+            "hermes_cli.models_validate.validate_requested_model",
             return_value=_MOCK_VALIDATION,
         ),
         patch("hermes_cli.model_switch.get_model_info", return_value=None),
@@ -154,8 +154,8 @@ class TestAgentSwitchModelDefenseInDepth:
         with patch(
             "agent.anthropic_adapter.build_anthropic_client",
             side_effect=_raise_after_capture,
-        ), patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=""), patch(
-            "agent.anthropic_adapter._is_oauth_token", return_value=False
+        ), patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=""), patch(
+            "agent.anthropic_credentials._is_oauth_token", return_value=False
         ):
             with pytest.raises(_Sentinel):
                 agent.switch_model(

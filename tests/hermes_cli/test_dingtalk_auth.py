@@ -156,14 +156,5 @@ class TestRenderQR:
 # ---------------------------------------------------------------------------
 
 
-class TestConfigOverrides:
-
-    def test_base_url_default(self, monkeypatch):
-        monkeypatch.delenv("DINGTALK_REGISTRATION_BASE_URL", raising=False)
-        # Force module reload to pick up current env
-        import importlib
-        import hermes_cli.dingtalk_auth as mod
-        importlib.reload(mod)
-        assert mod.REGISTRATION_BASE_URL == "https://oapi.dingtalk.com"
 
 

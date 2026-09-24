@@ -105,7 +105,8 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
     """Directory searches omit credential and MCP-token result entries."""
     import json
 
-    from tools.file_operations import SearchMatch, SearchResult
+    from tools.file_operations import SearchResult
+    from tools.file_operations_common import SearchMatch
     import tools.file_tools as ft
     import tools.terminal_tool as terminal_tool
 
@@ -149,7 +150,7 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
         path=str(fake_home),
         task_id="search-filter-credentials",
     )
-    out = json.loads(search_response.split("\n\n[Hint:", 1)[0])
+    out = json.loads(search_response)
     raw = json.dumps(out)
     returned_paths = {
         match["path"] for match in out.get("matches", [])
@@ -164,7 +165,7 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
     assert out["_omitted"].startswith("4 result(s) omitted")
     assert out["total_count"] == 5
     assert out["truncated"] is True
-    assert "[Hint: Results truncated." in search_response
+    assert out["_hint"].startswith("Results truncated. Use offset=")
 
 
 # ---------------------------------------------------------------------------

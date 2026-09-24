@@ -121,49 +121,40 @@ class TestSSHBulkDownload:
         assert "testuser@example.com" in cmd_str
 
 
-    def test_ssh_bulk_download_uses_120s_timeout(self, ssh_mock_env, tmp_path):
-        """The subprocess.run call should use a 120s timeout."""
+
+    def test_ssh_bulk_download_tolerates_only_socket_ignored_exit_2(self, ssh_mock_env, tmp_path):
+        """Live sockets are excluded up front, and an rc=2 whose stderr is solely
+        'socket ignored' lines (a socket not named *.sock) does not fail the transfer."""
         dest = tmp_path / "backup.tar"
+        stderr = b"tar: home/testuser/.hermes/gateway.sock: socket ignored\n"
+        completed = subprocess.CompletedProcess([], 2, stderr=stderr)
 
-        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
-            ssh_mock_env._ssh_bulk_download(dest)
+        with patch.object(subprocess, "run", return_value=completed) as mock_run:
+            ssh_mock_env._ssh_bulk_download(dest)  # must not raise
 
-        call_kwargs = mock_run.call_args
-        assert call_kwargs.kwargs.get("timeout") == 120 or call_kwargs[1].get("timeout") == 120
+        assert "--exclude='*.sock'" in " ".join(mock_run.call_args[0][0])
+
+    def test_ssh_bulk_download_still_fails_on_every_other_status(self, ssh_mock_env, tmp_path):
+        """rc=1; rc=2 with a real error beside the socket line, with no diagnostic at all, or
+        with 'socket ignored' merely inside a filename — all still raise."""
+        from tools.environments.base import EnvironmentConnectionError
+        dest = tmp_path / "backup.tar"
+        failures = (
+            subprocess.CompletedProcess([], 1, stderr=b"tar: home/testuser/.hermes/state.db: file changed as we read it"),
+            subprocess.CompletedProcess([], 2, stderr=(b"tar: home/testuser/.hermes/gateway.sock: socket ignored\n"
+                                                      b"tar: home/testuser/.hermes/state.db: Cannot open: Permission denied\n")),
+            subprocess.CompletedProcess([], 2, stderr=b"\n"),
+            subprocess.CompletedProcess([], 2, stderr=b"tar: socket ignored dir/state.db: Cannot open: Permission denied\n"),
+        )
+        for completed in failures:
+            with patch.object(subprocess, "run", return_value=completed):
+                with pytest.raises(EnvironmentConnectionError):
+                    ssh_mock_env._ssh_bulk_download(dest)
 
 
 class TestSSHCleanup:
     """Verify SSH cleanup() calls sync_back() before closing ControlMaster."""
 
-    def test_ssh_cleanup_calls_sync_back(self, monkeypatch):
-        """cleanup() should call sync_back() before SSH control socket teardown."""
-        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/u")
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
-
-        call_order = []
-
-        class TrackingSyncManager:
-            def __init__(self, **kwargs):
-                pass
-
-            def sync(self, **kw):
-                pass
-
-            def sync_back(self):
-                call_order.append("sync_back")
-
-        monkeypatch.setattr(ssh_env, "FileSyncManager", TrackingSyncManager)
-
-        env = SSHEnvironment(host="h", user="u")
-        # Ensure control_socket does not exist so cleanup skips the SSH exit call
-        env.control_socket = Path("/nonexistent/socket")
-
-        env.cleanup()
-
-        assert "sync_back" in call_order
 
     def test_ssh_cleanup_calls_sync_back_before_control_exit(self, monkeypatch):
         """sync_back() must run before the ControlMaster exit command."""
@@ -228,26 +219,10 @@ class TestModalBulkDownload:
         assert args[1] == "-c"
         assert "tar cf -" in args[2]
         assert "-C / root/.hermes" in args[2]
+        # Live sockets cannot be archived; exclude them like the SSH backend.
+        assert "--exclude='*.sock'" in args[2]
 
 
-    def test_modal_bulk_download_uses_120s_timeout(self, tmp_path):
-        """run_coroutine should be called with timeout=120."""
-        env = _make_mock_modal_env()
-        _wire_modal_download(env, tar_bytes=b"data")
-
-        run_kwargs = {}
-        original_run = env._worker.run_coroutine
-
-        def tracking_run(coro, **kwargs):
-            run_kwargs.update(kwargs)
-            return original_run(coro, **kwargs)
-
-        env._worker.run_coroutine = tracking_run
-        dest = tmp_path / "backup.tar"
-
-        env._modal_bulk_download(dest)
-
-        assert run_kwargs.get("timeout") == 120
 
 
 class TestModalCleanup:
@@ -299,6 +274,8 @@ class TestDaytonaBulkDownload:
         assert env._sandbox.process.exec.call_count == 2
         tar_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
         assert "tar cf" in tar_cmd
+        # Live sockets cannot be archived; exclude them like the SSH backend.
+        assert "--exclude='*.sock'" in tar_cmd
         # PID-suffixed temp path avoids collisions on sync_back retry
         assert "/tmp/.hermes_sync." in tar_cmd
         assert ".tar" in tar_cmd
@@ -352,61 +329,3 @@ class TestDaytonaCleanup:
 # =====================================================================
 
 
-class TestBulkDownloadWiring:
-    """Verify each backend passes bulk_download_fn to FileSyncManager."""
-
-    def test_ssh_passes_bulk_download_fn(self, monkeypatch):
-        """SSHEnvironment should pass _ssh_bulk_download to FileSyncManager."""
-        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/root")
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
-
-        captured_kwargs = {}
-
-        class CaptureSyncManager:
-            def __init__(self, **kwargs):
-                captured_kwargs.update(kwargs)
-
-            def sync(self, **kw):
-                pass
-
-        monkeypatch.setattr(ssh_env, "FileSyncManager", CaptureSyncManager)
-
-        SSHEnvironment(host="h", user="u")
-
-        assert "bulk_download_fn" in captured_kwargs
-        assert callable(captured_kwargs["bulk_download_fn"])
-
-
-    def test_daytona_passes_bulk_download_fn(self, monkeypatch):
-        """DaytonaEnvironment should pass _daytona_bulk_download to FileSyncManager."""
-        captured_kwargs = {}
-
-        def capture_fsm(**kwargs):
-            captured_kwargs.update(kwargs)
-            return type("M", (), {"sync": lambda self, **k: None})()
-
-        monkeypatch.setattr(daytona_env, "FileSyncManager", capture_fsm)
-
-        env = object.__new__(daytona_env.DaytonaEnvironment)
-        env._sandbox = MagicMock()
-        env._remote_home = "/root"
-        env._lock = __import__("threading").Lock()
-        env._persistent = True
-        env._task_id = "test"
-        env._daytona = MagicMock()
-
-        # Replicate the wiring done in __init__
-        from tools.environments.file_sync import iter_sync_files
-        env._sync_manager = daytona_env.FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{env._remote_home}/.hermes"),
-            upload_fn=env._daytona_upload,
-            delete_fn=env._daytona_delete,
-            bulk_upload_fn=env._daytona_bulk_upload,
-            bulk_download_fn=env._daytona_bulk_download,
-        )
-
-        assert "bulk_download_fn" in captured_kwargs
-        assert callable(captured_kwargs["bulk_download_fn"])

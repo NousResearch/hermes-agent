@@ -97,6 +97,19 @@ export function collectTourTargets(doc: Document, max: number): TourTarget[] {
   }
 
   const visible = (el: Element): boolean => {
+    // An inactive tab in a keep-alive stack stays MOUNTED, hidden with
+    // `visibility: hidden` so its scroll position survives — which means it
+    // keeps its layout box and its rect is identical to the visible tab's (see
+    // components/pane-shell/pane-visibility.ts). No rect test can tell those
+    // two apart, so the attribute is the only answer, and without it a tour can
+    // spotlight a background tab's composer. Duplicate `data-tour` handles are
+    // headed off at the source instead (app/chat/tour-marker.ts). Inlined
+    // rather than imported because this function is stringified into the
+    // preview webview, where no pane ever carries the attribute.
+    if (el.closest('[data-pane-hidden]')) {
+      return false
+    }
+
     const rect = el.getBoundingClientRect()
 
     if (rect.width < 4 || rect.height < 4) {

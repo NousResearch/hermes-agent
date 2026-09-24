@@ -8,7 +8,7 @@ description: "将 Hermes Agent 设置为 Microsoft Teams 机器人"
 
 将 Hermes Agent 作为机器人接入 Microsoft Teams。与 Slack 的 Socket Mode 不同，Teams 通过调用**公开 HTTPS webhook**（钩子）来投递消息，因此你的实例需要一个可公开访问的端点——本地开发时使用开发隧道，生产环境使用真实域名。
 
-如果你需要的是来自 Microsoft Graph 事件的会议摘要，而非普通的机器人对话，请使用专用设置页面：[Teams 会议](/user-guide/messaging/teams-meetings)。
+如果你需要的是来自 Microsoft Graph 事件的会议摘要，而非普通的机器人对话，请使用专用设置页面：[Teams 会议](./teams-meetings.md)。
 
 ## 机器人的响应方式
 
@@ -170,7 +170,7 @@ platforms:
 
 ### 会议摘要投递（Teams 会议 Pipeline）
 
-当 [Teams 会议 pipeline 插件](/user-guide/messaging/msgraph-webhook)启用后，此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
+当 [Teams 会议 pipeline 插件](./msgraph-webhook.md)启用后，此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
 
 Pipeline 摘要投递在 `teams` 平台条目下与机器人配置并列配置：
 
@@ -195,7 +195,7 @@ platforms:
 | 模式 | 适用场景 | 权衡 |
 |------|----------|------|
 | `incoming_webhook` | 使用 Teams 生成的静态 URL，简单地将摘要发布到某个频道。 | 不支持回复线程和表情回应，显示为 webhook 配置的身份。 |
-| `graph` | 通过 Microsoft Graph 以机器人身份发布带线程的频道帖子或 1:1/群聊消息。 | 需要完成 [Graph 应用注册](/guides/microsoft-graph-app-registration)，并具备 `ChannelMessage.Send`（频道）或 `Chat.ReadWrite.All`（聊天）应用权限。 |
+| `graph` | 通过 Microsoft Graph 以机器人身份发布带线程的频道帖子或 1:1/群聊消息。 | 需要完成 [Graph 应用注册](../../guides/microsoft-graph-app-registration.md)，并具备 `ChannelMessage.Send`（频道）或 `Chat.ReadWrite.All`（聊天）应用权限。 |
 
 如果 `teams_pipeline` 插件**未启用**，这些设置不会生效——它们仅在 pipeline 运行时绑定到 Graph webhook 入口时才会激活。
 
@@ -251,5 +251,5 @@ teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messa
 
 ## 相关文档
 
-- [Teams 会议](/user-guide/messaging/teams-meetings)
-- [运营 Teams 会议 Pipeline](/guides/operate-teams-meeting-pipeline)
+- [Teams 会议](./teams-meetings.md)
+- [运营 Teams 会议 Pipeline](../../guides/operate-teams-meeting-pipeline.md)

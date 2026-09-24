@@ -1,0 +1,289 @@
+"""Tests for agent/error_surface.py — turn-error → UI layer descriptors."""
+
+from __future__ import annotations
+
+import pytest
+
+from agent.error_surface import (
+    LAYER_AUTH,
+    LAYER_BILLING,
+    LAYER_DISK,
+    LAYER_ENDPOINT,
+    LAYER_GATEWAY,
+    LAYER_PROVIDER,
+    LAYER_STREAMING,
+    build_error_surface_from_exception,
+    build_error_surface_from_result,
+)
+
+
+# ── build_error_surface_from_result ──────────────────────────────────────
+
+
+def _failed_result(reason: str = "", error: str = "provider exploded", **extra) -> dict:
+    result = {"completed": False, "failed": True, "error": error}
+    if reason:
+        result["failure_reason"] = reason
+    result.update(extra)
+    return result
+
+
+def test_result_none_for_non_dict():
+    assert build_error_surface_from_result("boom") is None
+    assert build_error_surface_from_result(None) is None
+
+
+def test_result_none_for_healthy_result():
+    assert (
+        build_error_surface_from_result({"completed": True, "final_response": "hi"})
+        is None
+    )
+
+
+def test_result_auth_reasons_map_to_auth_layer():
+    # Both auth reasons are non-retryable, matching classify_api_error's own
+    # verdict (a bare retry replays the same rejected credential).
+    surface = build_error_surface_from_result(_failed_result("auth"))
+    assert surface == {"layer": LAYER_AUTH, "code": "auth", "retryable": False}
+
+    surface = build_error_surface_from_result(_failed_result("auth_permanent"))
+    assert surface["layer"] == LAYER_AUTH
+    assert surface["retryable"] is False
+
+
+def test_auth_surface_names_oauth_vs_api_key_recovery():
+    """The desktop's one-click fix differs by credential kind: an OAuth provider
+    (Accounts tab) needs a re-login, an API-key provider a new key. The descriptor
+    carries the kind + display label so the client never guesses from the slug."""
+    oauth = build_error_surface_from_result(_failed_result("auth"), provider="nous")
+    assert oauth["auth_kind"] == "oauth"
+    assert oauth["provider_label"] == "Nous Portal"
+
+    key = build_error_surface_from_result(_failed_result("auth"), provider="openrouter")
+    assert key["auth_kind"] == "api_key"
+
+    # Non-auth layers never carry the field (clients gate the button on it).
+    assert "auth_kind" not in build_error_surface_from_result(_failed_result("rate_limit"), provider="nous")
+
+
+def test_result_billing_block_wins():
+    surface = build_error_surface_from_result(
+        _failed_result("rate_limit", billing_block={"provider": "nous"})
+    )
+    assert surface["layer"] == LAYER_BILLING
+    assert surface["retryable"] is False
+
+
+def test_result_billing_reason_without_block():
+    surface = build_error_surface_from_result(_failed_result("billing"))
+    assert surface == {"layer": LAYER_BILLING, "code": "billing", "retryable": False}
+
+
+def test_result_provider_default_for_classified_reasons():
+    for reason in (
+        "rate_limit",
+        "server_error",
+        "overloaded",
+        "unknown",
+        "format_error",
+    ):
+        surface = build_error_surface_from_result(_failed_result(reason))
+        assert surface["layer"] == LAYER_PROVIDER, reason
+        assert surface["code"] == reason
+
+
+def test_result_non_retryable_reasons():
+    for reason in (
+        "auth",
+        "format_error",
+        "content_policy_blocked",
+        "model_not_found",
+        "ssl_cert_verification",
+    ):
+        surface = build_error_surface_from_result(_failed_result(reason))
+        assert surface["retryable"] is False, reason
+
+
+def test_result_prefers_classifier_retry_verdict():
+    """conversation_loop stamps ``failure_retryable`` from the real
+    ClassifiedError — it must win over the fallback reason set."""
+    surface = build_error_surface_from_result(
+        _failed_result("unknown", failure_retryable=False)
+    )
+    assert surface["retryable"] is False
+
+    surface = build_error_surface_from_result(
+        _failed_result("format_error", failure_retryable=True)
+    )
+    assert surface["retryable"] is True
+
+
+def test_result_stamps_failing_session_identity():
+    surface = build_error_surface_from_result(
+        _failed_result("rate_limit"), provider="openrouter", model="test/m1"
+    )
+    assert surface["provider"] == "openrouter"
+    assert surface["model"] == "test/m1"
+
+    # Absent identity omits the keys instead of stamping empty strings.
+    surface = build_error_surface_from_result(_failed_result("rate_limit"))
+    assert "provider" not in surface and "model" not in surface
+
+
+def test_result_timeout_on_custom_endpoint_is_endpoint_layer():
+    surface = build_error_surface_from_result(
+        _failed_result("timeout"), provider="custom"
+    )
+    assert surface["layer"] == LAYER_ENDPOINT
+
+    # Same reason on a vendor provider stays provider-layer.
+    surface = build_error_surface_from_result(
+        _failed_result("timeout"), provider="anthropic"
+    )
+    assert surface["layer"] == LAYER_PROVIDER
+
+
+def test_result_stream_drop_text_maps_to_streaming():
+    surface = build_error_surface_from_result(
+        _failed_result(error="The provider's stream connection keeps dropping")
+    )
+    assert surface["layer"] == LAYER_STREAMING
+    assert surface["code"] == "stream_drop"
+    assert surface["retryable"] is True
+
+
+def test_result_unclassified_failure_defaults_to_provider_unknown():
+    surface = build_error_surface_from_result(_failed_result(error="something odd"))
+    assert surface == {"layer": LAYER_PROVIDER, "code": "unknown", "retryable": True}
+
+
+def test_result_disk_full_wins_over_reason():
+    surface = build_error_surface_from_result(
+        _failed_result(
+            "server_error", error="OSError: [Errno 28] No space left on device"
+        )
+    )
+    assert surface["layer"] == LAYER_DISK
+    assert surface["retryable"] is False
+
+
+# ── build_error_surface_from_exception ───────────────────────────────────
+
+
+def test_exception_non_api_is_gateway_layer():
+    surface = build_error_surface_from_exception(KeyError("history"))
+    assert surface["layer"] == LAYER_GATEWAY
+    assert surface["code"] == "KeyError"
+    assert surface["retryable"] is True
+
+
+def test_exception_disk_full_is_disk_layer():
+    surface = build_error_surface_from_exception(OSError(28, "No space left on device"))
+    assert surface["layer"] == LAYER_DISK
+
+
+def test_exception_with_status_code_routes_through_classifier():
+    class FakeAPIError(Exception):
+        status_code = 429
+
+    surface = build_error_surface_from_exception(
+        FakeAPIError("rate limited"), provider="openrouter"
+    )
+    # 429 → rate_limit → provider layer via the real classifier.
+    assert surface["layer"] == LAYER_PROVIDER
+    assert surface["code"] in ("rate_limit", "upstream_rate_limit")
+
+
+def test_anthropic_usage_limit_routes_to_billing_recovery():
+    class FakeAPIError(Exception):
+        status_code = 429
+
+    surface = build_error_surface_from_exception(
+        FakeAPIError("usage limit reached"),
+        provider="anthropic",
+        model="claude-opus-5",
+    )
+
+    assert surface == {
+        "layer": LAYER_BILLING,
+        "code": "billing",
+        "retryable": False,
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+    }
+
+
+def test_exception_auth_status_routes_to_auth_layer():
+    class FakeAuthError(Exception):
+        status_code = 401
+
+    surface = build_error_surface_from_exception(FakeAuthError("invalid api key"))
+    assert surface["layer"] == LAYER_AUTH
+
+
+def test_exception_never_raises_on_weird_input():
+    class Hostile(Exception):
+        @property
+        def status_code(self):  # pragma: no cover - exercised via classifier
+            raise RuntimeError("hostile attribute")
+
+    # Must not raise, whatever it returns.
+    build_error_surface_from_exception(Hostile("x"))
+
+
+# ── Nous free tier ────────────────────────────────────────────────────────
+
+
+def test_free_tier_block_gets_its_own_code_and_carries_the_sentence():
+    """A free-tier refusal is never an OAuth re-login: its own ``free_tier_<kind>`` code on the
+    provider layer, with the chat sentence riding along as the card body."""
+    result = _failed_result("auth_permanent", error="HTTP 403: no permissions",
+                            free_tier={"kind": "disabled", "message": "Using Hermes without signing in is switched off."})
+    surface = build_error_surface_from_result(result, provider="nous", model="nous/welcome")
+    assert surface["layer"] == LAYER_PROVIDER and surface["code"] == "free_tier_disabled"
+    assert surface["retryable"] is False and "auth_kind" not in surface
+    assert surface["message"] == "Using Hermes without signing in is switched off."
+
+
+@pytest.mark.parametrize("kind,retryable", [
+    ("rate_limited", True), ("at_capacity", True), ("outage", True),
+    ("disabled", False), ("model_not_free", False), ("route", False), ("refused", False),
+])
+def test_free_tier_kinds_say_whether_a_later_send_can_succeed(kind, retryable):
+    surface = build_error_surface_from_result(_failed_result("rate_limit", free_tier={"kind": kind}), provider="nous")
+    assert surface["code"] == f"free_tier_{kind}" and surface["retryable"] is retryable
+    assert "message" not in surface
+
+
+def test_a_free_tier_block_without_a_kind_is_ignored():
+    surface = build_error_surface_from_result(_failed_result("auth_permanent", free_tier={}), provider="nous")
+    assert surface["code"] == "auth_permanent" and surface["layer"] == LAYER_AUTH
+
+
+def test_rate_limit_reset_rides_the_surface():
+    """#98852: a 429 whose Retry-After (or ``resets_at`` body field) names when the limit lifts
+    surfaces that moment as ``resets_at`` (epoch seconds) so the card can say "Limit resets at
+    HH:mm" next to Retry; a 429 without any reset signal carries no ``resets_at``."""
+    import time
+
+    import httpx
+    import openai
+
+    def _rate_limit(headers: dict, body: dict):
+        request = httpx.Request("POST", "http://fake/v1/chat/completions")
+        response = httpx.Response(429, headers=headers, request=request)
+        return openai.RateLimitError("HTTP 429: The usage limit has been reached", response=response, body=body)
+
+    before = time.time()
+    exc = _rate_limit({"Retry-After": "3600"},
+                      {"error": {"message": "The usage limit has been reached", "type": "usage_limit_reached"}})
+    surface = build_error_surface_from_exception(exc, provider="openai", model="gpt-5")
+    assert surface["code"] == "rate_limit" and surface["retryable"] is True
+    assert before + 3500 <= surface["resets_at"] <= time.time() + 3600
+
+    result = {"error": "HTTP 429: The usage limit has been reached", "failure_reason": "rate_limit",
+              "failure_retryable": True, "failure_resets_at": 1_800_000_000}
+    assert build_error_surface_from_result(result, provider="openai")["resets_at"] == 1_800_000_000.0
+
+    bare = _rate_limit({}, {"error": {"message": "Rate limit exceeded"}})
+    assert "resets_at" not in build_error_surface_from_exception(bare, provider="openai", model="gpt-5")

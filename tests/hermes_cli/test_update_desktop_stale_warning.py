@@ -13,6 +13,7 @@ complete`` instead of the success line, and gateway mode writes ``1`` to
 import pytest
 
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_maint as update_cmd_maint
 from hermes_cli.update_cmd import (
     _print_update_summary,
     _rebuild_desktop_after_update,
@@ -50,6 +51,22 @@ def desktop_env(tmp_path, monkeypatch):
         def _run_logged_subprocess(cmd, cwd=None, env=None):
             calls["builds"] += 1
             return _Result(1, stdout="Error: [stage-native-deps] boom")
+
+        @staticmethod
+        def _install_rebuilt_desktop_app(_desktop_dir):
+            return [], []
+
+        @staticmethod
+        def _desktop_packaged_executable(_desktop_dir):
+            return None
+
+        @staticmethod
+        def _desktop_dist_exists(_desktop_dir):
+            return False
+
+        @staticmethod
+        def _desktop_stamp_path():
+            return tmp_path / "home" / "desktop-build-stamp.json"
 
     monkeypatch.setattr(update_cmd, "_m", lambda: _FakeMain)
     monkeypatch.setattr(
@@ -97,6 +114,27 @@ def test_up_to_date_desktop_returns_true_without_spawning(desktop_env):
     assert calls["builds"] == 0
 
 
+def test_lost_desktop_with_surviving_build_stamp_is_rebuilt(desktop_env, monkeypatch):
+    """#90495: a swap that lost release/ and dist/ in an EARLIER run leaves both presence terms false
+    forever; the build stamp under HERMES_HOME survived and is the proof Desktop was installed here."""
+    desktop_dir, calls = desktop_env
+    monkeypatch.setattr(
+        update_cmd._m(), "_run_logged_subprocess",
+        staticmethod(lambda cmd, cwd=None, env=None: calls.__setitem__("builds", calls["builds"] + 1) or _Result(0)),
+    )
+    stamp = update_cmd._m()._desktop_stamp_path()
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text('{"commit": "old"}', encoding="utf-8")
+
+    assert _rebuild_desktop_after_update(desktop_dir, had_desktop_app_before_update=False) is True
+    assert calls["builds"] == 1
+
+    # Control: no stamp and no artifacts = Desktop was never installed here; nothing is built.
+    stamp.unlink()
+    assert _rebuild_desktop_after_update(desktop_dir, had_desktop_app_before_update=False) is True
+    assert calls["builds"] == 1
+
+
 def test_desktop_never_installed_returns_true(tmp_path, monkeypatch):
     spawned = []
     monkeypatch.setattr(
@@ -137,7 +175,16 @@ def test_summary_keeps_success_banner_when_desktop_ok(capsys, monkeypatch):
     monkeypatch.setattr(
         update_cmd, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
     )
+    monkeypatch.setattr(
+        update_cmd_maint, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
+    )
     monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda *a, **k: "")
+    monkeypatch.setattr(
+        update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None)
+    )
+    monkeypatch.setattr(
+        update_cmd_maint, "_post_update_sqlite_runtime_status", lambda: (True, None)
+    )
     _print_update_summary(
         node_failures=[],
         desktop_build_ok=True,

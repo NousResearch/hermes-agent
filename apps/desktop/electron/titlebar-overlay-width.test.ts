@@ -6,7 +6,8 @@ import {
   MACOS_TAHOE_DARWIN_MAJOR,
   macTitleBarOverlayHeight,
   nativeOverlayWidth,
-  OVERLAY_FALLBACK_WIDTH
+  OVERLAY_FALLBACK_WIDTH,
+  titleBarOverlayOptions
 } from './titlebar-overlay-width'
 
 // This static reservation is only the pre-layout FALLBACK. Once laid out the
@@ -18,10 +19,45 @@ test('Windows reserves the overlay fallback width', () => {
   assert.equal(nativeOverlayWidth({ isWindows: true }), OVERLAY_FALLBACK_WIDTH)
 })
 
-test('WSLg paints the same WCO, so it reserves the same fallback width', () => {
+test('WSLg custom controls reserve the same fallback width', () => {
   // The original bug: WSL fell through to 0, so the right tools sat under the
   // controls and the title overran into them.
   assert.equal(nativeOverlayWidth({ isWsl: true }), OVERLAY_FALLBACK_WIDTH)
+})
+
+test('WSLg disables the undersized native overlay in favor of renderer controls', () => {
+  assert.equal(
+    titleBarOverlayOptions({
+      platform: 'wslg',
+      titlebarHeight: 34,
+      color: 'transparent',
+      foreground: '#ffffff',
+      dark: true
+    }),
+    false
+  )
+})
+
+test('native Windows and Linux keep the same window-controls overlay', () => {
+  const input = { titlebarHeight: 34, color: 'transparent', foreground: '#ffffff', dark: false }
+  const expected = { color: 'transparent', height: 34, symbolColor: '#ffffff' }
+
+  for (const platform of ['windows', 'linux'] as const) {
+    assert.deepEqual(titleBarOverlayOptions({ platform, ...input }), expected)
+  }
+})
+
+test('macOS keeps its height-only traffic-light overlay', () => {
+  assert.deepEqual(
+    titleBarOverlayOptions({
+      platform: 'mac',
+      darwinMajor: MACOS_TAHOE_DARWIN_MAJOR,
+      titlebarHeight: 34,
+      color: 'transparent',
+      foreground: '#ffffff'
+    }),
+    { height: 0 }
+  )
 })
 
 test('plain Linux paints the WCO too, so it reserves the fallback width', () => {
@@ -35,10 +71,6 @@ test('plain Linux paints the WCO too, so it reserves the fallback width', () => 
 
 test('macOS uses traffic lights, not a WCO overlay, so it reserves nothing', () => {
   assert.equal(nativeOverlayWidth({ isMac: true }), 0)
-})
-
-test('the fallback width is a sane positive pixel value', () => {
-  assert.ok(Number.isInteger(OVERLAY_FALLBACK_WIDTH) && OVERLAY_FALLBACK_WIDTH > 0)
 })
 
 test('pre-Tahoe keeps the full titlebar overlay height', () => {

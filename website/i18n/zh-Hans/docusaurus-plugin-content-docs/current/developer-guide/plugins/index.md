@@ -14,25 +14,25 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 | 如果你想添加… | 请阅读 |
 |---|---|
 | 自定义工具、钩子、斜杠命令、技能或 CLI 子命令 | **本指南**（通用插件接口） |
-| **LLM / 推理后端**（新提供商） | [模型提供商插件](/developer-guide/model-provider-plugin) |
-| **网关频道**（Discord/Telegram/IRC/Teams 等） | [添加平台适配器](/developer-guide/adding-platform-adapters) |
-| **记忆后端**（Honcho/Mem0/Supermemory 等） | [记忆提供商插件](/developer-guide/memory-provider-plugin) |
-| **上下文压缩引擎** | [上下文引擎插件](/developer-guide/context-engine-plugin) |
-| **图像生成后端** | [图像生成提供商插件](/developer-guide/image-gen-provider-plugin) |
-| **视频生成后端** | [视频生成提供商插件](/developer-guide/video-gen-provider-plugin) |
-| **网页搜索/提取后端** | [网页搜索提供商插件](/developer-guide/web-search-provider-plugin) |
-| **云浏览器后端**（Browserbase 类 CDP 会话提供商） | [浏览器提供商插件](/developer-guide/browser-provider-plugin) |
-| **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](/developer-guide/secret-source-plugin) |
-| **仪表盘 OIDC/认证提供商** | [Web 仪表盘 — 自定义提供商](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
-| **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](/user-guide/features/tts#custom-command-providers)——配置驱动，无需 Python |
-| **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](/user-guide/features/tts#voice-message-transcription-stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |
-| **通过 MCP 接入外部工具**（文件系统、GitHub、Linear、任意 MCP 服务器） | [MCP](/user-guide/features/mcp)——在 `config.yaml` 中声明 `mcp_servers.<name>` |
-| **网关事件钩子**（在启动、会话事件、命令时触发） | [事件钩子](/user-guide/features/hooks#gateway-event-hooks)——将 `HOOK.yaml` + `handler.py` 放入 `~/.hermes/hooks/<name>/` |
-| **Shell 钩子**（在事件发生时运行 shell 命令） | [Shell 钩子](/user-guide/features/hooks#shell-hooks)——在 `config.yaml` 的 `hooks:` 下声明 |
-| **额外技能来源**（自定义 GitHub 仓库、私有技能索引） | [技能](/user-guide/features/skills)——`hermes skills tap add <repo>` · [发布 tap](/user-guide/features/skills#publishing-a-custom-skill-tap) |
-| 一流的**核心**推理提供商（非插件） | [添加提供商](/developer-guide/adding-providers) |
+| **LLM / 推理后端**（新提供商） | [模型提供商插件](../model-provider-plugin.md) |
+| **网关频道**（Discord/Telegram/IRC/Teams 等） | [添加平台适配器](../adding-platform-adapters.md) |
+| **记忆后端**（Honcho/Mem0/Supermemory 等） | [记忆提供商插件](../memory-provider-plugin.md) |
+| **上下文压缩引擎** | [上下文引擎插件](../context-engine-plugin.md) |
+| **图像生成后端** | [图像生成提供商插件](../image-gen-provider-plugin.md) |
+| **视频生成后端** | [视频生成提供商插件](../video-gen-provider-plugin.md) |
+| **网页搜索/提取后端** | [网页搜索提供商插件](../web-search-provider-plugin.md) |
+| **云浏览器后端**（Browserbase 类 CDP 会话提供商） | [浏览器提供商插件](../browser-provider-plugin.md) |
+| **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](../secret-source-plugin.md) |
+| **仪表盘 OIDC/认证提供商** | [Web 仪表盘 — 自定义提供商](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
+| **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](../../user-guide/features/tts.md#custom-command-providers)——配置驱动，无需 Python |
+| **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](../../user-guide/features/tts.md#voice-message-transcription-stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |
+| **通过 MCP 接入外部工具**（文件系统、GitHub、Linear、任意 MCP 服务器） | [MCP](../../user-guide/features/mcp.md)——在 `config.yaml` 中声明 `mcp_servers.<name>` |
+| **网关事件钩子**（在启动、会话事件、命令时触发） | [事件钩子](../../user-guide/features/hooks.md#gateway-event-hooks)——将 `HOOK.yaml` + `handler.py` 放入 `~/.hermes/hooks/<name>/` |
+| **Shell 钩子**（在事件发生时运行 shell 命令） | [Shell 钩子](../../user-guide/features/hooks.md#shell-hooks)——在 `config.yaml` 的 `hooks:` 下声明 |
+| **额外技能来源**（自定义 GitHub 仓库、私有技能索引） | [技能](../../user-guide/features/skills.md)——`hermes skills tap add <repo>` · [发布 tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
+| 一流的**核心**推理提供商（非插件） | [添加提供商](../adding-providers.md) |
 
-查看完整的[可插拔接口表](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each)，获取每种扩展接口的汇总视图，包括配置驱动（TTS、STT、MCP、shell 钩子）和放入目录（网关钩子）两种方式。
+查看完整的[可插拔接口表](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each)，获取每种扩展接口的汇总视图，包括配置驱动（TTS、STT、MCP、shell 钩子）和放入目录（网关钩子）两种方式。
 :::
 
 ## 你将构建什么
@@ -527,18 +527,18 @@ def register(ctx):
 
 ### 钩子参考
 
-每个钩子的完整文档见**[事件钩子参考](/user-guide/features/hooks#plugin-hooks)**——回调签名、参数表、触发时机和示例。以下是摘要：
+每个钩子的完整文档见**[事件钩子参考](../../user-guide/features/hooks.md#plugin-hooks)**——回调签名、参数表、触发时机和示例。以下是摘要：
 
 | 钩子 | 触发时机 | 回调签名 | 返回值 |
 |------|-----------|-------------------|---------|
-| [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | 任意工具执行前 | `tool_name: str, args: dict, task_id: str` | 忽略 |
-| [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | 任意工具返回后 | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | 忽略 |
-| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | 每轮一次，工具调用循环前 | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [上下文注入](#pre_llm_call-context-injection) |
-| [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | 每轮一次，工具调用循环后（仅成功轮次） | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | 忽略 |
-| [`on_session_start`](/user-guide/features/hooks#on_session_start) | 新会话创建（仅第一轮） | `session_id: str, model: str, platform: str` | 忽略 |
-| [`on_session_end`](/user-guide/features/hooks#on_session_end) | 每次 `run_conversation` 调用结束 + CLI 退出 | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | 忽略 |
-| [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/网关销毁活跃会话 | `session_id: str \| None, platform: str` | 忽略 |
-| [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | 网关切换新会话键（`/new`、`/reset`） | `session_id: str, platform: str` | 忽略 |
+| [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | 任意工具执行前 | `tool_name: str, args: dict, task_id: str` | 忽略 |
+| [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | 任意工具返回后 | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | 忽略 |
+| [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | 每轮一次，工具调用循环前 | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [上下文注入](#pre_llm_call-context-injection) |
+| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | 每轮一次，工具调用循环后（仅成功轮次） | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | 忽略 |
+| [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | 新会话创建（仅第一轮） | `session_id: str, model: str, platform: str` | 忽略 |
+| [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | 每次 `run_conversation` 调用结束 + CLI 退出 | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | 忽略 |
+| [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/网关销毁活跃会话 | `session_id: str \| None, platform: str` | 忽略 |
+| [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | 网关切换新会话键（`/new`、`/reset`） | `session_id: str, platform: str` | 忽略 |
 
 大多数钩子是即发即忘的观察者——其返回值被忽略。例外是 `pre_llm_call`，它可以向对话中注入上下文。
 
@@ -675,7 +675,7 @@ def register(ctx):
 
 注册后，用户可以运行 `hermes my-plugin status`、`hermes my-plugin config` 等命令。
 
-**记忆提供商插件**使用基于约定的方式：在插件的 `cli.py` 文件中添加 `register_cli(subparser)` 函数。记忆插件发现系统会自动找到它——无需调用 `ctx.register_cli_command()`。详见[记忆提供商插件指南](/developer-guide/memory-provider-plugin#adding-cli-commands)。
+**记忆提供商插件**使用基于约定的方式：在插件的 `cli.py` 文件中添加 `register_cli(subparser)` 函数。记忆插件发现系统会自动找到它——无需调用 `ctx.register_cli_command()`。详见[记忆提供商插件指南](../memory-provider-plugin.md#adding-cli-commands)。
 
 **活跃提供商限制：** 记忆插件 CLI 命令仅在其提供商是配置中活跃的 `memory.provider` 时才会出现。如果用户尚未设置你的提供商，你的 CLI 命令不会出现在帮助输出中。
 
@@ -808,7 +808,7 @@ description: Acme Inference — OpenAI-compatible direct API
 
 在任何调用 `get_provider_profile()` 或 `list_providers()` 的地方首次使用时懒加载发现——`auth.py`、`config.py`、`doctor.py`、`models.py`、`runtime_provider.py` 和 chat_completions 传输层会自动连接。用户插件按名称覆盖内置插件。
 
-**完整指南：** [模型提供商插件](/developer-guide/model-provider-plugin)——字段参考、可覆盖钩子（`prepare_messages`、`build_extra_body`、`build_api_kwargs_extras`、`fetch_models`）、api_mode 选择、认证类型、测试。
+**完整指南：** [模型提供商插件](../model-provider-plugin.md)——字段参考、可覆盖钩子（`prepare_messages`、`build_extra_body`、`build_api_kwargs_extras`、`fetch_models`）、api_mode 选择、认证类型、测试。
 
 ### 平台插件——添加网关频道
 
@@ -868,7 +868,7 @@ optional_env:
     password: false
 ```
 
-**完整指南：** [添加平台适配器](/developer-guide/adding-platform-adapters)——完整的 `BasePlatformAdapter` 约定、消息路由、认证限制、设置向导集成。参考 `plugins/platforms/irc/` 获取仅使用标准库的可用示例。
+**完整指南：** [添加平台适配器](../adding-platform-adapters.md)——完整的 `BasePlatformAdapter` 约定、消息路由、认证限制、设置向导集成。参考 `plugins/platforms/irc/` 获取仅使用标准库的可用示例。
 
 ### 记忆提供商插件——添加跨会话知识后端
 
@@ -902,7 +902,7 @@ def register(ctx):
 
 记忆提供商是单选的——同一时间只有一个处于活跃状态，通过 `config.yaml` 中的 `memory.provider` 选择。
 
-**完整指南：** [记忆提供商插件](/developer-guide/memory-provider-plugin)——完整的 `MemoryProvider` ABC、线程约定、配置文件隔离、通过 `cli.py` 注册 CLI 命令。
+**完整指南：** [记忆提供商插件](../memory-provider-plugin.md)——完整的 `MemoryProvider` ABC、线程约定、配置文件隔离、通过 `cli.py` 注册 CLI 命令。
 
 ### 上下文引擎插件——替换上下文压缩器
 
@@ -924,7 +924,7 @@ def register(ctx):
 
 上下文引擎是单选的——通过 `config.yaml` 中的 `context.engine` 选择。
 
-**完整指南：** [上下文引擎插件](/developer-guide/context-engine-plugin)。
+**完整指南：** [上下文引擎插件](../context-engine-plugin.md)。
 
 ### 图像生成后端
 
@@ -954,13 +954,13 @@ version: 1.0.0
 description: Custom image generation backend
 ```
 
-**完整指南：** [图像生成提供商插件](/developer-guide/image-gen-provider-plugin)——完整的 `ImageGenProvider` ABC、`list_models()` / `get_setup_schema()` 元数据、`success_response()`/`error_response()` 辅助函数、base64 与 URL 输出、用户覆盖、pip 分发。
+**完整指南：** [图像生成提供商插件](../image-gen-provider-plugin.md)——完整的 `ImageGenProvider` ABC、`list_models()` / `get_setup_schema()` 元数据、`success_response()`/`error_response()` 辅助函数、base64 与 URL 输出、用户覆盖、pip 分发。
 
 **参考示例：** `plugins/image_gen/openai/`（DALL-E / GPT-Image via OpenAI SDK）、`plugins/image_gen/openai-codex/`、`plugins/image_gen/xai/`（Grok 图像生成）。
 
 ## 非 Python 扩展接口
 
-Hermes 也接受完全不是 Python 插件的扩展。这些在[可插拔接口表](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each)中有所展示；以下各节简要介绍每种编写方式。
+Hermes 也接受完全不是 Python 插件的扩展。这些在[可插拔接口表](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each)中有所展示；以下各节简要介绍每种编写方式。
 
 ### MCP 服务器——注册外部工具
 
@@ -979,7 +979,7 @@ mcp_servers:
       type: "oauth"
 ```
 
-Hermes 在启动时连接到每个服务器，列出其工具，并与内置工具一起注册。LLM 看到它们的方式与其他工具完全相同。**完整指南：** [MCP](/user-guide/features/mcp)。
+Hermes 在启动时连接到每个服务器，列出其工具，并与内置工具一起注册。LLM 看到它们的方式与其他工具完全相同。**完整指南：** [MCP](../../user-guide/features/mcp.md)。
 
 ### 网关事件钩子——在生命周期事件时触发
 
@@ -1003,7 +1003,7 @@ async def handle(event_type: str, context: dict) -> None:
 
 事件包括 `gateway:startup`、`session:start`、`session:end`、`session:reset`、`agent:start`、`agent:step`、`agent:end` 以及通配符 `command:*`。钩子中的错误会被捕获并记录日志——它们不会阻塞主流程。
 
-**完整指南：** [网关事件钩子](/user-guide/features/hooks#gateway-event-hooks)。
+**完整指南：** [网关事件钩子](../../user-guide/features/hooks.md#gateway-event-hooks)。
 
 ### Shell 钩子——在工具调用时运行 shell 命令
 
@@ -1019,7 +1019,7 @@ hooks:
 
 支持与 Python 插件钩子相同的所有事件（`pre_tool_call`、`post_tool_call`、`pre_llm_call`、`post_llm_call`、`on_session_start`、`on_session_end`、`pre_gateway_dispatch`），以及用于 `pre_tool_call` 阻断决策的结构化 JSON 输出。
 
-**完整指南：** [Shell 钩子](/user-guide/features/hooks#shell-hooks)。
+**完整指南：** [Shell 钩子](../../user-guide/features/hooks.md#shell-hooks)。
 
 ### 技能来源——添加自定义技能注册表
 
@@ -1033,7 +1033,7 @@ hermes skills install myorg/skills-repo/my-workflow
 
 发布你自己的 tap 只需一个包含 `skills/<skill-name>/SKILL.md` 目录的 GitHub 仓库——无需服务器或注册表注册。
 
-**完整指南：** [技能中心](/user-guide/features/skills#skills-hub) · [发布自定义 tap](/user-guide/features/skills#publishing-a-custom-skill-tap)（仓库结构、最小示例、非默认路径、信任级别）。
+**完整指南：** [技能中心](../../user-guide/features/skills.md#skills-hub) · [发布自定义 tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap)（仓库结构、最小示例、非默认路径、信任级别）。
 
 ### 通过命令模板接入 TTS / STT
 
@@ -1052,7 +1052,7 @@ tts:
 
 对于 STT，将 `HERMES_LOCAL_STT_COMMAND` 指向一个 shell 模板。支持的占位符：`{input_path}`、`{output_path}`、`{format}`、`{voice}`、`{model}`、`{speed}`（TTS）；`{input_path}`、`{output_dir}`、`{language}`、`{model}`（STT）。任何与路径交互的 CLI 都自动成为插件。
 
-**完整指南：** [TTS 自定义命令提供商](/user-guide/features/tts#custom-command-providers) · [STT](/user-guide/features/tts#voice-message-transcription-stt)。
+**完整指南：** [TTS 自定义命令提供商](../../user-guide/features/tts.md#custom-command-providers) · [STT](../../user-guide/features/tts.md#voice-message-transcription-stt)。
 
 ## 通过 pip 分发
 
@@ -1104,7 +1104,7 @@ services.hermes-agent.extraPlugins = [
 ];
 ```
 
-完整文档（包括 overlay 用法和冲突检查）见 [Nix 设置指南](/getting-started/nix-setup#plugins)。
+完整文档（包括 overlay 用法和冲突检查）见 [Nix 设置指南](../../getting-started/nix-setup.md#plugins)。
 
 ## 常见错误
 

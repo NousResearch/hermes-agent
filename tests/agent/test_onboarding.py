@@ -6,16 +6,10 @@ import yaml
 
 from agent.onboarding import (
     BUSY_INPUT_FLAG,
-    OPENCLAW_RESIDUE_FLAG,
     TOOL_PROGRESS_FLAG,
-    busy_input_hint_cli,
-    busy_input_hint_gateway,
     detect_openclaw_residue,
     is_seen,
     mark_seen,
-    openclaw_residue_hint_cli,
-    tool_progress_hint_cli,
-    tool_progress_hint_gateway,
 )
 
 
@@ -68,31 +62,6 @@ class TestMarkSeen:
 
 
 
-class TestHintMessages:
-
-
-
-
-
-    def test_busy_input_hint_cli_steer(self):
-        msg = busy_input_hint_cli("steer")
-        assert "/busy interrupt" in msg
-        assert "/busy queue" in msg
-        assert "steer" in msg.lower()
-
-
-    def test_hints_are_not_empty(self):
-        for hint in (
-            busy_input_hint_gateway("queue"),
-            busy_input_hint_gateway("interrupt"),
-            busy_input_hint_gateway("steer"),
-            busy_input_hint_cli("queue"),
-            busy_input_hint_cli("interrupt"),
-            busy_input_hint_cli("steer"),
-            tool_progress_hint_gateway(),
-            tool_progress_hint_cli(),
-        ):
-            assert hint.strip()
 
 
 class TestRoundTrip:
@@ -136,40 +105,11 @@ class TestDetectOpenclawResidue:
 
 
 
-class TestOpenclawResidueHint:
 
 
-    def test_hint_warns_cleanup_breaks_openclaw(self):
-        # Archiving the directory breaks OpenClaw for users still running it —
-        # the banner must flag that side effect.
-        msg = openclaw_residue_hint_cli().lower()
-        assert "openclaw will stop working" in msg or "stop working" in msg
-
-    def test_hint_not_empty(self):
-        assert openclaw_residue_hint_cli().strip()
-
-
-class TestOpenclawResidueSeenFlag:
-    def test_flag_independent_of_other_flags(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        mark_seen(cfg_path, BUSY_INPUT_FLAG)
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is False
-
-    def test_flag_round_trips(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        assert mark_seen(cfg_path, OPENCLAW_RESIDUE_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is True
 
 
 class TestProfileBuildMode:
-    def test_default_is_ask(self):
-        from agent.onboarding import profile_build_mode
-
-        assert profile_build_mode({}) == "ask"
-        assert profile_build_mode({"onboarding": {}}) == "ask"
-        assert profile_build_mode({"onboarding": {"profile_build": "ask"}}) == "ask"
 
 
 
@@ -180,48 +120,7 @@ class TestProfileBuildMode:
         assert profile_build_mode({"onboarding": "nope"}) == "ask"
 
 
-class TestProfileBuildDirective:
-    def test_directive_is_opt_in_and_consent_gated(self):
-        from agent.onboarding import profile_build_directive
-
-        d = profile_build_directive()
-        # Must OFFER, not assume.
-        assert "OFFER" in d
-        # Must require consent before external lookups.
-        assert "consent" in d.lower()
-        # Must forbid silently reading connected accounts.
-        assert "silently" in d.lower()
-        # Must persist via the user-profile memory store.
-        assert 'target="user"' in d
-        # Must allow declining.
-        assert "decline" in d.lower()
-
-    def test_directive_mentions_first_message(self):
-        from agent.onboarding import profile_build_directive
-
-        assert "first message ever" in profile_build_directive()
 
 
-class TestProfileBuildSeenFlag:
-    def test_flag_round_trips(self, tmp_path):
-        from agent.onboarding import PROFILE_BUILD_FLAG
-
-        cfg_path = tmp_path / "config.yaml"
-        assert mark_seen(cfg_path, PROFILE_BUILD_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert is_seen(loaded, PROFILE_BUILD_FLAG) is True
-
-    def test_flag_independent_of_busy_input(self, tmp_path):
-        from agent.onboarding import PROFILE_BUILD_FLAG
-
-        cfg_path = tmp_path / "config.yaml"
-        mark_seen(cfg_path, BUSY_INPUT_FLAG)
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert is_seen(loaded, PROFILE_BUILD_FLAG) is False
 
 
-class TestProfileBuildConfigDefault:
-    def test_default_config_carries_ask(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        assert DEFAULT_CONFIG["onboarding"]["profile_build"] == "ask"

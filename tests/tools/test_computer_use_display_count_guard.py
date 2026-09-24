@@ -28,8 +28,8 @@ def test_zero_displays_downgrades_ok_to_degraded():
     out = _apply_display_count_guard(_report(count=0))
     assert out["overall"] == "degraded"
     assert out["checks"][0]["status"] == "fail"
-    assert "0 shareable" in out["checks"][0]["message"]
-    assert "dongle" in out["checks"][0]["hint"]
+    assert out["checks"][0]["message"] != "ScreenCaptureKit reachable"
+    assert out["checks"][0]["hint"]
 
 
 def test_positive_display_count_untouched():

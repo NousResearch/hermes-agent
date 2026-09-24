@@ -12,12 +12,7 @@ text to a non-whitespace placeholder at two points on the Anthropic request path
 in ``_convert_assistant_message`` (main path). Ref #69512.
 """
 import pytest
-from agent.anthropic_adapter import (
-    _EMPTY_TEXT_PLACEHOLDER,
-    _safe_text,
-    _sanitize_replay_block,
-    _convert_assistant_message,
-)
+from agent.anthropic_message_convert import _EMPTY_TEXT_PLACEHOLDER, _safe_text, _sanitize_replay_block, _convert_assistant_message
 
 
 def _text_blocks(msg):

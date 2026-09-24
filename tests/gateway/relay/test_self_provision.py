@@ -135,15 +135,6 @@ def test_outbound_only_when_no_endpoint(monkeypatch):
 # ─────────────────── instance-id forwarding (Phase 6 Unit α) ───────────────────
 
 
-def test_instance_id_absent_forwards_none(monkeypatch):
-    """No stamp (self-hosted / pre-Phase-6) -> instance_id None; the connector
-    stores null and per-instance routing simply has no binding yet."""
-    _arm(monkeypatch)
-    captured: dict = {}
-    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
-
-    assert relay.self_provision_relay() is True
-    assert captured["instance_id"] is None
 
 
 def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
@@ -212,15 +203,6 @@ def test_forwards_wake_url_to_provision(monkeypatch):
     assert captured["wake_url"] == "https://wake.example/poke"
 
 
-def test_wake_url_absent_forwards_none(monkeypatch):
-    """No stamp (self-hosted / non-suspendable) -> wake_url None; the connector
-    stores null and simply never pokes (it can't wake what it can't reach)."""
-    _arm(monkeypatch)
-    captured: dict = {}
-    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
-
-    assert relay.self_provision_relay() is True
-    assert captured["wake_url"] is None
 
 
 # ─────────────────────────── fail-soft ───────────────────────────

@@ -10,6 +10,7 @@ interface UseComposerDropArgs {
   cwd: ChatBarProps['cwd']
   insertInlineRefs: (refs: InlineRefInput[]) => boolean
   onAttachDroppedItems: ChatBarProps['onAttachDroppedItems']
+  recordUndoPoint: () => void
   requestMainFocus: () => void
 }
 
@@ -24,6 +25,7 @@ export function useComposerDrop({
   cwd,
   insertInlineRefs,
   onAttachDroppedItems,
+  recordUndoPoint,
   requestMainFocus
 }: UseComposerDropArgs) {
   const [dragActive, setDragActive] = useState(false)
@@ -116,6 +118,11 @@ export function useComposerDrop({
 
   const handleInputDrop = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+      // A plain text drag within the editor mutates the DOM without a
+      // React-visible beforeinput (insertFromDrop), so the undo snapshot has
+      // to be banked here — before Chromium applies the move.
+      recordUndoPoint()
+
       return
     }
 

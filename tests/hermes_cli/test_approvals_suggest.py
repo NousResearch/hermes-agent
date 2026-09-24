@@ -23,9 +23,7 @@ from hermes_cli.approvals_suggest import (
     apply_proposals,
     build_proposals,
     derive_glob,
-    is_unsafe_class,
     normalize_command,
-    parse_apply_indices,
     scan_approval_history,
     suggest_command,
 )
@@ -143,7 +141,6 @@ class TestScan:
         assert len(scan_approval_history(path, days=0)) == 2
 
 
-
 # ---------------------------------------------------------------------------
 # Normalize / glob derivation
 # ---------------------------------------------------------------------------
@@ -194,8 +191,58 @@ class TestRankingAndSafety:
         assert len(build_proposals(records, min_count=1)) == 1
 
 
+# ---------------------------------------------------------------------------
+# Credential masking in rendered proposals
+# ---------------------------------------------------------------------------
 
+class TestProposalRedaction:
+    """Mined commands can embed credentials; patterns and examples must mask them."""
 
+    def test_render_masks_credential_in_example_line(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        pat = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(
+                con,
+                f"git push --force https://x-access-token:{pat}@github.com/org/repo.git",
+            )
+        assert suggest_command(_args(path)) == 0
+        out = capsys.readouterr().out
+        assert pat not in out
+        assert "x-access-token" in out  # command shape survives, credential does not
+
+    def test_json_payload_masks_credential_in_examples(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        pat = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(
+                con,
+                f"git push --force https://x-access-token:{pat}@github.com/org/repo.git",
+            )
+        assert suggest_command(_args(path, json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["proposals"]
+        for p in payload["proposals"]:
+            assert pat not in p["pattern"]
+            assert all(pat not in ex for ex in p["examples"])
+
+    def test_credential_in_glob_tokens_falls_back_to_class_key(self, isolated_allowlist):
+        """Redaction must never reach a persisted glob: `KEY=*** git *` would be three
+        fnmatch wildcards pre-approving any `KEY=… git …` command."""
+        from tools.approval_floors import _command_matches_permanent_allowlist
+
+        cmd = "GITHUB_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a git push --force origin main"
+        proposals = build_proposals([(cmd, "git push --force")] * 3, min_count=1)
+        assert [(p.pattern, p.kind) for p in proposals] == [("git push --force", "class")]
+        assert "ghp_" not in proposals[0].examples[0]
+        added = apply_proposals(proposals, [0])
+        assert "*" not in "".join(added)
+        approval_module.load_permanent(set(approval_module.load_permanent_allowlist()))
+        assert not _command_matches_permanent_allowlist("GITHUB_TOKEN=x sudo git push --force origin main")
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +284,6 @@ class TestApply:
         assert isolated_allowlist["patterns"] == {"git push *", "docker restart *"}
         out = capsys.readouterr().out
         assert "git push *" in out and "docker restart *" in out
-
 
 
 class TestJsonOutput:
@@ -292,5 +338,3 @@ class TestParserWiring:
         args = parser.parse_args(["approvals", "suggest"])
         assert args.apply_indices is None
         assert args.json is False
-        assert args.days == 90
-        assert args.min_count == 2

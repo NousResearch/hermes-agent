@@ -23,16 +23,94 @@ export interface TranscriptTailState {
   /** The last hydration page was exactly the page limit, so older rows
    *  likely exist beyond what the in-memory store holds. */
   possiblyTruncated: boolean
-  /** Owning profile captured at hydration time, so a later backfill routes
-   *  its REST read to the same backend that served the tail. */
-  profile?: null | string
+  /** The request route captured at hydration time, replayed verbatim by a
+   *  later backfill so it reaches the backend that served the tail. The
+   *  resolved OWNER is the map key, not this field: an ambient read must stay
+   *  ambient even once the server has named its profile. */
+  profile?: TranscriptProfileScope
 }
 
+export type TranscriptProfileScope =
+  | null
+  | string
+  | {
+      connectionId?: null | string
+      profile?: null | string
+    }
+
 export const $transcriptTailBySessionId = atom<Record<string, TranscriptTailState>>({})
+const TRANSCRIPT_TAIL_LIMIT = 256
+let transcriptTailOrder: string[] = []
 
 type TailPage = Pick<SessionMessagesResponse, 'messages' | 'pagination'>
 
-function tailStateFromPage(page: TailPage, profile?: null | string): TranscriptTailState {
+function normalizedScope(profile?: TranscriptProfileScope): { connectionId: string; profile: string } | null {
+  // A bare string is the legacy "named profile" spelling: it always names a
+  // profile, so empty means the default one.
+  if (typeof profile === 'string') {
+    return { connectionId: '', profile: profile.trim() || 'default' }
+  }
+
+  if (!profile) {
+    return null
+  }
+
+  return {
+    connectionId: String(profile.connectionId || '').trim(),
+    // An omitted profile targets the serving process, not necessarily default.
+    profile: String(profile.profile || '').trim()
+  }
+}
+
+function transcriptTailKey(storedSessionId: string, profile?: TranscriptProfileScope): string {
+  const scope = normalizedScope(profile)
+
+  return scope ? JSON.stringify([scope.connectionId, scope.profile, storedSessionId]) : storedSessionId
+}
+
+function matchingTailEntries(storedSessionId: string): Array<[string, TranscriptTailState]> {
+  return Object.entries($transcriptTailBySessionId.get()).filter(([key]) => {
+    if (key === storedSessionId) {
+      return true
+    }
+
+    try {
+      const parsed = JSON.parse(key)
+
+      return Array.isArray(parsed) && parsed.length === 3 && parsed[2] === storedSessionId
+    } catch {
+      return false
+    }
+  })
+}
+
+/**
+ * Resolve the single tail entry an address refers to, returning its key too.
+ *
+ * `undefined` when the address is ambiguous (two scopes recorded for one stored
+ * session, no profile to disambiguate) or absent. Callers that page or rewind
+ * must then leave the transcript alone: a route that cannot be addressed
+ * exactly is a route that cannot be fetched from.
+ */
+function resolveTailEntry(
+  storedSessionId: string,
+  profile?: TranscriptProfileScope
+): [key: string, state: TranscriptTailState] | undefined {
+  const current = $transcriptTailBySessionId.get()
+
+  if (profile !== undefined) {
+    const key = transcriptTailKey(storedSessionId, profile)
+    const state = current[key]
+
+    return state ? [key, state] : undefined
+  }
+
+  const matches = matchingTailEntries(storedSessionId)
+
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): TranscriptTailState {
   const pagination = page.pagination
 
   // No pagination metadata is a legacy backend that ignored the paging query
@@ -48,37 +126,169 @@ function tailStateFromPage(page: TailPage, profile?: null | string): TranscriptT
   }
 }
 
-/** Record the outcome of a tail hydration (`getLatestSessionMessages`). */
-export function recordTranscriptTail(storedSessionId: string, page: TailPage, profile?: null | string): void {
+function sameTailState(a: TranscriptTailState, b: TranscriptTailState): boolean {
+  return (
+    a.nextOffset === b.nextOffset &&
+    a.possiblyTruncated === b.possiblyTruncated &&
+    JSON.stringify(a.profile ?? null) === JSON.stringify(b.profile ?? null)
+  )
+}
+
+function setTranscriptTailEntry(key: string, state: TranscriptTailState): void {
+  const current = $transcriptTailBySessionId.get()
+
+  // Heartbeats re-record identical entries; a needless .set() re-renders the
+  // whole chat tree through the tail atom (#113842).
+  if (key in current && sameTailState(current[key], state)) {
+    // Still a use of the entry: bump it to the MRU end so the constantly
+    // re-read active session is not the next eviction candidate.
+    transcriptTailOrder = [...transcriptTailOrder.filter(candidate => candidate !== key), key]
+
+    return
+  }
+
+  const existing = new Set(Object.keys(current))
+  transcriptTailOrder = transcriptTailOrder.filter(candidate => candidate !== key && existing.has(candidate))
+  transcriptTailOrder.push(key)
+
+  const next = { ...current, [key]: state }
+
+  while (transcriptTailOrder.length > TRANSCRIPT_TAIL_LIMIT) {
+    const oldest = transcriptTailOrder.shift()
+
+    if (oldest !== undefined) {
+      delete next[oldest]
+    }
+  }
+
+  $transcriptTailBySessionId.set(next)
+}
+
+/** Record the outcome of a tail hydration (`getLatestSessionMessages`).
+ *  `route` is what the request was sent with; `owner` is the resolved backend
+ *  the entry is keyed under (defaults to the route when they coincide). */
+export function recordTranscriptTail(
+  storedSessionId: string,
+  page: TailPage,
+  route?: TranscriptProfileScope,
+  owner: TranscriptProfileScope | undefined = route
+): void {
   if (!storedSessionId) {
     return
   }
 
-  const current = $transcriptTailBySessionId.get()
-  $transcriptTailBySessionId.set({ ...current, [storedSessionId]: tailStateFromPage(page, profile) })
+  const key = transcriptTailKey(storedSessionId, owner)
+  const existing = $transcriptTailBySessionId.get()[key]
+
+  // This runs before the active refresh decides whether the page is
+  // authoritative (use-background-sync). A transient zero-row read must not
+  // turn a known-truncated tail into "nothing earlier", or "Show earlier"
+  // disarms while the rows are still on the backend. Re-recording the kept
+  // entry (a no-op write) still bumps it to the MRU end.
+  const keepTruncated = page.messages.length === 0 && existing?.possiblyTruncated
+
+  setTranscriptTailEntry(key, keepTruncated ? existing : tailStateFromPage(page, route))
 }
 
 /** Advance the bookkeeping after one older backfill page landed. */
-export function recordTranscriptBackfillPage(storedSessionId: string, page: TailPage): void {
-  const current = $transcriptTailBySessionId.get()
-  const previous = current[storedSessionId]
-  $transcriptTailBySessionId.set({
-    ...current,
-    [storedSessionId]: tailStateFromPage(page, previous?.profile)
-  })
-}
+export function recordTranscriptBackfillPage(
+  storedSessionId: string,
+  page: TailPage,
+  profile?: TranscriptProfileScope
+): void {
+  const entry = resolveTailEntry(storedSessionId, profile)
 
-export function transcriptTailState(storedSessionId: null | string | undefined): TranscriptTailState | undefined {
-  return storedSessionId ? $transcriptTailBySessionId.get()[storedSessionId] : undefined
-}
-
-export function clearTranscriptTail(storedSessionId: string): void {
-  const current = $transcriptTailBySessionId.get()
-
-  if (!(storedSessionId in current)) {
+  if (!entry) {
     return
   }
 
-  const { [storedSessionId]: _dropped, ...rest } = current
-  $transcriptTailBySessionId.set(rest)
+  setTranscriptTailEntry(entry[0], tailStateFromPage(page, entry[1].profile))
+}
+
+/**
+ * Re-arm the older-page fetch after in-store history was released.
+ *
+ * `boundRetainedTranscript` (app/chat/transcript-retention) drops rows that are
+ * older than the live window once they are persisted — but they stay reachable
+ * only while the transcript still reports older rows as fetchable. Rewind the
+ * entry's offset by the released rows so the next "Show earlier" fetches them
+ * back instead of treating the in-memory store as the whole transcript.
+ *
+ * The offset is decremented RELATIVE to what the backend reported, never
+ * recomputed from the store's own row count, and it is decremented by BACKEND
+ * rows: the hydration fold merges a turn's tool rows into the assistant message
+ * they belong to (`ChatMessage.serverRowSpan` carries how many), and the backend
+ * pages display history (an `include_compacted` read is grouped by display
+ * order; inactive rows are not counted). Subtracting from the backend's own
+ * number can only overlap a page that is already in memory — which the merge
+ * dedupes — where an over-counted absolute offset would skip rows the reader
+ * can then never reach.
+ *
+ * Returns false when the session has no entry: without one there is no route
+ * recorded to fetch a page from, so the caller must keep its rows rather than
+ * release history nothing can bring back.
+ */
+export function rewindTranscriptTail(
+  storedSessionId: string,
+  releasedServerRows: number,
+  profile?: TranscriptProfileScope
+): boolean {
+  if (!storedSessionId || releasedServerRows <= 0) {
+    return false
+  }
+
+  const entry = resolveTailEntry(storedSessionId, profile)
+
+  if (!entry) {
+    return false
+  }
+
+  setTranscriptTailEntry(entry[0], {
+    nextOffset: Math.max(0, entry[1].nextOffset - releasedServerRows),
+    possiblyTruncated: true,
+    profile: entry[1].profile
+  })
+
+  return true
+}
+
+export function transcriptTailState(
+  storedSessionId: null | string | undefined,
+  profile?: TranscriptProfileScope
+): TranscriptTailState | undefined {
+  if (!storedSessionId) {
+    return undefined
+  }
+
+  return resolveTailEntry(storedSessionId, profile)?.[1]
+}
+
+/** Drops the LRU order as well as the atom. */
+export function clearTranscriptTailPaging(): void {
+  transcriptTailOrder = []
+  $transcriptTailBySessionId.set({})
+}
+
+export function clearTranscriptTail(storedSessionId: string, profile?: TranscriptProfileScope): void {
+  const current = $transcriptTailBySessionId.get()
+
+  const keys =
+    profile === undefined
+      ? matchingTailEntries(storedSessionId).map(([key]) => key)
+      : [transcriptTailKey(storedSessionId, profile)]
+
+  if (keys.length === 0) {
+    return
+  }
+
+  const next = { ...current }
+
+  for (const key of keys) {
+    delete next[key]
+  }
+
+  const removed = new Set(keys)
+  transcriptTailOrder = transcriptTailOrder.filter(key => !removed.has(key))
+
+  $transcriptTailBySessionId.set(next)
 }

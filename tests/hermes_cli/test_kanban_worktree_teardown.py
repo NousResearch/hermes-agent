@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli import kanban_db_connect as kbc
 
 
 def _git(*args: str, cwd: str | None = None) -> str:
@@ -66,7 +68,7 @@ def repo(tmp_path: Path) -> Path:
 
 def _make_worktree(repo: Path, task_id: str, branch: str | None = None) -> Path:
     target = repo / ".worktrees" / task_id
-    kb._ensure_git_worktree(repo, target, branch or f"wt/{task_id}")
+    kbw._ensure_git_worktree(repo, target, branch or f"wt/{task_id}")
     return target
 
 
@@ -82,7 +84,7 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 
 def test_clean_pushed_worktree_removed(repo: Path) -> None:
     wt = _make_worktree(repo, "t_aaaa1111")
-    kb._cleanup_worktree_workspace("t_aaaa1111", str(wt))
+    kbw._cleanup_worktree_workspace("t_aaaa1111", str(wt))
     assert not wt.exists()
     # auto-generated task branch goes with it
     assert not _branch_exists(repo, "wt/t_aaaa1111")
@@ -90,10 +92,75 @@ def test_clean_pushed_worktree_removed(repo: Path) -> None:
     assert (repo / "README.md").exists()
 
 
+def test_cleanup_leaves_a_worktree_cwd_before_removal(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows cannot remove a worktree that is the process's current directory."""
+    wt = _make_worktree(repo, "t_cwd112425")
+    real_git = kbw._git
+
+    def windows_git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
+        if args[:2] == ("worktree", "remove") and Path.cwd().is_relative_to(wt):
+            return subprocess.CompletedProcess(
+                ["git", *args], 1, stderr="Permission denied: current directory"
+            )
+        return real_git(repo_root, *args, timeout=timeout)
+
+    monkeypatch.setattr(kbw, "_git", windows_git)
+    monkeypatch.chdir(wt)
+    kbw._cleanup_worktree_workspace("t_cwd112425", str(wt))
+
+    assert Path.cwd() == repo
+    assert not wt.exists()
+
+
+def test_cleanup_proceeds_when_cwd_was_deleted(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deferred parent cleanup (#33774) runs after the child's scratch cwd was
+    rmtree'd; a dead cwd must not preserve a clean, pushed worktree."""
+    wt = _make_worktree(repo, "t_deadcwd113073")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
+    scratch.rmdir()
+
+    kbw._cleanup_worktree_workspace("t_deadcwd113073", str(wt))
+
+    assert not wt.exists()
+    assert not _branch_exists(repo, "wt/t_deadcwd113073")
+
+
+def test_cleanup_retries_worktree_removal_once(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A brief Windows directory-handle delay gets one safe retry."""
+    wt = _make_worktree(repo, "t_retry112425")
+    real_git = kbw._git
+    attempts = 0
+
+    def delayed_remove(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
+        nonlocal attempts
+        if args[:2] == ("worktree", "remove"):
+            attempts += 1
+            if attempts == 1:
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, stderr="Permission denied: handle pending"
+                )
+        return real_git(repo_root, *args, timeout=timeout)
+
+    monkeypatch.setattr(kbw, "_git", delayed_remove)
+    monkeypatch.setattr(kbw.time, "sleep", lambda _delay: None)
+    kbw._cleanup_worktree_workspace("t_retry112425", str(wt))
+
+    assert attempts == 2
+    assert not wt.exists()
+
+
 def test_dirty_worktree_preserved(repo: Path) -> None:
     wt = _make_worktree(repo, "t_bbbb2222")
     (wt / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
-    kb._cleanup_worktree_workspace("t_bbbb2222", str(wt))
+    kbw._cleanup_worktree_workspace("t_bbbb2222", str(wt))
     assert wt.is_dir()
     assert (wt / "wip.txt").exists()
 
@@ -103,20 +170,20 @@ def test_unpushed_commits_preserved(repo: Path) -> None:
     (wt / "work.txt").write_text("committed but not pushed\n", encoding="utf-8")
     _git("-C", str(wt), "add", "work.txt")
     _git("-C", str(wt), "commit", "-m", "local work")
-    kb._cleanup_worktree_workspace("t_cccc3333", str(wt))
+    kbw._cleanup_worktree_workspace("t_cccc3333", str(wt))
     assert wt.is_dir()
 
 
 def test_custom_branch_survives_worktree_removal(repo: Path) -> None:
     wt = _make_worktree(repo, "t_dddd4444", branch="feature/custom")
-    kb._cleanup_worktree_workspace("t_dddd4444", str(wt), "feature/custom")
+    kbw._cleanup_worktree_workspace("t_dddd4444", str(wt), "feature/custom")
     assert not wt.exists()
     # only auto-generated wt/* branches are deleted
     assert _branch_exists(repo, "feature/custom")
 
 
 def test_main_checkout_never_removed(repo: Path) -> None:
-    kb._cleanup_worktree_workspace("t_eeee5555", str(repo))
+    kbw._cleanup_worktree_workspace("t_eeee5555", str(repo))
     assert repo.is_dir()
     assert (repo / "README.md").exists()
 
@@ -124,7 +191,7 @@ def test_main_checkout_never_removed(repo: Path) -> None:
 def test_non_git_dir_preserved(tmp_path: Path) -> None:
     plain = tmp_path / "not-a-worktree"
     plain.mkdir()
-    kb._cleanup_worktree_workspace("t_ffff6666", str(plain))
+    kbw._cleanup_worktree_workspace("t_ffff6666", str(plain))
     assert plain.is_dir()
 
 
@@ -144,8 +211,10 @@ def test_tree_dirtied_between_check_and_removal_preserved(
     (wt / "late-wip.txt").write_text("dirtied after the check\n", encoding="utf-8")
     # Pre-check lies (as if the file appeared just after it ran) — real git
     # must still refuse the removal.
-    monkeypatch.setattr(cli, "_worktree_is_dirty", lambda _p: False)
-    kb._cleanup_worktree_workspace("t_gggg7777", str(wt))
+    from hermes_cli import worktree_ops
+
+    monkeypatch.setattr(worktree_ops, "_worktree_is_dirty", lambda _p: False)
+    kbw._cleanup_worktree_workspace("t_gggg7777", str(wt))
     assert wt.is_dir()
     assert (wt / "late-wip.txt").exists()
 
@@ -168,7 +237,7 @@ def _worktree_task(conn, repo: Path, title: str = "wt-task") -> tuple[str, Path]
 
 
 def test_complete_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
@@ -179,7 +248,7 @@ def test_complete_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> No
 
 
 def test_complete_task_preserves_dirty_worktree(kanban_home: Path, repo: Path) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)
         (wt / "wip.txt").write_text("unsaved\n", encoding="utf-8")
         with kb.write_txn(conn):
@@ -191,7 +260,7 @@ def test_complete_task_preserves_dirty_worktree(kanban_home: Path, repo: Path) -
 
 
 def test_archive_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)
         assert kb.archive_task(conn, tid)
     assert not wt.exists()
@@ -200,7 +269,7 @@ def test_archive_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> Non
 def test_parent_worktree_deferred_until_children_done(
     kanban_home: Path, repo: Path
 ) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         parent, parent_wt = _worktree_task(conn, repo, title="parent")
         child = kb.create_task(conn, title="child", assignee="worker")
         kb.link_tasks(conn, parent, child)

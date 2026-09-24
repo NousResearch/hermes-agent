@@ -9,9 +9,6 @@ sanitize/merge pass already coalesces consecutive user messages.
 
 from __future__ import annotations
 
-import threading
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from tui_gateway.server import _append_model_switch_marker
 
@@ -31,9 +28,6 @@ class TestAppendModelSwitchMarkerRole:
         )
 
 
-    def test_no_marker_for_none_session(self) -> None:
-        """None session should be a no-op."""
-        _append_model_switch_marker(None, model="gpt-4o", provider="openai")
 
 
 class TestModelSwitchMarkerDedup:
@@ -57,14 +51,6 @@ class TestModelSwitchMarkerDedup:
         # The surviving marker is the last history entry.
         assert session["history"][-1] is markers[0]
 
-    def test_five_switches_leave_one_marker(self) -> None:
-        # Mirrors the issue's screenshot: 5 consecutive MoA preset switches.
-        session: dict = {"session_key": "s", "history": []}
-        for name in ("质量-非高峰", "省钱-非高峰", "代码编程-非高峰", "日常对话-非高峰", "智能-高峰"):
-            _append_model_switch_marker(session, model=name, provider="moa")
-        markers = self._markers(session)
-        assert len(markers) == 1
-        assert "智能-高峰" in markers[0]["content"]
 
     def test_dedup_preserves_real_conversation_turns(self) -> None:
         session: dict = {

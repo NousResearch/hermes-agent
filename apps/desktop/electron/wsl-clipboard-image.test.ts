@@ -5,7 +5,6 @@ import { test } from 'vitest'
 import {
   decodeClipboardImageBase64,
   encodePowerShellCommand,
-  powershellCandidates,
   readWslWindowsClipboardImage
 } from './wsl-clipboard-image'
 
@@ -115,10 +114,4 @@ test('readWslWindowsClipboardImage returns null when every candidate throws', ()
 
   const result = readWslWindowsClipboardImage({ exec, candidates: ['a', 'b'] })
   assert.equal(result, null)
-})
-
-test('powershellCandidates lists the bare name first, then the absolute fallback', () => {
-  const candidates = powershellCandidates()
-  assert.equal(candidates[0], 'powershell.exe')
-  assert.ok(candidates.some(c => c.endsWith('WindowsPowerShell/v1.0/powershell.exe')))
 })

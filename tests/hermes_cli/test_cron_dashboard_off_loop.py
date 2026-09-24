@@ -13,6 +13,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
+import hermes_cli.web_server_cron as _web_server_cron
 
 
 @pytest.fixture()
@@ -37,7 +38,7 @@ def test_cron_fire_profile_lookup_off_loop(monkeypatch, loop_probe):
         probe("find")
         return None
 
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", fake_find)
+    monkeypatch.setattr(_web_server_cron, "_find_cron_job_profile", fake_find)
 
     import plugins.cron_providers.chronos.verify as chv
     monkeypatch.setattr(chv, "get_fire_verifier", lambda: (lambda **kw: {"sub": "t"}))
@@ -62,7 +63,7 @@ def test_blueprint_instantiate_create_job_off_loop(monkeypatch, loop_probe):
         probe("call")
         return {"id": "bp-job-1", "kwargs_seen": sorted(kwargs.keys())}
 
-    monkeypatch.setattr(web_server, "_call_cron_for_profile", fake_call)
+    monkeypatch.setattr(_web_server_cron, "_call_cron_for_profile", fake_call)
     monkeypatch.setattr(web_server, "_has_valid_session_token", lambda req: True)
 
     import cron.blueprint_catalog as bc
@@ -104,7 +105,7 @@ def test_blueprint_instantiate_reports_saved_but_unregistered(monkeypatch):
     def fail_call(profile, fn, *args, **kwargs):
         raise failure
 
-    monkeypatch.setattr(web_server, "_call_cron_for_profile", fail_call)
+    monkeypatch.setattr(_web_server_cron, "_call_cron_for_profile", fail_call)
     monkeypatch.setattr(web_server, "_has_valid_session_token", lambda req: True)
 
     import cron.blueprint_catalog as bc

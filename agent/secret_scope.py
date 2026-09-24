@@ -1,104 +1,161 @@
 """Profile-scoped credential resolution for multi-profile gateway multiplexing.
 
-The multiplexing gateway serves many profiles from one process. Each profile
-has its own ``.env`` with its own provider keys and platform tokens, so we
-**cannot** union them into the process-global ``os.environ`` (that would leak
-profile A's keys to profile B's turns, and to every subprocess spawned with
-``env=dict(os.environ)``).
-
-This module provides a fail-closed, context-local secret scope:
-
-- ``set_secret_scope(mapping)`` installs the active profile's secrets for the
-  current task (a contextvar, so it propagates into the agent's worker thread
-  via ``copy_context()`` exactly like the HERMES_HOME override).
-- ``get_secret(name)`` reads from that scope. When multiplexing is **active**
-  and no scope is set, it RAISES rather than silently falling back to
-  ``os.environ`` — an un-migrated or newly-added call site fails loud at that
-  exact line instead of leaking another profile's value. When multiplexing is
-  **off** (the default), it transparently reads ``os.environ`` so the
-  single-profile gateway and every non-gateway caller behave exactly as before.
-
-Design rationale lives in ``docs/design/multiplexing-gateway.md`` (Workstream A).
+The multiplexing gateway serves many profiles from one process; each profile's
+``.env`` keys **cannot** be unioned into ``os.environ`` (profile A's keys would
+leak into profile B's turns and subprocesses). This module is a fail-closed,
+context-local secret scope: ``set_secret_scope(mapping)`` installs the active
+profile's secrets for the current task (a contextvar, so it propagates into the
+agent's worker thread via ``copy_context()``); ``get_secret(name)`` reads from
+it and, when multiplexing is active with no scope set, RAISES rather than
+falling back to ``os.environ``. Design: ``website/docs/developer-guide/multiplexing-gateway.md``.
 """
 from __future__ import annotations
 
+import codecs
 import os
 import re
+import threading
+from collections import OrderedDict
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, NamedTuple, Optional, Tuple
+
+from utils import file_signature
 
 
-# ── multiplex-active flag ────────────────────────────────────────────────
-# Process-global: set once at gateway startup when gateway.multiplex_profiles
-# is true. Governs whether get_secret() fails closed on an unscoped read.
-# A plain module global (not a contextvar): it describes the deployment mode,
-# not a per-task value.
+# Process-global (describes the deployment mode, not a per-task value): set once
+# at gateway startup when gateway.multiplex_profiles is true.
 _MULTIPLEX_ACTIVE: bool = False
+# Launch home pinned by set_multiplex_active(True) itself (None: no auto-pin outstanding).
+_AUTO_PINNED_HOME = None
 
 
 def set_multiplex_active(active: bool) -> None:
-    """Mark whether the process is running as a profile multiplexer.
+    """Mark whether the process is a profile multiplexer (get_secret fails closed).
 
-    Called once at gateway startup. When True, ``get_secret`` fails closed on
-    an unscoped read instead of falling back to ``os.environ``.
-    """
-    global _MULTIPLEX_ACTIVE
+    Activation also pins the launch home for routed-profile decisions
+    (``hermes_constants.pin_process_hermes_home``) unless an embedding host already pinned one:
+    from here on "is this task routed" compares the override against the home the process was
+    launched with, not against whatever a host later mirrors into ``os.environ["HERMES_HOME"]``.
+    Deactivation releases only the pin activation itself created — a transient toggle
+    (``gateway_migrate._multiplex_read_mode``, a cron worker restoring the caller's mode) must not
+    drop the host's explicit pin (#119242)."""
+    global _MULTIPLEX_ACTIVE, _AUTO_PINNED_HOME
+    from hermes_constants import (
+        get_routing_process_hermes_home,
+        pin_process_hermes_home,
+        process_hermes_home_is_pinned,
+    )
     _MULTIPLEX_ACTIVE = bool(active)
+    if _MULTIPLEX_ACTIVE:
+        if not process_hermes_home_is_pinned():
+            _AUTO_PINNED_HOME = get_routing_process_hermes_home()
+            pin_process_hermes_home(_AUTO_PINNED_HOME)
+    elif _AUTO_PINNED_HOME is not None:
+        if get_routing_process_hermes_home() == _AUTO_PINNED_HOME:
+            pin_process_hermes_home(None)
+        _AUTO_PINNED_HOME = None
 
 
 def is_multiplex_active() -> bool:
-    """Return whether the process is running as a profile multiplexer."""
     return _MULTIPLEX_ACTIVE
 
 
-# ── the secret scope contextvar ──────────────────────────────────────────
-_SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar(
-    "_SECRET_SCOPE", default=None
-)
+class _BoundScope(NamedTuple):
+    """An installed secret scope plus the home it was built for, when the binder
+    declared one — the provenance ``serves_routed_profile`` needs when the binding
+    deliberately skips the HERMES_HOME override (kanban spawn-env builds, MCP
+    owner scopes)."""
+
+    mapping: Mapping[str, str]
+    profile_home: Optional[str]
+
+
+def serves_routed_profile() -> bool:
+    """True when the current task runs for a profile other than the process's own: always under
+    multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
+    per-profile cron ticker) or a secret scope stamped with a foreign home is bound. The MCP
+    registry scope and the check_fn cache key both follow this predicate so a served profile's
+    view never aliases the launch profile's (#111151). A host that mirrors the turn's profile into
+    ``HERMES_HOME`` pins its own home with ``hermes_constants.pin_process_hermes_home`` so the
+    mirror cannot flip this predicate."""
+    if is_multiplex_active():
+        return True
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    own = hermes_home_key(get_routing_process_hermes_home())
+    bound = _SECRET_SCOPE.get()
+    if bound is not None and bound.profile_home and hermes_home_key(bound.profile_home) != own:
+        return True
+    override = get_hermes_home_override()
+    return override is not None and hermes_home_key(override) != own
+
+
+_SECRET_SCOPE: ContextVar[Optional[_BoundScope]] = ContextVar("_SECRET_SCOPE", default=None)
 
 
 class UnscopedSecretError(RuntimeError):
-    """Raised when a secret is read in multiplex mode with no scope installed.
+    """A secret was read in multiplex mode with no scope installed.
 
-    This is the fail-closed signal: it means a credential read reached
-    ``get_secret`` without a profile scope active, which in a multiplexer would
-    otherwise leak whichever profile's value happened to be in ``os.environ``.
     The fix is to wrap the call path in ``set_secret_scope(...)`` (the per-turn
-    / per-adapter profile scope), not to widen the allowlist.
+    / per-adapter profile scope), not to widen the global allowlist.
+
+    ``str(exc)`` is the ONE sentence an end user can act on; the developer diagnosis
+    (which secret, which doc) rides ``__notes__`` so tracebacks and logs keep it.
     """
 
+    def __init__(self, secret_name: str = "", developer_detail: str = ""):
+        # Older callers passed the whole developer sentence positionally
+        # (``UnscopedSecretError("get_secret('X') called with no scope ...")``); a secret
+        # name never contains whitespace, so treat such a string as the detail.
+        if secret_name and not developer_detail and any(ch.isspace() for ch in secret_name):
+            secret_name, developer_detail = "", secret_name
+        what = f"this profile's {secret_name}" if secret_name else "this profile's API key"
+        super().__init__(
+            f"Hermes could not read {what} (an internal profile-scoping bug on the multiplexed "
+            "gateway, not your configuration). Run `hermes gateway restart`; if it keeps happening, "
+            "report it with `hermes debug share`."
+        )
+        self.secret_name = secret_name
+        self.developer_detail = developer_detail
+        if developer_detail:
+            self.add_note(developer_detail)
 
-def set_secret_scope(secrets: Optional[Mapping[str, str]]) -> Token:
-    """Install the active profile's secret mapping for the current context.
 
-    Returns a token for ``reset_secret_scope``. Pass ``None`` to clear.
-    """
-    return _SECRET_SCOPE.set(secrets)
+def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Optional[str] = None) -> Token:
+    """Install the active profile's secret mapping; ``None`` clears. Returns a reset token.
+
+    ``profile_home`` stamps the home the mapping was built for so
+    ``serves_routed_profile`` detects a foreign-home scope even when the binder
+    deliberately skips the HERMES_HOME override."""
+    if secrets is None:
+        return _SECRET_SCOPE.set(None)
+    return _SECRET_SCOPE.set(_BoundScope(secrets, str(profile_home) if profile_home else None))
 
 
 def reset_secret_scope(token: Token) -> None:
-    """Restore the previous secret scope."""
     _SECRET_SCOPE.reset(token)
 
 
 def current_secret_scope() -> Optional[Mapping[str, str]]:
-    """Return the active secret mapping, or None when no scope is installed."""
-    return _SECRET_SCOPE.get()
+    """The active secret mapping, or None when no scope is installed."""
+    bound = _SECRET_SCOPE.get()
+    return bound.mapping if bound is not None else None
 
 
-# ── genuinely-global env vars (NOT per-profile secrets) ──────────────────
-# These are process/deployment-level settings, not profile credentials. They
-# legitimately live in os.environ and must keep reading from it even in
-# multiplex mode — routing them through the fail-closed path would wrongly
-# crash. Anything matching is read from os.environ regardless of scope.
-#
-# Membership test is by exact name OR prefix (see _is_global_env). Keep this
-# list tight: when in doubt a value is a profile secret, not a global.
+def current_secret_scope_home() -> Optional[str]:
+    """The home the active scope was stamped with, or None when unstamped/unbound."""
+    bound = _SECRET_SCOPE.get()
+    return bound.profile_home if bound is not None else None
+
+
+# Genuinely-global env vars: process/deployment settings, NOT profile secrets.
+# They keep reading os.environ even in multiplex mode (routing them through the
+# fail-closed path would wrongly crash). Keep this tight — when in doubt a
+# value is a profile secret. Membership is exact name OR prefix.
 _GLOBAL_ENV_EXACT = frozenset({
     # Hermes runtime / deployment
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_GATEWAY_LOCK_DIR",
-    "HERMES_MAX_ITERATIONS", "HERMES_MAX_TOKENS", "HERMES_API_TIMEOUT",
+    "HERMES_MAX_ITERATIONS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
     # OS / interpreter
@@ -106,14 +163,22 @@ _GLOBAL_ENV_EXACT = frozenset({
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
     # Kanban paths (per-board, not per-profile-secret)
     "HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_BOARD",
-    # API-server LISTENER settings — deployment config (Docker compose
-    # ``environment:`` block, systemd ``Environment=``), not profile secrets.
-    # The scoped runner reload (#64674) must keep seeing them or container
-    # deployments silently lose the api_server platform (#69379). NOTE:
-    # API_SERVER_KEY is deliberately NOT here — it IS a credential and stays
-    # profile-scoped.
+    # API-server LISTENER settings — deployment config (compose/systemd env),
+    # which the scoped runner reload must keep seeing or containers silently
+    # lose the api_server platform. API_SERVER_KEY is a credential: NOT here.
+    # See #64674, #69379.
     "API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT",
     "API_SERVER_CORS_ORIGINS",
+    # Relay-connector ROUTING stamps injected by managed deploys. Every reader
+    # (gateway.config, relay_url()/registration/self-provision) must resolve
+    # the SAME value or the adapter registers while the platform is absent
+    # from config. GATEWAY_RELAY_SECRET/_ID/_DELIVERY_KEY and IDP_* are auth
+    # material and deliberately stay profile-scoped.
+    "GATEWAY_RELAY_URL", "GATEWAY_RELAY_ENDPOINT",
+    "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS",
+    "GATEWAY_RELAY_PLATFORMS", "GATEWAY_RELAY_BOT_IDS",
+    "GATEWAY_RELAY_ROUTE_KEYS", "GATEWAY_RELAY_INSTANCE_ID",
+    "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_DISPLAY_NAME",
 })
 _GLOBAL_ENV_PREFIXES = (
     "HERMES_KANBAN_",
@@ -123,85 +188,58 @@ _GLOBAL_ENV_PREFIXES = (
 
 
 def _is_global_env(name: str) -> bool:
-    """Return True for genuinely process-global (non-profile-secret) env vars."""
-    if name in _GLOBAL_ENV_EXACT:
-        return True
-    return any(name.startswith(p) for p in _GLOBAL_ENV_PREFIXES)
+    """True for genuinely process-global (non-profile-secret) env vars."""
+    return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES)
+
+
+def _environ_or(name: str, default: Optional[str]) -> Optional[str]:
+    val = os.environ.get(name)
+    return val if val is not None else default
 
 
 def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     """Resolve a credential by env-var name, honoring the active profile scope.
 
-    Resolution order:
-
-    1. Genuinely-global vars (``_is_global_env``) always read ``os.environ`` —
-       they are deployment settings, not profile secrets.
-    2. When a secret scope is installed (multiplexed turn), read from it. Under
-       multiplexing the scope is authoritative — an absent key returns
-       ``default`` and we do NOT fall through to ``os.environ``, because in a
-       multiplexer ``os.environ`` may hold another profile's value. When
-       multiplexing is OFF, a scope miss falls through to ``os.environ``:
-       single-profile deployments legitimately provide credentials via the
-       process environment (systemd ``Environment=``, secret-manager wrappers
-       like ``pass-cli run`` / ``op run``, plain shell exports) rather than
-       ``<home>/.env``, and the scope — installed unconditionally around e.g.
-       every cron job — must stay a ``.env`` overlay, not a blindfold.
-    3. No scope installed:
-       - multiplex INACTIVE (default deployment): read ``os.environ`` —
-         identical to the legacy ``os.getenv`` behavior every caller had before.
-       - multiplex ACTIVE: FAIL CLOSED. Raise ``UnscopedSecretError`` so the
-         missing scope is caught loudly instead of leaking a cross-profile value.
+    Global vars always read ``os.environ``. With a scope installed, a miss returns
+    ``default`` under multiplexing (never another profile's ``os.environ`` value)
+    but falls through to ``os.environ`` otherwise — single-profile deployments
+    inject credentials via the process env (systemd, ``op run``), so the scope
+    must stay a ``.env`` overlay, not a blindfold (otherwise cron 401s). With no
+    scope: multiplex INACTIVE reads ``os.environ``; ACTIVE raises (fail closed).
     """
     if _is_global_env(name):
-        val = os.environ.get(name)
-        return val if val is not None else default
-
-    scope = _SECRET_SCOPE.get()
-    if scope is not None:
-        val = scope.get(name)
+        return _environ_or(name, default)
+    bound = _SECRET_SCOPE.get()
+    if bound is not None:
+        val = bound.mapping.get(name)
         if val is not None:
             return val
-        if _MULTIPLEX_ACTIVE:
-            return default
-        # Multiplex off: the scope is an overlay over the process environment,
-        # not an isolation boundary — there is no other profile to leak from.
-        # Without this fallthrough, credentials injected only into the process
-        # environment vanish inside any set_secret_scope(...) block (the cron
-        # scheduler installs one around every job), so cron jobs send a
-        # placeholder API key and 401 while interactive turns keep working.
-        val = os.environ.get(name)
-        return val if val is not None else default
-
+        return default if (_MULTIPLEX_ACTIVE or serves_routed_profile()) else _environ_or(name, default)
     if _MULTIPLEX_ACTIVE:
         raise UnscopedSecretError(
+            name,
             f"get_secret({name!r}) called with no profile secret scope active "
             f"while multiplexing is on. This credential read must run inside a "
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
-            f"profile's value. See docs/design/multiplexing-gateway.md "
-            f"(Workstream A)."
+            f"profile's value. See website/docs/developer-guide/multiplexing-gateway.md "
+            f"(Workstream A).",
         )
+    return _environ_or(name, default)
 
-    val = os.environ.get(name)
-    return val if val is not None else default
+
+def get_secret_str(name: str, default: str = "") -> str:
+    """``get_secret`` for callers that want a ``str``: ``default`` only when the secret is genuinely
+    unset. Still raises ``UnscopedSecretError`` — swallowing it hides a spawn-site bug."""
+    val = get_secret(name, default)
+    return default if val is None else val
 
 
 def _strip_inline_comment(value: str) -> str:
-    """Strip a dotenv-style inline comment from a raw ``.env`` value.
-
-    Mirrors python-dotenv (1.2.2) semantics, verified empirically:
-
-    - Quoted values: scan for the matching close quote
-      (backslash-escape-aware for double quotes, since ``save_env_value``
-      writes ``\\"``/``\\\\`` escapes). Everything through the close quote is
-      kept; a trailing ``# ...`` remainder after it is discarded, so
-      ``KEY="has # inside" # trailing`` yields ``has # inside``. Non-comment
-      trailing junk leaves the value untouched (lenient, unlike dotenv's
-      hard parse error).
-    - Unquoted values: truncate only at a ``#`` PRECEDED BY WHITESPACE, so
-      ``KEY=foo#bar`` keeps ``foo#bar`` while ``KEY=value # comment`` keeps
-      ``value``. A value that *starts* with ``#`` (``KEY=#leading``) is kept.
-    """
+    """Strip a dotenv-style inline comment (python-dotenv semantics): quoted values
+    scan to the matching close quote (backslash-aware for double quotes) and drop a
+    trailing ``# ...``, else stay untouched; unquoted values truncate only at a
+    ``#`` PRECEDED BY WHITESPACE (``foo#bar`` survives, ``value # c`` → ``value``)."""
     value = value.strip()
     if not value:
         return value
@@ -214,80 +252,150 @@ def _strip_inline_comment(value: str) -> str:
                 i += 2  # skip the escaped character
                 continue
             if ch == quote:
-                remainder = value[i + 1:].lstrip()
-                if remainder.startswith("#"):
-                    return value[: i + 1]
-                return value
+                return value[: i + 1] if value[i + 1:].lstrip().startswith("#") else value
             i += 1
         return value  # unterminated quote: leave as-is
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
-    """Parse a ``.env`` file into a plain dict WITHOUT touching ``os.environ``.
+def _parse_env_value(raw_value: str) -> str:
+    """Parse the small .env value subset Hermes writes itself (bare, 'single', or "double" with
+    ``\\"`` / ``\\\\`` escapes)."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        quoted = value[1:-1]
+        parsed: list[str] = []
+        i = 0
+        while i < len(quoted):
+            escaped = quoted[i] == "\\" and quoted[i + 1:i + 2] in ('"', "\\")
+            parsed.append(quoted[i + 1] if escaped else quoted[i])
+            i += 2 if escaped else 1
+        return "".join(parsed)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return value
 
-    Used to load a profile's secrets into an isolated mapping for
-    ``set_secret_scope``. Parses the small KEY=VALUE subset Hermes writes
-    itself (``export`` prefix, ``#`` comments — full-line and
-    dotenv-compatible inline, matching quotes with the
-    writer's ``\\"``/``\\\\`` escapes reversed — the same semantics as
-    ``hermes_cli.config._parse_env_value``) but never mutates the process
-    environment — that isolation is the whole point.
 
-    Encoding is ``utf-8-sig`` so a leading UTF-8 BOM (Windows Notepad /
-    PowerShell ``Set-Content -Encoding UTF8``) does not prefix the first
-    key as ``\\ufeffNAME`` and make ``get_secret('NAME')`` miss under scope.
-    """
-    secrets: Dict[str, str] = {}
+# Per-path memo of parsed ``.env`` files. ``build_profile_secret_scope()`` runs on every gateway
+# turn, cron fire, MCP/browser adoption and housekeeping drain, and each call used to re-read and
+# re-parse the whole file.
+#
+# FRESHNESS: every call still OPENS the file and keys on ``utils.file_signature`` of that
+# descriptor's ``fstat`` (mtime_ns, size, inode, ctime_ns — ctime can't be backdated, so a pinned-
+# timestamp rewrite is still seen), re-checked after the read. The open keeps close-to-open
+# revalidation on NFS, a vanished/unreadable file fails the open and is never cached (a transient
+# EACCES must not become "this profile has no secrets"), and the descriptor pins one inode so a
+# symlink repointed mid-read can't file one file's contents under another's identity.
+# ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
+# calls it for Hermes's own .env writers.
+_ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str]]]" = OrderedDict()
+_ENV_FILE_CACHE_LOCK = threading.Lock()
+_ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
+
+
+def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
+    """Drop one path from the ``load_env_file()`` memo, or all of them."""
+    with _ENV_FILE_CACHE_LOCK:
+        if env_path is None:
+            _ENV_FILE_CACHE.clear()
+        else:
+            _ENV_FILE_CACHE.pop(str(env_path), None)
+
+
+def _decode_env_bytes(raw: bytes) -> str:
+    """BOM stripped; invalid UTF-8 falls back to latin-1 exactly as
+    ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``."""
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8):]
     try:
-        text = env_path.read_text(encoding="utf-8-sig")
-    except (FileNotFoundError, OSError, UnicodeDecodeError):
-        return secrets
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
 
-    # Parse values with the canonical Hermes parser: save_env_value
-    # escapes " and \ inside double quotes, and every other reader
-    # (load_env, python-dotenv) reverses those escapes. Stripping only
-    # the outer quotes here would corrupt credentials containing "
-    # or \ — they work interactively but fail in scoped (cron /
-    # multiplex) resolution.
-    from hermes_cli.config import _parse_env_value
 
-    for raw in text.splitlines():
-        line = raw.strip()
+def _parse_env_text(text: str) -> Dict[str, str]:
+    """Tokenize already-read ``.env`` text. See :func:`load_env_file`."""
+    secrets: Dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
             line = line[len("export "):].lstrip()
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
+        key, sep, value = line.partition("=")
         key = key.strip()
-        if not key:
-            continue
-        secrets[key] = _parse_env_value(_strip_inline_comment(value))
+        if sep and key:
+            secrets[key] = _parse_env_value(_strip_inline_comment(value))
+    return secrets
 
+
+def load_env_file(env_path: Path) -> Dict[str, str]:
+    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
+    scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
+    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
+    prefix, ``#`` comments, quote escapes reversed; a BOM is stripped so it doesn't prefix the first key.
+    Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
+    into ``os.environ``. Absent/unreadable → ``{}``.
+
+    Memoised per path on the open descriptor's stat identity (see the cache comment above). Always
+    returns a fresh dict: callers mutate what they get back (``build_profile_secret_scope`` layers
+    external secrets over it).
+    """
+    key = str(env_path)
+    try:
+        with open(env_path, "rb") as handle:
+            fingerprint = file_signature(os.fstat(handle.fileno()))
+            with _ENV_FILE_CACHE_LOCK:
+                cached = _ENV_FILE_CACHE.get(key)
+                if cached is not None and cached[0] == fingerprint:
+                    _ENV_FILE_CACHE.move_to_end(key)
+                    return dict(cached[1])
+            raw = handle.read()
+            # Same descriptor: a rewrite that landed between the fstat and the read is parsed but not
+            # stored under the pre-write fingerprint.
+            settled = file_signature(os.fstat(handle.fileno())) == fingerprint
+    except OSError:
+        # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
+        invalidate_env_file_cache(env_path)
+        return {}
+
+    secrets = _parse_env_text(_decode_env_bytes(raw))
+    if settled:
+        with _ENV_FILE_CACHE_LOCK:
+            _ENV_FILE_CACHE[key] = (fingerprint, dict(secrets))
+            _ENV_FILE_CACHE.move_to_end(key)
+            while len(_ENV_FILE_CACHE) > _ENV_FILE_CACHE_MAX:
+                _ENV_FILE_CACHE.popitem(last=False)
     return secrets
 
 
 def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from its ``<home>/.env``.
-
-    Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
-    global vars are intentionally NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` directly, so the scope holds only profile secrets.
-    """
-    home = Path(hermes_home)
-    secrets = load_env_file(home / ".env")
-
+    """Build a profile's secret mapping from ``<home>/.env`` plus its external
+    secret sources. Global vars are NOT copied in — ``get_secret`` reads those
+    from ``os.environ`` — so the scope holds only profile secrets."""
+    secrets = load_env_file(Path(hermes_home) / ".env")
     try:
         from hermes_cli.env_loader import get_secret_source_values
-        external_secrets = get_secret_source_values(home)
+        external_secrets = get_secret_source_values(Path(hermes_home))
     except Exception:
         external_secrets = {}
-
-    for key, value in external_secrets.items():
-        if _is_global_env(key):
-            continue
-        secrets[key] = value
-
+    secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
+    # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
+    # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
+    # into that profile's own mapping. A secondary never inherits it (#80099 class).
+    from gateway.config_loader import bridged_allow_all_users
+    bridged = bridged_allow_all_users()
+    if bridged is not None and _is_process_home(hermes_home):
+        secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
     return secrets
+
+
+def _is_process_home(hermes_home: Path) -> bool:
+    """Is *hermes_home* the profile this process serves as its own? Same launch-home identity as
+    ``serves_routed_profile()``: a host that mirrors a served profile into ``HERMES_HOME`` would
+    otherwise seed the launch profile's bridged allow-all grant into that profile's scope."""
+    from hermes_constants import get_routing_process_hermes_home
+    try:
+        return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
+    except OSError:
+        return False

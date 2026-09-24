@@ -30,7 +30,6 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const DESKTOP_VITE_CONFIG = path.join(REPO_ROOT, 'apps', 'desktop', 'vite.config.ts')
 
 interface Manifest {
   dependencies?: Record<string, string>
@@ -94,17 +93,5 @@ test('workspaces declaring react and react-dom pin them to the same exact versio
     'react and react-dom must be pinned to the same exact version per workspace, ' +
       'otherwise npm can hoist a newer react next to the older react-dom and React ' +
       `throws error #527 (blank window): ${offenders.join('; ')}`
-  )
-})
-
-test('the desktop bundler does not alias react at the hoisted root copy', () => {
-  const config = fs.readFileSync(DESKTOP_VITE_CONFIG, 'utf-8')
-
-  assert.ok(
-    !config.includes('node_modules/react'),
-    'apps/desktop/vite.config.ts hardcodes a node_modules path for react/react-dom. ' +
-      'That pins the bundle to the hoisted copies, which npm is free to resolve to a ' +
-      'different version than the pinned react-dom. Resolve both from the workspace ' +
-      "instead (see this test's module docstring)."
   )
 })

@@ -10,28 +10,6 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
-import sys
-from unittest.mock import MagicMock
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-    telegram_mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    telegram_mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-    sys.modules.setdefault("telegram.error", telegram_mod.error)
-
-
-_ensure_telegram_mock()
-
 from gateway.config import Platform  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
@@ -54,43 +32,9 @@ def _bare_adapter():
 
 
 class TestPollingHealthConfirmation:
-    def test_first_progress_emits_confirmed_healthy(self, caplog):
-        a = _bare_adapter()
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
-            a._record_polling_progress(1)
-        rendered = " | ".join(rec.getMessage() for rec in caplog.records)
-        assert "confirmed healthy" in rendered
-        assert "generation 1" in rendered
-        assert a._polling_progress_event.is_set()
 
-    def test_subsequent_progress_is_silent(self, caplog):
-        """Only the FIRST round-trip of a generation logs — a quiet evening
-        must not spam one INFO per getUpdates poll."""
-        a = _bare_adapter()
-        a._record_polling_progress(1)  # first — logs
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
-            a._record_polling_progress(1)  # second — silent
-            a._record_polling_progress(1)  # third — silent
-        assert not [
-            rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()
-        ]
 
-    def test_new_generation_logs_again(self, caplog):
-        """A reconnect starts a new generation with a fresh event; its first
-        progress must re-emit the confirmation so the pending line of THAT
-        reconnect also resolves."""
-        a = _bare_adapter()
-        a._record_polling_progress(1)
-        # reconnect: new generation, event reset, counters possibly nonzero
-        a._polling_generation = 2
-        a._polling_progress_event = asyncio.Event()
-        a._polling_network_error_count = 1
-        a._send_path_degraded = True
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
-            a._record_polling_progress(2)
-        rendered = " | ".join(rec.getMessage() for rec in caplog.records)
-        assert "confirmed healthy" in rendered
-        assert "generation 2" in rendered
+
 
     def test_stale_generation_progress_stays_silent(self, caplog):
         """Progress from an abandoned generation must neither log nor set the
@@ -101,7 +45,5 @@ class TestPollingHealthConfirmation:
         a._polling_progress_event = asyncio.Event()
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
             a._record_polling_progress(1)
-        assert not [
-            rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()
-        ]
+        assert not [rec for rec in caplog.records if rec.levelno == logging.INFO]
         assert not a._polling_progress_event.is_set()

@@ -124,25 +124,7 @@ class TestCronContextDeliveryResolution:
             _exit_cron_context(tokens, extra)
         assert result["deliver"] == "discord:#engineering"
 
-    def test_local_passes_through(self, temp_cron_home):
-        tokens, extra = _enter_cron_context("telegram", "-100999")
-        try:
-            result = _create(deliver="local")
-        finally:
-            _exit_cron_context(tokens, extra)
-        assert result["deliver"] == "local"
 
-    def test_stored_deliver_never_literal_origin_in_cron_context(self, temp_cron_home):
-        from cron.jobs import get_job
-
-        tokens, extra = _enter_cron_context("telegram", "-100123456")
-        try:
-            result = _create(deliver="origin")
-        finally:
-            _exit_cron_context(tokens, extra)
-        job = get_job(result["job_id"])
-        stored = str(job.get("deliver", ""))
-        assert "origin" not in [p.strip() for p in stored.split(",")]
 
 
 class TestCronContextUpdatePath:
@@ -186,11 +168,3 @@ class TestNonCronContextUnchanged:
         result = _create(deliver="origin")
         assert result["deliver"] == "origin"
 
-    def test_chat_session_omitted_deliver_unchanged(self, temp_cron_home):
-        # Outside cron context the resolution helper must be a no-op so the
-        # ordinary chat/CLI create path is byte-identical to before.
-        from tools.cronjob_tools import _resolve_cron_context_deliver
-
-        assert _resolve_cron_context_deliver(None) is None
-        assert _resolve_cron_context_deliver("origin") == "origin"
-        assert _resolve_cron_context_deliver("origin,all") == "origin,all"

@@ -180,11 +180,12 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     expect(group.panes).toEqual(['sessions', 'hermes-bots:pane'])
   })
 
-  it('forces the tab strip visible when already co-located but hidden with bots active (community "only Bots shows" regression)', async () => {
+  it('shows the tab strip when already co-located but hidden with bots active (community "only Bots shows" regression)', async () => {
     // The Aug 2026 field reports: sessions+bots already share one group, the
-    // strip is hidden (headerHidden), and bots holds the active tab — the
-    // sessions pane exists but is unreachable. The re-home path never runs
-    // (nothing to move), so the enforce must repair reachability directly.
+    // legacy strip flag is set, and bots holds the active tab — the sessions
+    // pane exists but is unreachable. The re-home path never runs (nothing to
+    // move), so reachability has to come from somewhere else: the migration
+    // drops the legacy flag, and a two-pane zone on auto shows its strip.
     const hiddenStackedTree = {
       type: 'split',
       id: 'root',
@@ -208,10 +209,10 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
 
     const group = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:pane')!
 
-    // Both panes stay put — but the strip is forced visible so SESSIONS is
-    // reachable again. The active tab is NOT stolen mid-boot.
+    // Both panes stay put — but the strip is visible so SESSIONS is reachable
+    // again. The active tab is NOT stolen mid-boot.
     expect(group.panes).toEqual(['sessions', 'hermes-bots:pane'])
-    expect(group.headerHidden).not.toBe(true)
+    expect(tree.tabStripVisibleForGroup(group)).toBe(true)
   })
 
   it('re-homes an edge-enforced pane stranded in the sessions tab strip', async () => {

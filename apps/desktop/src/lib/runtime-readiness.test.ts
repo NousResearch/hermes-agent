@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { evaluateRuntimeReadiness, fetchRuntimeReadinessSignals, interpretRuntimeReadiness } from './runtime-readiness'
+import { fetchRuntimeReadinessSignals, interpretRuntimeReadiness, runtimeReadinessDisplay } from './runtime-readiness'
 
 describe('interpretRuntimeReadiness', () => {
   it('prefers runtime_check when both signals exist', () => {
@@ -88,24 +88,26 @@ describe('fetchRuntimeReadinessSignals', () => {
   })
 })
 
-describe('evaluateRuntimeReadiness', () => {
-  it('forwards requestedProvider to setup.runtime_check', async () => {
-    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
-      if (method === 'setup.status') {
-        return { provider_configured: true } as T
-      }
+describe('runtimeReadinessDisplay', () => {
+  it('does not call configured credentials setup when runtime resolution fails', () => {
+    expect(
+      runtimeReadinessDisplay({
+        checksDisagree: true,
+        ready: false,
+        reason: 'Anthropic cannot serve the selected model.',
+        source: 'runtime_check'
+      })
+    ).toBe('unavailable')
+  })
 
-      if (method === 'setup.runtime_check') {
-        expect(params).toEqual({ provider: 'nous' })
-
-        return { ok: true } as T
-      }
-
-      throw new Error(`unexpected method: ${method}`)
-    }
-
-    const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'nous' })
-
-    expect(result.ready).toBe(true)
+  it('keeps needs-setup for an authoritative unconfigured result', () => {
+    expect(
+      runtimeReadinessDisplay({
+        checksDisagree: false,
+        ready: false,
+        reason: 'No provider configured.',
+        source: 'setup_status'
+      })
+    ).toBe('needs_setup')
   })
 })

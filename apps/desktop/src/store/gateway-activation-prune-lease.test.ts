@@ -53,7 +53,8 @@ const {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   pruneSecondaryGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 function installDesktop(): void {
@@ -94,6 +95,15 @@ afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
+// Flush microtasks until the dial registers its secondary (or bail). The dial
+// path's hop count is an implementation detail — #95343's withTimeout wrapper
+// added an await hop and broke the previous exactly-two-Promise.resolve flush.
+async function flushUntilSecondaryRegistered(max = 20): Promise<void> {
+  for (let i = 0; i < max && secondaryGateways.length === 0; i++) {
+    await Promise.resolve()
+  }
+}
+
 describe('activation lease vs. the live-work pruner (#89622)', () => {
   it('a prune during the switch dial does not dispose the target and the switch lands', async () => {
     let releaseConnect: () => void = () => undefined
@@ -103,8 +113,7 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     const switching = ensureGatewayForProfile('bot')
     // Let the dial start (createSecondary + connect() now pending on the gate).
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushUntilSecondaryRegistered()
     expect(secondaryGateways).toHaveLength(1)
 
     // The exact recompute that killed the switch: no live sessions, target not
@@ -144,7 +153,11 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
     // lease released, the idle entry must be disposed exactly as before.
     await ensureGatewayForProfile('default')
 
+    // Age the socket past the min-lifetime grace so this prune asserts the
+    // lease release, not the freshly-opened spare (#94769).
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(new Set())
+    vi.useRealTimers()
 
     expect(secondaryGateways[0].close).toHaveBeenCalled()
   })
@@ -159,8 +172,7 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     // Dial starts and never settles (wedged bridge call).
     void ensureGatewayForProfile('bot')
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushUntilSecondaryRegistered()
     expect(secondaryGateways).toHaveLength(1)
 
     // Inside the lease window: spared.
@@ -169,10 +181,35 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     // Past the lease window: reclaimed. (Lease is wall-clock bounded so a
     // leaked lease cannot pin a dead entry forever.)
-    vi.setSystemTime(Date.now() + 31_000)
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
     pruneSecondaryGateways(new Set())
     expect(secondaryGateways[0].close).toHaveBeenCalled()
 
     releaseConnect()
+  })
+
+  it('a freshly opened idle secondary rides one prune tick before reaping (#94769)', async () => {
+    vi.useFakeTimers()
+
+    // A socket that just opened is a prune ↔ on-demand-dial race in the making:
+    // its consumer may not have registered in the keep-set yet, and closing it
+    // detaches the runtime → backend orphan-reap → `session.reclaimed` →
+    // re-resume on a fresh socket the next recompute closes again. The
+    // min-lifetime grace bounds that race without pinning the entry forever.
+    await ensureGatewayForProfile('bot')
+    expect(secondaryGateways[0].connectionState).toBe('open')
+
+    // Move away so 'bot' is neither active nor in the keep-set.
+    await ensureGatewayForProfile('default')
+    expect(secondaryGateways).toHaveLength(1)
+
+    // Immediately after open: spared by the grace window.
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    // Past the grace window: reclaimed as idle, as before.
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).toHaveBeenCalled()
   })
 })

@@ -1,0 +1,15 @@
+name: dashscope-video
+repo: https://github.com/rriggs/hermes-plugin-dashscope-video
+sha: 229b5c93d498dfa25aab31f0bef47f32fccde69f
+description: DashScope (Qwen Cloud) video generation -- HappyHorse 1.1 models via Alibaba Cloud Model
+  Studio. Async task API. Works with token plan (sk-sp-*) keys.
+maintainer: rriggs
+tier: community
+category: tools
+docs_url: https://github.com/rriggs/hermes-plugin-dashscope-video#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - QWEN_API_KEY

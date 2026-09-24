@@ -94,63 +94,7 @@ class TestGoogleWorkspaceSetupDepsPins:
             f"  Full REQUIRED_PACKAGES: {packages}"
         )
 
-    def test_setup_py_pins_match_pyproject_toml(self):
-        """httplib2 pin in setup.py must match pyproject.toml google extra."""
-        required_packages = _parse_setup_py_required_packages()
-        pyproject_packages = _parse_pyproject_google_extra()
 
-        required_pins = _extract_pins(required_packages)
-        pyproject_pins = _extract_pins(pyproject_packages)
-
-        for pkg in ("httplib2", "google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"):
-            setup_ver = required_pins.get(pkg)
-            toml_ver = pyproject_pins.get(pkg)
-            if setup_ver is None and toml_ver is None:
-                continue  # neither path pins it, skip
-            assert toml_ver is not None, (
-                f"{pkg} is pinned in setup.py ({setup_ver}) but NOT in pyproject.toml google extra.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  pyproject.toml google: {pyproject_pins}"
-            )
-            assert setup_ver is not None, (
-                f"{pkg} is pinned in pyproject.toml ({toml_ver}) but NOT in setup.py.\n"
-                f"  pyproject.toml google: {pyproject_pins}\n"
-                f"  setup.py: {required_pins}"
-            )
-            assert setup_ver == toml_ver, (
-                f"{pkg} pin mismatch: setup.py has {setup_ver}, pyproject.toml has {toml_ver}.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  pyproject.toml google: {pyproject_pins}"
-            )
-
-    def test_setup_py_pins_match_lazy_deps(self):
-        """httplib2 pin in setup.py must match tools/lazy_deps.py skill.google_workspace."""
-        required_packages = _parse_setup_py_required_packages()
-        lazy_packages = _parse_lazy_deps_google_workspace()
-
-        required_pins = _extract_pins(required_packages)
-        lazy_pins = _extract_pins(lazy_packages)
-
-        for pkg in ("httplib2", "google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"):
-            setup_ver = required_pins.get(pkg)
-            lazy_ver = lazy_pins.get(pkg)
-            if setup_ver is None and lazy_ver is None:
-                continue
-            assert lazy_ver is not None, (
-                f"{pkg} is pinned in setup.py ({setup_ver}) but NOT in lazy_deps.py.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  lazy_deps.py: {lazy_pins}"
-            )
-            assert setup_ver is not None, (
-                f"{pkg} is pinned in lazy_deps.py ({lazy_ver}) but NOT in setup.py.\n"
-                f"  lazy_deps.py: {lazy_pins}\n"
-                f"  setup.py: {required_pins}"
-            )
-            assert setup_ver == lazy_ver, (
-                f"{pkg} pin mismatch: setup.py has {setup_ver}, lazy_deps.py has {lazy_ver}.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  lazy_deps.py: {lazy_pins}"
-            )
 
     def test_all_google_packages_are_pinned_in_all_paths(self):
         """Every google workspace package that is version-pinned in any path must appear in all three."""

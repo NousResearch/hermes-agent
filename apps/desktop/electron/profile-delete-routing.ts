@@ -60,6 +60,65 @@ export interface ProfileDeleteDecisionDeps {
   primaryProfileKey: () => string
 }
 
+export interface ConnectionScopedProfileDeleteRequest {
+  connectionId?: unknown
+  method?: unknown
+  path?: unknown
+  profile?: unknown
+}
+
+export interface ConnectionScopedProfileDeleteDeps<T> {
+  acquire: (profile: string) => () => void
+  connectionKind: (connectionId: string) => string
+  dispatch: (routeProfile: null) => Promise<T>
+  isDefaultProfile: (profile: string) => boolean
+  isValidProfileName: (profile: string) => boolean
+  prepareLocal: (request: ConnectionScopedProfileDeleteRequest) => Promise<void>
+  teardownConnection: (connectionId: string, profile: string) => Promise<void>
+}
+
+/**
+ * Run an explicit registry profile DELETE under the same process-wide gate as
+ * legacy deletion. Teardown and dispatch are injected so the Electron caller
+ * can stop either local profile pools or one connection-qualified backend.
+ * Dispatch deliberately receives a null route profile: resolving the deleted
+ * profile again would recurse into the gate (and could recreate its home).
+ */
+export async function dispatchConnectionScopedProfileDelete<T>(
+  request: ConnectionScopedProfileDeleteRequest,
+  deps: ConnectionScopedProfileDeleteDeps<T>
+): Promise<T> {
+  const targetProfile = profileNameFromDeleteRequest(request)
+  const logicalProfile = String(request.profile ?? '').trim() || targetProfile || ''
+  const connectionId = String(request.connectionId ?? '').trim()
+
+  if (!targetProfile || !connectionId) {
+    throw new Error('Connection-scoped profile deletion requires a connection and profile.')
+  }
+
+  if (deps.isDefaultProfile(targetProfile)) {
+    throw new Error('The default profile cannot be deleted.')
+  }
+
+  if (!deps.isValidProfileName(targetProfile)) {
+    throw new Error(`Invalid profile name: ${targetProfile}`)
+  }
+
+  const release = deps.acquire(targetProfile)
+
+  try {
+    if (deps.connectionKind(connectionId) === 'local') {
+      await deps.prepareLocal(request)
+    } else {
+      await deps.teardownConnection(connectionId, logicalProfile)
+    }
+
+    return await deps.dispatch(null)
+  } finally {
+    release()
+  }
+}
+
 /**
  * Process-local barrier for profile deletion. Electron IPC handlers run
  * concurrently, so tearing down a pooled backend is not enough by itself: a

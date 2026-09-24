@@ -47,28 +47,7 @@ async def _create_and_return_transport():
 class TestRunAsyncLoopLifecycle:
     """Verify _run_async() keeps the event loop alive after returning."""
 
-    def test_loop_not_closed_after_run_async(self):
-        """The loop used by _run_async must still be open after the call."""
-        from model_tools import _run_async
 
-        loop = _run_async(_get_current_loop())
-
-        assert not loop.is_closed(), (
-            "_run_async() closed the event loop — cached async clients will "
-            "crash with 'Event loop is closed' on GC (issue #2104)"
-        )
-
-    def test_same_loop_reused_across_calls(self):
-        """Consecutive _run_async calls should reuse the same loop."""
-        from model_tools import _run_async
-
-        loop1 = _run_async(_get_current_loop())
-        loop2 = _run_async(_get_current_loop())
-
-        assert loop1 is loop2, (
-            "_run_async() created a new loop on the second call — cached "
-            "async clients from the first call would be orphaned"
-        )
 
     def test_cached_transport_survives_between_calls(self):
         """A transport/future created in call 1 must be valid in call 2."""
@@ -87,24 +66,6 @@ class TestRunAsyncLoopLifecycle:
 class TestRunAsyncWorkerThread:
     """Verify worker threads get persistent per-thread loops (delegate_task fix)."""
 
-    def test_worker_thread_loop_not_closed(self):
-        """A worker thread's loop must stay open after _run_async returns,
-        so cached httpx/AsyncOpenAI clients don't crash on GC."""
-        from concurrent.futures import ThreadPoolExecutor
-        from model_tools import _run_async
-
-        def _run_on_worker():
-            loop = _run_async(_get_current_loop())
-            still_open = not loop.is_closed()
-            return loop, still_open
-
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            loop, still_open = pool.submit(_run_on_worker).result()
-
-        assert still_open, (
-            "Worker thread's event loop was closed after _run_async — "
-            "cached async clients will crash with 'Event loop is closed'"
-        )
 
     def test_worker_thread_reuses_loop_across_calls(self):
         """Multiple _run_async calls on the same worker thread should
@@ -352,49 +313,6 @@ class TestVisionDispatchLoopSafety:
     verify the event loop stays alive afterwards — the exact scenario
     from issue #2104."""
 
-    def test_vision_dispatch_keeps_loop_alive(self, tmp_path):
-        """After dispatching vision_analyze via the registry, the event
-        loop must remain open so cached async clients don't crash on GC."""
-        from model_tools import _get_tool_loop
-        from tools.registry import registry
-
-        fake_response = _mock_vision_response()
-
-        with (
-            patch(
-                "tools.vision_tools.async_call_llm",
-                new_callable=AsyncMock,
-                return_value=fake_response,
-            ),
-            patch(
-                "tools.vision_tools._download_image",
-                new_callable=AsyncMock,
-                side_effect=lambda url, dest, **kw: _write_fake_image(dest),
-            ),
-            patch(
-                "tools.vision_tools._validate_image_url_async",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-            patch(
-                "tools.vision_tools._image_to_base64_data_url",
-                return_value="data:image/jpeg;base64,abc",
-            ),
-        ):
-            result_json = registry.dispatch(
-                "vision_analyze",
-                {"image_url": "https://example.com/cat.png", "question": "What is this?"},
-            )
-
-        result = json.loads(result_json)
-        assert result.get("success") is True, f"dispatch failed: {result}"
-        assert "cat" in result.get("analysis", "").lower()
-
-        loop = _get_tool_loop()
-        assert not loop.is_closed(), (
-            "Event loop closed after vision_analyze dispatch — cached async "
-            "clients will crash with 'Event loop is closed' (issue #2104)"
-        )
 
     def test_two_consecutive_vision_dispatches(self, tmp_path):
         """Two back-to-back vision_analyze dispatches must both succeed

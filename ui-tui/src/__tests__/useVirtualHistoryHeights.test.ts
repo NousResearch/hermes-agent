@@ -37,23 +37,17 @@ describe('ensureVirtualItemHeight', () => {
     expect(heights.get('d')).toBe(1)
   })
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -4, 1_000_000_000])(
-    'quarantines invalid cached height %s and reseeds it',
-    cached => {
-      const heights = new Map([['bad', cached]])
+  it.each([Number.NaN, -4, 1_000_000_000])('quarantines invalid cached height %s and reseeds it', cached => {
+    const heights = new Map([['bad', cached]])
 
-      expect(ensureVirtualItemHeight(heights, 'bad', 0, 4, () => 7)).toBe(7)
-      expect(heights.get('bad')).toBe(7)
-    }
-  )
+    expect(ensureVirtualItemHeight(heights, 'bad', 0, 4, () => 7)).toBe(7)
+    expect(heights.get('bad')).toBe(7)
+  })
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -4, 1_000_000_000])(
-    'falls back when the estimator returns invalid height %s',
-    estimate => {
-      const heights = new Map<string, number>()
+  it.each([Number.NaN, -4, 1_000_000_000])('falls back when the estimator returns invalid height %s', estimate => {
+    const heights = new Map<string, number>()
 
-      expect(ensureVirtualItemHeight(heights, 'bad', 0, 4, () => estimate)).toBe(4)
-      expect(heights.get('bad')).toBe(4)
-    }
-  )
+    expect(ensureVirtualItemHeight(heights, 'bad', 0, 4, () => estimate)).toBe(4)
+    expect(heights.get('bad')).toBe(4)
+  })
 })

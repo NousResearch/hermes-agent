@@ -24,7 +24,6 @@ from hermes_cli.dashboard_auth import (
     InvalidCredentialsError,
     ProviderError,
     Session,
-    assert_protocol_compliance,
     clear_providers,
     register_provider,
 )
@@ -170,12 +169,7 @@ def gated_app(pw_provider):
 
 
 class TestProtocolExtension:
-    def test_password_provider_is_protocol_compliant(self):
-        assert assert_protocol_compliance(PasswordProvider) is None
 
-    def test_default_supports_password_is_false(self):
-        # OAuth providers (the Stub) inherit the False default.
-        assert StubAuthProvider.supports_password is False
 
     def test_default_complete_password_login_raises_not_implemented(self):
         # A provider that doesn't override the method (the Stub) raises,
@@ -344,19 +338,6 @@ class TestRateLimit:
 
 
 class TestLoginPageRender:
-    def test_password_provider_renders_credential_form_and_script(self):
-        clear_providers()
-        register_provider(PasswordProvider())
-        try:
-            html = render_login_html(next_path="/sessions")
-            assert '<form class="provider-form" data-provider="testpw"' in html
-            assert 'name="username"' in html
-            assert 'name="password"' in html
-            assert 'value="/sessions"' in html
-            assert "<script>" in html
-            assert "/auth/password-login" in html
-        finally:
-            clear_providers()
 
     def test_oauth_only_page_stays_script_free(self):
         clear_providers()

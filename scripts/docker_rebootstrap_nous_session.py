@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -187,14 +188,24 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     # Surgical replacement: swap ONLY providers.nous, preserve everything else.
     providers["nous"] = seed_nous
 
-    tmp_path = f"{auth_path}.rebootstrap.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(store, fh)
-    os.replace(tmp_path, auth_path)
+    # 0600 from creation: the seed holds a refresh token and must never sit at umask, even briefly.
+    # (stdlib only by design — see module docstring — so this mirrors utils.atomic_json_write by hand.)
+    # Randomly named: boot-hook PIDs inside a container repeat, so a PID-named temp left by a
+    # SIGKILL'd run would collide with O_EXCL forever and main() would swallow the FileExistsError.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(auth_path) or ".", prefix=os.path.basename(auth_path) + ".rebootstrap.", suffix=".tmp")
     try:
-        os.chmod(auth_path, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(store, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, auth_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return "reseeded" if terminal else "reseeded_newer"
 
 

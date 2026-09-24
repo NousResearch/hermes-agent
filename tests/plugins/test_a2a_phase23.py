@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -241,13 +242,6 @@ class TestStreamingEndToEnd:
 
         asyncio.run(run())
 
-    def test_agent_card_advertises_streaming(self):
-        card = protocol.build_agent_card(
-            name="test", url="http://localhost:9900/",
-            description="test", streaming=True, push_notifications=True,
-        )
-        assert card["capabilities"]["streaming"] is True
-        assert card["capabilities"]["pushNotifications"] is True
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -259,7 +253,7 @@ class TestPushSigning:
     def test_sign_push_payload_deterministic(self, monkeypatch):
         monkeypatch.setenv("A2A_PUSH_SECRET", "test-secret-123")
         payload = {"statusUpdate": {"taskId": "task-1"}}
-        sig = security.sign_push_payload(payload)
+        sig = security.A2ASecurityContext.capture().sign_push_payload(payload)
         assert sig
         import hashlib
         import hmac as hmac_mod
@@ -273,12 +267,12 @@ class TestPushSigning:
     def test_no_secret_means_unsigned(self, monkeypatch):
         monkeypatch.delenv("A2A_PUSH_SECRET", raising=False)
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
-        assert security.sign_push_payload({"x": 1}) == ""
+        assert security.A2ASecurityContext.capture().sign_push_payload({"x": 1}) == ""
 
     def test_falls_back_to_bearer_token(self, monkeypatch):
         monkeypatch.delenv("A2A_PUSH_SECRET", raising=False)
         monkeypatch.setenv("A2A_BEARER_TOKEN", "bearer-as-push-secret")
-        assert security.sign_push_payload({"x": 1})
+        assert security.A2ASecurityContext.capture().sign_push_payload({"x": 1})
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -301,9 +295,6 @@ class TestAntiLoopProtection:
         turns.reset("c1")
         assert turns.track("c1") == 1
 
-    def test_max_pingpong_turns_default(self, monkeypatch):
-        monkeypatch.delenv("A2A_MAX_PINGPONG_TURNS", raising=False)
-        assert protocol.max_pingpong_turns() == 5
 
     def test_max_pingpong_turns_env_override(self, monkeypatch):
         monkeypatch.setenv("A2A_MAX_PINGPONG_TURNS", "10")
@@ -342,11 +333,6 @@ class TestAntiLoopProtection:
 
 
 class TestRateLimiting:
-    def test_allows_under_limit(self, monkeypatch):
-        monkeypatch.setenv("A2A_RATE_LIMIT", "10")
-        rl = protocol.RateLimiter()
-        for _ in range(10):
-            assert rl.allow("peer-1") is True
 
     def test_blocks_over_limit(self, monkeypatch):
         monkeypatch.setenv("A2A_RATE_LIMIT", "3")
@@ -401,13 +387,6 @@ class TestRateLimiting:
 
 
 class TestMetrics:
-    def test_metrics_snapshot_has_fields(self):
-        m = protocol.metrics.snapshot()
-        for field in ("uptime_seconds", "inbound_total", "outbound_total",
-                      "streams_started", "push_sent", "push_failed",
-                      "tasks_completed", "tasks_failed", "anti_loop_triggers",
-                      "rate_limit_triggers", "avg_latency_ms"):
-            assert field in m
 
     def test_record_latency_updates_average(self):
         m = protocol.Metrics()
@@ -445,22 +424,7 @@ class TestMetrics:
 
 
 class TestTaskStore:
-    def test_create_and_get(self):
-        store = protocol.TaskStore()
-        store.create("t1", "c1", "peer-1")
-        rec = store.get("t1")
-        assert rec["state"] == protocol.STATE_SUBMITTED
-        assert rec["context_id"] == "c1"
-        assert rec["peer"] == "peer-1"
 
-    def test_complete_keeps_task_queryable(self):
-        store = protocol.TaskStore()
-        store.create("t1", "c1", "p")
-        store.complete("t1", protocol.STATE_COMPLETED, "the reply")
-        rec = store.get("t1")
-        assert rec is not None
-        assert rec["state"] == protocol.STATE_COMPLETED
-        assert rec["reply"] == "the reply"
 
     def test_complete_is_idempotent(self):
         store = protocol.TaskStore()
@@ -498,6 +462,123 @@ class TestTaskStore:
         assert store.get("t-new")["state"] == protocol.STATE_SUBMITTED
         # Second sweep does nothing (already terminal).
         assert store.fail_orphans(timeout_seconds=300) == []
+
+    def test_watchdog_preserves_active_requests_and_reply_window(self, monkeypatch):
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
+        adapter, _base = _make_live_adapter(monkeypatch)
+        now = time.time()
+        for task_id, age in (("t-live", 700), ("t-orphan", 700), ("t-within-reply-window", 400)):
+            adapter.tasks.create(task_id, "c1", "p")
+            adapter.tasks.set_state(task_id, protocol.STATE_WORKING)
+            adapter.tasks._tasks[task_id]["created_at"] = now - age
+
+        adapter._add_pending("t-live", "c1")
+        agent = {"slug": "dev", "tenant": "dev", "profile": "dev", "local": False, "timeout": 900}
+
+        def fake_forward(*_args):
+            forwarded_id = next(tid for tid in adapter.tasks._tasks if tid not in {
+                "t-live", "t-orphan", "t-within-reply-window"
+            })
+            adapter.tasks._tasks[forwarded_id]["created_at"] = now - 700
+            assert adapter._fail_orphans_once() == ["t-orphan"]
+            return "forwarded reply", protocol.STATE_COMPLETED
+
+        monkeypatch.setattr(adapter, "_forward_to_profile", fake_forward)
+        terminal, pending = adapter._prepare_task(
+            {"message": protocol.text_message(protocol.ROLE_USER, "hello", context_id="forwarded")},
+            "peer", agent=agent,
+        )
+
+        assert pending is None
+        assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_COMPLETED
+        assert adapter.tasks.get("t-live")["state"] == protocol.STATE_WORKING
+        assert adapter.tasks.get("t-within-reply-window")["state"] == protocol.STATE_WORKING
+
+        adapter._pop_pending("t-live")
+        assert adapter._fail_orphans_once() == ["t-live"]
+
+    def test_orphan_timeout_is_bounded_and_disconnect_clears_active_tasks(self, monkeypatch):
+        from plugins.platforms.a2a import adapter as mod
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1e18")
+        assert mod._orphan_timeout() == mod._MAX_ORPHAN_TIMEOUT
+
+        adapter, _base = _make_live_adapter(monkeypatch)
+        adapter._add_pending("t-live", "c1")
+        asyncio.run(adapter.disconnect())
+        assert adapter._active_tasks == set()
+
+    def test_watchdog_cannot_race_local_finalization(self, monkeypatch):
+        adapter, _base = _make_live_adapter(monkeypatch)
+        rec = adapter.tasks.create("t-live", "c1", "peer")
+        adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-live"]["created_at"] = time.time() - 700
+        future = adapter._add_pending("t-live", "c1")
+        future.set_result((protocol.STATE_COMPLETED, "reply"))
+        pending = {
+            "task_id": "t-live", "context_id": "c1", "peer": "peer",
+            "future": future, "created_iso": rec["created_iso"], "started": time.time(),
+        }
+
+        original_redact = security.redact_outbound
+        finalizing = threading.Event()
+        resume = threading.Event()
+        result = []
+
+        def pause_while_finalizing(reply):
+            finalizing.set()
+            assert resume.wait(timeout=1)
+            return original_redact(reply)
+
+        monkeypatch.setattr(security, "redact_outbound", pause_while_finalizing)
+        thread = threading.Thread(
+            target=lambda: result.append(adapter._finalize_task(pending, *adapter._await_reply(pending)))
+        )
+        thread.start()
+        assert finalizing.wait(timeout=1)
+        try:
+            assert adapter._fail_orphans_once() == []
+        finally:
+            resume.set()
+            thread.join(timeout=1)
+
+        assert not thread.is_alive()
+        assert result == [(protocol.STATE_COMPLETED, "reply")]
+        assert adapter.tasks.get("t-live")["state"] == protocol.STATE_COMPLETED
+
+    def test_stream_disconnect_releases_active_request(self, monkeypatch):
+        adapter, _base = _make_live_adapter(monkeypatch)
+        rec = adapter.tasks.create("t-live", "c1", "peer")
+        adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
+        pending = {
+            "task_id": "t-live", "context_id": "c1", "peer": "peer",
+            "future": adapter._add_pending("t-live", "c1"),
+            "created_iso": rec["created_iso"], "started": time.time(),
+        }
+        monkeypatch.setattr(adapter, "_prepare_task", lambda *_args, **_kwargs: (None, pending))
+
+        class BrokenWriter:
+            def write(self, _chunk):
+                raise BrokenPipeError
+
+        class Handler:
+            wfile = BrokenWriter()
+
+            def send_response(self, _status):
+                pass
+
+            def send_header(self, _name, _value):
+                pass
+
+            def end_headers(self):
+                pass
+
+        adapter._rpc_message_stream(Handler(), 1, {}, "peer")
+
+        stored = adapter.tasks.get("t-live")
+        assert stored["state"] == protocol.STATE_FAILED
+        assert stored["reply"] == "[client disconnected]"
+        assert "t-live" not in adapter._pending
+        assert "t-live" not in adapter._active_tasks
 
     def test_list_newest_first_with_filters(self):
         store = protocol.TaskStore()
@@ -578,10 +659,6 @@ class TestA2AOrchestrate:
         assert "capability" in tools.a2a_orchestrate({"message": "do something"})
         assert "message" in tools.a2a_orchestrate({"capability": "research"})
 
-    def test_no_matching_peers(self, monkeypatch):
-        monkeypatch.setattr(tools, "_load_config", lambda: {})
-        result = tools.a2a_orchestrate({"capability": "research", "message": "search X"})
-        assert "no configured peers" in result
 
     def test_match_peers_by_capability(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)

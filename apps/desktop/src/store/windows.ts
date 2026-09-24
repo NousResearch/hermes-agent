@@ -76,12 +76,42 @@ export function isWatchWindow(): boolean {
   return result
 }
 
+// A "browser" window is a popped-out in-app Browser: the same webview +
+// address bar as the docked tab, in its own OS window. The tab id rides
+// `?tab=` next to `win=browser` (before the hash, same contract as secondary).
+let browserWindowCache: boolean | null = null
+
+export function isBrowserWindow(): boolean {
+  if (browserWindowCache !== null) {
+    return browserWindowCache
+  }
+
+  let result = false
+
+  try {
+    result = new URLSearchParams(window.location.search).get('win') === 'browser'
+  } catch {
+    result = false
+  }
+
+  browserWindowCache = result
+
+  return result
+}
+
+export function windowBrowserTabId(): null | string {
+  try {
+    return new URLSearchParams(window.location.search).get('tab')?.trim() || null
+  } catch {
+    return null
+  }
+}
+
 // True for any window that is NOT the primary app instance — a secondary
-// session window or the HUD. Single-claim channels (the quick-entry capture
-// bridge, the pet overlay control bridge) and the install/onboarding overlays
-// belong to the primary alone: two windows answering one channel turns one
-// keystroke into N prompts, and a HUD is the last place to paint onboarding.
-export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow()
+// session window, the HUD, or a popped-out Browser. Single-claim channels
+// (the quick-entry capture bridge, the pet overlay control bridge) and the
+// install/onboarding overlays belong to the primary alone.
+export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isBrowserWindow()
 
 // A full peer window renders the ordinary app shell against the backend that
 // Electron already has running. It is not an auxiliary/specialized renderer,
@@ -90,6 +120,18 @@ export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWind
 export function isPeerInstanceWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
   try {
     return new URLSearchParams(search).get('peer') === '1'
+  } catch {
+    return false
+  }
+}
+
+// Set by Electron only for an explicit "Open profile in new window". An
+// ordinary ⌘⇧N peer also carries profile/connectionId (its boot seed) but not
+// this marker, so a later device/profile selection stays the New-session
+// default there (#115102).
+export function isProfilePinnedWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+  try {
+    return new URLSearchParams(search).get('profileWindow') === '1'
   } catch {
     return false
   }
@@ -111,6 +153,17 @@ export function windowProfileOverride(): null | string {
   }
 }
 
+// The registry connection a peer was launched against, paired with
+// windowProfileOverride(). Electron writes `connectionId=` (empty) for a
+// registry-local route, which reads back as null here.
+export function windowConnectionOverride(): null | string {
+  try {
+    return new URLSearchParams(window.location.search).get('connectionId') || null
+  } catch {
+    return null
+  }
+}
+
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {
@@ -120,6 +173,11 @@ export function canOpenSessionWindow(): boolean {
 // True when the shell can open a full peer app window (⌘⇧N / "New Window").
 export function canOpenNewWindow(): boolean {
   return typeof window !== 'undefined' && typeof window.hermesDesktop?.openWindow === 'function'
+}
+
+// True when the shell can pop the in-app Browser into its own OS window.
+export function canOpenBrowserWindow(): boolean {
+  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openBrowserWindow === 'function'
 }
 
 // True when the shell can hand a session to the user's own terminal emulator.
@@ -133,40 +191,70 @@ type WindowOpenResult = { ok: boolean; error?: string } | undefined
 
 // Run a window-open bridge call, surfacing any failure as a toast. Shared by the
 // session pop-out and the new-window opener.
-async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage: string): Promise<void> {
+async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage: string): Promise<boolean> {
   try {
     const result = await call()
 
     if (!result?.ok) {
       notifyError(new Error(result?.error || 'unknown error'), failMessage)
+
+      return false
     }
+
+    return true
   } catch (err) {
     notifyError(err, failMessage)
+
+    return false
   }
 }
 
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
+// The window is a full renderer that adopts the PRIMARY profile unless told
+// otherwise, so the owning profile rides along (same ladder as openHud,
+// #82285): the session's stamped owner wins, and an unstamped/uncached id —
+// a brand-new subagent child — inherits the profile the user is looking at
+// (#82768, #61286).
 export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }
 
+  // Lazy imports: `./profile` subscribes to the API client on load, so a
+  // static import here would drag it into every page that opens windows.
+  const [{ $activeGatewayProfile, normalizeProfileKey }, { $sessions, rememberedSessionProfile }] = await Promise.all([
+    import('./profile'),
+    import('./session')
+  ])
+
+  const profile = normalizeProfileKey(rememberedSessionProfile($sessions.get(), sessionId, $activeGatewayProfile.get()))
+
   await runWindowOpen(
-    () => window.hermesDesktop.openSessionWindow(sessionId, opts),
+    () => window.hermesDesktop.openSessionWindow(sessionId, { ...opts, profile }),
     'Could not open chat in a new window'
   )
 }
 
 // Open a new full-chrome app window — a peer instance of the primary that
 // renders the complete app against the shared backend. No-ops outside Electron.
-export async function openNewWindow(): Promise<void> {
+export async function openNewWindow(route?: { connectionId: null | string; profile: string }): Promise<void> {
   if (!canOpenNewWindow()) {
     return
   }
 
-  await runWindowOpen(() => window.hermesDesktop.openWindow(), 'Could not open a new window')
+  await runWindowOpen(() => window.hermesDesktop.openWindow(route), 'Could not open a new window')
+}
+
+/** Pop the in-app Browser into its own OS window. Returns whether the
+ *  window opened so the caller can dock the tab again on failure. */
+export async function openBrowserInNewWindow(tabId: string): Promise<boolean> {
+  if (!tabId || !canOpenBrowserWindow()) {
+    return false
+  }
+
+  return runWindowOpen(() => window.hermesDesktop.openBrowserWindow(tabId), 'Could not pop out browser')
 }
 
 // Resume a session in the user's own terminal emulator, running the TUI there.

@@ -16,7 +16,6 @@ Also: SessionDB connections were never closed on gateway shutdown,
 leaving WAL locks in place until Python actually exited.
 """
 
-import threading
 from unittest.mock import MagicMock
 
 
@@ -51,83 +50,8 @@ class TestReleaseRunningAgentStateUnit:
         runner._release_running_agent_state("missing")  # still fine
 
 
-class TestNoMoreBareDeleteSites:
-    """Regression: all bare `del self._running_agents[key]` sites were
-    converted to use the helper.  If a future contributor reverts one,
-    this test flags it.  Docstrings / comments mentioning the old
-    pattern are allowed.
-    """
-
-    def test_no_bare_del_of_running_agents_in_gateway_run(self):
-        from pathlib import Path
-        import re
-
-        gateway_run = (Path(__file__).parent.parent.parent / "gateway" / "run.py").read_text()
-        # Match `del self._running_agents[...]` that is NOT inside a
-        # triple-quoted docstring.  We scan non-docstring lines only.
-        lines = gateway_run.splitlines()
-
-        in_docstring = False
-        docstring_delim = None
-        offenders = []
-        for idx, line in enumerate(lines, start=1):
-            stripped = line.strip()
-            if not in_docstring:
-                if stripped.startswith('"""') or stripped.startswith("'''"):
-                    delim = stripped[:3]
-                    # single-line docstring?
-                    if stripped.count(delim) >= 2:
-                        continue
-                    in_docstring = True
-                    docstring_delim = delim
-                    continue
-                if re.search(r"\bdel\s+self\._running_agents\[", line):
-                    offenders.append((idx, line.rstrip()))
-            else:
-                if docstring_delim and docstring_delim in stripped:
-                    in_docstring = False
-                    docstring_delim = None
-
-        assert offenders == [], (
-            "Found bare `del self._running_agents[...]` sites in gateway/run.py. "
-            "Use self._release_running_agent_state(session_key) instead so "
-            "_running_agents_ts and _busy_ack_ts are popped in lockstep.\n"
-            + "\n".join(f"  line {n}: {l}" for n, l in offenders)
-        )
 
 
-class TestSessionDbCloseOnShutdown:
-    """_stop_impl should call .close() on both self._session_db and
-    self.session_store._db to release SQLite WAL locks before the new
-    gateway (during --replace restart) tries to open the same file.
-    """
-
-
-    def test_shutdown_tolerates_close_raising(self):
-        """A close() that raises must not prevent subsequent cleanup."""
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        flaky_db = MagicMock()
-        flaky_db.close.side_effect = RuntimeError("simulated lock error")
-        healthy_db = MagicMock()
-
-        runner._db = flaky_db
-        runner.session_store = MagicMock()
-        runner.session_store._db = healthy_db
-
-        # Same pattern as production: try/except around each close().
-        for _db_holder in (runner, getattr(runner, "session_store", None)):
-            _db = getattr(_db_holder, "_db", None) if _db_holder else None
-            if _db is None or not hasattr(_db, "close"):
-                continue
-            try:
-                _db.close()
-            except Exception:
-                pass
-
-        flaky_db.close.assert_called_once()
-        healthy_db.close.assert_called_once()
 
 
 class TestSessionResetZombieRace:

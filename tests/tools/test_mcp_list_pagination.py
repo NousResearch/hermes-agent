@@ -7,6 +7,8 @@ past page 1. Port of the invariant behind anomalyco/opencode#35439/#35500.
 """
 
 import asyncio
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -68,3 +70,38 @@ class TestDiscoveryUsesPagination:
 
         asyncio.run(server._discover_tools())
         assert [t.name for t in server._tools] == ["first", "second"]
+
+
+class TestTypeErrorPropagation:
+    """#104150: a TypeError raised INSIDE the list call (e.g. a server
+    response decode failure) must propagate — it must not be caught by the
+    mcp-2.0/1.x calling-convention fallback and replaced by a misleading
+    'unexpected keyword argument cursor' error."""
+
+    def test_type_error_from_modern_list_call_propagates(self):
+        calls = {"n": 0}
+
+        async def broken_list(*, params=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return SimpleNamespace(tools=[_tool("first")], nextCursor="page-2")
+            raise TypeError("server response decode failed")
+
+        with pytest.raises(TypeError, match="server response decode failed"):
+            asyncio.run(_paginate_full_list(broken_list, "tools", "srv"))
+
+        assert calls["n"] == 2, "the legacy-cursor retry must not run"
+
+    def test_legacy_signature_still_uses_cursor_fallback(self):
+        """A genuinely 1.x-shaped method (no params kwarg) keeps working."""
+        calls = {"n": 0}
+
+        async def legacy_list(cursor=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return SimpleNamespace(tools=[_tool("first")], nextCursor="p2")
+            return SimpleNamespace(tools=[_tool("second")], nextCursor=None)
+
+        items = asyncio.run(_paginate_full_list(legacy_list, "tools", "srv"))
+        assert [t.name for t in items] == ["first", "second"]
+        assert calls["n"] == 2

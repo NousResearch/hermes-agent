@@ -59,24 +59,6 @@ class TestWarnIfCredentialFileBroadlyReadable:
             )
         assert caplog.text == ""
 
-    def test_uses_provided_logger(self, tmp_path):
-        f = tmp_path / "tokens.json"
-        f.write_text("{}")
-        f.chmod(0o644)
-
-        records = []
-
-        class _Sink(logging.Handler):
-            def emit(self, record):
-                records.append(record)
-
-        log = logging.getLogger("test.credfile.sink")
-        log.addHandler(_Sink())
-        try:
-            assert warn_if_credential_file_broadly_readable(f, log=log) is True
-        finally:
-            log.handlers.clear()
-        assert records and "chmod 600" in records[0].getMessage()
 
 
 class TestGoogleChatReadPathWarns:

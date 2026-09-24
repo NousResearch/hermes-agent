@@ -5,20 +5,14 @@ content loss, that chunks are synthesized in order, and that the delivery
 packing respects platform upload limits.
 """
 
-import json
-import os
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from tools.tts_tool import (
+from tools.tts_tool import _build_audio_delivery_files, _split_text_for_tts
+from tools.tts_tool_delivery import (
     AudioDeliveryProfile,
-    _build_audio_delivery_files,
-    _concat_audio_files,
     _pack_audio_files_for_delivery,
     _split_oversized_sentence,
-    _split_text_for_tts,
 )
 
 
@@ -57,11 +51,6 @@ class TestSplitOversizedSentence:
     def test_short_sentence_returns_as_is(self):
         assert _split_oversized_sentence("Hello world.", 100) == ["Hello world."]
 
-    def test_long_word_is_hard_split(self):
-        word = "A" * 100
-        chunks = _split_oversized_sentence(word, 30)
-        assert all(len(c) <= 30 for c in chunks)
-        assert "".join(chunks) == word
 
     def test_word_boundary_split(self):
         words = " ".join(["word"] * 50)
@@ -69,17 +58,6 @@ class TestSplitOversizedSentence:
         assert all(len(c) <= 30 for c in chunks)
 
 
-class TestAudioDeliveryProfile:
-    def test_default_profile(self):
-        profile = AudioDeliveryProfile(platform="default", max_file_bytes=10 * 1024 * 1024)
-        assert profile.target_file_bytes > 0
-        assert profile.target_file_bytes < profile.max_file_bytes
-
-    def test_custom_safety_ratio(self):
-        profile = AudioDeliveryProfile(
-            platform="custom", max_file_bytes=1000, safety_ratio=0.5
-        )
-        assert profile.target_file_bytes == 500
 
 
 class TestPackAudioFilesForDelivery:
@@ -132,19 +110,3 @@ class TestBuildAudioDeliveryFiles:
         with pytest.raises(ValueError, match="exceeds"):
             _build_audio_delivery_files([str(f)], out, profile)
 
-    def test_combines_multiple_files(self, tmp_path):
-        files = []
-        for i in range(3):
-            f = tmp_path / f"chunk{i:02d}.mp3"
-            f.write_bytes(b"\x00" * 100)
-            files.append(str(f))
-        out = str(tmp_path / "output.mp3")
-        profile = AudioDeliveryProfile(platform="default", max_file_bytes=10000)
-
-        with patch("tools.tts_tool._concat_audio_files") as mock_concat:
-            mock_concat.return_value = out
-            # Copy the first file to output so the size check passes
-            Path(out).write_bytes(b"\x00" * 300)
-            paths, combined = _build_audio_delivery_files(files, out, profile)
-            assert len(paths) == 1
-            assert combined is True

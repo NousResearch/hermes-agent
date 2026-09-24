@@ -16,6 +16,25 @@ export const SIDEBAR_GROUP_PAGE = 5
 // Recent sessions previewed under each project in the overview.
 export const PROJECT_PREVIEW_COUNT = 3
 
+// Rows each "Show more" adds once a project's full list is open (an expanded
+// overview row, an entered lane, entered Home). Large enough that 50+ sessions
+// are a click or two away, small enough that a 5000-chat Home never mounts
+// every row at once.
+export const PROJECT_SESSION_PAGE = 50
+
+// Reveal `rows` a page at a time: the first `first`, then PROJECT_SESSION_PAGE
+// per `showMore()`. `more` is the next step's size (0 once everything shows).
+export function useRevealedRows<T>(rows: T[], first: number): { more: number; shown: T[]; showMore: () => void } {
+  const [count, setCount] = useState(first)
+  const shown = rows.length > count ? rows.slice(0, count) : rows
+
+  return {
+    more: Math.min(PROJECT_SESSION_PAGE, rows.length - shown.length),
+    shown,
+    showMore: () => setCount(current => current + PROJECT_SESSION_PAGE)
+  }
+}
+
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4
 
@@ -44,6 +63,16 @@ const projectActivityTime = (project: SidebarProjectTree): number =>
 // The project's most-recent sessions, for the overview preview under each row.
 export const latestProjectSessions = (project: SidebarProjectTree, limit: number): SessionInfo[] =>
   [...projectSessions(project)].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
+
+// The overview payload carries only the most-recent preview rows per project.
+// Once the user asks for the rest, the project's full lanes are fetched on
+// demand; fold them under the (live-overlaid) preview so a just-created
+// session keeps its place and nothing renders twice.
+export const expandedProjectSessions = (preview: SessionInfo[], hydrated: SidebarProjectTree): SessionInfo[] => {
+  const seen = new Set(preview.map(session => session.id))
+
+  return [...preview, ...latestProjectSessions(hydrated, Infinity).filter(session => !seen.has(session.id))]
+}
 
 // Home is a fixture, not a project: it always leads the overview, above the
 // active project and outside any hand-picked order.

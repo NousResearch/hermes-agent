@@ -129,20 +129,5 @@ class TestKimiModelDiscovery:
         assert models == ["kimi-k2.6"]
 
 
-class TestKimiFullKwargsIntegration:
-    """The transport's full kwargs carry at most one reasoning knob."""
-
-    def _build(self, kimi_profile, reasoning_config):
-        from agent.transports.chat_completions import ChatCompletionsTransport
-
-        return ChatCompletionsTransport().build_kwargs(
-            model="kimi-k2-turbo-preview",
-            messages=[{"role": "user", "content": "ping"}],
-            tools=None,
-            provider_profile=kimi_profile,
-            reasoning_config=reasoning_config,
-            base_url="https://api.moonshot.ai/v1",
-            provider_name="kimi-coding",
-        )
 
 

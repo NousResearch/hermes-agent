@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: motherduck
+description: 'MotherDuck: query DuckDB cloud warehouses with SQL.'
+source: https://motherduck.com/docs/key-tasks/ai-and-motherduck/mcp-setup/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://api.motherduck.com/mcp
+
+auth:
+  type: oauth
+
+# Curated default: the 9 core catalog/SQL tools. The other 30 (Dive, Flight
+# scheduled-jobs, Guide products + ask_docs_question) stay available via
+# `hermes mcp configure motherduck`.
+tools:
+  default_enabled:
+    - list_columns
+    - list_databases
+    - list_macros
+    - list_shares
+    - list_tables
+    - list_views
+    - query
+    - query_rw
+    - search_catalog
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - motherduck
+    - duckdb
+  hosts:
+    - motherduck.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  MotherDuck (or run `hermes mcp login motherduck`). Approve access,
+  then restart the session so tools load.

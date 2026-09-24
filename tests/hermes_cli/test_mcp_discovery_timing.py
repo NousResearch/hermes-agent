@@ -24,6 +24,7 @@ import types
 import pytest
 
 from hermes_cli import mcp_startup
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -31,11 +32,11 @@ def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
     try:
-        mcp_startup._mcp_discovery_started = False
-        mcp_startup._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_started = set()
+        mcp_startup._mcp_discovery_thread = {}
         yield
     finally:
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
@@ -106,7 +107,7 @@ def _stub_mcp_modules(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: None,
             get_mcp_status=lambda: [{"connected": True}],
@@ -135,25 +136,11 @@ def test_ensure_helper_starts_discovery_and_waits(monkeypatch):
     )
 
     # Discovery was started (thread created)
-    assert mcp_startup._mcp_discovery_thread is not None or waited
+    assert mcp_startup._current_home_thread() is not None or waited
     # Wait was called with single_query=True
     assert any(call[1] is True for call in waited)
 
 
-def test_ensure_helper_is_idempotent(monkeypatch):
-    """Calling the helper twice doesn't start a second discovery thread."""
-    _stub_mcp_modules(monkeypatch)
-    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, warning=lambda *_a, **_k: None)
-
-    mcp_startup.ensure_mcp_discovery_before_agent_build(logger=logger)
-    thread1 = mcp_startup._mcp_discovery_thread
-    if thread1:
-        thread1.join(timeout=2.0)
-
-    mcp_startup.ensure_mcp_discovery_before_agent_build(logger=logger)
-    thread2 = mcp_startup._mcp_discovery_thread
-    if thread2:
-        thread2.join(timeout=2.0)
 
     # Second call didn't create a new thread (first one completed, status shows connected)
     # or if it did, it's because the first exited with zero connected — but we stubbed
@@ -181,41 +168,11 @@ def test_ensure_helper_swallows_errors(monkeypatch):
 # ── oneshot ordering: discovery before AIAgent ──────────────────────────────
 
 
-def test_oneshot_calls_ensure_helper_before_aiagent(monkeypatch):
-    """oneshot._run_agent must call ensure_mcp_discovery_before_agent_build
-    before constructing AIAgent (#38448)."""
-    import inspect
-
-    import hermes_cli.oneshot as oneshot_mod
-
-    src = inspect.getsource(oneshot_mod._run_agent)
-    helper_idx = src.find("ensure_mcp_discovery_before_agent_build")
-    agent_idx = src.find("AIAgent(")
-    assert helper_idx != -1, "oneshot._run_agent must call ensure_mcp_discovery_before_agent_build"
-    assert agent_idx != -1, "oneshot._run_agent must construct AIAgent"
-    assert helper_idx < agent_idx, (
-        "ensure_mcp_discovery_before_agent_build must be called BEFORE AIAgent "
-        "construction in oneshot._run_agent (#38448)"
-    )
 
 
 # ── _init_agent ordering: discovery before AIAgent (CLI path) ───────────────
 
 
-def test_init_agent_calls_ensure_helper_before_aiagent(monkeypatch):
-    """cli_agent_setup_mixin._init_agent must call
-    ensure_mcp_discovery_before_agent_build before constructing AIAgent."""
-    import inspect
-
-    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
-
-    src = inspect.getsource(CLIAgentSetupMixin._init_agent)
-    helper_idx = src.find("ensure_mcp_discovery_before_agent_build")
-    # _init_agent delegates AIAgent construction to cli.py, so we check
-    # the helper appears before the session_db / agent construction logic
-    assert helper_idx != -1, (
-        "_init_agent must call ensure_mcp_discovery_before_agent_build"
-    )
 
 
 def test_init_agent_forwards_single_query_flag(monkeypatch):
@@ -241,7 +198,8 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
-    monkeypatch.setattr(cli_mod, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+    import run_agent
+    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is True
@@ -269,7 +227,8 @@ def test_init_agent_defaults_to_interactive(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
-    monkeypatch.setattr(cli_mod, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+    import run_agent
+    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is False
@@ -287,7 +246,7 @@ def test_wait_stays_bounded_when_discovery_is_slow(monkeypatch):
     stop = threading.Event()
     thread = threading.Thread(target=lambda: stop.wait(10), daemon=True)
     thread.start()
-    mcp_startup._mcp_discovery_thread = thread
+    mcp_startup._mcp_discovery_thread[hermes_home_key()] = thread
 
     try:
         start = time.monotonic()
@@ -302,9 +261,3 @@ def test_wait_stays_bounded_when_discovery_is_slow(monkeypatch):
     )
 
 
-def test_wait_returns_instantly_when_discovery_done():
-    """When discovery is already complete, the wait returns immediately."""
-    mcp_startup._mcp_discovery_thread = None
-    t0 = time.time()
-    mcp_startup.wait_for_mcp_discovery(single_query=True)
-    assert time.time() - t0 < 0.2

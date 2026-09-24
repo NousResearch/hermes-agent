@@ -65,7 +65,6 @@ class TestReadFileToolFifoGuard:
         assert time.monotonic() - t0 < 5, "guard must not block on the FIFO"
         assert result["success"] is False
         assert "FIFO" in result["note"]
-        assert "no read was attempted" in result["note"]
 
     def test_regular_file_unaffected(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))

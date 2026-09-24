@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { approvePairing, getMessagingPlatforms } from './api/messaging'
+import { getAuxiliaryModels, getGlobalModelInfo } from './api/models'
+import { getOfficialSkills, getSkillHubSources } from './api/skills'
+import { getToolsetConfig } from './api/toolsets'
 import {
   getHermesConfigRecord,
   getMcpCatalog,
@@ -38,7 +42,7 @@ describe('capability helpers are connection-scoped', () => {
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
   })
 
-  const last = () => api.mock.calls.at(-1)?.[0] as { connectionId?: string; profile?: string }
+  const last = () => api.mock.calls.at(-1)?.[0] as { connectionId?: string; profile?: string; priority?: string }
 
   it('omits both scopes when none are active (single-source users unaffected)', () => {
     void getSkills()
@@ -74,6 +78,64 @@ describe('capability helpers are connection-scoped', () => {
     expect(last().connectionId).toBe('gw-tailscale')
   })
 
+  it('marks an explicitly scoped Settings / Capabilities read as foreground (#111651)', () => {
+    // A scope-selector pick is a visible user action: its cold dial must take
+    // the pool's reserved foreground slot instead of queueing behind hydration.
+    getHermesConfigRecord('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    void getSkills('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    // The Model page fires these alongside the config record for the same
+    // scope; an untagged sibling would queue as background work again.
+    void getGlobalModelInfo('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    void getAuxiliaryModels('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+  })
+
+  it('every explicitly scoped api/ helper dials foreground, not only the Settings pages (#111651)', () => {
+    // The class rule lives in the scope helpers themselves, so a helper in
+    // any api/ module inherits it — Capabilities hub/toolset-config reads and
+    // the Messaging page were left queueing as background work when the rule
+    // was spread per call site.
+    void getOfficialSkills('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    void getSkillHubSources('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    void getToolsetConfig('browser', { connectionId: 'homelab', profile: 'coder' })
+    expect(last()).toMatchObject({ connectionId: 'homelab', profile: 'coder', priority: 'foreground' })
+
+    void getMessagingPlatforms('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    // `null` deliberately targets the primary — that backend is always warm,
+    // so it stays untagged like the ambient path.
+    void getOfficialSkills(null)
+    expect(last()).not.toHaveProperty('priority')
+  })
+
+  it('a foreground tag never leaks into a request body that carries the profile', () => {
+    void approvePairing('telegram', 'req-1', 'coder')
+
+    const call = api.mock.calls.at(-1)?.[0] as { body?: Record<string, unknown>; priority?: string }
+
+    expect(call.priority).toBe('foreground')
+    expect(call.body).toEqual({ platform: 'telegram', request_id: 'req-1', profile: 'coder' })
+  })
+
+  it('keeps ambient config reads unprioritized for background hydration', () => {
+    getHermesConfigRecord()
+    expect(last()).not.toHaveProperty('priority')
+
+    void getGlobalModelInfo()
+    expect(last()).not.toHaveProperty('priority')
+  })
+
   it('object scopes pin every read and write to the named connection', () => {
     void getSkills({ connectionId: 'homelab', profile: 'inbox-bot' })
     void getToolsets({ connectionId: 'homelab', profile: 'inbox-bot' })
@@ -89,21 +151,27 @@ describe('capability helpers are connection-scoped', () => {
     }
   })
 
-  it("a 'local' pin routes to the local pool even while a remote gateway is active", () => {
+  it("a 'local' pin carries an explicit connectionId even while a remote gateway is active", () => {
     setApiRequestProfile('research')
     setApiRequestConnection('gw-tailscale')
 
     void getSkills({ connectionId: 'local', profile: 'coder' })
 
+    // The explicit pin must survive to Electron main: its registry resolver
+    // owns 'local' (forced-local pooled child). Omitting the key here let the
+    // ambient tag — or, worse, a remote registry PRIMARY on the v1 fallback
+    // route — absorb a "This device" pick (v0.20.6 regression, #91564 rung).
     expect(last().profile).toBe('coder')
-    expect(last()).not.toHaveProperty('connectionId')
+    expect(last().connectionId).toBe('local')
   })
 
-  it('profileScopeKey keeps legacy keys byte-identical and namespaces remote pins', () => {
+  it('profileScopeKey keeps legacy keys byte-identical and namespaces every explicit pin', () => {
     expect(profileScopeKey()).toBe('default')
     expect(profileScopeKey(null)).toBe('default')
     expect(profileScopeKey('coder')).toBe('coder')
-    expect(profileScopeKey({ connectionId: 'local', profile: 'coder' })).toBe('coder')
+    // A 'local' pin and the ambient path can resolve to DIFFERENT backends
+    // when the registry primary is remote — they must not share a cache row.
+    expect(profileScopeKey({ connectionId: 'local', profile: 'coder' })).toBe('local::coder')
     expect(profileScopeKey({ connectionId: 'homelab', profile: 'coder' })).toBe('homelab::coder')
     expect(profileScopeKey({ connectionId: 'homelab' })).toBe('homelab::default')
   })

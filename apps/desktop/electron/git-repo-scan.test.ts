@@ -23,6 +23,17 @@ function makeRepo(root: string, valid = true): void {
   }
 }
 
+function makeRepoAt(root: string, ...segments: string[]): string {
+  const repo = path.join(root, ...segments)
+  makeRepo(repo)
+
+  return repo
+}
+
+function foundRoots(results: { root: string }[]): string[] {
+  return results.map(entry => entry.root).sort()
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 
@@ -60,6 +71,53 @@ describe('scanGitRepos', () => {
 
     const result = await scanGitRepos([root, repo], { enabled: true })
     expect(result).toEqual([{ label: 'repo', root: repo }])
+  })
+})
+
+describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
+  it('finds a normal repo but skips root-level media folders on darwin', async () => {
+    const root = tempDir()
+    const dev = makeRepoAt(root, 'dev', 'proj')
+    makeRepoAt(root, 'Pictures', 'wallpapers')
+    makeRepoAt(root, 'Music', 'samples')
+    makeRepoAt(root, 'Movies', 'clips')
+    makeRepoAt(root, 'Public', 'shared')
+
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([dev])
+  })
+
+  it('still scans a media-named directory below the search root on darwin', async () => {
+    const root = tempDir()
+    const nested = makeRepoAt(root, 'dev', 'Music', 'app')
+
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([nested])
+  })
+
+  it('skips Apple media-library packages at any depth on darwin', async () => {
+    const root = tempDir()
+    const keeper = makeRepoAt(root, 'code', 'site')
+    makeRepoAt(root, 'code', 'Photos Library.photoslibrary', 'inner')
+    makeRepoAt(root, 'backups', 'Music Library.MUSICLIBRARY', 'inner')
+    makeRepoAt(root, 'backups', 'TV Library.tvlibrary', 'inner')
+    makeRepoAt(root, 'backups', 'Old.aplibrary', 'inner')
+
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([keeper])
+  })
+
+  it('walks an explicitly passed media root on darwin', async () => {
+    const root = tempDir()
+    const musicRoot = path.join(root, 'Music')
+    const repo = makeRepoAt(musicRoot, 'samples')
+
+    expect(foundRoots(await scanGitRepos([musicRoot], { enabled: true, platform: 'darwin' }))).toEqual([repo])
+  })
+
+  it('does not exclude media-named folders on linux', async () => {
+    const root = tempDir()
+    const dev = makeRepoAt(root, 'dev', 'proj')
+    const music = makeRepoAt(root, 'Music', 'samples')
+
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'linux' }))).toEqual([dev, music].sort())
   })
 })
 

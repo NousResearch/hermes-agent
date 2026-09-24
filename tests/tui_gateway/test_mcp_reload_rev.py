@@ -24,6 +24,8 @@ import threading
 import pytest
 
 import tools.mcp_tool as mcp_tool
+from tools import mcp_tool_discovery as _mcp_discovery
+from tools import mcp_tool_lifecycle as _mcp_lifecycle
 import tui_gateway.server as srv
 
 
@@ -33,8 +35,8 @@ def reload_env(monkeypatch):
     calls = {"discover": 0, "shutdown": 0}
     rev_box = {"rev": "rev-a"}
 
-    monkeypatch.setattr(mcp_tool, "shutdown_mcp_servers", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
-    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", lambda: calls.__setitem__("discover", calls["discover"] + 1))
+    monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda: calls.__setitem__("discover", calls["discover"] + 1))
     monkeypatch.setattr(srv, "_compute_mcp_rev", lambda: rev_box["rev"])
 
     saved = (srv._mcp_reload_gen, srv._mcp_reload_loaded_rev)
@@ -72,7 +74,7 @@ def test_failed_reload_is_an_error_and_no_generation_advance(reload_env, monkeyp
     def _boom():
         raise RuntimeError("flapping server")
 
-    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", _boom)
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", _boom)
 
     envelope = _reload(rev="rev-b")
 
@@ -146,7 +148,7 @@ def _run_leader_follower(reload_env, monkeypatch, follower_rev):
             leader_in_discovery.set()
             assert release_leader.wait(timeout=10)
 
-    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", _slow_discover)
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", _slow_discover)
 
     results: dict = {}
 

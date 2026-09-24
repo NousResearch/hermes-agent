@@ -119,19 +119,7 @@ class TestXAIPayload:
         provider.generate("animate this", image_url=str(image_path))
 
         payload = _last_post(captured)["json"]
-        assert payload["model"] == "grok-imagine-video-1.5"
         assert payload["image"]["url"].startswith("data:image/png;base64,")
-
-    def test_explicit_model_override_is_honored_for_image(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate(
-            "animate this",
-            image_url="https://example.com/cat.png",
-            model="grok-imagine-video",
-            _model_override_explicit=True,
-        )
-        payload = _last_post(captured)["json"]
-        assert payload["model"] == "grok-imagine-video"
 
     def test_reference_images_payload(self, xai_provider):
         provider, captured = xai_provider

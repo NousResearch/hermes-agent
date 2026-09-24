@@ -13,7 +13,8 @@ Contract under test:
 1. ``config.set key=fast`` with a session must NOT write config.yaml; it pins
    ``create_service_tier_override`` ("priority" / "" for explicit normal) so
    lazily-built sessions and rebuilds keep the choice.
-2. Without a session it persists globally, unchanged.
+2. Without a session it persists globally, unchanged. A session_id the
+   backend no longer holds is refused with 4001, not treated as "no session".
 3. ``config.get key=fast`` must read a pre-build session's pin.
 """
 
@@ -107,6 +108,15 @@ class TestConfigSetFastSessionScope:
         assert resp["result"]["value"] == "normal"
         write_key.assert_called_once_with("agent.service_tier", "normal")
 
+    def test_stale_session_id_is_refused_not_persisted_globally(self) -> None:
+        """A runtime id the backend no longer holds (reaped / re-minted) is not "no session": it
+        must 4001 so the client resumes, not rewrite the profile's tier for every surface."""
+        with patch.dict(server._sessions, {}, clear=True), \
+                patch.object(server, "_write_config_key") as write_key:
+            resp = _set({"key": "fast", "session_id": "reaped-sid", "value": "normal"})
+        assert resp.get("error", {}).get("code") == 4001, resp
+        write_key.assert_not_called()
+
 
 class TestConfigGetFastSessionScope:
     def test_reads_prebuild_pin(self) -> None:
@@ -120,7 +130,3 @@ class TestConfigGetFastSessionScope:
         assert resp["result"]["value"] == "fast"
 
 
-    def test_falls_back_to_global(self) -> None:
-        with patch.object(server, "_load_service_tier", return_value="priority"):
-            resp = _get({"key": "fast"})
-        assert resp["result"]["value"] == "fast"

@@ -111,16 +111,6 @@ class TestTrustGate:
 
 
 class TestPrecedence:
-    def test_scan_order_project_first(self, project_env):
-        _trust(project_env["config"], project_env["repo"])
-        order = su.get_scan_ordered_skills_dirs()
-        proj_dirs = {
-            (project_env["repo"] / ".hermes" / "skills").resolve(),
-            (project_env["repo"] / ".agents" / "skills").resolve(),
-        }
-        assert set(order[:2]) == proj_dirs
-        assert order[2] == su.get_skills_dir()
-
     def test_project_paths_are_readonly_owned(self, project_env):
         _trust(project_env["config"], project_env["repo"])
         p = project_env["repo"] / ".hermes" / "skills" / "repo-skill" / "SKILL.md"
@@ -148,6 +138,25 @@ class TestNonInteractiveInheritance:
         _trust(project_env["config"], project_env["repo"])
         assert su.find_project_root() == project_env["repo"].resolve()
         assert su.get_project_skills_dirs() != []
+
+    def test_session_cwd_beats_backend_launch_cwd(
+        self, project_env, monkeypatch, tmp_path
+    ):
+        """Desktop project skills follow the active session, not launch cwd."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        launcher = tmp_path / "desktop-launcher"
+        launcher.mkdir()
+        monkeypatch.chdir(launcher)
+        monkeypatch.setenv("TERMINAL_CWD", str(launcher))
+        _trust(project_env["config"], project_env["repo"])
+
+        tokens = set_session_vars(cwd=str(project_env["repo"]))
+        try:
+            assert su.find_project_root() == project_env["repo"].resolve()
+            assert su.get_project_skills_dirs() != []
+        finally:
+            clear_session_vars(tokens)
 
     def test_no_workdir_no_trust_inheritance(self, project_env, monkeypatch, tmp_path):
         # A surface running outside any repo (API server from home-like dir)
@@ -177,9 +186,9 @@ class TestQuarantine:
 
     @pytest.fixture(autouse=True)
     def _clear_quarantine_cache(self):
-        su._project_quarantine_cache_clear()
+        su._PROJECT_QUARANTINE_CACHE.clear()
         yield
-        su._project_quarantine_cache_clear()
+        su._PROJECT_QUARANTINE_CACHE.clear()
 
     def _add_malicious_skill(self, repo: Path) -> Path:
         d = repo / ".hermes" / "skills" / "evil-skill"
@@ -231,7 +240,7 @@ class TestQuarantine:
         (evil_dir / "SKILL.md").write_text(
             "---\nname: evil-skill\ndescription: now actually benign\n---\nbody\n"
         )
-        su._project_quarantine_cache_clear()
+        su._PROJECT_QUARANTINE_CACHE.clear()
         assert su.is_quarantined_project_skill(evil_dir / "SKILL.md") is False
 
     def test_scan_cache_outside_repo(self, project_env):

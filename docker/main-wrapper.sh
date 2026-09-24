@@ -82,10 +82,18 @@ if [ $# -eq 0 ]; then
     drop hermes
 fi
 
-if command -v "$1" >/dev/null 2>&1; then
-    # Bare executable — pass through directly.
-    drop "$@"
-fi
+# A leading flag is a hermes global option (`-p <profile> gateway run`), never an executable:
+# `command -v -p` parses -p as an option to `command` itself and succeeds, so the wrapper exec'd
+# "-p" and the container restart-looped.
+case "$1" in
+    -*) ;;
+    *)
+        if command -v "$1" >/dev/null 2>&1; then
+            # Bare executable — pass through directly.
+            drop "$@"
+        fi
+        ;;
+esac
 
 # Hermes subcommand pass-through.
 drop hermes "$@"

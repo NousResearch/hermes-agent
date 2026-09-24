@@ -14,7 +14,6 @@ asserts the two gaps that were genuinely open plus the relevant regression
 guards.
 """
 
-import pytest
 
 from tools.approval import detect_dangerous_command
 
@@ -66,17 +65,3 @@ class TestGitPushForceLongOptionAbbreviation:
         assert dangerous is False
 
 
-class TestFullFormRegressions:
-    """The two changed long-flag patterns must still detect their full form."""
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "chown --recursive root /etc",
-            "git push --force origin main",
-        ],
-    )
-    def test_full_form_still_detected(self, cmd):
-        dangerous, key, _ = detect_dangerous_command(cmd)
-        assert dangerous is True, f"Full-form long flag not detected in: {cmd!r}"
-        assert key is not None

@@ -1,0 +1,26 @@
+name: hermes-iroh-interconnect
+repo: https://github.com/rahlquist/hermes-iroh-interconnect
+sha: c7d13769715f25d410696800a538d746952da50e
+description: "Authenticated Hermes agent-to-agent tasks and optional file transfer over Iroh QUIC. Disclosure — tasks from a paired peer run in your live gateway agent with its full toolset; pairing is confirmed via the tool's confirm=true argument, not a UI prompt. Uses n0's public relays by default (HERMES_IROH_RELAY=off or a self-hosted URL for LAN-only). iroh_send_file can share any readable path the model names (credential-name denylist only, overridable with allow_sensitive); remote-triggered auto-fetch is off by default and confined to HERMES_IROH_AUTO_FETCH_DIR. The Rust sidecar is built locally with cargo, never downloaded."
+maintainer: Richard Ahlquist
+tier: community
+category: tools
+docs_url: https://github.com/rahlquist/hermes-iroh-interconnect
+version: "0.3.1"
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - iroh_peer_status
+    - iroh_peer_list
+    - iroh_peer_pair
+    - iroh_peer_make_ticket
+    - iroh_send_file
+    - iroh_fetch_file
+    - iroh_transfer_status
+    - iroh_peer_call
+    - iroh_peer_settings
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

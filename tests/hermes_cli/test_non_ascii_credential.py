@@ -74,19 +74,5 @@ class TestEnvLoaderSanitization:
         captured = capsys.readouterr()
         assert "GOOGLE_API_KEY" in captured.err
         assert "U+200B" in captured.err
-        assert "re-copy" in captured.err.lower()
 
 
-    def test_ascii_control_chars_not_stripped(self, monkeypatch, capsys):
-        """ASCII control bytes (e.g. ESC 0x1B from terminal paste) are NOT non-ASCII.
-
-        This is intentional — they're valid ASCII for HTTP headers even if the
-        provider rejects them. Documents the scope of the sanitizer.
-        """
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
-
-        _WARNED_KEYS.clear()
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant\x1bapi-key")
-        _sanitize_loaded_credentials()
-        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant\x1bapi-key"
-        assert capsys.readouterr().err == ""

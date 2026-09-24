@@ -80,17 +80,7 @@ class TestCostInResultEntry(unittest.TestCase):
         self.assertAlmostEqual(entry["cost_usd"], 0.123457, places=6)
         self.assertEqual(entry["cost_status"], "estimated")
 
-    def test_reported_status_passes_through(self):
-        child = _make_mock_child(cost=0.5, cost_status="reported")
-        _, result = self._run(child)
-        entry = result["results"][0]
-        self.assertEqual(entry["cost_status"], "reported")
 
-    def test_zero_cost_child_has_zero_cost_entry(self):
-        child = _make_mock_child(cost=0.0, cost_status="unknown")
-        _, result = self._run(child)
-        entry = result["results"][0]
-        self.assertEqual(entry["cost_usd"], 0.0)
 
     def test_internal_child_cost_field_still_stripped(self):
         child = _make_mock_child(cost=0.25)

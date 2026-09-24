@@ -31,26 +31,19 @@ import autopilot        # noqa: E402
 import contextlib as _ctx  # noqa: E402
 import io as _io          # noqa: E402
 import json as _json      # noqa: E402
-import smtplib as _smtplib  # noqa: E402
 import time as _time      # noqa: E402
 
 import badbool          # noqa: E402
 import brokers          # noqa: E402
-import cdp              # noqa: E402
 import config           # noqa: E402
-import crypto           # noqa: E402
 import dossier          # noqa: E402
-import email_modes      # noqa: E402
 import emailer          # noqa: E402
 import pdd              # noqa: E402
 import legal            # noqa: E402
 import ledger           # noqa: E402
-import paths            # noqa: E402
-import registry         # noqa: E402
 import report          # noqa: E402
 import storage          # noqa: E402
 import tiers            # noqa: E402
-import vectors          # noqa: E402
 
 _AGE = bool(shutil.which("age") and shutil.which("age-keygen"))
 
@@ -134,16 +127,6 @@ def test_seed_broker_db_loads_and_is_well_formed():
 
 
 
-def test_blocked_pass_records_and_cluster_coverage():
-    # Records added from the blocked-tail pass load, resolve, and dedupe correctly.
-    ids = {b["id"] for b in brokers.load_all()}
-    assert {"addresses", "socialcatfish"} <= ids
-    # addresses.com is a PeopleConnect/Intelius front-end -> covered by the intelius cluster (deduped).
-    assert "addresses" in brokers.clusters().get("intelius", [])
-    for bid in ("addresses", "socialcatfish"):
-        b = brokers.get(bid)
-        assert tiers.select_tier(b) in {"T0", "T1", "T2", "T3"}
-        assert b["optout"]["method"]
 
 
 # --- tier selection -----------------------------------------------------------
@@ -613,36 +596,6 @@ def test_human_tasks_digest_markdown():
 
 # --- CA data broker registry (coverage breadth: DROP + email lane) ---------------------------
 
-def _registry_csv():
-    """Mimic the CA registry CSV: junk row 0, label row 1 (with the real NBSP), data rows."""
-    import csv as _csv
-    import io as _io
-    buf = _io.StringIO()
-    w = _csv.writer(buf)
-    w.writerow(["", "junk header the site hides", "", "", "", ""])
-    w.writerow(["Data broker\xa0name:", "Doing Business As (DBA), if applicable:",
-                "Data broker primary website:", "Data broker primary contact email address:",
-                "Data broker's primary website that contains details on how consumers can exercise "
-                "their CA Consumer Privacy Act rights, including how to delete their personal information:",
-                "The data broker or any of its subsidiaries is regulated by the federal Fair Credit "
-                "Reporting Act (FCRA):"])
-    w.writerow(["Acme Data LLC", "AcmeDBA", "https://acme.example",
-                "privacy@acme.example", "https://acme.example/ccpa", "No"])
-    w.writerow(["Credit Bureau Co", "", "https://cbc.example",
-                "privacy@cbc.example", "https://cbc.example/rights", "Yes"])
-    return buf.getvalue()
-
-
-
-
-
-
-
-
-
-
-
-
 # --- hardening: locking / rate-limit / retry / idempotency / freshness / metrics ------------
 
 def test_storage_lock_mutual_exclusion_and_stale_break():
@@ -663,46 +616,6 @@ def test_storage_lock_mutual_exclusion_and_stale_break():
         os.utime(lock, (old, old))
         with storage.locked(target, timeout=0.2, stale=30):
             pass
-
-
-
-
-class _FlakySMTP:
-    attempts = 0
-
-    def __init__(self, host, port, timeout=None):
-        pass
-
-    def __enter__(self):
-        _FlakySMTP.attempts += 1
-        if _FlakySMTP.attempts < 3:
-            raise _smtplib.SMTPServerDisconnected("transient")
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def ehlo(self):
-        pass
-
-    def starttls(self):
-        pass
-
-    def login(self, u, p):
-        pass
-
-    def send_message(self, m):
-        _FlakySMTP.sent = m
-
-
-class _AuthFailSMTP(_FlakySMTP):
-    def __enter__(self):
-        return self
-
-    def login(self, u, p):
-        raise _smtplib.SMTPAuthenticationError(535, b"bad creds")
-
-
 
 
 

@@ -1,4 +1,7 @@
 from unittest.mock import Mock, patch
+from tools import browser_tool_cloud as bt_cloud
+from tools import browser_tool_cdp as bt_cdp
+from tools import browser_tool_session as bt_session
 
 
 HOST = "example-host"
@@ -10,13 +13,13 @@ VERSION_URL = f"{HTTP_URL}/json/version"
 
 class TestResolveCdpOverride:
     def test_keeps_full_devtools_websocket_url(self):
-        from tools.browser_tool import _resolve_cdp_override
+        from tools.browser_tool_cdp import _resolve_cdp_override
 
         assert _resolve_cdp_override(WS_URL) == WS_URL
 
 
     def test_redacts_secret_query_params_in_success_log(self):
-        from tools.browser_tool import _resolve_cdp_override
+        from tools.browser_tool_cdp import _resolve_cdp_override
 
         raw = "https://cdp.example/json/version?access_token=super-secret-token-123456"
         resolved_ws = "wss://cdp.example/devtools/browser/abc?token=super-secret-token-123456"
@@ -25,7 +28,7 @@ class TestResolveCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": resolved_ws}
 
-        with patch("tools.browser_tool.requests.get", return_value=response), \
+        with patch("requests.get", return_value=response), \
                 patch("tools.browser_tool.logger.info") as mock_info:
             resolved = _resolve_cdp_override(raw)
 
@@ -38,14 +41,14 @@ class TestResolveCdpOverride:
         assert "token=***" in logged_ws
 
     def test_redacts_secret_query_params_in_failure_log(self):
-        from tools.browser_tool import _resolve_cdp_override
+        from tools.browser_tool_cdp import _resolve_cdp_override
 
         raw = "https://cdp.example?access_token=super-secret-token-123456"
         secret_error = RuntimeError(
             "upstream rejected https://cdp.example/json/version?access_token=super-secret-token-123456"
         )
 
-        with patch("tools.browser_tool.requests.get", side_effect=secret_error), \
+        with patch("requests.get", side_effect=secret_error), \
                 patch("tools.browser_tool.logger.warning") as mock_warning:
             resolved = _resolve_cdp_override(raw)
 
@@ -77,13 +80,13 @@ class TestResolveCdpOverride:
 
         monkeypatch.setattr(browser_tool, "_active_sessions", {})
         monkeypatch.setattr(browser_tool, "_session_last_activity", {})
-        monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
-        monkeypatch.setattr(browser_tool, "_update_session_activity", lambda task_id: None)
-        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
+        monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_lifecycle._update_session_activity", lambda task_id: None)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
 
-        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
-            session_info = browser_tool._get_session_info("task-browser-use")
+        with patch("requests.get", return_value=response) as mock_get:
+            session_info = bt_session._get_session_info("task-browser-use")
 
         assert session_info["cdp_url"] == WS_URL
         provider.create_session.assert_called_once_with("task-browser-use")
@@ -109,14 +112,13 @@ class TestGetCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
-        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
-            resolved = browser_tool._get_cdp_override()
+        with patch("requests.get", return_value=response) as mock_get:
+            resolved = bt_cdp._get_cdp_override()
 
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
     def test_uses_config_browser_cdp_url_when_env_missing(self, monkeypatch):
-        import tools.browser_tool as browser_tool
 
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
 
@@ -125,8 +127,8 @@ class TestGetCdpOverride:
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
         with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"cdp_url": HTTP_URL}}), \
-             patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
-            resolved = browser_tool._get_cdp_override()
+             patch("requests.get", return_value=response) as mock_get:
+            resolved = bt_cdp._get_cdp_override()
 
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
@@ -167,7 +169,7 @@ class TestCreateCdpSession:
     """
 
     def test_redacts_token_in_session_creation_log(self):
-        from tools.browser_tool import _create_cdp_session
+        from tools.browser_tool_session import _create_cdp_session
 
         cdp_url_with_token = "wss://cdp.example/devtools/browser/abc?token=super-secret-token-999"
 
@@ -182,7 +184,7 @@ class TestCreateCdpSession:
         assert "token=***" in logged_args
 
     def test_plain_url_without_secrets_passes_through(self):
-        from tools.browser_tool import _create_cdp_session
+        from tools.browser_tool_session import _create_cdp_session
 
         plain_url = "ws://localhost:9222/devtools/browser/abc123"
 

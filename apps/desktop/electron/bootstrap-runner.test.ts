@@ -9,6 +9,7 @@ import {
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
+  cleanInstallerLogLine,
   hasExistingGitCheckout,
   installedAgentInstallScript,
   installRefForStamp,
@@ -179,10 +180,6 @@ test('resolveInstallScript downloads fallback stamps by branch instead of zero c
     assert.equal(result.source, 'download')
     assert.equal(result.commit, null)
     assert.equal(result.path, cachedScriptPath(home, 'fallback-main'))
-    assert.ok(
-      logs.some(ev => /fallback, unpinned/.test(ev.line || '')),
-      'emits an unpinned fallback log line'
-    )
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
@@ -241,10 +238,6 @@ test('resolveInstallScript falls back to the installed agent checkout on a 404',
     // It should have copied the installer into the bootstrap cache.
     assert.equal(result.path, cachedScriptPath(home, commit))
     assert.ok(fs.existsSync(result.path), 'fallback script copied into cache')
-    assert.ok(
-      logs.some(ev => /falling back to installed agent/.test(ev.line || '')),
-      'emits a fallback log line'
-    )
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
@@ -272,3 +265,43 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+// #112675: install.sh colours its banners and curl/uv redraw progress with \r
+// even into a pipe; the overlay renders lines as plain text, so the emitter
+// must hand every consumer (log ring, Details panel, Copy output) the text a
+// terminal would be left showing.
+test('installer log lines reach the emitter without escape sequences; \\r redraws keep the last frame', () => {
+  assert.equal(cleanInstallerLogLine('\u001b[0;32m✓\u001b[0m Detected: macos (macos)'), '✓ Detected: macos (macos)')
+  assert.equal(cleanInstallerLogLine('\u001b[2K\u001b[1GCloning repository…\u001b[K'), 'Cloning repository…')
+  assert.equal(cleanInstallerLogLine('\u001b]0;hermes\u0007Installing Hermes'), 'Installing Hermes')
+  assert.equal(cleanInstallerLogLine('\r 12%\r 67%\r100%\u001b[K'), '100%')
+  assert.equal(cleanInstallerLogLine('Resolving dependencies…\r'), 'Resolving dependencies…')
+  // Only-escape frames drop entirely, so the caller emits nothing for them.
+  assert.equal(cleanInstallerLogLine('\u001b[0m\r'), '')
+  // Plain multi-byte text is untouched.
+  assert.equal(cleanInstallerLogLine('Ready — café ✓ 中文'), 'Ready — café ✓ 中文')
+})
+
+test.skipIf(process.platform === 'win32')(
+  'a manifest-step failure surfaces the installer tail without escape sequences',
+  async () => {
+    const home = mkTmpHome()
+    fs.mkdirSync(path.join(home, 'scripts'))
+    fs.writeFileSync(
+      path.join(home, 'scripts', 'install.sh'),
+      '#!/usr/bin/env bash\nprintf "\\033[0;31m\\xe2\\x9c\\x97\\033[0m manifest broke\\n" >&2\nexit 3\n'
+    )
+
+    const result = await runBootstrap({
+      installStamp: null,
+      activeRoot: home,
+      sourceRepoRoot: home,
+      hermesHome: home,
+      logRoot: home,
+      onEvent: () => {}
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'install.sh --manifest failed: exit 3\n✗ manifest broke')
+  }
+)

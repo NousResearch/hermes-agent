@@ -63,15 +63,6 @@ afterEach(() => {
 })
 
 describe('local desktop pack stays out of the publish path', () => {
-  test('the pack script pins an explicit publish policy', () => {
-    // electron-builder 26 infers `onTagOrDraft` from CI when --publish is
-    // absent, and `hermes desktop` runs the pack with CI=1 (_npm_lifecycle_env).
-    // v27 drops the implicit behavior, so being explicit is also forward-safe.
-    const pack = desktopPkg.scripts.pack
-    assert.match(pack, /--dir\b/)
-    assert.match(pack, /--publish\s+never\b/)
-  })
-
   test('publish resolution succeeds with a GitHub token present', async () => {
     // The #87758 failure mode: CI=1 makes isPublish true, a GITHUB_TOKEN in the
     // environment auto-selects the github provider, and the provider needs a

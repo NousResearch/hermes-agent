@@ -88,7 +88,17 @@ export interface KanbanEvent {
 export interface KanbanAttachment {
   id: number | string
   filename: string
+  stored_path?: null | string
   size?: null | number
+}
+
+/** GET /tasks/:id `link_tasks` — one resolved row per linked task, so the UI
+ *  renders titles instead of raw ids. Additive: older backends omit it and
+ *  the drawer falls back to shortId chips. */
+export interface KanbanLinkTask {
+  id: string
+  title: string
+  status: string
 }
 
 /** Fields present only on the detail endpoint (beyond the card's KanbanTask).
@@ -117,8 +127,12 @@ export interface KanbanTaskDetail {
   task: KanbanTaskFull
   comments: KanbanComment[]
   events: KanbanEvent[]
-  attachments: KanbanAttachment[]
+  /** Kanban backends before attachments landed (#35395, May 2026) omit this
+   *  key and have no /tasks/{id}/attachments endpoints; absent/null hides the
+   *  section instead of offering uploads the backend would 404 on. */
+  attachments?: KanbanAttachment[] | null
   links: { parents: string[]; children: string[] }
+  link_tasks?: KanbanLinkTask[] | null
   runs: KanbanRun[]
 }
 
@@ -137,6 +151,25 @@ export interface BoardMeta {
   /** First-class Project the board is scoped to (id) + resolved name. */
   project_id?: null | string
   project_name?: null | string
+}
+
+/** POST /boards/{slug}/export — the archive the backend wrote. */
+export interface BoardExportResult {
+  board: string
+  archive: string
+  size: number
+}
+
+/** POST /boards/import — the NEW board the archive landed as. */
+export interface BoardImportResult {
+  board: string
+  name: string
+  /** True when the archive's slug was taken and the import got a suffix. */
+  renamed: boolean
+  requested_board: string
+  counts: Record<string, number>
+  /** Human-readable notes (parked tasks, dropped attachments). */
+  warnings: string[]
 }
 
 /** GET /projects — first-class Hermes projects available to scope a board. */

@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from typing import Union
 
 from agent.agent_runtime_helpers import (
-    intent_ack_continuation_enabled,
     intent_ack_continuation_mode,
     looks_like_codex_intermediate_ack,
 )
@@ -70,13 +69,6 @@ def test_missing_attr_defaults_to_auto():
     assert intent_ack_continuation_mode(bare) == "off"
     bare_codex = SimpleNamespace(api_mode="codex_responses", model="x", _strip_think_blocks=lambda c: c)
     assert intent_ack_continuation_mode(bare_codex) == "codex_only"
-
-
-def test_enabled_is_mode_not_off():
-    assert intent_ack_continuation_enabled(_agent(True, "chat_completions")) is True
-    assert intent_ack_continuation_enabled(_agent("auto", "codex_responses")) is True
-    assert intent_ack_continuation_enabled(_agent("auto", "chat_completions")) is False
-    assert intent_ack_continuation_enabled(_agent(False, "codex_responses")) is False
 
 
 # ── detector: workspace requirement ─────────────────────────────────────────

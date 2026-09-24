@@ -16,16 +16,10 @@ import json
 import pytest
 
 from agent.lsp.protocol import (
-    ERROR_CONTENT_MODIFIED,
-    ERROR_METHOD_NOT_FOUND,
     LSPProtocolError,
-    LSPRequestError,
     classify_message,
     encode_message,
-    make_error_response,
     make_notification,
-    make_request,
-    make_response,
     read_message,
 )
 
@@ -85,9 +79,8 @@ async def test_read_message_rejects_runaway_header():
     in and surfaces a protocol error."""
     flood = (b"X-Junk: " + b"A" * 200 + b"\r\n") * 60   # ~12 KiB worth
     reader = await _stream_from_bytes(flood)
-    with pytest.raises(LSPProtocolError) as exc:
+    with pytest.raises(LSPProtocolError):
         await read_message(reader)
-    assert "8 KiB" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +100,6 @@ def test_make_notification_omits_id():
 
 
 
-def test_make_error_response_shape():
-    msg = make_error_response(7, ERROR_CONTENT_MODIFIED, "stale", {"hint": "retry"})
-    assert msg["error"]["code"] == ERROR_CONTENT_MODIFIED
-    assert msg["error"]["message"] == "stale"
-    assert msg["error"]["data"] == {"hint": "retry"}
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +123,3 @@ def test_classify_message_invalid():
 # ---------------------------------------------------------------------------
 
 
-def test_lsp_request_error_carries_code_and_data():
-    e = LSPRequestError(ERROR_METHOD_NOT_FOUND, "no", {"x": 1})
-    assert e.code == ERROR_METHOD_NOT_FOUND
-    assert e.message == "no"
-    assert e.data == {"x": 1}

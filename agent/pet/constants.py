@@ -1,43 +1,30 @@
 """Pet sprite geometry + animation-state taxonomy.
 
-These values are the common petdex/Codex pet geometry. The real ``pet.json``
-usually only carries ``id``/``displayName``/``description``/``spritesheetPath``;
-row taxonomy is inferred from the atlas shape so Hermes can render both legacy
-8-row sheets and current 9-row Codex sheets.
+Common petdex/Codex pet geometry. ``pet.json`` usually only carries
+``id``/``displayName``/``description``/``spritesheetPath``; row taxonomy is
+inferred from the atlas shape so Hermes renders both legacy 8-row sheets and
+current 9-row Codex sheets.
 """
 
 from __future__ import annotations
 
 from enum import Enum
 
-# Frame geometry (pixels). Current Codex/petdex spritesheets are 8 columns x 9
-# rows (1536x1872), while older Hermes/petdex sheets used 9 columns x 8 rows
-# (1728x1664). Renderers derive both row taxonomy and real column count from the
-# concrete sheet, so either shape works.
+# Frame geometry (pixels). Codex/petdex sheets are 8 cols x 9 rows (1536x1872);
+# older sheets 9 x 8 (1728x1664). Renderers derive taxonomy/columns from the sheet.
 FRAME_W = 192
 FRAME_H = 208
-
-# Frames consumed per animation state (the petdex web app uses CSS
-# ``steps(6)``).  A sheet may physically contain more columns; we only step
-# through the first ``FRAMES_PER_STATE``.
+# Frames stepped per state (petdex CSS ``steps(6)``); extra physical columns are ignored.
 FRAMES_PER_STATE = 6
+LOOP_MS = 1100  # full-loop duration for one state, ms (petdex default)
 
-# Full-loop duration for one state, milliseconds (petdex default).
-LOOP_MS = 1100
-
-# Default on-screen scale relative to native frame size.  ``display.pet.scale``
-# is the single master scalar: the desktop canvas multiplies its native pixels
-# by it and every terminal surface derives its half-block/kitty column width
-# from it (see :func:`cols_for_scale`), so one number shrinks all three
-# interfaces together.  (petdex's own clients render at 0.7; we default smaller
-# so the kitty/GUI mascot stays a glanceable corner sprite.  The half-block
-# fallback can't shrink as far — see ``UNICODE_MIN_COLS`` — and clamps to its
-# legibility floor instead.)
+# ``display.pet.scale`` is the single master scalar: the desktop canvas multiplies
+# native pixels by it and every terminal surface derives its column width from it
+# (:func:`cols_for_scale`). petdex clients render at 0.7; we default smaller so the
+# mascot stays a glanceable corner sprite (half-blocks clamp to ``UNICODE_MIN_COLS``).
 DEFAULT_SCALE = 0.33
-
-# User-settable scale bounds (``/pet scale``, desktop slider).  Floor keeps the
-# pet clickable/visible; ceiling stops a fat-fingered value from filling the
-# screen.  The unicode fallback additionally clamps to ``UNICODE_MIN_COLS``.
+# User-settable bounds (``/pet scale``, desktop slider): floor keeps the pet
+# clickable/visible; ceiling stops a fat-fingered value from filling the screen.
 MIN_SCALE = 0.1
 MAX_SCALE = 3.0
 
@@ -46,27 +33,18 @@ def clamp_scale(scale: float) -> float:
     """Clamp *scale* to ``[MIN_SCALE, MAX_SCALE]`` (the single validation point)."""
     return max(MIN_SCALE, min(MAX_SCALE, scale))
 
-# Terminal cells one native frame spans at ``scale == 1.0``.  A cell is ~8px
-# wide, a frame is ``FRAME_W`` (192) px → 24 cells.  This mirrors the kitty
-# graphics placement (``scaled_px // 8``) so at full scale every renderer agrees.
-BASE_UNICODE_COLS = FRAME_W // 8
 
-# Legibility floor for the half-block fallback.  A half-block cell samples the
-# sprite at only 1 horizontal + 2 vertical taps, so below this width a 192×208
-# pet collapses into an unreadable blob *regardless* of scale.  kitty/GUI draw
-# true pixels and have no such floor — that's why the same ``scale: 0.33`` is
-# crisp there but mush in half-blocks.  ``scale`` shrinks the unicode pet down
-# TO this floor (and grows it above), instead of past it into noise.
+# Cells one native frame spans at ``scale == 1.0`` (~8px cells → 24); mirrors the
+# kitty placement (``scaled_px // 8``) so at full scale every renderer agrees.
+BASE_UNICODE_COLS = FRAME_W // 8
+# Legibility floor for half-blocks: a cell samples 1 horizontal + 2 vertical taps,
+# so below this width the pet is an unreadable blob regardless of scale (kitty/GUI
+# draw true pixels, no floor). ``scale`` shrinks the unicode pet TO this floor, not past it.
 UNICODE_MIN_COLS = 16
 
 
 def cols_for_scale(scale: float) -> int:
-    """Half-block width implied by *scale*, clamped to the legibility floor.
-
-    Above the floor it tracks the kitty cell box (``scaled_px // 8``) so the two
-    renderers converge at larger sizes; below it the floor keeps the sprite
-    readable rather than letting it devolve into a blob.
-    """
+    """Half-block width implied by *scale*, clamped to the legibility floor (tracks the kitty cell box above it)."""
     return max(UNICODE_MIN_COLS, round(BASE_UNICODE_COLS * (scale or DEFAULT_SCALE)))
 
 
@@ -76,12 +54,7 @@ def resolve_cols(scale: float, unicode_cols: int = 0) -> int:
 
 
 class PetState(str, Enum):
-    """Animation state a pet can be shown in.
-
-    These are Hermes' activity state names. They are not always identical to the
-    source atlas row names: Codex-format pets use rows like ``jumping`` /
-    ``running`` while the UI keeps the shorter ``jump`` / ``run`` names.
-    """
+    """Animation state a pet can be shown in (Hermes names; Codex rows say ``jumping``/``running`` for ``jump``/``run``)."""
 
     IDLE = "idle"
     WAVE = "wave"
@@ -92,56 +65,25 @@ class PetState(str, Enum):
     WAITING = "waiting"
 
 
-# Legacy Hermes/petdex row order (top -> bottom) used by the older 8-row,
-# 9-column atlas shape.
-LEGACY_STATE_ROWS: list[str] = [
-    PetState.IDLE.value,
-    PetState.WAVE.value,
-    PetState.RUN.value,
-    PetState.FAILED.value,
-    PetState.REVIEW.value,
-    PetState.JUMP.value,
-    "extra1",
-    "extra2",
-]
+# Legacy Hermes/petdex row order (top -> bottom) for the older 8-row, 9-column atlas.
+LEGACY_STATE_ROWS: list[str] = ["idle", "wave", "run", "failed", "review", "jump", "extra1", "extra2"]
 
-# Current Petdex row order (top -> bottom) used by 1536x1872 atlases:
-# 8 columns x 9 rows of 192x208 cells.
-CODEX_STATE_ROWS: list[str] = [
-    PetState.IDLE.value,
-    "running-right",
-    "running-left",
-    "waving",
-    "jumping",
-    PetState.FAILED.value,
-    PetState.WAITING.value,
-    "running",
-    PetState.REVIEW.value,
-]
+# Current Petdex row order (top -> bottom) for 1536x1872 atlases (8 cols x 9 rows).
+CODEX_STATE_ROWS: list[str] = ["idle", "running-right", "running-left", "waving", "jumping", "failed", "waiting", "running", "review"]
 
-# Default/fallback for callers without a sheet. Prefer the current 9-row Codex
-# format because generated pets and the public Codex pet contract use it.
+# Default for callers without a sheet: generated pets and the Codex contract use 9 rows.
 STATE_ROWS: list[str] = CODEX_STATE_ROWS
-
-# Canonical Hermes activity names -> accepted row-name aliases in descending
-# preference. This keeps our internal state names stable (`wave`/`jump`/`run`)
-# while matching Petdex's current `waving`/`jumping`/`running` taxonomy.
+# Canonical Hermes names -> accepted row-name aliases in descending preference.
+_CODEX_NAMES = {"wave": "waving", "jump": "jumping", "run": "running"}
 STATE_ALIASES: dict[str, tuple[str, ...]] = {
-    PetState.IDLE.value: (PetState.IDLE.value,),
-    PetState.WAVE.value: (PetState.WAVE.value, "waving"),
-    PetState.JUMP.value: (PetState.JUMP.value, "jumping"),
-    PetState.RUN.value: (PetState.RUN.value, "running"),
-    PetState.FAILED.value: (PetState.FAILED.value,),
-    PetState.REVIEW.value: (PetState.REVIEW.value,),
-    PetState.WAITING.value: (PetState.WAITING.value,),
+    s: (s, _CODEX_NAMES[s]) if s in _CODEX_NAMES else (s,) for s in ("idle", "wave", "jump", "run", "failed", "review", "waiting")
 }
 
 
 def state_aliases_for(state: "PetState | str") -> tuple[str, ...]:
     """Return accepted row-name aliases for *state* (always non-empty)."""
     value = state.value if isinstance(state, PetState) else str(state)
-    aliases = STATE_ALIASES.get(value)
-    return aliases if aliases else (value,)
+    return STATE_ALIASES.get(value) or (value,)
 
 
 def state_rows_for_grid(row_count: int | None) -> list[str]:
@@ -150,18 +92,10 @@ def state_rows_for_grid(row_count: int | None) -> list[str]:
         rows = int(row_count or 0)
     except (TypeError, ValueError):
         rows = 0
-
-    if rows >= len(CODEX_STATE_ROWS):
-        return CODEX_STATE_ROWS
-    return LEGACY_STATE_ROWS
+    return CODEX_STATE_ROWS if rows >= len(CODEX_STATE_ROWS) else LEGACY_STATE_ROWS
 
 
 def state_row_index(state: "PetState | str", row_count: int | None = None) -> int:
     """Return the spritesheet row index for *state* (clamped, never raises)."""
     rows = state_rows_for_grid(row_count)
-    for name in state_aliases_for(state):
-        try:
-            return rows.index(name)
-        except ValueError:
-            continue
-    return 0  # fall back to the idle row
+    return next((rows.index(name) for name in state_aliases_for(state) if name in rows), 0)  # 0 = idle row

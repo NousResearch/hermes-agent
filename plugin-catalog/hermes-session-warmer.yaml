@@ -1,0 +1,24 @@
+name: hermes-session-warmer
+repo: https://github.com/mojomast/hermes-session-warmer
+sha: eba7be111c44e4ac6b702cdcb341c8d71da1c57e
+version: "0.1.0"
+description: >-
+  Opt-in bounded idle prompt warming for explicitly allowlisted OpenAI-compatible
+  text-chat endpoints. Sends potentially billable requests; no tool execution or
+  conversation writes. Does not support Codex/Responses or native Anthropic.
+  Authenticated endpoints use optional HERMES_SESSION_WARMER_API_KEY.
+maintainer: mojomast
+tier: community
+category: models
+docs_url: https://github.com/mojomast/hermes-session-warmer#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - on_session_end
+  provides_middleware:
+    - llm_request
+  requires_env: []

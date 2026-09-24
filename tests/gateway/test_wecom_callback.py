@@ -6,8 +6,19 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.wecom import callback_adapter as _callback_mod
 from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
+
+# ``_build_event`` parses inbound XML with defusedxml, which ships with the
+# ``wecom`` extra (and transitively with ``youtube``, hence ``[all]`` in CI). A
+# dev venv without either extra cannot exercise the parser; the crypto,
+# routing, token-refresh and body-size tests below do not touch it and run
+# regardless. This is a dependency gate, not a host-OS gate.
+requires_defusedxml = pytest.mark.skipif(
+    not _callback_mod.DEFUSEDXML_AVAILABLE,
+    reason="defusedxml not installed (uv sync --extra wecom)",
+)
 
 
 def _app(name="test-app", corp_id="ww1234567890", agent_id="1000002"):
@@ -46,6 +57,7 @@ class TestWecomCrypto:
 
 
 class TestWecomCallbackEventConstruction:
+    @requires_defusedxml
     def test_build_event_extracts_text_message(self):
         adapter = WecomCallbackAdapter(_config())
         xml_text = """
@@ -140,6 +152,7 @@ class TestWecomCallbackSendTokenRefresh:
 
 
 class TestWecomCallbackPollLoop:
+    @requires_defusedxml
     @pytest.mark.asyncio
     async def test_poll_loop_dispatches_handle_message(self, monkeypatch):
         adapter = WecomCallbackAdapter(_config())

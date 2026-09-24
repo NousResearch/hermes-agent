@@ -14,7 +14,6 @@ can't silently regress to swallowing every exception.
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import pytest
 
@@ -108,34 +107,3 @@ def test_handler_delegates_unknown_errors_to_default(monkeypatch):
 # ---------------------------------------------------------------------
 
 
-def test_unhandled_transient_error_in_task_does_not_propagate_to_loop():
-    """Smoke test the wiring as a loop would actually use it.
-
-    Schedules a task that raises TimedOut and is never awaited. With the
-    handler installed, the loop completes normally and logs a warning
-    instead of dying. Without the handler, asyncio would emit
-    ``Task exception was never retrieved`` and (depending on Python's
-    debug mode) potentially escalate.
-    """
-
-    async def raiser():
-        raise TimedOut("upstream timeout")
-
-    async def main():
-        loop = asyncio.get_running_loop()
-        loop.set_exception_handler(_gateway_loop_exception_handler)
-        task = loop.create_task(raiser())
-        # Give the task a tick to run and raise.
-        await asyncio.sleep(0)
-        # Don't await ``task`` — let it become an unhandled-exception task.
-        del task
-        import gc
-
-        gc.collect()
-        await asyncio.sleep(0)
-
-    # If the safety net works, this returns cleanly. If not, the test
-    # would still pass (asyncio's default is a warning, not a crash) —
-    # the real assertion is that no unhandled exception escapes the
-    # ``run`` boundary.
-    asyncio.run(main())

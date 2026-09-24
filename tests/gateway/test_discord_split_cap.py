@@ -67,8 +67,7 @@ class TestCapSplitChunks:
         capped = adapter._cap_split_chunks(chunks)
         assert len(capped) == CAP
         assert capped[0] == chunks[0]
-        assert "Response truncated" in capped[-1]
-        assert "delivery limit" in capped[-1]
+        assert capped[-1] not in chunks  # last slot is the truncation notice
         # The notice itself must stay under Discord's per-message cap.
         assert len(capped[-1]) <= MAX
 

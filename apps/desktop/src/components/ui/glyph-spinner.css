@@ -1,0 +1,123 @@
+/* Compositor-only glyph spinner.
+ *
+ * The previous implementation ticked a setInterval and replaced
+ * `glyph.textContent` every frame. Replacing a text node is a structural DOM
+ * mutation, so each tick scheduled a style recalculation — and because these
+ * spinners sit inside the transcript, that recalc resolved against the whole
+ * document. Scheduler attribution on an incident trace put the large majority
+ * of the wide document-scale recalcs on this ticker, and none of the cheap
+ * scoped ones; the trace numbers are in the PR that introduced this file.
+ *
+ * Every frame is now in the DOM from mount as a vertical strip, and a
+ * `transform: translateY` keyframes animation scrolls it one frame at a time.
+ * Transform animations run on the compositor: no JS timer, no text mutation,
+ * no style recalc, no layout, nothing scheduled per frame.
+ *
+ * The strip is N frames tall and each frame is exactly 1em, so travelling N
+ * frame-heights scrolls through the whole strip exactly once. `steps(N)`
+ * (jump-end) samples that travel at 0, 1/N, ... (N-1)/N, i.e. it parks on
+ * frame 0..N-1 for one interval each and then wraps — the same sequence and
+ * cadence the ticker produced. Both N and the duration arrive as custom
+ * properties set inline per spinner, so all 18 spinner variants (16 distinct
+ * frame/interval shapes) share this one rule set with no generated or
+ * colliding per-variant keyframes. Every var() carries the braille default as
+ * its fallback, so a missing custom property degrades to a working spinner
+ * rather than an invalid declaration.
+ */
+
+.glyph-spinner {
+  /* Single source of truth for the frame metric: the clip viewport, each frame
+     box, and the keyframe travel all derive from this, so they cannot drift
+     apart. `em` resolves against the element it is used on, and font-size is
+     uniform across this subtree — nothing below .glyph-spinner declares one —
+     so the strip's `em` and the frame's `em` are the same length. */
+  --glyph-spinner-frame-height: 1em;
+
+  display: block;
+  height: var(--glyph-spinner-frame-height, 1em);
+  overflow: hidden;
+  line-height: 1;
+}
+
+/* Decorative and aria-hidden, so it must not land in a transcript copy. These
+   spinners sit inside [data-selectable-text] subtrees (tool/delegate,
+   tool/fallback), where the strip would otherwise contribute all N glyphs to a
+   selection where the old one-character implementation contributed one.
+   Descendants are named explicitly rather than left to inherit: the competing
+   `[data-selectable-text='true'] *` rule carries the same (0,1,0) specificity,
+   so relying on inheritance would make the winner depend on stylesheet order. */
+.glyph-spinner,
+.glyph-spinner *,
+[data-selectable-text='true'] .glyph-spinner,
+[data-selectable-text='true'] .glyph-spinner * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.glyph-spinner__strip {
+  display: block;
+  animation: glyph-spinner-advance var(--glyph-spinner-duration, 800ms) steps(var(--glyph-spinner-frames, 10)) infinite;
+}
+
+/* Promote to a compositor layer — without it, trace instrumentation recorded a
+   non-zero compositeFailed on every animation record. Scoped to spinners that
+   are actually animating: a permanently promoted layer per parked spinner is
+   pure memory at fan-out breadth, where many spinners sit mounted and paused
+   at once. */
+.glyph-spinner:not([data-paused='true']) .glyph-spinner__strip {
+  will-change: transform;
+}
+
+/* The global renderer pause and the reduced-motion freeze stop the animation;
+   drop the layer hint there too, so parked spinners hold no compositor layer. */
+:root[data-renderer-animations-paused] .glyph-spinner__strip {
+  will-change: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glyph-spinner__strip {
+    will-change: auto;
+  }
+}
+
+.glyph-spinner__frame {
+  display: block;
+  height: var(--glyph-spinner-frame-height, 1em);
+  /* Clip each frame to its own box. Braille (U+2800..U+28FF) renders from a
+     system fallback face — JetBrains Mono has no glyphs in that block — and
+     fallback metrics are not guaranteed to fit the 1em box, so ink from the
+     neighbouring frames could otherwise bleed into the viewport. */
+  overflow: hidden;
+  line-height: 1;
+}
+
+/* Parked, for either of two reasons: the pane is a kept-alive but inactive tab
+   (usePaneVisible), or the caller passed `paused` to hold the spinner still
+   while it stays mounted through a fade-out (ChatSwapOverlay). Hidden panes
+   normally get `content-visibility: hidden`, which already stops animations in
+   the skipped subtree, but that containment has a runtime kill switch and
+   older pane layers only set `visibility: hidden` — which does NOT stop an
+   animation. This keeps the original explicit guarantee ("N mounted tabs each
+   ticking burns CPU for pixels nobody can see") independent of which of those
+   is in play. */
+.glyph-spinner[data-paused='true'] .glyph-spinner__strip {
+  animation-play-state: paused;
+}
+
+/* The travel MUST be an absolute length, never a percentage. A percentage
+   translate resolves against the strip's own box, so Chromium treats the
+   animation as layout-dependent and refuses to composite it — trace
+   instrumentation showed compositeFailed set on every record while the
+   keyframes used translateY(-100%), and clean compositing on a sibling
+   transform animation that travelled an absolute length (numbers in the PR).
+   N frames x the frame height is the same distance, computed rather than
+   box-relative. */
+@keyframes glyph-spinner-advance {
+  from {
+    transform: translateY(0);
+  }
+
+  to {
+    transform: translateY(calc(var(--glyph-spinner-frames, 10) * -1 * var(--glyph-spinner-frame-height, 1em)));
+  }
+}

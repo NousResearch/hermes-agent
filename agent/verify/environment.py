@@ -1,9 +1,8 @@
 """Environment manifest for project verification.
 
-Ported from superagent-ai/grok-cli ``src/verify/environment.ts``.
-The manifest lives at ``<project>/.hermes/environment.json`` and is the
-user-editable source of truth: when present and valid it wins over fresh
-static detection.
+Ported from superagent-ai/grok-cli ``src/verify/environment.ts``. The manifest
+at ``<project>/.hermes/environment.json`` is the user-editable source of truth:
+when present and valid it wins over fresh static detection.
 """
 
 from __future__ import annotations
@@ -24,52 +23,26 @@ def manifest_path(root: Path) -> Path:
 
 
 def load_manifest(root: Path) -> Recipe | None:
-    """Load the saved recipe from the manifest, tolerating malformed files.
-
-    Mirrors grok's ``loadVerifyEnvironment``: any read/parse/shape problem
-    returns ``None`` rather than raising, so a corrupt manifest degrades to
-    fresh detection instead of breaking ``hermes verify``.
-    """
-    path = manifest_path(root)
+    """Load the saved recipe; any read/parse/shape problem returns ``None`` so a
+    corrupt manifest degrades to fresh detection. Accepts the wrapped
+    ``{version, recipe}`` shape and a bare recipe."""
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
+        manifest = json.loads(manifest_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # ValueError includes JSONDecodeError
         return None
-    try:
-        manifest = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(manifest, dict):
-        return None
-    # Accept both the wrapped {version, recipe} shape and a bare recipe.
-    recipe_raw = manifest.get("recipe", manifest)
-    return Recipe.from_dict(recipe_raw)
+    return Recipe.from_dict(manifest.get("recipe", manifest)) if isinstance(manifest, dict) else None
 
 
 def save_manifest(root: Path, recipe: Recipe) -> Path:
-    """Persist ``recipe`` as the project's verify manifest.
-
-    Writes the versioned wrapper shape (grok's ``saveVerifyEnvironment``
-    equivalent) and returns the manifest path.
-    """
+    """Persist ``recipe`` in the versioned wrapper shape; returns the manifest path."""
     path = manifest_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": MANIFEST_VERSION,
-        "recipe": recipe.to_dict(),
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-    }
+    payload = {"version": MANIFEST_VERSION, "recipe": recipe.to_dict(), "updatedAt": datetime.now(timezone.utc).isoformat()}
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 
 
 def load_or_detect(root: Path) -> tuple[Recipe | None, str]:
-    """Return (recipe, source) where source is 'manifest' or 'detected'.
-
-    A saved manifest wins over fresh detection, matching grok-cli's
-    behavior where ``.grok/environment.json`` is the source of truth.
-    """
+    """Return ``(recipe, source)``; a saved manifest ('manifest') wins over 'detected'."""
     saved = load_manifest(root)
-    if saved is not None:
-        return saved, "manifest"
-    return detect_recipe(root), "detected"
+    return (saved, "manifest") if saved is not None else (detect_recipe(root), "detected")

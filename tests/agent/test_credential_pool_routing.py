@@ -83,68 +83,6 @@ class TestGatewayTurnRoutePool:
 # 3 & 4. Eager fallback deferred/fires based on credential pool
 # ---------------------------------------------------------------------------
 
-class TestEagerFallbackWithPool:
-    """Test the eager fallback guard in run_agent.py's error handling loop."""
-
-    def _make_agent(self, has_pool=True, pool_has_creds=True, has_fallback=True):
-        """Create a minimal AIAgent mock with the fields needed."""
-        from run_agent import AIAgent
-
-        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
-            agent = AIAgent()
-
-        agent._credential_pool = None
-        if has_pool:
-            pool = MagicMock()
-            pool.has_available.return_value = pool_has_creds
-            agent._credential_pool = pool
-
-        agent._fallback_chain = [{"model": "fallback/model"}] if has_fallback else []
-        agent._fallback_index = 0
-        agent._try_activate_fallback = MagicMock(return_value=True)
-        agent._emit_status = MagicMock()
-
-        return agent
-
-    def test_eager_fallback_deferred_when_pool_has_credentials(self):
-        """429 with active pool should NOT trigger eager fallback."""
-        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
-
-        # Simulate the check from run_agent.py lines 7180-7191
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
-
-        agent._try_activate_fallback.assert_not_called()
-
-    def test_eager_fallback_fires_when_no_pool(self):
-        """429 without pool should trigger eager fallback."""
-        agent = self._make_agent(has_pool=False, has_fallback=True)
-
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
-
-        agent._try_activate_fallback.assert_called_once()
-
-    def test_eager_fallback_fires_when_pool_exhausted(self):
-        """429 with exhausted pool should trigger eager fallback."""
-        agent = self._make_agent(has_pool=True, pool_has_creds=False, has_fallback=True)
-
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
-
-        agent._try_activate_fallback.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

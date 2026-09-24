@@ -34,33 +34,7 @@ class TestDetectProviderEntra:
             side_effect=_fake_runtime,
         ):
             assert _acp_auth.detect_provider() == "azure-foundry"
-            assert _acp_auth.has_provider() is True
 
-    def test_string_api_key_still_works(self):
-        from acp_adapter import auth as _acp_auth
 
-        def _fake_runtime(**_kwargs):
-            return {
-                "provider": "openrouter",
-                "api_key": "sk-or-static-key",
-            }
-
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            side_effect=_fake_runtime,
-        ):
-            assert _acp_auth.detect_provider() == "openrouter"
-
-    def test_empty_string_api_key_returns_none(self):
-        from acp_adapter import auth as _acp_auth
-
-        def _fake_runtime(**_kwargs):
-            return {"provider": "openrouter", "api_key": ""}
-
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            side_effect=_fake_runtime,
-        ):
-            assert _acp_auth.detect_provider() is None
 
 

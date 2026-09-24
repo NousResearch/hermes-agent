@@ -4,12 +4,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
 import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
 import { prettyName, withoutKey } from './helpers'
-import { ListRow } from './primitives'
+import { LIST_ROW_COLUMNS, ListRow } from './primitives'
 import type { EnvRowProps } from './types'
 
 export type KeyRowProps = Omit<EnvRowProps, 'info' | 'varKey'>
@@ -71,7 +72,7 @@ export function KeyField({
   const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [varKey]: e.target.value }))
 
   const keydown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && dirty) {
+    if (isSubmitEnter(e) && dirty) {
       void onSave(varKey)
     } else if (e.key === 'Escape' && editing) {
       e.preventDefault()
@@ -121,7 +122,6 @@ export function KeyField({
               disabled={busy}
               onClick={() => void onClear(varKey)}
               size="icon-xs"
-              title={t.settings.credentials.remove}
               type="button"
               variant="ghost"
             >
@@ -204,7 +204,7 @@ export function CredentialKeyCard({
       {/* One CSS grid: 1 col stacked, 2 cols at @2xl. p-3 card padding = gap-3
           row/col gaps, everything top-left aligned (items-start), no indents.
           The label row is h-8 to line up with the input row beside it. */}
-      <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:gap-y-3">
+      <div className={cn('grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:gap-y-3', LIST_ROW_COLUMNS)}>
         <div className="flex h-8 min-w-0 items-center gap-2">
           <span
             className={cn('size-2 shrink-0 rounded-full', info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
@@ -290,7 +290,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
     >
       {/* Same grid as CredentialKeyCard: 1 col stacked, 2 cols at @2xl, p-3 =
           gap-3, items-start, label row h-8 to line up with the input row. */}
-      <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:gap-y-3">
+      <div className={cn('grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:gap-y-3', LIST_ROW_COLUMNS)}>
         <div className="flex h-8 min-w-0 items-center gap-2">
           <span
             className={cn(

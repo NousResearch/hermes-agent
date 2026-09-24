@@ -2347,8 +2347,10 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
         # agent's one-shot notice so the TUI/Desktop user sees which provider actually answered.
         from hermes_cli.fallback_config import pre_agent_fallback_notice
-        # requested_provider=None means resolve_runtime_provider read the persisted config provider.
-        primary_provider = requested_provider or (_load_cfg().get("model") or {}).get("provider")
+        # requested_provider=None means resolve_runtime_provider read the persisted config provider;
+        # ``model: <id>`` (string shorthand) names no provider.
+        cfg_model = _load_cfg().get("model")
+        primary_provider = requested_provider or (cfg_model.get("provider") if isinstance(cfg_model, dict) else None)
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
         return resolution.selected_model, resolution.runtime

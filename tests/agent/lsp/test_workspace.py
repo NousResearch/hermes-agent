@@ -93,7 +93,13 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
 
 
 def test_normalize_path_expands_tilde(monkeypatch):
+    # os.path.expanduser resolves ~ from USERPROFILE (then HOMEDRIVE+HOMEPATH)
+    # on Windows and from HOME on POSIX. Set all of them so the test pins the
+    # same home on every platform instead of leaking the real Windows profile.
     monkeypatch.setenv("HOME", "/home/user")
+    monkeypatch.setenv("USERPROFILE", "/home/user")
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
     p = normalize_path("~/x.py")
     assert p == os.path.abspath("/home/user/x.py")
 

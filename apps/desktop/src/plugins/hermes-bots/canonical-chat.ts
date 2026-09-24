@@ -48,6 +48,15 @@ export const PROFILE_SESSION_LIST_LIMIT = 200
  *  recognize canonical-titled tabs without restating the literal. */
 export const CANONICAL_CHAT_TITLE = 'Bot Chat'
 
+/** The registry root and current tip are the only canonical tile keys we can
+ * verify without the hidden lineage's sidebar projection. */
+export function isStaleCanonicalChatTile(
+  tile: { storedSessionId: string; workspaceTabTitle?: string },
+  canonicalIds: readonly string[]
+): boolean {
+  return tile.workspaceTabTitle === CANONICAL_CHAT_TITLE && !canonicalIds.includes(String(tile.storedSessionId))
+}
+
 /** A `session.list` row as the registry lookup reads it. CanonicalSession
  *  models the roster's `canonical_session` field, which carries no
  *  `message_count` — the listing row does. `readonly` because the count is
@@ -92,6 +101,15 @@ async function openStoredBotChat(
   const ownerKey = botWorkspaceOwnerKey(bot)
   const hasAuthoritativeCount = typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+
+  // Hidden Bot Chat lineages never reach the sidebar's lineage index. Reconcile
+  // old canonical tiles against the exact-title registry before the open; an
+  // empty front allowlist discards stale tiles without stealing focus from a
+  // background refresh or a side chat.
+  if (typeof host.focusOpenWorkspaceSession === 'function') {
+    const canonicalIds = [String(summary.id), String(storedId)]
+    host.focusOpenWorkspaceSession(ownerKey, tile => isStaleCanonicalChatTile(tile, canonicalIds), [])
+  }
 
   // Current SDKs export the Bot-specific budget. The fallback preserves
   // compatibility with older hosts and isolated plugin test harnesses.

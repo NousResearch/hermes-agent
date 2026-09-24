@@ -20,6 +20,8 @@ const { openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
 
 vi.mock('./canonical-chat', () => ({
   CANONICAL_CHAT_TITLE: 'Bot Chat',
+  isStaleCanonicalChatTile: (tile: { storedSessionId: string; workspaceTabTitle?: string }, ids: string[]) =>
+    tile.workspaceTabTitle === 'Bot Chat' && !ids.includes(tile.storedSessionId),
   ensureBotMetadata: vi.fn(async () => ({})),
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat,

@@ -31,7 +31,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RosterRow } from './types'
 
 const { hostMock, persistMock, requestForBotMock, saveBotMetaMock } = vi.hoisted(() => ({
-  hostMock: { openSession: vi.fn(), request: vi.fn() },
+  hostMock: { focusOpenWorkspaceSession: vi.fn(), openSession: vi.fn(), request: vi.fn() },
   persistMock: vi.fn(),
   requestForBotMock: vi.fn(),
   saveBotMetaMock: vi.fn()
@@ -158,6 +158,34 @@ describe('the registry row wins, always', () => {
     // The durable registry id names the chat; the tip is what takes focus.
     expect(opened).toEqual({ openedId: 'tip-9', registryId: 'root-1' })
     expect(hostMock.openSession.mock.calls[0][0]).toBe('tip-9')
+  })
+
+  it('discards only stale canonical tiles before opening a hidden lineage tip without fronting another tab', async () => {
+    respondWith(method =>
+      method === 'session.list'
+        ? { sessions: [{ id: 'root-1', resolved_id: 'tip-9', root_title: 'Bot Chat', title: 'Bot Chat' }] }
+        : {}
+    )
+    const tiles = [
+      { storedSessionId: 'old-tip', workspaceTabTitle: 'Bot Chat' },
+      { storedSessionId: 'root-1', workspaceTabTitle: 'Bot Chat' },
+      { storedSessionId: 'tip-9', workspaceTabTitle: 'Bot Chat' },
+      { storedSessionId: 'side-chat', workspaceTabTitle: 'Another chat' }
+    ]
+    hostMock.focusOpenWorkspaceSession.mockImplementation((_owner, probe, allowed) => {
+      expect(allowed).toEqual([])
+      expect(tiles.filter(probe)).toEqual([tiles[0]])
+      return null
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+    await openBotCanonicalChat('ops')
+
+    expect(hostMock.focusOpenWorkspaceSession).toHaveBeenCalledWith('bot:ops', expect.any(Function), [])
+    expect(hostMock.openSession).toHaveBeenCalledWith('tip-9', expect.objectContaining({ intent: 'in-place' }))
+    expect(hostMock.focusOpenWorkspaceSession.mock.invocationCallOrder[0]).toBeLessThan(
+      hostMock.openSession.mock.invocationCallOrder[0]
+    )
   })
 
   it('never reads or writes a stored pointer while opening', async () => {

@@ -1776,8 +1776,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 logger.warning(
                     "%s OAuth refresh token is terminally invalid (%s); clearing local token state. "
                     "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
-                self._clear_terminal_tokens_state(entry, exc)
-                self._quarantine_sources(entry, {"device_code"})
+                singleton_cleared = self._clear_terminal_tokens_state(entry, exc)
+                # ``manual:device_code`` may be either an independent grant or a
+                # legacy alias of the singleton.  The auth store's matching
+                # token pair, not its source label, proves which it is.
+                if singleton_cleared:
+                    self._quarantine_sources(entry, {"device_code"})
                 self._mark_dead_refresh_grant(entry, exc)
                 return None
         elif self.provider == "nous":
@@ -1833,8 +1837,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 last_error_message=str(exc),
             )
 
-    def _clear_terminal_tokens_state(self, entry: PooledCredential, exc: Exception) -> None:
-        """Drop the dead Codex/xAI token pair from auth.json unless a peer already rotated it."""
+    def _clear_terminal_tokens_state(self, entry: PooledCredential, exc: Exception) -> bool:
+        """Clear a proven-dead Codex/xAI singleton and report whether it matched the failed grant."""
         display = _TOKENS_SINGLETON_PROVIDERS[self.provider][1]
         try:
             with _auth_store_lock():
@@ -1843,7 +1847,17 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 tokens = (state.get("tokens") or {}) if isinstance(state, dict) else None
                 if isinstance(tokens, dict):
                     store_refresh = str(tokens.get("refresh_token") or "").strip()
-                    if not store_refresh or store_refresh == str(entry.refresh_token or "").strip():
+                    entry_refresh = str(entry.refresh_token or "").strip()
+                    store_access = str(tokens.get("access_token") or "").strip()
+                    entry_access = str(entry.access_token or "").strip()
+                    same_grant = bool(store_refresh and store_refresh == entry_refresh)
+                    # An access-only singleton has no refresh-token evidence.
+                    # It can only be cleared for the exact credential that
+                    # supplied its access token; a matching principal is not
+                    # enough because separate grants can share one account.
+                    if not store_refresh:
+                        same_grant = bool(store_access and store_access == entry_access)
+                    if same_grant:
                         tokens.pop("access_token", None)
                         tokens.pop("refresh_token", None)
                         state["tokens"] = tokens
@@ -1857,8 +1871,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                         }
                         _save_provider_state(auth_store, self.provider, state)
                         _save_auth_store(auth_store)
+                        return True
         except Exception as clear_exc:
             logger.debug("Failed to clear terminal %s OAuth state: %s", display, clear_exc)
+        return False
 
     def _clear_terminal_nous_state(self, entry: PooledCredential, exc: Exception) -> None:
         try:

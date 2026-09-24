@@ -19,7 +19,7 @@ import pytest
 
 from agent import anthropic_credentials as ac
 from agent import credential_pool as cp
-from agent.credential_pool import STATUS_DEAD, CredentialPool, PooledCredential
+from agent.credential_pool import STATUS_DEAD, CredentialPool, PooledCredential, load_pool
 
 
 def _pool(provider: str) -> CredentialPool:
@@ -119,6 +119,80 @@ def test_surviving_manual_entry_is_marked_dead_after_terminal_refresh(monkeypatc
 
     assert [e.id for e in pool._entries] == ["e1"]  # manual rows are never dropped by the quarantine
     assert pool._entries[0].last_status == STATUS_DEAD
+
+
+def _codex_jwt(account: str, subject: str, expires_at: float) -> str:
+    def segment(payload: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+    payload = {
+        "sub": subject,
+        "exp": int(expires_at),
+        "https://api.openai.com/auth": {"chatgpt_account_id": account},
+    }
+    return f"{segment({'alg': 'none'})}.{segment(payload)}.sig"
+
+
+def _write_codex_store(home, singleton_tokens: dict, manual_tokens: dict) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {"openai-codex": {"tokens": singleton_tokens, "auth_mode": "chatgpt"}},
+        "credential_pool": {"openai-codex": [
+            {"id": "singleton", "label": "device_code", "auth_type": "oauth", "priority": 0,
+             "source": "device_code", **singleton_tokens},
+            {"id": "manual", "label": "manual", "auth_type": "oauth", "priority": 1,
+             "source": "manual:device_code", **manual_tokens},
+        ]},
+    }), encoding="utf-8")
+
+
+def test_terminal_manual_codex_refresh_preserves_independent_access_only_singleton(tmp_path, monkeypatch):
+    """A failed manual grant cannot clear a separate access-only singleton from auth.json."""
+    home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    now = time.time()
+    singleton_access = _codex_jwt("account-A", "user-A", now + 3600)
+    manual_access = _codex_jwt("account-B", "user-B", now + 3600)
+    _write_codex_store(
+        home,
+        {"access_token": singleton_access},
+        {"access_token": manual_access, "refresh_token": "rt-B"},
+    )
+    pool = load_pool("openai-codex")
+    manual = next(entry for entry in pool.entries() if entry.id == "manual")
+    monkeypatch.setattr(cp.auth_mod, "_is_terminal_codex_oauth_refresh_error", lambda exc: True)
+
+    assert pool._recover_failed_refresh(manual, RuntimeError("invalid_grant")) is None
+
+    on_disk = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    state = on_disk["providers"]["openai-codex"]
+    assert state["tokens"] == {"access_token": singleton_access}
+    assert "last_auth_error" not in state
+    assert pool.select() is not None and pool.current().id == "singleton"
+    assert next(entry for entry in pool.entries() if entry.id == "manual").last_status == STATUS_DEAD
+
+
+def test_terminal_manual_codex_refresh_quarantines_same_refresh_token_alias(tmp_path, monkeypatch):
+    """A manual alias that shares the rejected singleton refresh grant retires both rows."""
+    home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    access_token = _codex_jwt("account-A", "user-A", time.time() + 3600)
+    shared_tokens = {"access_token": access_token, "refresh_token": "rt-shared"}
+    _write_codex_store(home, shared_tokens, shared_tokens)
+    pool = load_pool("openai-codex")
+    manual = next(entry for entry in pool.entries() if entry.id == "manual")
+    monkeypatch.setattr(cp.auth_mod, "_is_terminal_codex_oauth_refresh_error", lambda exc: True)
+
+    assert pool._recover_failed_refresh(manual, RuntimeError("invalid_grant")) is None
+
+    on_disk = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    assert on_disk["providers"]["openai-codex"]["tokens"] == {}
+    assert on_disk["providers"]["openai-codex"]["last_auth_error"]["relogin_required"] is True
+    assert [entry.id for entry in pool.entries()] == ["manual"]
+    assert pool.entries()[0].last_status == STATUS_DEAD
+    assert pool.select() is None
 
 def _expired_invoke_jwt() -> str:
     def _part(payload: dict) -> str:

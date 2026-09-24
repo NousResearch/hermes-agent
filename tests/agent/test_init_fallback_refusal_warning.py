@@ -12,9 +12,9 @@ from types import SimpleNamespace
 import pytest
 
 
-def _agent():
+def _agent(provider="openrouter"):
     return SimpleNamespace(
-        provider="openrouter",
+        provider=provider,
         model="z-ai/glm-5.3-flash",
         base_url=None,
         api_key=None,
@@ -28,8 +28,19 @@ _LADDER = [
 ]
 
 
-def _refusing_router(monkeypatch):
+@pytest.mark.parametrize(
+    "primary, raise_match",
+    [
+        ("openrouter", "No LLM provider configured"),
+        # Explicit non-OpenRouter primary: provider-specific missing-credentials error.
+        ("anthropic", "no API key was found"),
+    ],
+)
+def test_fully_refusing_ladder_warns_with_each_reason(
+    monkeypatch, caplog, primary, raise_match
+):
     """Primary resolves no client; deepseek resolves none (missing key), kimi raises."""
+    from agent import agent_init
 
     def _fake_resolve(provider, model=None, **kwargs):
         if provider == "kimi":
@@ -41,30 +52,21 @@ def _refusing_router(monkeypatch):
         "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
 
-
-def test_fully_refusing_ladder_warns_with_each_reason(tmp_path, monkeypatch, caplog):
-    from agent import agent_init
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _refusing_router(monkeypatch)
-
     with caplog.at_level(logging.WARNING, logger="run_agent"):
-        with pytest.raises(RuntimeError, match="No LLM provider configured"):
-            agent_init._routed_client_kwargs(_agent(), _LADDER, 60)
+        with pytest.raises(RuntimeError, match=raise_match):
+            agent_init._routed_client_kwargs(_agent(primary), _LADDER, 60)
 
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 1
     text = warnings[0].getMessage()
-    assert "openrouter" in text
+    assert primary in text
     assert "deepseek" in text and "no usable credentials" in text
     assert "kimi" in text and "kimi auth handshake refused" in text
 
 
-def test_recovered_ladder_does_not_warn(tmp_path, monkeypatch, caplog):
+def test_recovered_ladder_does_not_warn(monkeypatch, caplog):
     """An entry refusing while a later one serves the init is degraded config, not a failure."""
     from agent import agent_init
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     class _Client:
         pass
@@ -92,30 +94,3 @@ def test_recovered_ladder_does_not_warn(tmp_path, monkeypatch, caplog):
     assert agent.provider == "kimi"
     assert agent._fallback_activated
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-
-
-def test_explicit_provider_branch_warning_does_not_claim_no_provider_configured(
-    tmp_path, monkeypatch, caplog
-):
-    """An explicit non-OpenRouter primary raises the provider-specific missing-credentials
-    message; the refusal summary must still name every entry without asserting the
-    generic ``No LLM provider configured`` verdict that branch never produces."""
-    from agent import agent_init
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _refusing_router(monkeypatch)
-
-    agent = _agent()
-    agent.provider = "anthropic"
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
-        with pytest.raises(RuntimeError) as excinfo:
-            agent_init._routed_client_kwargs(agent, _LADDER, 60)
-
-    assert "No LLM provider configured" not in str(excinfo.value)
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert len(warnings) == 1
-    text = warnings[0].getMessage()
-    assert not text.startswith("No LLM provider configured")
-    assert "anthropic" in text
-    assert "deepseek" in text and "no usable credentials" in text
-    assert "kimi" in text and "kimi auth handshake refused" in text

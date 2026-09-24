@@ -1,7 +1,21 @@
 import { atom, computed } from 'nanostores'
 
 import type { OverlayState } from './interfaces.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { $uiState } from './uiStore.js'
+
+export function capturePromptResponseGuard<K extends 'approval' | 'clarify' | 'sudo' | 'secret'>(
+  key: K,
+  prompt: OverlayState[K]
+): () => boolean {
+  const destination = captureDestination()
+  const info = $uiState.get().info
+
+  return () => Boolean(prompt) && isCurrentDestination(destination) &&
+    $uiState.get().info?.execution_epoch === info?.execution_epoch &&
+    $uiState.get().info?.execution_generation === info?.execution_generation &&
+    $overlayState.get()[key] === prompt
+}
 
 const buildOverlayState = (): OverlayState => ({
   agents: false,

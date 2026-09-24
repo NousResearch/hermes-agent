@@ -140,7 +140,7 @@ def test_corrupt_breadcrumb_returns_none(hermes_home, monkeypatch, no_terminal_e
 def _make_session(home: Path, session_id: str):
     from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = SessionDB(db_path=home / "state.db")
     db.create_session(session_id, "cli")
     db.close()
 

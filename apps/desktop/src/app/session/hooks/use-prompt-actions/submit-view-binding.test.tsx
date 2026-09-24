@@ -105,9 +105,22 @@ async function mountOnStaleRuntime() {
   setSelectedStoredSessionId(STORED)
   setActiveSessionId(STALE_RUNTIME)
 
-  const requestGateway = vi.fn(
-    async (method: string) => (method === 'session.resume' ? { session_id: RESUMED_RUNTIME } : {}) as never
-  )
+  // prompt.submit answers with a canonical admission receipt: the client keeps
+  // the optimistic bubble only for a receipt that echoes its submission id.
+  const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'session.resume') { return { session_id: RESUMED_RUNTIME } as never }
+
+    if (method === 'prompt.submit') {
+      return {
+        admission_id: params?.submission_id,
+        submission_id: params?.submission_id,
+        session_id: params?.session_id,
+        status: 'started'
+      } as never
+    }
+
+    return {} as never
+  })
 
   let submit!: Submit
   let cache!: Cache

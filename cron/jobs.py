@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -461,6 +461,11 @@ EMPTY_PAYLOAD_ERROR = (
 NO_AGENT_WITHOUT_SCRIPT_ERROR = (
     "no_agent=True requires a script — with no agent and no script "
     "there is nothing for the job to run."
+)
+
+SCRIPT_IS_COMMAND_LINE_ERROR = (
+    "script must name a file under {scripts_dir} (e.g. 'watchdog.sh'), not a shell command line: "
+    "{script!r} has no such file. Write the command into a script there and pass its filename."
 )
 
 
@@ -1706,6 +1711,20 @@ def _validate_job_mode_invariants(
             "based on source changes. Use a plain no_agent script job instead.")
     if no_agent and not script:
         raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
+    if script and _script_is_command_line(script):
+        raise ValueError(SCRIPT_IS_COMMAND_LINE_ERROR.format(
+            scripts_dir=display_hermes_home() + "/scripts/", script=script))
+
+
+def _script_is_command_line(script: str) -> bool:
+    """A ``script`` with whitespace that resolves to no file is a command line (``echo hi``),
+    not a path; run every tick it would deliver "Script not found" as the payload. A plain
+    missing filename stays creatable (``hermes cron doctor`` reports it)."""
+    if not any(ch.isspace() for ch in script.strip()):
+        return False
+    from cron.lifecycle_guard import _resolve_script_path
+    path = _resolve_script_path(script)
+    return path is None or not path.is_file()
 
 
 def _oneshot_past_grace_error(run_at: Any) -> ValueError:
@@ -2376,6 +2395,7 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
+    execution_id: Optional[str] = None,
     model_unreachable: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
@@ -2400,6 +2420,8 @@ def mark_job_run(
     (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
+        if execution_id is not None and execution_id in job.get("canonical_completions", []):
+            return True
         if expected_fire_owner is not None:
             claim = job.get("fire_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
@@ -2409,6 +2431,8 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        if execution_id is not None:
+            job.setdefault("canonical_completions", []).append(execution_id)
         _advance_after_run(job, now)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry

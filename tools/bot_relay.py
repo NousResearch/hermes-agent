@@ -49,15 +49,14 @@ DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
 DESKTOP_DELIVER_TIMEOUT_SECONDS = (
     TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
 )
-# A claimed envelope still unanswered this long after its claim was taken by a Desktop that died
-# before ``bot_relay.deliver``; the next drain re-offers it, once. The longest a LIVE delivery can
-# be in flight without a reply on disk is the Desktop's own deliver deadline (it posts a
-# ``delivery_timeout`` reply when that passes, and the gateway-side hold — lock wait + the turn
-# attempts — ends before it by construction), so past that point plus posting headroom the silence
-# is provably the Desktop's death, not a slow turn. tests/tools/test_bot_relay.py pins the order.
+# A claimed envelope is replayed on every drain until its reply lands (``_replay_unanswered``); the
+# budgets below only bound how long the sender-side waiter keeps watching. The longest a LIVE delivery
+# can be in flight without a reply on disk is the Desktop's own deliver deadline (it posts a
+# ``delivery_timeout`` reply when that passes), so a second delivery of a replayed envelope can start
+# no earlier than that plus posting headroom. tests/tools/test_bot_relay.py pins the order.
 REOFFER_AFTER_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
-# The waiter must outlive the Desktop's timeout reply for the first delivery AND for the one
-# re-offered delivery: re-offer window + a whole deliver budget + posting headroom.
+# The waiter must outlive the Desktop's timeout reply for the first delivery AND for one replayed
+# delivery: replay window + a whole deliver budget + posting headroom.
 REPLY_WAIT_SECONDS = REOFFER_AFTER_SECONDS + DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
 # Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
@@ -81,22 +80,6 @@ class EnvelopeRefusedError(RuntimeError):
 # Profile names, handles and connection ids share one shape (also the local
 # ``message_agent`` target grammar in ``tools/bot_mode_dm.py``).
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
-
-# One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *BOT_CHAT_TURN_ARGS``.
-# ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
-BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
-
-# Set by a dispatcher on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
-# ``tui_gateway.methods_bot_relay``). The failed attempt's turn-start persist already left the DM as the
-# Bot Chat's unanswered tail row, and a fresh process cannot tell that from a new message on its own — so
-# the re-run is told to adopt that row instead of appending a second copy
-# (``hermes_cli.quiet_single_query.adopt_unanswered_turn``, which consumes the variable before the turn).
-RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
-
-
-def retry_turn_env(env: Optional[Mapping[str, str]]) -> dict[str, str]:
-    """The re-run's child env: the first attempt's env plus the resume marker."""
-    return {**(os.environ if env is None else env), RESUME_UNANSWERED_TURN_ENV: "1"}
 
 
 def relay_root(root: Path | str) -> Path:
@@ -300,7 +283,7 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
                                    "Try again once that machine reconnects to the Desktop.")
     base = _ensure_dirs(root)
     envelope = {
-        "id": uuid.uuid4().hex, "created_at": int(time.time()),
+        "id": uuid.uuid4().hex, "created_at": int(time.time()), "canonical_delivery_v1": True,
         "from_profile": sender_profile, "from_handle": sender_handle,
         "target_connection": target["connection_id"], "target_profile": target["profile"],
         "target_handle": target["handle"], "message": message,
@@ -350,8 +333,7 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     _sweep_stale(base)
     ttl = _envelope_ttl_seconds()
     now = time.time()
-    # Re-offers first: they are the oldest mail this drain hands out.
-    out: list[dict] = _reoffer_unanswered(root, base, ttl, now)
+    out: list[dict] = []
     # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
     # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
     # by filename ordered them by ``uuid4().hex`` — at random.
@@ -363,58 +345,45 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
-            os.utime(claimed, (now, now))  # the re-offer window counts from the claim, not the enqueue
             envelope = json.loads(claimed.read_text(encoding="utf-8"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
             out.append(envelope)
+    seen = {row["id"] for row in out}
+    out.extend(_replay_unanswered(root, base, seen, now))
     return out
 
 
-def _reoffer_unanswered(root: Path | str, base: Path, ttl: float, now: float) -> list[dict]:
-    """``claimed/`` envelopes unanswered ``REOFFER_AFTER_SECONDS`` after their claim, at most once each.
+def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> list[dict]:
+    """``claimed/`` canonical envelopes whose reply has not landed yet, replayed on EVERY drain.
 
-    The claim is the Desktop's: one that disconnects between ``outbox.drain`` and ``bot_relay.deliver``
-    leaves the envelope here with no reply, silent until the waiter's deadline and then swept, while
-    the reconnected Desktop's drains see an empty outbox (#111021, #111207). Bounds, in check order:
-
-    * ``created_at + REPLY_WAIT_SECONDS`` passed with no reply — the waiter is gone (or about to be);
-      a ``delivery_timeout`` reply is written so it learns, and the envelope is never handed out again.
-    * already re-offered (``reoffered_at`` stamped on the envelope) — one extra delivery per message,
-      never a turn loop against a target nobody is listening for.
-    * ``bot_mode.envelope_ttl_seconds`` applies to the re-offer leg exactly as to the outbox: the
-      message is back in the queue from ``claim + REOFFER_AFTER_SECONDS``; a drain that comes ``ttl``
-      later than that refuses it with ``queued_expired``.
+    A drained envelope is not "delivered": its stable id is handed out again until the target's
+    terminal reply is written under that id, so a Desktop that disconnects between ``outbox.drain``
+    and ``bot_relay.deliver`` (#111021, #111207) or loses the drain result cannot drop the DM. The
+    replay is safe because ``bot_relay.deliver`` forwards the SAME id to the target profile's
+    authority, which admits one turn per id and answers a retry with the existing record — never a
+    second turn. Once ``created_at + REPLY_WAIT_SECONDS`` passes with no reply the waiter is gone
+    (or about to be): a ``delivery_timeout`` reply is written so it learns, and the envelope is
+    never handed out again.
     """
     out: list[dict] = []
     for path in sorted((base / CLAIMED_DIR).glob("*.json"), key=_queued_at):
         if (base / REPLIES_DIR / path.name).exists():
             continue
         with contextlib.suppress(OSError, ValueError):
-            claimed_at = path.stat().st_mtime
             envelope = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
+            if envelope.get("canonical_delivery_v1") is not True or envelope.get("id") in seen:
+                continue
             env_id = str(envelope.get("id") or "")
             label = f"@{envelope.get('target_handle') or '?'} on {envelope.get('target_connection') or '?'}"
-            created = float(envelope.get("created_at") or claimed_at)
+            created = float(envelope.get("created_at") or path.stat().st_mtime)
             if now - created > REPLY_WAIT_SECONDS:
                 write_reply(root, env_id, reason="delivery_timeout", error=(
                     f"no reply from {label} within {REPLY_WAIT_SECONDS}s of sending — the Desktop picked "
                     "the message up but never reported a delivery. It will not be retried; resend if it matters."))
                 continue
-            if envelope.get("reoffered_at"):
-                continue
-            queued_for = now - claimed_at - REOFFER_AFTER_SECONDS
-            if queued_for < 0:
-                continue
-            if ttl > 0 and queued_for > ttl:
-                write_reply(root, env_id, reason="queued_expired", error=(
-                    f"re-queued message to {label} expired after {ttl}s waiting for the Desktop to drain it "
-                    "again — it was NOT delivered. Resend once the Desktop reconnects."))
-                continue
-            envelope["reoffered_at"] = int(now)
-            _atomic_write_json(path, envelope)
             out.append(envelope)
     return out
 
@@ -424,10 +393,9 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
     code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted.
 
     Idempotent by envelope id — the first settled reply stands, error or not. That is safe because
-    two deliveries of one envelope never overlap: ``_reoffer_unanswered`` waits past the Desktop's own
-    deliver deadline (``REOFFER_AFTER_SECONDS``), so by the time a second delivery can start, the first
-    has either replied (and the waiter may already have read it) or provably died without one. A
-    later write is therefore a duplicate or a bookkeeping timeout, never a truer answer."""
+    a replayed envelope (``_replay_unanswered``) carries the SAME id into the target authority,
+    which admits one turn per id, so a later write is a duplicate or a bookkeeping timeout, never
+    a truer answer."""
     base = _ensure_dirs(root)
     safe = str(envelope_id or "").strip()
     if not re.match(r"^[0-9a-f]{32}$", safe):
@@ -511,11 +479,6 @@ def _hermes_cli() -> str:
     """
     sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
-
-
-def local_delivery_command(profile: str, query_file: str) -> list[str]:
-    """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
 
 
 class DeliveryAuthor:

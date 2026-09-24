@@ -227,7 +227,9 @@ it.each(recoveryCases)(
       }
 
       if (rpc === 'prompt.submit') {
-        return { status: 'streaming' }
+        // Durable admission protocol: a successful submit is acknowledged with
+        // the receipt for THIS submission, never a bare legacy status.
+        return { admission_id: params?.submission_id, status: 'started' }
       }
 
       throw new Error(`unexpected ${rpc}`)

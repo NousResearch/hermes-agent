@@ -6,7 +6,9 @@ executions ledger / delivery routing / ``mark_job_run``, a second OS process sha
 (its ticker races the in-process one for every tick; the tick lock admits one). Fire-claim
 contention between two OS processes is ``test_two_replicas_contend_for_every_fire``.
 Fake: the agent (``cron.scheduler.run_job``) and the platform wire (``_send_to_platform``), which
-record what they were handed. Time: one file-backed virtual clock (see ``_cron_clock``).
+record what they were handed. The gateway housekeeping thread's drain of the durable delivery
+queue is performed by the driver after every tick settles (``H.drain_deliveries``).
+Time: one file-backed virtual clock (see ``_cron_clock``).
 
 Oracle (independent of cron/jobs.py): per job, the expected fire set is computed from croniter
 over the job's configured zone (hermes ``timezone`` if set, else the process zone — "server
@@ -22,7 +24,8 @@ After every tick: the actual fires == expected fires, every stored ``next_run_at
 model's pending occurrence and is strictly after virtual now, and the ticker reported no error.
 A run held past the fire-claim TTL: after every virtual 30 s its claim was refreshed by the run's
 heartbeat, and a contender's ``claim_job_for_fire`` loses to it.
-At the end: no execution is non-terminal; every row's status/delivery outcome matches what the
+At the end: no execution is non-terminal, no queued send is left undrained; every row's status
+and delivery outcome (a ``queued`` handoff resolved through the queue's verdict) matches what the
 fake runner/sink actually saw (delivered => the sink got exactly that execution's message).
 """
 
@@ -278,6 +281,7 @@ class Soak:
             return not [r for r in H.non_terminal(self.home) if r["job_id"] not in held_ids]
 
         H.wait_until(quiet, f"scheduler quiescence {self.describe(self.now())}")
+        H.drain_deliveries()  # the gateway's housekeeping drain, once the runs have booked their sends
 
     def tick(self, hosts=None, entering: Optional[str] = None) -> None:
         t = self.now()
@@ -504,9 +508,12 @@ class Soak:
         starts = {r["exec"]: r for r in runs if r["event"] == "start"}
         ends = {r["exec"] for r in runs if r["event"] == "end"}
         sink = H.read_jsonl(self.control.sink)
+        deliveries = H.delivery_status(self.home)
         where = f"[{self.sc.id} final]"
         stuck = [r for r in rows.values() if r["status"] in ("claimed", "running")]
         assert not stuck, f"{where} non-terminal executions left: {stuck}"
+        undrained = {e: s for e, s in deliveries.items() if s in ("pending", "delivering")}
+        assert not undrained, f"{where} queued sends never drained: {undrained}"
         assert set(starts) - ends == self.killed_execs, f"{where} runs without an end"
         assert len(starts) == len(set(starts)), f"{where} duplicate execution ids"
         for exec_id, start in starts.items():
@@ -514,19 +521,20 @@ class Soak:
             assert row is not None, f"{where} run {exec_id} ({start['name']}) has no ledger row"
             sent = [s for s in sink if s["exec"] == exec_id]
             ok_sent = [s for s in sent if s["ok"]]
+            outcome = H.effective_outcome(row, deliveries)
             label = f"{where} {start['name']} exec={exec_id} status={row['status']} " \
-                    f"outcome={row['delivery_outcome']} sink={sent} error={row.get('error')!r}"
+                    f"outcome={row['delivery_outcome']}/{outcome} sink={sent} error={row.get('error')!r}"
             if exec_id in self.killed_execs:
                 assert row["status"] == "unknown", label
                 assert not sent, label
                 continue
             assert len(sent) <= 1, f"{label}: delivered more than once"
-            if row["delivery_outcome"] == "delivered":
+            if outcome == "delivered":
                 assert len(ok_sent) == 1, f"{label}: 'delivered' but the sink never got it"
             if ok_sent:
-                assert row["delivery_outcome"] == "delivered", f"{label}: sink got it, ledger says not"
+                assert outcome == "delivered", f"{label}: sink got it, ledger says not"
             if sent and not ok_sent:
-                assert row["delivery_outcome"] == "failed", f"{label}: failed send not recorded"
+                assert outcome == "failed", f"{label}: failed send not recorded"
             assert "nterrupt" not in str(row.get("error") or ""), f"{label}: marked interrupted"
             agent_failed = "provider outage" in str(row.get("error") or "")
             if agent_failed:
@@ -540,7 +548,7 @@ class Soak:
                 assert row["status"] in ("failed", "unknown", "skipped"), f"{where} ghost row {row}"
         if hasattr(self, "long_run_exec"):
             row = rows[self.long_run_exec]
-            assert (row["status"], row["delivery_outcome"]) == ("completed", "delivered"), (
+            assert (row["status"], H.effective_outcome(row, deliveries)) == ("completed", "delivered"), (
                 f"{where} long run lost its lease: {row}")
         for job in H.store_jobs(self.home):
             assert not job.get("pending_slot"), f"{where} leftover pending_slot {job}"
@@ -677,6 +685,7 @@ def test_two_replicas_contend_for_every_fire(soak_env):
             assert not t.is_alive(), f"round {rnd}: in-process replica never finished"
             outcomes = sorted([mine["won"], peer.result(rnd)])
             entered.unlink()
+            H.drain_deliveries()  # the gateway's housekeeping drain of the winner's queued send
             claims = [c for c in H.read_jsonl(control.claims) if c["round"] == rnd]
             assert sorted(c["pid"] for c in claims) == sorted([os.getpid(), peer.pid]), claims
             assert sorted(c["won"] for c in claims) == [False, True], f"round {rnd}: {claims}"
@@ -690,12 +699,14 @@ def test_two_replicas_contend_for_every_fire(soak_env):
     finally:
         peer.stop()
     rows = H.ledger_rows(hermes_home)
+    deliveries = H.delivery_status(hermes_home)
     sink = H.read_jsonl(control.sink)
     starts = {r["exec"] for r in H.read_jsonl(control.runs) if r["event"] == "start"}
     won = [r for r in rows if r["id"] in starts]
     lost = [r for r in rows if r["id"] not in starts]
     assert len(won) == len(lost) == REPLICA_ROUNDS, (len(won), len(lost), rows)
-    assert all((r["status"], r["delivery_outcome"]) == ("completed", "delivered") for r in won), won
+    assert all((r["status"], H.effective_outcome(r, deliveries)) == ("completed", "delivered")
+               for r in won), (won, deliveries)
     assert all(r["status"] == "failed" and "not acquired" in (r["error"] or "") for r in lost), lost
     assert sorted(s["exec"] for s in sink if s["ok"]) == sorted(starts), sink
     print(f"C13 replicas: winners by pid {[(n, pid) for n, _, pid in fired]}")

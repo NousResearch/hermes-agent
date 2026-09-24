@@ -24,8 +24,11 @@ const STORED = 'completion-stored'
 const ANSWER = 'The answer is unchanged.'
 const noop = async () => undefined
 
-const requestGateway = async <T,>(method: string): Promise<T> =>
-  (method === 'prompt.submit' ? { status: 'started' } : { status: 'redirected' }) as T
+// The canonical admission receipt echoes the client's submission id.
+const requestGateway = async <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+  (method === 'prompt.submit'
+    ? { admission_id: params?.submission_id, session_id: SID, status: 'started' }
+    : { status: 'redirected' }) as T
 
 // Real submit/redirect, stream reducer, cache and view publication; only RPC
 // acceptance and history/metadata I/O are stand-ins.
@@ -110,14 +113,14 @@ function mount(rpc = requestGateway) {
 it('binds a late submit acknowledgement to its exact optimistic prompt without reviving the turn', async () => {
   const laterUser: ChatMessage = { id: 'later-user', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }
 
-  const h = mount(async <T,>(): Promise<T> => {
+  const h = mount(async <T,>(_method: string, params?: Record<string, unknown>): Promise<T> => {
     await h.send('message.start')
     await h.send('message.delta', { text: ANSWER })
     await h.send('message.complete', { text: ANSWER })
     h.update(state => ({ ...state, messages: [...state.messages, laterUser], needsInput: true }))
     await flush()
 
-    return { status: 'started', user_row_id: 71 } as T
+    return { admission_id: params?.submission_id, session_id: SID, status: 'started', user_row_id: 71 } as T
   })
 
   await h.submit()

@@ -4,8 +4,11 @@ import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/te
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
+import { $busyInputConfig, busyInputOwnerKey, normalizeBusyInputMode } from '@/store/busy-input-mode'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
+import { $activeGatewayProfile } from '@/store/profile'
 import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
+import { $connection } from '@/store/session'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
@@ -67,6 +70,8 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
       const profileRefreshEpoch = profileRefreshEpochRef.current
       const selectionGeneration = getComposerSelectionGeneration()
+      const connection = $connection.get()
+      const profile = $activeGatewayProfile.get()
 
       try {
         const [config, defaults] = await Promise.all([getHermesConfig(), getHermesConfigDefaults().catch(() => ({}))])
@@ -139,6 +144,14 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         if (!canPublish()) {
           return
+        }
+
+        if ($connection.get() === connection && $activeGatewayProfile.get() === profile) {
+          $busyInputConfig.set({
+            owner: busyInputOwnerKey(connection?.connectionId, profile),
+            connection,
+            mode: normalizeBusyInputMode(config.display?.busy_input_mode)
+          })
         }
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)

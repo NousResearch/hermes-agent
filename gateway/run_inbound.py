@@ -672,6 +672,43 @@ class GatewayInboundMixin:
         # — that copy was never consumed and grew unbounded.
         running_agent.interrupt(_interrupt_text)
 
+    async def _hm_busy_preempt(self, event: "MessageEvent", source: SessionSource, _quick_key: str) -> bool:
+        """busy_input_mode for a follow-up the durable FIFO is about to admit. Returns True when the
+        text already landed inside the running turn (steer / redirect), so it must NOT also be
+        admitted as its own turn; False when the caller should admit it (queue mode, a demotion,
+        or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        mode = self._effective_busy_input_mode(source)
+        state = self._peek_session_state(_quick_key)
+        running_agent = state.turn.agent if state else None
+        if (mode == "queue" or self._draining or running_agent is None
+                or running_agent is _AGENT_PENDING_SENTINEL or not self._hm_text_only(event)):
+            return False
+        text = (event.text or "").strip()
+        if not text:
+            return False
+        if mode == "steer":
+            if hasattr(running_agent, "steer"):
+                try:
+                    return bool(self._steer_running_agent(running_agent, self._steer_text_with_origin(text, event)))
+                except Exception as exc:
+                    logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
+            return False
+        if self._agent_has_active_subagents(running_agent):
+            logger.info("PRIORITY interrupt demoted to queue for session %s because the running agent has active subagents (#30170)", _quick_key)
+            return False
+        if await self._session_has_compression_in_flight(_quick_key):
+            logger.info("PRIORITY interrupt demoted to queue for session %s because context compression is in flight (#56391)", _quick_key)
+            return False
+        if (getattr(running_agent, "_supports_active_turn_redirect", False) is True and hasattr(running_agent, "redirect")
+                and self._redirect_active_turn(running_agent, text, _quick_key, event)):
+            logger.debug("PRIORITY redirect for session %s", _quick_key)
+            return True
+        # No redirect: end the running turn; the follow-up is admitted and runs as the next turn.
+        logger.debug("PRIORITY interrupt for session %s", _quick_key)
+        running_agent.interrupt()
+        return False
+
     async def _hm_handle_running_session_message(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
@@ -1293,9 +1330,28 @@ class GatewayInboundMixin:
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
-        _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
+        _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply
+
+        # The message handler entered the routed profile's scope; its authority owns this turn.
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is not None and not event.get_command() and not is_internal:
+            from gateway.session_ingress import admit_message, executing_admission
+            if not executing_admission.get():
+                # The durable FIFO only orders turns; busy_input_mode still decides what a follow-up
+                # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
+                # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
+                # its whole request timeout.
+                if self._is_session_running(_quick_key) and await self._hm_busy_preempt(event, source, _quick_key):
+                    return None
+                return await admit_message(authority, event)
+        if (authority is None and not is_internal and not event.get_command()
+                and getattr(self, 'session_authority', None) is not None):
+            # Scoped to a home this process does not serve: never fall back to the launch ledger.
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('profile_mismatch')
 
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)

@@ -254,7 +254,7 @@ def _legacy_empty_job(hermes_env):
     return dict(job, prompt="   ")
 
 
-def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env):
+def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env, cron_owner):
     import cron.scheduler as scheduler
 
     job = _legacy_empty_job(hermes_env)
@@ -275,7 +275,7 @@ def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env):
 
 
 
-def test_run_one_job_does_not_resurrect_the_paused_job(hermes_env):
+def test_run_one_job_does_not_resurrect_the_paused_job(hermes_env, cron_owner):
     """The real caller runs post-run bookkeeping (mark_job_run) after run_job
     returns. That must not undo the pause, or the job re-fires every tick."""
     import cron.scheduler as scheduler

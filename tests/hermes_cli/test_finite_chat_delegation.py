@@ -1,8 +1,11 @@
 """Finite chat must consume parallel delegated results before the CLI exits."""
 
+import asyncio
 import http.server
 import json
 import os
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 import subprocess
 import sys
@@ -16,7 +19,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mode", ["quiet", "oneshot", "redirected"])
+@pytest.mark.parametrize("mode", ["quiet", "oneshot", "redirected", "resumed"])
 def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mode):
     """Real parser, CLI, agent loops and delegate_task. Only inference is synthetic.
 
@@ -104,6 +107,8 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
     url = f"http://127.0.0.1:{server.server_port}/v1"
     (home / "config.yaml").write_text(
         f"model:\n  provider: custom\n  base_url: {url}\n  api_mode: chat_completions\n"
+        "gateway:\n  multiplex_profiles: false\n"
+        "auxiliary:\n  title_generation:\n    enabled: false\n"
         "memory:\n  memory_enabled: false\n  user_profile_enabled: false\n"
         "terminal:\n  env: local\n  oneshot_completion_wait_seconds: 1\n"
         f"delegation:\n  max_concurrent_children: 2\n  base_url: {url}\n"
@@ -121,16 +126,51 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
                HERMES_MANAGED_DIR=str(tmp_path / "managed"), TERMINAL_CWD=str(tmp_path),
                OPENAI_BASE_URL=url, OPENAI_API_KEY="local-test-only", PYTHONPATH=str(REPO_ROOT),
                PYTHONDONTWRITEBYTECODE="1", LANG="C.UTF-8")
-    mode_flags = {"quiet": ["-Q"], "oneshot": ["--oneshot"], "redirected": []}
+    mode_flags = {"quiet": ["-Q"], "oneshot": ["--oneshot"], "redirected": [],
+                  "resumed": ["-Q"]}
     command = [
         sys.executable, "-c", "from hermes_cli.main import main; main()", "chat",
-        *mode_flags[mode], "--provider", "custom", "--model", "test-model",
+        *mode_flags[mode], "--provider", "custom", "--model", "test-model", "--base-url", url,
         "--toolsets", "delegation", "--ignore-rules", "--query-file", str(query),
-        "--reasoning", "high", "--max-turns", "10", "--run-budget", "60",
+        "--reasoning", "high", "--max-turns", "10",
     ]
+    from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
+
+    async def create_resume_target(desc):
+        async with websocket(home, desc) as ws:
+            created = await rpc(ws, "session.create", request_id="interactive-origin", source="cli",
+                                model="test-model", provider="custom", base_url=url,
+                                toolsets=["delegation"], cwd=str(tmp_path), ignore_rules=True)
+            return created["result"]["stored_session_id"]
+
+    async def check_receipt(desc, row):
+        sid, request_id, payload = row
+        payload = json.loads(payload)
+        assert payload["finite"] is True
+        async with websocket(home, desc) as ws:
+            assert "result" in await rpc(ws, "session.resume", session_id=sid)
+            retry = dict(session_id=sid, input_id=request_id, **payload)
+            assert (await rpc(ws, "prompt.submit", **retry))["result"]["status"] == "terminal"
+            conflict = await rpc(ws, "prompt.submit", **{**retry, "finite": False})
+            assert conflict["error"]["message"] == "admission_conflict"
+            invalid = await rpc(ws, "prompt.submit", **{**retry, "finite": "true"})
+            assert invalid["error"]["message"] == "invalid_params"
     try:
-        result = subprocess.run(command, cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, encoding="utf-8", timeout=75)
+        # Own the ordinary authority explicitly: a finite viewer must not own its lifetime.
+        with daemon(REPO_ROOT, home, env, barrier=False) as (owner, desc):
+            if mode == "resumed":
+                sid = asyncio.run(create_resume_target(desc))
+                command = command[:5] + ["-Q", "--resume", sid, "--query-file", str(query)]
+            result = subprocess.run(command, cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, encoding="utf-8", timeout=75)
+            assert owner.poll() is None
+            with closing(sqlite3.connect(f"file:{home / 'state.db'}?mode=ro", uri=True)) as db:
+                admissions = db.execute("SELECT status FROM session_admissions").fetchall()
+                saved = db.execute("SELECT target_session_id,request_id,payload_json FROM session_admissions").fetchone()
+                # Inline children never leave a detached-result receipt for a later viewer.
+                assert db.execute("SELECT count(*) FROM async_delegations").fetchone() == (0,)
+            assert admissions == [("terminal",)], admissions
+            asyncio.run(check_receipt(desc, saved))
     finally:
         server.shutdown()
         server.server_close()

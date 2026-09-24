@@ -2,7 +2,7 @@ import type { UsageModelData } from '@hermes/shared/billing'
 import type {
   ConnectionRequestPayload,
   GatewayEvent,
-  GatewayEventName,
+  GatewayEventMap,
   InflightTurn,
   TranscriptMessage,
   Usage
@@ -15,9 +15,50 @@ import type { SessionInfo, SlashCategory } from './types.js'
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
 export type GatewaySkin = HermesSkin
 
-/** Distributive form of the shared `GatewayEvent<K>` so `switch (ev.type)`
- *  narrows `ev.payload` per case (the generic-defaulted interface does not). */
-export type AnyGatewayEvent = { [K in GatewayEventName]: GatewayEvent<K> }[GatewayEventName]
+/** Generation-bound shared control published by a canonical gateway
+ *  (`gateway/session_pending_controls.py::register` / `register_clarify`). Answered through
+ *  `approval.respond` / `clarify.respond` with the prompt id, never through a server→client
+ *  request frame; `execution_epoch` is folded in by `GatewayClient.publishWire`. */
+export interface CanonicalSharedPrompt {
+  execution_epoch?: string
+  execution_generation: number
+  kind?: 'approval' | 'clarify'
+  prompt_id: string
+}
+
+export interface CanonicalApprovalPrompt extends CanonicalSharedPrompt {
+  allow_permanent?: boolean
+  choices?: string[]
+  command?: string
+  description?: string
+  smart_denied?: boolean
+}
+
+export interface CanonicalClarifyPrompt extends CanonicalSharedPrompt {
+  answers?: Record<string, string>
+  choices?: null | string[]
+  multi_select?: boolean
+  question?: string
+  questions?: Array<{ choices?: null | string[]; multi_select?: boolean; qid: string; question: string }>
+}
+
+/** Events the canonical gateway publishes that the generated `tui_gateway` contract does not
+ *  declare (it has no server→client prompt frames; controls ride the event stream). */
+export interface CanonicalGatewayEventMap {
+  'approval.request': CanonicalApprovalPrompt
+  'approval.settled': Pick<CanonicalSharedPrompt, 'execution_generation' | 'prompt_id'>
+  'clarify.request': CanonicalClarifyPrompt
+  'clarify.settled': Pick<CanonicalSharedPrompt, 'execution_generation' | 'prompt_id'>
+}
+
+export type AnyGatewayEventMap = CanonicalGatewayEventMap & GatewayEventMap
+export type AnyGatewayEventName = keyof AnyGatewayEventMap & string
+
+/** Distributive form of the shared `GatewayEvent<K>` (plus the canonical events above) so
+ *  `switch (ev.type)` narrows `ev.payload` per case (the generic-defaulted interface does not). */
+export type AnyGatewayEvent = {
+  [K in AnyGatewayEventName]: Omit<GatewayEvent, 'payload' | 'type'> & { payload?: AnyGatewayEventMap[K]; type: K }
+}[AnyGatewayEventName]
 
 export interface GatewayCompletionItem {
   display: string
@@ -178,11 +219,13 @@ export interface SystemBatteryResponse {
 // ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
-  info?: SessionInfo & { config_warning?: string; credential_warning?: string }
-  session_id: string
   // Durable id (state.db row) — what session.resume takes; `session_id` is the
   // process-local runtime handle.
   stored_session_id?: string
+  info?: SessionInfo & { config_warning?: string; credential_warning?: string }
+  session_id: string
+  /** Canonical gateways: the actor's subscription token for `session.detach`. */
+  subscription_id?: string
 }
 
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
@@ -205,6 +248,7 @@ export interface SessionActiveListResponse {
 }
 
 export interface SessionActivateResponse {
+  stored_session_id?: string
   inflight?: null | InflightTurn
   info?: SessionInfo
   message_count?: number
@@ -215,6 +259,13 @@ export interface SessionActivateResponse {
   session_key?: string
   started_at?: number
   status?: LiveSessionStatus
+  subscription_id?: string
+}
+
+export interface SessionDetachResponse {
+  detached: boolean
+  session_id: string
+  subscription_id: string
 }
 
 export interface SessionDeleteResponse {
@@ -300,6 +351,8 @@ export interface SessionCloseResponse {
 }
 
 export interface SessionInterruptResponse {
+  execution_generation?: number
+  execution_state?: string
   ok?: boolean
 }
 
@@ -311,6 +364,12 @@ export interface SessionSteerResponse {
 // ── Prompt / submission ──────────────────────────────────────────────
 
 export interface PromptSubmitResponse {
+  input_id?: string
+  status?: string
+  admission_id?: string
+  target_session_id?: string
+  target_profile_home?: string
+  outcome?: string | null
   ok?: boolean
   /** Set when the submitted text was a bare voice stop phrase consumed
    *  server-side to end the voice chat instead of starting a turn. */
@@ -325,6 +384,13 @@ export interface BackgroundStartResponse {
 export interface ClarifyLockResponse {
   remaining?: string[]
   status: 'expired' | 'ok'
+}
+
+/** Canonical `approval.respond` / `clarify.respond` (`gateway/session_pending_controls.py::respond`):
+ *  generation-bound shared controls answered by prompt id, not by a server→client request frame. */
+export interface SharedControlRespondResponse {
+  prompt_id?: string
+  status?: 'already_resolved' | 'resolved'
 }
 
 // ── Shell / clipboard / input ────────────────────────────────────────

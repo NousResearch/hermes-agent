@@ -72,59 +72,66 @@ class SessionTitlesMixin:
         re-running the titler on an llm row is a no-op). No writer may move a hidden
         canonical Bot Chat off its title. Read and write are one compare-and-swap
         transaction, so a manual ``/title`` racing an in-flight generation is not clobbered."""
+        return bool(self._execute_write(
+            lambda conn: self._set_session_title_in_transaction(conn, session_id, title, source=source)
+        ))
+
+    def _set_session_title_in_transaction(self, conn, session_id: str, title: str, *, source: str):
+        """Reuse title rules within an authority-owned transaction; never commit here."""
         title = self.sanitize_title(title)
         is_user = source == self.TITLE_SOURCE_USER
         new_rank = self._title_rank(source) if not is_user else None
+        affected = []
 
-        def _do(conn):
-            current = conn.execute(
-                "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
+        current = conn.execute(
+            "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
+        ).fetchone()
+        if current is None:
+            return []
+        # The canonical Bot Chat's NAME is its identity (Bot Mode resolves it by
+        # exact-title lookup on every open), so a rename orphans the conversation. Hidden
+        # is the discriminator: canonical chats are born hidden; a visible session merely
+        # named "Bot Chat" stays renameable. Provenance-blind.
+        if ((current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE and bool(current["hidden"])
+                and title != self.CANONICAL_BOT_CHAT_TITLE):
+            if is_user:
+                raise ValueError("This is the bot's canonical Bot Chat — its name is its "
+                                 "identity, and renaming it would orphan the conversation. "
+                                 "To start fresh, create a new bot instead.")
+            return []
+        if not is_user and current["title"] is not None and self._title_rank(current["title_source"]) >= new_rank:
+            return []
+        if title:
+            conflict = conn.execute(
+                "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ?", (title, session_id),
             ).fetchone()
-            if current is None:
-                return 0
-            # The canonical Bot Chat's NAME is its identity (Bot Mode resolves it by
-            # exact-title lookup on every open), so a rename orphans the conversation. Hidden
-            # is the discriminator: canonical chats are born hidden; a visible session merely
-            # named "Bot Chat" stays renameable. Provenance-blind.
-            if ((current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE and bool(current["hidden"])
-                    and title != self.CANONICAL_BOT_CHAT_TITLE):
-                if is_user:
-                    raise ValueError("This is the bot's canonical Bot Chat — its name is its "
-                                     "identity, and renaming it would orphan the conversation. "
-                                     "To start fresh, create a new bot instead.")
-                return 0
-            if not is_user and current["title"] is not None and self._title_rank(current["title_source"]) >= new_rank:
-                return 0
-            if title:
-                conflict = conn.execute(
-                    "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ?", (title, session_id),
-                ).fetchone()
-                if conflict:
-                    conflict_id = conflict["id"]
-                    # A hidden compressed ancestor holding the title cannot be freed by the
-                    # user, so transfer it onto the tip (uniqueness + lineage kept).
-                    if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
-                        conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
-                    # A deliberately archived hidden Bot Chat is a retired registry
-                    # entry, not a live identity. Retire its name in the same title
-                    # transaction so a replacement can become the sole canonical row;
-                    # the old session remains archived and otherwise untouched.
-                    elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-                          and bool(conflict["hidden"])):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
-                    else:
-                        raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
-            # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
-            # the SELECT and here loses instead of being overwritten.
-            return conn.execute(
-                "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND title IS ? AND title_source IS ?",
-                (title, source if title else None, session_id, current["title"], current["title_source"]),
-            ).rowcount
-
-        return self._execute_write(_do) > 0
+            if conflict:
+                conflict_id = conflict["id"]
+                # A hidden compressed ancestor holding the title cannot be freed by the
+                # user, so transfer it onto the tip (uniqueness + lineage kept).
+                if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
+                    conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
+                    affected.append(conflict_id)
+                # A deliberately archived hidden Bot Chat is a retired registry
+                # entry, not a live identity. Retire its name in the same title
+                # transaction so a replacement can become the sole canonical row;
+                # the old session remains archived and otherwise untouched.
+                elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
+                      and bool(conflict["hidden"])):
+                    conn.execute(
+                        "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                        (conflict_id,),
+                    )
+                    affected.append(conflict_id)
+                else:
+                    raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
+        # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
+        # the SELECT and here loses instead of being overwritten.
+        changed = conn.execute(
+            "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND title IS ? AND title_source IS ?",
+            (title, source if title else None, session_id, current["title"], current["title_source"]),
+        ).rowcount
+        return [*affected, session_id] if changed else affected
 
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set a title on the user's behalf (``user`` provenance). Empty clears it. Raises
@@ -186,13 +193,26 @@ class SessionTitlesMixin:
     def get_next_title_in_lineage(self, base_title: str) -> str:
         """Next title in a lineage ("my session" -> "my session #2"): strip any " #N" suffix,
         then increment the highest existing number."""
-        match = _NUMBERED_TITLE_RE.match(base_title)
-        base = match.group(1) if match else base_title
-        rows = self._read_all(
-            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-            (base, f"{_escape_like(base)} #%"))
-        if not rows:
-            return base
-        # The unnumbered original counts as #1.
-        numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row["title"]) for row in rows) if m]
-        return f"{base} #{max([1, *numbers]) + 1}"
+        base, sql, args = _lineage_title_query(base_title)
+        return _next_lineage_title(base, self._read_all(sql, args))
+
+
+def _lineage_title_query(base_title: str):
+    match = _NUMBERED_TITLE_RE.match(base_title)
+    base = match.group(1) if match else base_title
+    return base, "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'", (base, f"{_escape_like(base)} #%")
+
+
+def _next_lineage_title(base: str, rows) -> str:
+    if not rows:
+        return base
+    # The unnumbered original counts as #1.
+    numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row["title"]) for row in rows) if m]
+    return f"{base} #{max([1, *numbers]) + 1}"
+
+
+def lineage_title_on_conn(conn, base_title: str) -> str:
+    """``get_next_title_in_lineage`` inside an authority-owned transaction (same connection, so a
+    sibling branch committed in this transaction is counted)."""
+    base, sql, args = _lineage_title_query(base_title)
+    return _next_lineage_title(base, conn.execute(sql, args).fetchall())

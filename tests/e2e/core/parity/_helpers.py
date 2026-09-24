@@ -50,6 +50,8 @@ _PASSTHROUGH_ENV = frozenset({
 
 
 TURN_TIMEOUT = 240.0
+# `hermes gateway stop` waits for the daemon's planned exit (MCP teardown included).
+STOP_TIMEOUT = 120.0
 
 
 @dataclass
@@ -455,6 +457,25 @@ def terminate(proc: subprocess.Popen, timeout: float = 30.0) -> int | None:
             proc.kill()
             proc.wait(timeout=10)
     return proc.returncode
+
+
+def stop_profile_gateway(ph: ParityHome, timeout: float = STOP_TIMEOUT) -> bool:
+    """The normal stop for the profile's ``gateway run`` daemon: ``hermes gateway stop``.
+
+    ``hermes -z``, ``hermes chat -q``, ``hermes acp`` and ``hermes cron run`` are clients of the
+    unified gateway runtime: their first connect spawns the profile's daemon (``ensure_gateway_runtime``
+    → ``spawn_unmanaged_gateway``), the daemon owns the agent — and with it the MCP server tree — and it
+    keeps serving after the client exits (cron, messaging, the next client). So the surface's
+    "normal shutdown" is client exit PLUS the operator stop; only after that may the MCP tree be
+    judged for orphans. Returns True when the stop command reported a stopped gateway (False when
+    none was running, e.g. a client that never reached the daemon).
+    """
+    proc = subprocess.run(
+        hermes_argv("gateway", "stop"), cwd=ph.project, env=ph.env(), capture_output=True, text=True,
+        timeout=timeout, stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"hermes gateway stop exited {proc.returncode}: {proc.stderr[-2000:]}"
+    return "Stopped gateway" in proc.stdout
 
 
 def format_cells(results: Iterable[tuple[str, dict[str, bool]]]) -> str:

@@ -1204,6 +1204,25 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
+def _strip_multiplex_flag(config_path: Path) -> None:
+    """Multiplexing belongs to the default profile; a clone that keeps the flag would start its
+    own multiplexer (or be refused at boot) the first time it runs a gateway."""
+    if not config_path.is_file():
+        return
+    with contextlib.suppress(Exception):  # creation must not fail over an unreadable copy
+        from hermes_cli.config import atomic_config_write, read_user_config_raw
+        cfg = read_user_config_raw(config_path)
+        gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        if "multiplex_profiles" not in cfg and "multiplex_profiles" not in gateway:
+            return
+        cfg.pop("multiplex_profiles", None)
+        gateway.pop("multiplex_profiles", None)
+        if not gateway and "gateway" in cfg:
+            cfg.pop("gateway")
+        # Absent keys are deleted by the round-trip writer; the clone's comments survive.
+        atomic_config_write(config_path, cfg)
+
+
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
                            sync_imports: bool = False) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
@@ -1222,6 +1241,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         return
     for relpath in _CLONE_CONFIG_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    _strip_multiplex_flag(profile_dir / "config.yaml")
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)

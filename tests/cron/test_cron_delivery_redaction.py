@@ -55,22 +55,20 @@ def _deliver_platform_and_mirror(job: dict, content: str) -> tuple[str, str]:
 
 
 def _deliver_bot_chat(job: dict, content: str) -> str:
-    """Drive ``_deliver_to_bot_chat`` down to the CLI lane and capture the inbound turn."""
+    """Drive ``_deliver_to_bot_chat`` down to the live-owner admission and capture the inbound turn."""
     from cron.scheduler_delivery import _deliver_to_bot_chat
 
     captured = {}
 
-    def _fake_run(argv, *args, **kwargs):
-        with open(argv[argv.index("--query-file") + 1], encoding="utf-8") as fh:
-            captured["message"] = fh.read()
-        return MagicMock(returncode=0, stdout="", stderr="")
+    def _fake_deliver(home, owner, message, *, delivery_id):
+        captured["message"] = message
+        return {"status": "settled", "message": message, "delivery_id": delivery_id}
 
-    # The CLI lane is seamed at whichever spawn helper the tree has: ``subprocess.run`` or the
-    # report-driven ``_run_bot_chat_turn(argv, env, report_path, timeout)`` (#113608); ``create``
-    # keeps the second patch a no-op where the helper does not exist, so no real child is spawned.
-    with patch("cron.scheduler_delivery.subprocess.run", side_effect=_fake_run), \
-            patch("cron.scheduler_delivery._run_bot_chat_turn", create=True, side_effect=_fake_run):
-        err = _deliver_to_bot_chat(job, content, "")
+    # The canonical lane admits the turn to the target profile's live Bot Chat owner; the
+    # admission record is the outward seam (no local CLI child is ever spawned).
+    with patch("tools.bot_live_delivery.find_canonical_live_owner", return_value={"session_id": "bot"}), \
+            patch("tools.bot_live_delivery.deliver_to_live_owner", side_effect=_fake_deliver):
+        err = _deliver_to_bot_chat(dict(job, execution_id="r1"), content, "")
     assert err is None, err
     return captured["message"]
 

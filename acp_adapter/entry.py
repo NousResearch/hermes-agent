@@ -198,31 +198,24 @@ def main(argv: list[str] | None = None) -> None:
     from .server import HermesACPAgent
 
     # Windows: import the configured memory provider (and numpy) on the main thread before
-    # the MCP-discovery and ACP stdin-reader threads start (hermes_cli's ~150 ms
-    # plugin-discovery thread is the only one already running). A first-time
-    # native-extension import (numpy via holographic / mnemosyne / hindsight) racing another
-    # thread's import chain deadlocked in create_module and session/new never answered
-    # (#58083). After this the off-loop agent build finds the modules in sys.modules.
+    # the ACP stdin-reader thread starts. A first-time native-extension import racing another
+    # thread's import chain deadlocked in create_module and session/new never answered (#58083).
     if sys.platform == "win32":
         _warm_memory_provider_import(logger)
 
-    # MCP discovery from config.yaml runs in a background daemon thread so the ACP server is
-    # responsive immediately (blocking here cost 2-5 s); per-session MCP servers registered via
-    # asyncio.to_thread are unaffected. Metadata-only hosts can opt out of the global startup.
-    # Previously this blocked asyncio.run() for 2-5 s. (ACP also registers per-session MCP servers
-    # dynamically via asyncio.to_thread inside the event loop; that path is unaffected.)  Moved from
-    # model_tools.py module scope to avoid freezing the gateway's loop on lazy import (#16856).
-    if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1":
-        try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-            start_background_mcp_discovery(logger=logger, thread_name="acp-mcp-discovery")
-        except Exception:
-            logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
-
+    # MCP discovery and execution belong to the gateway daemon; this process is a viewer.
     agent = HermesACPAgent()
+
+    async def serve():
+        # MCP and execution belong to the daemon. Close only this viewer, while
+        # its event loop is still alive, including on protocol/transport errors.
+        try:
+            await acp.run_agent(agent, use_unstable_protocol=True)
+        finally:
+            await agent.aclose()
+
     try:
-        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+        asyncio.run(serve())
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

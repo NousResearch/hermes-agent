@@ -5,7 +5,6 @@ import type { TranslucencyState } from '@hermes/shared/translucency'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { HermesNotification } from '../electron/notification-types'
-import type { PoolLimits } from '../electron/pool-limits'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -22,18 +21,14 @@ declare global {
   interface Window {
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
-      // the window's backend; pass a named profile to lazily spawn/reuse that
-      // profile's backend from the pool.
-      getConnection: (
-        profile?: string | null,
-        opts?: { priority?: 'foreground' | 'background' }
-      ) => Promise<HermesConnection>
+      // the window's backend; pass a named profile to dial/reuse that profile's
+      // cached gateway descriptor.
+      getConnection: (profile?: string | null) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
-        priority?: 'foreground' | 'background'
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {
@@ -53,19 +48,6 @@ declare global {
       // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
-      // Keepalive: mark a pool profile backend as recently used so the idle
-      // reaper spares it while its chat is active. `activeTurn` reports whether
-      // a prompt turn leases the backend (early skip for cooperative
-      // retirement; the backend probe is the proof).
-      touchBackend: (profile?: string | null, options?: { activeTurn?: boolean }) => Promise<{ ok: boolean }>
-      // Pool sizing (Settings → Advanced): device-local, live-applied by the
-      // main process. get resolves the limits currently in force; set applies
-      // (and persists) new ones, evicting/reaping to converge immediately.
-      getPoolLimits: () => Promise<PoolLimits>
-      setPoolLimits: (limits: { maxBackends?: number; idleMs?: number }) => Promise<{
-        ok: boolean
-        limits: PoolLimits
-      }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
@@ -425,6 +407,10 @@ declare global {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+      }
+      preparedSubmissions?: {
+        read: () => Promise<string>
+        update: (key: string, entry: string | null) => Promise<void>
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>

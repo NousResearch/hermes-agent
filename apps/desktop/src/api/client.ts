@@ -1,6 +1,8 @@
-import { JsonRpcGatewayClient } from '@hermes/shared'
+import { type GatewayEvent, type GatewayEventName, JsonRpcGatewayClient, type ServerRequest, type ServerRequestHandler } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
+
+import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -27,7 +29,147 @@ export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
 
+// Canonical shared prompts (`gateway/session_pending_controls.py`) travel as
+// `approval.request` / `clarify.request` EVENTS keyed by `prompt_id` and are
+// answered through `approval.respond` / `clarify.respond`. The renderer only
+// knows server→client REQUESTS (#110521), so each prompt event is delivered to
+// the same `onRequest` registry as a request whose `respond` issues the RPC.
+const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'approval.request': 'approval', 'clarify.request': 'clarify' }
+
+const ATTACH_REQUIRED = new Set(['prompt.submit', 'approval.respond', 'clarify.respond', 'session.interrupt', 'prompt.cancel'])
+// A branch is a CAS mutation on the PARENT: an un-attached parent (right-click on a sidebar row
+// that was never opened) has no cached revision, so attach it first to learn one.
+const PARENT_ATTACH_REQUIRED = new Set(['session.branch_stored', 'session.branch_whole'])
+
+// Canonical-only identity keys. The legacy `hermes serve` contract refuses an unknown key as
+// version skew (4000), so they are stripped on a non-canonical dial. `prompt.submit` keeps its
+// `submission_id` on purpose: the submit path retries identityless on that exact refusal and
+// records the send as legacy-attempted, which a silent strip here would hide.
+const LEGACY_STRIP: Record<string, string[]> = { 'session.create': ['request_id'], 'session.branch_stored': ['request_id'] }
+
+function legacyParams(method: string, params: Record<string, unknown>): Record<string, unknown> {
+  const strip = LEGACY_STRIP[method]
+
+  if (!strip || !strip.some(key => key in params)) { return params }
+
+  return Object.fromEntries(Object.entries(params).filter(([key]) => !strip.includes(key)))
+}
+
 export class HermesGateway extends JsonRpcGatewayClient {
+  private canonical = false
+  private readonly protocol = new CanonicalDesktopProtocol()
+  private readonly promptHandlers = new Set<ServerRequestHandler>()
+  private readonly deliveredPrompts = new Set<string>()
+
+  override onRequest(handler: ServerRequestHandler): () => void {
+    this.promptHandlers.add(handler)
+    const off = super.onRequest(handler)
+
+    return () => {
+      this.promptHandlers.delete(handler)
+      off()
+    }
+  }
+
+  private deliverCanonicalPrompt(event: { type: string; session_id?: string; payload?: unknown }, replayed: boolean) {
+    const kind = CANONICAL_PROMPT_EVENTS[event.type]
+    const p = event.payload as Record<string, unknown> | undefined
+    const sid = event.session_id
+
+    if (!kind || !p || !sid || typeof p.prompt_id !== 'string') { return }
+    const id = p.prompt_id
+
+    if (this.deliveredPrompts.has(id)) { return }
+    this.deliveredPrompts.add(id)
+    const choices = Array.isArray(p.choices) ? p.choices : []
+
+    const params: Record<string, unknown> = kind === 'clarify'
+      ? { session_id: sid, question: p.question, choices, multi_select: p.multi_select, questions: p.questions, answers: p.answers }
+      : { session_id: sid, request_id: id, command: p.command, description: p.description, choices,
+          allow_permanent: choices.includes('always'), edit: p.edit }
+
+    let settled = false
+
+    const request: ServerRequest = {
+      id,
+      method: kind,
+      params,
+      replayed,
+      respond: result => {
+        if (settled) { return }
+        settled = true
+        const answer = kind === 'clarify' ? { answer: result.answer } : { choice: result.choice }
+        void this.request(`${kind}.respond`, { session_id: sid, request_id: id, ...answer }).catch(() => undefined)
+      },
+      fail: () => { settled = true }
+    }
+
+    for (const handler of this.promptHandlers) {
+      if (handler(request) !== false) { return }
+    }
+  }
+
+  override on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
+    return super.on<K>(type, event => {
+      // Named listeners run before wildcard listeners in the shared client.
+      // Normalize before either kind sees the prompt, including replay delivery.
+      if (this.canonical) { this.protocol.event(event) }
+      handler(event)
+    })
+  }
+
+  override async connect(wsUrl: string): Promise<void> {
+    this.canonical = new URL(wsUrl).searchParams.has('native_dial')
+    this.attached.clear()
+
+    return super.connect(wsUrl)
+  }
+
+  // Sessions attached over THIS socket. An authority subscription is per
+  // transport: when routing moves a session to another socket (a profile split,
+  // a redial) the new socket must resume before it may submit or respond.
+  private attached = new Set<string>()
+
+  override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
+    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
+    const sid = typeof params.session_id === 'string' ? params.session_id : null
+
+    if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(sid)) {
+      await this.request('session.resume', { session_id: sid, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
+    }
+
+    const parent = PARENT_ATTACH_REQUIRED.has(method) ? params.parent_session_id ?? params.session_id : null
+
+    if (typeof parent === 'string' && parent && !this.attached.has(parent)) {
+      await this.request('session.resume', { session_id: parent, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
+    }
+
+    const prepared = this.protocol.prepare(method, params)
+    const wireMethod = this.protocol.wire(method, prepared)
+
+    try {
+      const result = await super.request<T>(wireMethod, prepared, timeoutMs, signal)
+
+      const settled = this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), (m, p) => this.request(m, p)) as T
+
+      if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
+        // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
+        const sid = (settled as { session_id?: string }).session_id
+
+        if (sid) { this.attached.add(sid) }
+
+        for (const prompt of ((settled as { prompts?: Array<Record<string, unknown>> }).prompts ?? [])) {
+          this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, payload: prompt }, true)
+        }
+      }
+
+      return settled
+    } catch (error) {
+      this.protocol.failure(prepared, error)
+      throw error
+    }
+  }
+
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
@@ -40,7 +182,30 @@ export class HermesGateway extends JsonRpcGatewayClient {
       // The channel already answered -32601; note the missing registry in devtools.
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
-      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      socketFactory: url => {
+        const parsed = new URL(url)
+
+        if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
+        const ticket = parsed.searchParams.get('ticket')
+
+        if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
+        parsed.searchParams.delete('ticket')
+
+        return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
+      }
+    })
+    this.onEvent(event => {
+      if (!this.canonical) { return }
+      this.protocol.event(event)
+
+      if (event.type in CANONICAL_PROMPT_EVENTS) {
+        this.deliverCanonicalPrompt(event, false)
+      } else if (event.type.endsWith('.settled')) {
+        const id = (event.payload as { prompt_id?: unknown } | undefined)?.prompt_id
+
+        if (typeof id === 'string') { this.deliveredPrompts.delete(id) }
+      }
     })
   }
 }

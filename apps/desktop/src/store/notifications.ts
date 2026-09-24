@@ -2,7 +2,6 @@ import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
 import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
-import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
@@ -263,21 +262,15 @@ export function notifyError(
   options: { action?: NotificationAction; id?: string } = {}
 ): string {
   const readable = readableError(error, fallback)
-  const poolSlotTimeout = isLocalBackendSlotWaitTimeout(error)
 
   return notify({
-    action: poolSlotTimeout
-      ? {
-          label: translateNow('desktop.poolSlotTimeoutOpenSettings'),
-          onClick: requestPoolLimitsSettings
-        }
-      : (options.action ?? readable.action),
+    action: options.action ?? readable.action,
     // A caller that can fire again for the same cause names its toast, so the repeat replaces it.
     id: options.id,
     kind: 'error',
     title: fallback,
-    message: poolSlotTimeout ? translateNow('desktop.poolSlotTimeoutBody') : readable.message,
-    detail: poolSlotTimeout ? readable.message : readable.detail
+    message: readable.message,
+    detail: readable.detail
   })
 }
 

@@ -105,6 +105,17 @@ const relay: RelayLifecycle = {
 // leases. Local routes get a no-op release inside the host (idle-reaper
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
+// Claimed envelopes remain pinned to their sender until terminal reply ACK.
+// The sender's durable claimed directory restores these after renderer restart.
+const pendingRelays = new Map<string, Map<string, RelayEnvelope>>()
+
+function pendingRelaysFor(sender: RelayConnection): Map<string, RelayEnvelope> {
+  const senderKey = JSON.stringify(sender.route)
+  const pending = pendingRelays.get(senderKey) || new Map<string, RelayEnvelope>()
+  pendingRelays.set(senderKey, pending)
+
+  return pending
+}
 
 /** One reachable gateway plus a representative route onto it. The route carries
  *  identity only, so the human label comes from the registry (connectionLabels). */
@@ -140,7 +151,7 @@ function syncRelayRetention(connections: RelayConnection[]) {
     return
   }
 
-  const live = new Set(connections.map(connection => connection.id))
+  const live = new Set(connections.map(connection => JSON.stringify(connection.route)))
 
   for (const [id, release] of [...relayRouteRetentions]) {
     if (!live.has(id)) {
@@ -159,8 +170,8 @@ function syncRelayRetention(connections: RelayConnection[]) {
   }
 
   for (const connection of connections) {
-    if (!relayRouteRetentions.has(connection.id)) {
-      relayRouteRetentions.set(connection.id, host.retainProfileSocket(connection.route))
+    if (!relayRouteRetentions.has(JSON.stringify(connection.route))) {
+      relayRouteRetentions.set(JSON.stringify(connection.route), host.retainProfileSocket(connection.route))
     }
   }
 }
@@ -191,13 +202,15 @@ async function relayConnections(): Promise<RelayConnection[]> {
     for (const route of Array.isArray(routes) ? routes : []) {
       const id = String(route?.connectionId || '')
 
-      if (id && !byConnection.has(id)) {
-        byConnection.set(id, route)
+      const key = JSON.stringify(route)
+
+      if (id && !byConnection.has(key)) {
+        byConnection.set(key, route)
       }
     }
 
-    return [...byConnection.entries()].map(([id, route]) => ({
-      id,
+    return [...byConnection.values()].map(route => ({
+      id: route.connectionId,
       route
     }))
   } catch {
@@ -417,7 +430,16 @@ async function drainRelayOutboxes() {
           {}
         )
 
+        const pending = pendingRelaysFor(sender)
+
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {
+          if (envelope.id && !pending.has(envelope.id)) {pending.set(envelope.id, structuredClone(envelope))}
+        }
+
+        // Every claimed-but-unACKed envelope rides again: a delivery that
+        // settled without an exact identity, or whose ACK was lost, retries
+        // from the sender's pin instead of being silently dropped.
+        for (const envelope of pending.values()) {
           queued.push({ envelope, sender })
         }
       } catch {
@@ -485,6 +507,13 @@ async function deliverRelayEnvelope(
 ) {
   const envelopeId = String(envelope?.id || '')
   const target = byId.get(String(envelope?.target_connection || ''))
+  const pending = pendingRelaysFor(sender)
+
+  // A later drain re-queues every pinned envelope; the lane serialises them, so
+  // one already ACKed by an earlier delivery in this lane must not ride twice.
+  if (!envelopeId || !pending.has(envelopeId)) {
+    return
+  }
 
   const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
     try {
@@ -492,13 +521,10 @@ async function deliverRelayEnvelope(
         id: envelopeId,
         ...payload
       })
+      pending.delete(envelopeId)
     } catch {
       // Sender gateway unreachable — its waiter times out with guidance.
     }
-  }
-
-  if (!envelopeId) {
-    return
   }
 
   if (!target) {
@@ -514,10 +540,11 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<{ reply?: string }>(
-      target.route,
+    const res = await host.requestProfile<{ status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string }>(
+      { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
       'bot_relay.deliver',
       {
+        id: envelopeId,
         profile: String(envelope?.target_profile || ''),
         message: String(envelope?.message || ''),
         from_profile: String(envelope?.from_profile || ''),
@@ -526,6 +553,25 @@ async function deliverRelayEnvelope(
       },
       RELAY_DELIVER_TIMEOUT_MS
     )
+
+    if (res.delivery_id !== envelopeId || !res.admission_id) {
+      noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
+
+      return
+    }
+
+    if (res.status !== 'settled' && res.status !== 'failed') {
+      if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+
+      return
+    }
+
+    if (res.status === 'failed') {
+      noteBotAttention(attentionKey, res.reason || res.error || 'delivery failed')
+      await postReply({ error: res.error || res.reply || 'delivery failed', reason: res.reason })
+
+      return
+    }
 
     clearBotAttention(attentionKey)
     await postReply({
@@ -539,6 +585,9 @@ async function deliverRelayEnvelope(
     // classified codes beat free-text re-parsing.
     const reason = String(error?.data?.reason || '').trim()
     noteBotAttention(attentionKey, reason || error?.message || error)
+
+    // A transport exception can follow a committed admission; never settle it as failure.
+    if (!reason || reason === 'runtime_unavailable') {return}
     await postReply({
       error: String(error?.message || error || 'delivery failed'),
       ...(reason

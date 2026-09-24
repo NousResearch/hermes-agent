@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import hermes_cli.gateway_setup_service as service_setup
 
 
 # ---------------------------------------------------------------------------
@@ -20,12 +21,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_real_gateway_service(monkeypatch):
-    """run_import() auto-installs the gateway service post-restore; tests must
+    """run_import() may start an existing gateway service post-restore; tests must
     never touch the host's systemd/launchd. Individual tests re-patch these to
     assert the wiring."""
     import hermes_cli.gateway as gateway_mod
 
-    monkeypatch.setattr(gateway_mod, "ensure_gateway_service", lambda **kw: False)
+    monkeypatch.setattr(service_setup, "ensure_gateway_service", lambda **kw: False)
     monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
 
 
@@ -494,7 +495,7 @@ class TestImport:
 
         calls = []
         monkeypatch.setattr(
-            gateway_mod, "ensure_gateway_service",
+            service_setup, "ensure_gateway_service",
             lambda **kw: calls.append(kw) or True,
         )
         monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
@@ -518,7 +519,7 @@ class TestImport:
 
         calls = []
         monkeypatch.setattr(
-            gateway_mod, "ensure_gateway_service",
+            service_setup, "ensure_gateway_service",
             lambda **kw: calls.append(kw) or True,
         )
         monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: True)
@@ -775,9 +776,11 @@ class TestImport:
         # Live runtime files are untouched; the backup's foreign ones never land.
         assert (hermes_home / "gateway.pid").read_text() == "4242"
         assert (hermes_home / "processes.json").read_text() == '{"live": true}'
-        # cron.pid / gateway.lock had no live copy and were not seeded.
+        # No foreign runtime file is installed. Maintenance creates a local lock
+        # inode which must remain after release, or concurrent openers can split ownership.
         assert not (hermes_home / "cron.pid").exists()
-        assert not (hermes_home / "gateway.lock").exists()
+        lock = json.loads((hermes_home / "gateway.lock").read_text())
+        assert lock["hermes_home"] == str(hermes_home.resolve())
 
 
 
@@ -2356,7 +2359,7 @@ class TestImportHonorsHermesHomeOverride:
 
         calls = []
         monkeypatch.setattr(
-            "hermes_cli.gateway.ensure_gateway_service",
+            "hermes_cli.gateway_setup_service.ensure_gateway_service",
             lambda *a, **kw: calls.append(kw),
         )
         monkeypatch.setattr(
@@ -2390,7 +2393,7 @@ class TestImportHonorsHermesHomeOverride:
 
         calls = []
         monkeypatch.setattr(
-            "hermes_cli.gateway.ensure_gateway_service",
+            "hermes_cli.gateway_setup_service.ensure_gateway_service",
             lambda *a, **kw: calls.append(kw),
         )
         monkeypatch.setattr(

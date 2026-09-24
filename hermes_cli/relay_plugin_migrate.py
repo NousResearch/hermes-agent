@@ -244,9 +244,6 @@ def run_relay_migration_after_update() -> None:
     print_relay_migration_report(migrate_all_profile_relay_envs())
 
 
-RELAY_MIGRATE_COMMAND = "hermes migrate relay"
-
-
 def cmd_migrate_relay(args) -> None:
     """``hermes migrate relay [--all-profiles] [--no-validate]``."""
     from hermes_constants import get_hermes_home

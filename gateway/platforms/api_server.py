@@ -74,7 +74,8 @@ _STATIC_FEATURE_FLAGS = {
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
-# /v1/capabilities "endpoints" table: name -> (method, path).
+# /v1/capabilities "endpoints" table: name -> (method, path[, feature]). An entry naming a
+# feature is advertised only while that "features" flag is truthy on this listener.
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
     ("models", ("GET", "/v1/models")), ("model_options", ("GET", "/api/model/options")),
@@ -84,6 +85,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
+    ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown", "run_unknown_resolution")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
     ("session_create", ("POST", "/api/sessions")),
@@ -1667,6 +1669,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         db = self._ensure_session_db() if key else None
         if db is None:
             return None
+        if getattr(self.gateway_runner, 'session_authority', None) is not None:
+            from gateway.session_api import declared_api_session
+            return declared_api_session(db, key)
         try:
             row = db.find_latest_gateway_session_for_peer(
                 source=self._SESSION_SOURCE, session_key=key)
@@ -1748,6 +1753,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
         """Cached SessionDB for ``home`` (shared by both ``_ensure_session_db*``). Never writes
         ``self._session_db`` (explicit override only), so no profile pins later requests."""
+        if self.gateway_runner is not None:
+            from gateway.platforms.api_server_store import selected_session_db
+            return selected_session_db(self, home)
         from hermes_state_registry import acquire
         key = str(home)
         with self._session_db_cache_lock:
@@ -1778,6 +1786,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _ensure_session_db(self):
         """SessionDB for the active profile home (the runtime scope redirects ``get_hermes_home()``
         per profile). Sync, for ``_create_agent``; handlers use ``_ensure_session_db_async``."""
+        if self.gateway_runner is not None:
+            from hermes_constants import get_hermes_home
+            from gateway.platforms.api_server_store import selected_session_db
+            return selected_session_db(self, get_hermes_home())
         if self._session_db is not None:
             return self._session_db
         try:
@@ -1790,6 +1802,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _ensure_session_db_async(self):
         """Async variant: the profile home is captured on the loop thread (its scope is invisible
         inside ``to_thread``), only the blocking open runs in the worker, single-flight locked."""
+        if self.gateway_runner is not None:
+            from hermes_constants import get_hermes_home
+            from gateway.platforms.api_server_store import selected_session_db
+            return selected_session_db(self, get_hermes_home())
         if self._session_db is not None:
             return self._session_db
         try:
@@ -2367,6 +2383,33 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
+        runner = getattr(self, "gateway_runner", None)
+        features = {
+            "chat_completions": True, "chat_completions_streaming": True,
+            "responses_api": True, "responses_streaming": True, "run_submission": True,
+            "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
+            **_STATIC_FEATURE_FLAGS,
+            "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
+            "cors": bool(self._cors_origins),
+            # Always advertised for feature-detection; enabled follows config.
+            "browser_extension_control": {
+                "enabled": self._browser_control_enabled(),
+                "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
+                "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
+                "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
+                "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
+                "developer_mode": self._browser_control_developer_mode(),
+                "artifact_transport": {
+                    "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
+                    "download": {
+                        "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
+                    "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
+                    "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
+                    "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
+                "real_browser_actions": True,
+                "transports": {
+                    "local_vps": "websocket-subprotocol-ticket",
+                    "cloud": "authenticated-gateway-rpc"}}}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
@@ -2377,32 +2420,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "The API server creates a server-side Hermes AIAgent; "
                     "tools execute on the API-server host unless a future "
                     "explicit split-runtime mode is enabled.")},
-            "features": {
-                "chat_completions": True, "chat_completions_streaming": True,
-                "responses_api": True, "responses_streaming": True, "run_submission": True,
-                "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
-                **_STATIC_FEATURE_FLAGS,
-                "cors": bool(self._cors_origins),
-                # Always advertised for feature-detection; enabled follows config.
-                "browser_extension_control": {
-                    "enabled": self._browser_control_enabled(),
-                    "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
-                    "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
-                    "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
-                    "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
-                    "developer_mode": self._browser_control_developer_mode(),
-                    "artifact_transport": {
-                        "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
-                        "download": {
-                            "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
-                        "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
-                        "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
-                        "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
-                    "real_browser_actions": True,
-                    "transports": {
-                        "local_vps": "websocket-subprotocol-ticket",
-                        "cloud": "authenticated-gateway-rpc"}}},
-            "endpoints": {name: {"method": m, "path": p} for name, (m, p) in _CAPABILITY_ENDPOINTS},
+            "features": features,
+            "endpoints": {
+                name: {"method": entry[0], "path": entry[1]}
+                for name, entry in _CAPABILITY_ENDPOINTS
+                if len(entry) < 3 or features[entry[2]]},
         })
 
     # -- Browser-extension control (authenticated local/VPS API) ----------------------
@@ -3279,6 +3301,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """
         if not isinstance(message, str):
             return None
+        # Under session authority the Bot Chat is a LOCAL session whose only writer is the
+        # authority FIFO (a Desktop showing it is a viewer, not a lease holder): the turn enters
+        # through the same door as ``bot_relay.deliver`` and the receipt is its admission's.
+        if getattr(self.gateway_runner, "session_authority", None) is not None:
+            from gateway.platforms.api_server_bot_chat import admit_peer_turn
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self.gateway_runner)
+            if authority is None:
+                return None
+            return await admit_peer_turn(authority, session_id, message, author)
         db = await self._ensure_session_db_async()
         if db is None:
             return None
@@ -3286,7 +3318,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
 
         def _admit() -> Optional[Dict[str, Any]]:
-            owner = find_canonical_live_owner(home)
+            try:
+                owner = find_canonical_live_owner(home)
+            except ValueError:
+                # No reachable profile authority to hand the chat to: this process runs the turn.
+                return None
             # Only the canonical Bot Chat's own lineage: a peer turn into any other session runs here.
             if owner is None or db.get_compression_tip(session_id) != owner["session_id"]:
                 return None
@@ -3306,7 +3342,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         receipt on the same budget as the local path, so the peer still gets the reply on this call.
         """
         session_id = ctx["session_id"]
-        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
         if admitted is None:
             return None
         record = await self._await_live_bot_chat_receipt(*admitted)
@@ -3325,19 +3361,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                code=record.get("reason") or record["status"], headers=headers)
 
     async def _await_live_bot_chat_receipt(self, home: Path, record: Dict[str, Any], *, keepalive=None) -> Dict[str, Any]:
-        """Wait on the owner's mailbox record through the shared ``await_delivery_async`` primitive until it
-        settles or the local DM budget runs out; ``keepalive`` (async) is called every SSE keepalive interval
-        so a streaming caller's proxy keeps the socket."""
-        from tools.bot_live_delivery import await_delivery_async
+        """Wait on the live Bot Chat's receipt (the authority admission's waiter, or the legacy owner
+        mailbox through ``await_delivery_async``) until it settles or the local DM budget runs out;
+        ``keepalive`` (async) is called every SSE keepalive interval so a streaming caller's proxy
+        keeps the socket."""
+        from gateway.platforms.api_server_bot_chat import await_live_delivery
         from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
-        delivery_id = record["delivery_id"]
         deadline = time.monotonic() + _LIVE_WAIT_SECONDS
         while record["status"] in ("queued", "claimed"):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             budget = remaining if keepalive is None else min(remaining, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
-            record = await await_delivery_async(home, delivery_id, budget) or record
+            record = await await_live_delivery(self, home, record, budget)
             if keepalive is not None and record["status"] in ("queued", "claimed"):
                 await keepalive()
         return record
@@ -3347,7 +3383,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         the run's single ``assistant.completed`` event; a receipt still open at the budget is a
         ``run.queued`` event (the 202 shape), a failed one an ``error`` event carrying the reason."""
         session_id = ctx["session_id"]
-        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
         if admitted is None:
             return None
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
@@ -3397,6 +3433,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
+        from gateway.platforms.api_server_openai_routes import _response_status
         handed_off = await self._answer_through_live_bot_chat(ctx)
         if handed_off is not None:
             return handed_off
@@ -3422,7 +3459,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             result.get("final_response", "") if is_dict else "")
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
         return web.json_response(
-            {"object": "hermes.session.chat.completion",
+            {"object": "hermes.session.chat.completion", "status": _response_status(result),
              "session_id": effective_session_id or session_id,
              "message": {"role": "assistant", "content": final_response}, "usage": usage,
              "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
@@ -4012,6 +4049,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
+        request_id: Optional[str] = None, history_from_session: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
@@ -4030,6 +4068,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         already persisted: the transcript's unanswered tail row is adopted from ``conversation_history``
         as THIS turn's user message instead of being appended a second time
         (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
+        if getattr(self.gateway_runner, "session_authority", None) is not None:
+            from gateway.session_api_turn import run_api_turn
+            return await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
+                ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
+                stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
+                tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
+                agent_ref=agent_ref, active_run_id=active_run_id, gateway_session_key=gateway_session_key,
+                requested_model=requested_model, requested_provider=requested_provider, model_options=model_options,
+                route=route, session_model=session_model, requested_runtime=requested_runtime,
+                route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock,
+                bind_declared_conversation=bind_declared_conversation, request_id=request_id,
+                history_from_session=history_from_session, session_history_delivery=session_history_delivery,
+                turn_author=turn_author, resume_unanswered_turn=resume_unanswered_turn)
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -4220,7 +4271,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_get_run = _run_route_delegate("_handle_get_run")
     _handle_run_events = _run_route_delegate("_handle_run_events")
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
+    _handle_run_clarify = _run_route_delegate("_handle_run_clarify")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
+    _handle_resolve_unknown_run = _run_route_delegate("_handle_resolve_unknown_run")
     _handle_stop_run = _run_route_delegate("_handle_stop_run")
 
     async def _sweep_orphaned_runs(self) -> None:
@@ -4422,6 +4475,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Not used — the HTTP request/response cycle handles delivery directly."""
         return SendResult(success=False, error="API server uses HTTP request/response, not send()")
+
+    async def send_clarify(self, chat_id: str, question: str, choices: Optional[list],
+                           clarify_id: str, session_key: str,
+                           metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        from gateway.platforms.api_server_authority_runs import send_clarify
+        return await send_clarify(self, chat_id=chat_id, clarify_id=clarify_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the API server."""

@@ -31,10 +31,9 @@ def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
 
 @_projects_handler("projects.discover_repos")
 def _(rid, params: dict) -> dict:
-    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived. A profile whose
+    session store was never initialized still answers from its scan cache (``db`` is None then)."""
     with _profile_db(params) as db:
-        if db is None:
-            return _ok(rid, {"repos": []})
         from hermes_cli import projects_db as pdb
         policy = _repo_discovery_policy()
         with pdb.connect_closing() as conn:
@@ -70,7 +69,7 @@ def _(rid, params: dict) -> dict:
         elif not policy["enabled"]:
             pdb.clear_discovered_repos(conn, policy_key=policy_key)
     with _profile_db(params) as db:
-        repos = [] if db is None else _discover_repos_payload(db, include_cached=policy["enabled"])
+        repos = _discover_repos_payload(db, include_cached=policy["enabled"])
         return _ok(rid, {"repos": repos, "accepted": accepted, "discovery_policy": policy})
 
 
@@ -318,38 +317,17 @@ def _(rid, params: dict) -> dict:
     fallback masking a failed connection. ``profile`` answers for THAT profile's pin and ``.env``;
     unknown -> ``ok=False``."""
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import has_usable_secret
-        from hermes_cli.main import _has_any_provider_configured
+        from hermes_cli.runtime_readiness import check_runtime_readiness
         requested = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
-            if requested:
-                model, _startup_provider = _resolve_startup_runtime()
-                runtime = resolve_runtime_provider(requested=requested, target_model=model or None)
-            else:
-                model, runtime = _resolve_agent_model_runtime(None, None)
-            provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
-            provider = runtime.get("provider") or "provider"
-            source = str(runtime.get("source") or "")
-
-            def fail(error, src):
-                return {"ok": False, "provider": provider, "model": model,
-                        "source": src, "error": error, **scoped}
-            if (not provider_configured and provider == "bedrock"
-                    and source in {"iam-role", "aws-sdk-default-chain"}):
-                return fail("No Hermes provider is configured.", source)
-            api_key = runtime.get("api_key")
-            api_key_text = "" if callable(api_key) else str(api_key or "").strip()
-            if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
-                    or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                return fail(f"No usable credentials found for {provider}.", runtime.get("source"))
-            from hermes_cli.anon_auth import route_is_welcome_host
-            # free_tier is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
-            # on profile state: a paid Nous key beside a free-tier identity must not read as free.
-            return {"ok": True, "provider": runtime.get("provider"), "model": model,
-                    "source": runtime.get("source"),
-                    "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
+            def resolve():
+                if requested:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+                    model, _startup_provider = _resolve_startup_runtime()
+                    return model, resolve_runtime_provider(requested=requested, target_model=model or None)
+                return _resolve_agent_model_runtime(None, None)
+            return {**check_runtime_readiness(requested, strict_profile_scope=bool(profile), resolve=resolve),
                     **scoped}
         return _readiness_check(rid, params, probe)
     except Exception as e:

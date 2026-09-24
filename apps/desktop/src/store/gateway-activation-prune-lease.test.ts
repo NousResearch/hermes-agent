@@ -67,8 +67,7 @@ function installDesktop(): void {
       profile,
       token: 'registry-token'
     })),
-    getGatewayWsUrlFor: vi.fn(async () => 'ws://127.0.0.1:6161/ws'),
-    touchBackend: vi.fn(async () => undefined)
+    getGatewayWsUrlFor: vi.fn(async () => 'ws://127.0.0.1:6161/ws')
   }
 }
 

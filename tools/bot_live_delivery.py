@@ -1,9 +1,8 @@
-"""Durable, at-most-once handoff to an existing Bot Chat owner.
+"""Canonical Bot Chat transport and durable legacy delivery receipts.
 
-Adapted from FalconOrtiz's live-owner mailbox (#101564). A single private
-record advances queued -> claimed -> terminal under a process-shared lock.
-Claims never expire: a crashed consumer leaves an inspectable unknown outcome,
-not permission to execute the same input again. Receipts are permanent.
+Only gateway/session_bot.py admits execution. Old claimed/terminal records remain
+inspectable; the legacy UI claim consumer is retired. No authority means refusal.
+Receipt storage derives from FalconOrtiz's live-owner mailbox (#101564).
 """
 from __future__ import annotations
 
@@ -29,41 +28,70 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
-def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
-    """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
-    from hermes_cli.active_sessions import active_session_registry_snapshot
+def _bot_chat_tip(home: Path) -> str | None:
+    """Current Bot Chat tip id, or None when the profile has no store or no Bot Chat yet."""
     from hermes_state import SessionDB
 
-    home = Path(profile_home).resolve()
-    if not (home / "state.db").is_file():
+    if not (home / 'state.db').is_file():
         return None
-    db = SessionDB(db_path=home / "state.db", read_only=True)
+    db = SessionDB(db_path=home / 'state.db', read_only=True)
     try:
-        row = db.get_session_by_title("Bot Chat")
-        session_id = db.get_compression_tip(row["id"]) if row else None
+        row = db.get_session_by_title('Bot Chat')
+        return db.get_compression_tip(row['id']) if row else None
     finally:
         db.close()
-    if not session_id:
-        return None
-    for entry in active_session_registry_snapshot(registry_home=home):
-        if entry["session_id"] == session_id:
-            return {**entry, "profile_home": str(home)}
-    return None
 
 
 def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
-    """Only advertised consumers may receive owner-pinned mailbox deliveries."""
-    entry = find_canonical_owner(profile_home)
-    meta = (entry or {}).get("metadata") or {}
-    if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
-        return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
-            "live_session_id": meta["live_session_id"]}
-    return None
+    """Discover the profile authority and its exact Bot Chat without acquiring a lease.
+
+    ``session_id`` is the current Bot Chat tip, or ``''`` when the profile has none yet: the
+    authority's deliver door creates it on first delivery (main's ``--create-if-missing``),
+    so a missing chat is not a refusal. None only when the profile has no store at all."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+
+    home = Path(profile_home).resolve()
+    discovery = discover_gateway_endpoint(home, timeout=5)
+    if discovery.state != 'ready' or discovery.endpoint is None:
+        raise ValueError('profile authority is not ready')
+    if not (home / 'state.db').is_file():
+        return None
+    tip = _bot_chat_tip(home)
+    return dict(profile_home=str(home), session_id=tip or '', canonical=True,
+                lease_id=discovery.endpoint.instance_id, live_session_id=tip or '')
+
+
+def authority_delivery(home, params):
+    """Call only this home's already-running authority; never start a fallback."""
+    import asyncio
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.gateway_client import GatewayClient, _session_ticket
+    from websockets.asyncio.client import connect
+
+    home = Path(home).resolve()
+
+    async def request():
+        discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=5)
+        if discovery.state != 'ready' or discovery.endpoint is None:
+            raise ValueError('profile authority is not ready')
+        endpoint = discovery.endpoint
+        ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
+        url = endpoint.api_origin.replace('http:', 'ws:').replace('https:', 'wss:') + '/api/ws'
+        async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket],
+                           open_timeout=10) as ws:
+            if ws.subprotocol != 'hermes-gateway-v1':
+                raise ValueError('authority protocol mismatch')
+            async with GatewayClient(ws) as client:
+                return await client.rpc('bot_relay.deliver', **params)
+
+    return asyncio.run(request())
 
 
 def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:
     pinned = {key: owner.get(key) for key in _OWNER_KEYS}
-    if not all(isinstance(value, str) and value for value in pinned.values()):
+    # An empty session_id is the discovered "no Bot Chat yet" state; the door creates it.
+    if not all(isinstance(value, str) and (value or key in ("session_id", "live_session_id"))
+               for key, value in pinned.items()):
         raise ValueError("owner requires profile_home, session_id, lease_id and live_session_id")
     if pinned["profile_home"] != str(Path(home).resolve()):
         raise ValueError("owner belongs to a different profile home")
@@ -207,64 +235,20 @@ def deliver_to_live_owner(
     pinned = _owner(profile_home, owner)
     if not isinstance(message, str):
         raise ValueError("message must be a string")
-    key = _delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex)
-    with _locked(profile_home) as root:
-        path = root / f"{key}.json"
-        existing = _read(path)
-        if existing is not None:
-            if (existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author
-                    or existing.get("notification_category", "result") != notification_category):
-                raise ValueError("delivery id already belongs to a different payload")
-            return existing
-        record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
-                      message=message, status="queued", created_at=time.time_ns(),
-                      sequence=_next_sequence(root), **({"author": dict(author)} if author else {}))
-        if notification_category == "diagnostic":
-            record["notification_category"] = notification_category
-        _write(path, record)
-        return record
+    home = Path(profile_home).resolve()
+    return authority_delivery(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
+        profile=home.name if home.parent.name == "profiles" else "default",
+        message=message, **({"session_id": pinned["session_id"]} if pinned["session_id"] else {}),
+        **({"author": dict(author)} if author else {})))
 
 
-def _matches(home: Path | str, record: dict, owner: dict) -> bool:
-    pinned = record["owner"]
-    if any(pinned[key] != owner[key] for key in ("profile_home", "lease_id", "live_session_id")):
-        return False
-    if pinned["session_id"] == owner["session_id"]:
-        return True
-    from hermes_state import SessionDB
+def claim_pending_delivery(profile_home, owner):
+    """Retired UI poller: only session_bot may migrate and admit queued records.
 
-    db = SessionDB(db_path=Path(home) / "state.db", read_only=True)
-    try:
-        return db.get_compression_tip(pinned["session_id"]) == owner["session_id"]
-    finally:
-        db.close()
-
-
-def claim_pending_delivery(
-    profile_home: Path | str, owner: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Claim oldest matching input exactly once; caller supplies its current lease.
-
-    A lease transfer across compression is accepted only along the original
-    stored session's compression chain. A new lease/live session cannot steal it.
-    Caller must hold its normal turn-admission guard before invoking this.
+    Keep this refusal until the legacy notification poller's call site is removed.
+    A previously claimed record can still publish its terminal receipt below.
     """
-    current = _owner(profile_home, owner)
-    if not _root(profile_home).is_dir():
-        return None
-    with _locked(profile_home) as root:
-        pending = []
-        for path in root.glob("*.json"):
-            record = _scan_read(path)
-            if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
-                pending.append(record)
-        if not pending:
-            return None
-        record = min(pending, key=lambda item: (
-            item.get("sequence", item["created_at"]), item["delivery_id"]))
-        record.update(status="claimed", claimed_at=time.time_ns())
-        _write(root / f"{record['delivery_id']}.json", record)
-        return record
+    return None
 
 
 def complete_delivery(
@@ -294,7 +278,14 @@ def complete_delivery(
 
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
-    return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
+    record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
+    if record is not None and record.get('admission_id'):
+        home = Path(profile_home).resolve()
+        # The authority compares the stored author to the retry payload; omitting it is a conflict.
+        return authority_delivery(home, dict(id=delivery_id,
+            profile=home.name if home.parent.name == 'profiles' else 'default', message=record['message'],
+            **({'author': dict(record['author'])} if record.get('author') else {})))
+    return record
 
 
 _PENDING = ("queued", "claimed")

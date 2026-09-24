@@ -21,7 +21,11 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { capabilityScoped } from '@/api/client'
+import { capabilityScoped, getApiRequestConnection } from '@/api/client'
+
+import { createSessionMutationClient, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+
+const mutatePersistedVisibility = createSessionMutationClient()
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
@@ -1033,14 +1037,11 @@ export const host = {
       // not the registry-secondary path openGatewayForAgent takes for a 'local'
       // connection id. Behavior for a plain local open is unchanged.
       const dial = explicitRoute
-        ? () =>
-            openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile, {
-              spawnPriority: 'foreground'
-            })
+        ? () => openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile)
         : plan.switchWorkspace
           ? () => ensureGatewayProfile(plan.switchWorkspace as string)
           : plan.dialWithoutSwitching
-            ? () => openGatewayForProfile(plan.dialWithoutSwitching as string, { spawnPriority: 'foreground' })
+            ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
             : null
 
       if (dial) {
@@ -1545,12 +1546,15 @@ export const host = {
       throw new Error('Persisted session updates require a profile and session id')
     }
 
-    return hermesApi<{ ok: boolean; hidden: boolean }>({
-      ...(route ? { connectionId: route.connectionId } : {}),
-      path: `/api/sessions/${encodeURIComponent(options.sessionId)}`,
-      method: 'PATCH',
-      body: { hidden: options.hidden, profile }
-    })
+    const scope = { connectionId: route?.connectionId || getApiRequestConnection() || 'local' }
+    const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
+    const payload = { hidden: options.hidden, profile }
+
+    return mutatePersistedVisibility(JSON.stringify([scope, options.sessionId, payload]),
+      () => hermesApi<SessionMutationSnapshot>({ ...scope,
+        path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}` }),
+      identity => hermesApi<{ ok: boolean; hidden: boolean }>({ ...scope, path,
+        method: 'PATCH', body: { ...payload, ...identity } }))
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
@@ -1921,6 +1925,7 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+export { gatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen
  *  (a roster poll's activity watermark, say) writes HERE rather than keeping

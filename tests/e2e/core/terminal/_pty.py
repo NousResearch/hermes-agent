@@ -281,12 +281,18 @@ class PtyHermes:
         return self.proc.returncode
 
     def leftover_processes(self, timeout: float = 15.0) -> list[str]:
-        """Processes still alive in the child's session, or seen as its descendants, after exit."""
+        """Processes still alive in the child's session, or seen as its descendants, after exit.
+
+        The profile's ``gateway run`` is not a leftover: ``hermes chat`` attaches to it and it
+        keeps serving (cron, messaging, the next client) after the client exits; ``close()`` still
+        tears it down with the rest of this harness's tree."""
+        from gateway.status import looks_like_gateway_command_line
+
         def alive() -> list[int]:
             pids = set(session_members(self.sid))
             # Same pid AND same start time: a recycled pid is not our leftover.
             pids |= {pid for pid, started in self.seen_members if _start_time(pid) == started}
-            return sorted(pids)
+            return sorted(pid for pid in pids if not looks_like_gateway_command_line(cmdline(pid)))
         try:
             poll(lambda: not alive(), timeout=timeout, what="the PTY session to empty")
         except AssertionError:

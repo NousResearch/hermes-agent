@@ -70,11 +70,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "cron/scheduler_delivery.py",
-    "symbol": "_deliver_to_bot_chat",
-    "kind": "bare_which"
-  },
-  {
     "path": "cron/scheduler_script.py",
     "symbol": "_script_argv",
     "kind": "bare_which"

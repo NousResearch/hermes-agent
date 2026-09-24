@@ -398,11 +398,22 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // request — but the question TEXT is already in the tool args, so paint a
   // disabled preview immediately instead of a spinner (the single-question
   // card does the same while request_id races the tool block).
-  if (request?.questions?.length || fromArgs.questions) {
+  // The shared gateway answers a batch one card at a time (`_clarify_batch_sync`):
+  // its requests are single-question even when the tool args are a batch, so a
+  // live single-question request always drives the single card.
+  const singleLive = Boolean(request?.requestId) && !request?.questions?.length
+
+  if (!singleLive && (request?.questions?.length || fromArgs.questions)) {
     return <ClarifyToolBatchPending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
   }
 
-  return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+  return (
+    <ClarifyToolSinglePending
+      fromArgs={singleLive && fromArgs.questions ? {} : fromArgs}
+      onAnswered={() => setAnswered(true)}
+      request={request}
+    />
+  )
 }
 
 function ClarifyToolSinglePending({

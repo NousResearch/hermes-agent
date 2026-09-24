@@ -249,6 +249,13 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     return line
   }
 
+  // The canonical authority intentionally returns a narrow metadata snapshot.
+  // Do not invent tool/skill inventories or crash while rendering that session.
+  if (!info.skills || !info.tools) {
+    return <Box flexDirection="column"><Text color={t.color.muted}>Gateway session {sid}</Text>
+      <Text color={t.color.muted}>Tool and skill inventory is not exposed by this runtime.</Text></Box>
+  }
+
   // ── Collapsible skills section ──
   const skills = info.skills ?? {}
   const skillEntries = Object.entries(skills).sort()

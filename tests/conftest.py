@@ -1803,7 +1803,38 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
-    def _check_subprocess_cmd(name, cmd):
+    def _sandboxed_gateway_child(cmd_str: str, env) -> bool:
+        """The disposable-daemon fixtures (``tests/gateway/fixtures/*``, the socket-path-length
+        probes) launch the bare ``python -m gateway.run`` module entry with an explicit ``env``
+        that re-homes BOTH ``HERMES_HOME`` and ``HOME`` away from the developer's account. Such a
+        child resolves no developer unit or config, holds no live port, and is reaped by its
+        test: the orphan class the guard exists for is the ``hermes gateway run|start|restart``
+        CLI spawn against the real home, which the fixtures never use."""
+        if not isinstance(env, dict):
+            return False
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        if "-m" not in tokens or tokens[tokens.index("-m") + 1:][:1] != ["gateway.run"]:
+            return False
+        hermes_home, home = env.get("HERMES_HOME"), env.get("HOME")
+        if not hermes_home or not home:
+            return False
+        # The developer's account home from the passwd db: tests re-point ``Path.home`` at their
+        # tmp user dir, which would make a sandboxed child look like it runs against the real one.
+        try:
+            import pwd
+            real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        except (ImportError, KeyError):
+            real_home = Path.home().resolve()
+        try:
+            return (Path(home).resolve() != real_home
+                    and not Path(hermes_home).resolve().is_relative_to(real_home))
+        except Exception:
+            return False
+
+    def _check_subprocess_cmd(name, cmd, env=None):
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -1872,6 +1903,7 @@ def _live_system_guard(request, monkeypatch):
             not lookalike_ok
             and not in_container
             and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart")
+            and not _sandboxed_gateway_child(cmd_str, env)
         ):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -1887,7 +1919,7 @@ def _live_system_guard(request, monkeypatch):
 
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
-            _check_subprocess_cmd(name, cmd)
+            _check_subprocess_cmd(name, cmd, kwargs.get("env"))
             return real(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
@@ -1905,7 +1937,7 @@ def _live_system_guard(request, monkeypatch):
 
         class _GuardedPopen(real):  # type: ignore[misc, valid-type]
             def __init__(self, cmd, *args, **kwargs):
-                _check_subprocess_cmd("Popen", cmd)
+                _check_subprocess_cmd("Popen", cmd, kwargs.get("env"))
                 super().__init__(cmd, *args, **kwargs)
 
         _GuardedPopen.__name__ = "Popen"

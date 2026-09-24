@@ -754,8 +754,11 @@ export function useMessageStream({
           message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
         )
 
+        // A redirect reserves its correction row below the live stream without
+        // sealing it, so a still-pending stream row above the last user message
+        // is this completion's own reply, not a stale earlier occurrence.
         const streamIndex = streamId
-          ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)
+          ? prev.findIndex((message, index) => message.id === streamId && (index > lastUserIndex || message.pending))
           : -1
 
         const settleAt = (index: number) =>

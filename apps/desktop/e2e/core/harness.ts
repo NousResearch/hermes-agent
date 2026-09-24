@@ -8,6 +8,7 @@
  * fixed sleep.
  */
 
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as os from 'node:os'
@@ -256,13 +257,36 @@ export function sandboxProcesses(sandbox: CoreSandbox): ProcInfo[] {
  * dead backend is reparented away and still counted.
  */
 export function backendProcesses(sandbox: CoreSandbox): ProcInfo[] {
+  // The local backend is the gateway `hermes gateway ensure` attached to or started
+  // (`hermes_cli.main [--profile X] gateway run --quiet`); `serve` covers a pool backend.
   const serve = sandboxProcesses(sandbox).filter(
-    proc => / serve( |$)/.test(proc.cmdline) && !/electron/i.test(proc.cmdline.split(' ')[0])
+    proc => (/ serve( |$)/.test(proc.cmdline) || / gateway run( |$)/.test(proc.cmdline))
+      && !/electron/i.test(proc.cmdline.split(' ')[0])
   )
 
   const pids = new Set(serve.map(proc => proc.pid))
 
   return serve.filter(proc => !pids.has(proc.ppid))
+}
+
+
+/**
+ * `hermes gateway stop` for the sandbox profile, run with the backend's own
+ * interpreter (argv[0] of the live `gateway run`). Attach-mode Desktop never
+ * owns the gateway, so this is how a test proves teardown works when asked.
+ */
+export function stopSandboxGateway(sandbox: CoreSandbox): { code: number | null; output: string } {
+  const [backend] = backendProcesses(sandbox)
+  const python = backend?.cmdline.split(' ')[0] || 'python3'
+
+  const result = spawnSync(python, ['-m', 'hermes_cli.main', 'gateway', 'stop'], {
+    cwd: REPO_ROOT,
+    env: coreAppEnv(sandbox),
+    encoding: 'utf8',
+    timeout: 90_000
+  })
+
+  return { code: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 
 // ─── WebSocket recorder ─────────────────────────────────────────────────

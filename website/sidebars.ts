@@ -796,6 +796,8 @@ const sidebars: SidebarsConfig = {
             'developer-guide/micro-compaction',
             'developer-guide/gateway-internals',
             'developer-guide/gateway-session-lifecycle',
+            'developer-guide/gateway-local-sessions',
+            'developer-guide/gateway-classic-cli',
             'developer-guide/multiplexing-gateway',
             'developer-guide/completion-backlog-delivery',
             'developer-guide/session-storage',

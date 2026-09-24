@@ -160,6 +160,8 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
+    from hermes_state_mutation_retirement import retire_sessions
+    retire_sessions(conn, ids)
     for chunk in _id_chunks(ids):
         ph = _session_ids_placeholders(chunk)
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
@@ -331,68 +333,15 @@ class SessionSessionsMixin:
         sidebar even though its transcript is intact (#99222). Stores outside the profile tree (explicit
         ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
         """
-        if not (profile_name or "").strip():
-            profile_name = self._own_profile_name()
-        def _do(conn):
-            system_prompt_hash = self._store_system_prompt(conn, system_prompt)
-            conn.execute(
-                """INSERT INTO sessions (
-                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
-                   origin_json, display_name, started_at
-                )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       source = CASE
-                           WHEN sessions.source = 'unknown'
-                           THEN COALESCE(excluded.source, 'unknown')
-                           ELSE sessions.source
-                       END,
-                       model = COALESCE(sessions.model, excluded.model),
-                       model_config = CASE
-                           WHEN excluded.model_config IS NOT NULL
-                                AND json_type(
-                                    sessions.model_config, '$._reset_from'
-                                ) IS NOT NULL
-                                AND json_remove(
-                                    sessions.model_config, '$._reset_from'
-                                ) = '{}'
-                           THEN json_set(
-                               excluded.model_config,
-                               '$._reset_from',
-                               json_extract(
-                                   sessions.model_config, '$._reset_from'
-                               )
-                           )
-                           ELSE COALESCE(
-                               sessions.model_config, excluded.model_config
-                           )
-                       END,
-                       system_prompt_hash = COALESCE(
-                           sessions.system_prompt_hash,
-                           excluded.system_prompt_hash
-                       ),
-                       system_prompt = CASE
-                           WHEN sessions.system_prompt_hash IS NULL
-                                AND excluded.system_prompt_hash IS NOT NULL
-                           THEN NULL
-                           ELSE sessions.system_prompt
-                       END,
-""" + _UPSERT_KEEP_EXISTING_SQL,
-                (
-                    session_id, source, user_id, session_key, chat_id, chat_type, thread_id, model,
-                    json.dumps(model_config) if model_config else None, system_prompt_hash,
-                    parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
-                    display_name, time.time(),
-                ),
-            )
-            if system_prompt_hash is not None:
-                self._delete_unreferenced_system_prompts(conn)
-            if parent_session_id:
-                self._inherit_parent_session_metadata(conn, session_id)
-        # Transcript-critical: a failed row creation aborts the turn.
-        self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+        params = dict(session_id=session_id, source=source, model=model, model_config=model_config,
+                      system_prompt=system_prompt, user_id=user_id, session_key=session_key,
+                      chat_id=chat_id, chat_type=chat_type, thread_id=thread_id,
+                      parent_session_id=parent_session_id, cwd=cwd, profile_name=profile_name,
+                      git_repo_root=git_repo_root, origin_json=origin_json, display_name=display_name,
+                      transport_profile=transport_profile)
+        self._execute_write(lambda conn: insert_session_row_in_transaction(self, conn, **params),
+                            patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create (upsert) a session record. Returns the session_id."""
@@ -869,7 +818,13 @@ class SessionSessionsMixin:
     def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
         forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
-        return self._write_rowcount(
+        return bool(self._execute_write(
+            lambda conn: self._set_lineage_column_in_transaction(conn, column, session_id, value)
+        ))
+
+    def _set_lineage_column_in_transaction(self, conn, column: str, session_id: str, value: Any):
+        """Return affected IDs so authority revisions share this exact lineage selector."""
+        return [row[0] for row in conn.execute(
             f"""
             WITH RECURSIVE
               ancestors(id) AS (
@@ -898,9 +853,10 @@ class SessionSessionsMixin:
             UPDATE sessions
             SET {column} = ?
             WHERE id IN (SELECT id FROM lineage)
+            RETURNING id
             """,
             (session_id, session_id, value),
-        ) > 0
+        ).fetchall()]
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
@@ -1573,6 +1529,8 @@ class SessionSessionsMixin:
                 for covered_id, expected in expected_display_messages.items()
             ):
                 return False
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, [session_id])
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1587,13 +1545,31 @@ class SessionSessionsMixin:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
 
+    def discard_unadmitted_session(self, session_id: str) -> bool:
+        """Abort a row this same flow just created and nobody has been admitted against (seed-copy
+        compensation): remove it WITHOUT the retirement fence so the id can be lazily recreated.
+        A row with any admission or worker receipt is a real session and takes the fenced
+        :meth:`delete_session` path instead."""
+        def _do(conn):
+            if conn.execute(
+                "SELECT 1 FROM session_admissions WHERE target_session_id=? UNION ALL "
+                "SELECT 1 FROM worker_executions WHERE session_id=? LIMIT 1", (session_id, session_id)).fetchone():
+                return None
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            return cur.rowcount > 0
+        result = self._execute_write(_do)
+        if result is None:
+            return self.delete_session(session_id)
+        return bool(result)
+
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
         share one transaction so a concurrent flush can't be lost."""
         def _do(conn):
-            cursor = conn.execute(
+            eligible = conn.execute(
                 """
-                DELETE FROM sessions
+                SELECT 1 FROM sessions
                 WHERE id = ?
                   AND title IS NULL
                   AND NOT EXISTS (
@@ -1605,10 +1581,16 @@ class SessionSessionsMixin:
                   )
                 """,
                 (session_id,),
-            )
-            if cursor.rowcount > 0:
-                self._delete_unreferenced_system_prompts(conn)
-            return cursor.rowcount > 0
+            ).fetchone()
+            if eligible is None:
+                return False
+            # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
+            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, [session_id])
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._delete_unreferenced_system_prompts(conn)
+            return True
         deleted = self._execute_write(_do)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
@@ -1627,6 +1609,8 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)
@@ -1664,6 +1648,8 @@ class SessionSessionsMixin:
             session_ids = {row["id"] for row in conn.execute(
                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             ).fetchall()}
+            from hermes_state_mutation_retirement import retire_prunable
+            session_ids = retire_prunable(conn, sorted(session_ids))
             if not session_ids:
                 return 0
             for chunk in _id_chunks(session_ids):

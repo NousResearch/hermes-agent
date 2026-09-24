@@ -160,6 +160,10 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     if not _discovered:
         _discover_providers()
     layer, home, key = _bound_home_layer()
@@ -215,6 +219,10 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name); the bound home's
     ``$HERMES_HOME`` plugins shadow process-wide profiles of the same name."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
     global _PROVIDER_LIST_CACHE
     if not _discovered:
         _discover_providers()
@@ -559,6 +567,10 @@ def _discover_providers() -> None:
     module-level. Later steps win on name collision. ``$HERMES_HOME`` plugins are
     per profile home and load through :func:`_home_layer` at lookup time.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     global _discovered, _discovering
     if _discovered:
         return

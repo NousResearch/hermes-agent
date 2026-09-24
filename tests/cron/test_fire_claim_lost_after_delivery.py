@@ -64,7 +64,9 @@ def _claimed_job():
     """A real recurring job record holding a live fire claim (as a firing tick has)."""
     from cron.jobs import claim_job_for_fire, create_job, get_job
 
-    job = create_job(prompt="x", schedule="every 5m", name="105861")
+    # A real (non-local) lane: on this branch agent-job delivery rides the durable queue
+    # (``cron.delivery_queue.enqueue``), which is the seam every probe below observes.
+    job = create_job(prompt="x", schedule="every 5m", name="105861", deliver="telegram")
     assert claim_job_for_fire(job["id"]) is True
     job = get_job(job["id"])
     assert isinstance(job.get("fire_claim"), dict) and job["fire_claim"].get("by")
@@ -88,13 +90,13 @@ def _drive(monkeypatch, *, run_result, samples_before_miss):
         hb.arm()
         return run_result
 
-    def fake_deliver(job, content, **kwargs):
+    def fake_deliver(execution_id, job, content, **kwargs):
         delivered.append(content)
-        return None
+        return {"status": "pending"}
 
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)
-    monkeypatch.setattr(sched, "_deliver_result", fake_deliver)
+    monkeypatch.setattr("cron.delivery_queue.enqueue", fake_deliver)
     return sched, job, hb, delivered
 
 
@@ -104,7 +106,8 @@ _REAL_ERROR = "the real error text the failure path recorded"
 @pytest.mark.parametrize(
     "success, run_result, expected_status, expected_error",
     [
-        (True, (True, "output text", "the report", None), "ok", None),
+        # A queued (durable-queue) success books ``delivery_queued`` until the gateway drains it.
+        (True, (True, "output text", "the report", None), "delivery_queued", None),
         (False, (False, "output text", "", _REAL_ERROR), "error", _REAL_ERROR),
     ],
     ids=["delivered-ok", "delivered-failure-notice"],
@@ -144,14 +147,15 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
         monkeypatch, run_result=(True, "output text", "the report", None),
         samples_before_miss=99)
     cancel = threading.Event()
-    deliver_result = sched._deliver_result
+    from cron import delivery_queue
+    enqueue = delivery_queue.enqueue
 
-    def deliver_then_cancel(job, content, **kwargs):
-        outcome = deliver_result(job, content, **kwargs)
+    def deliver_then_cancel(execution_id, job, content, **kwargs):
+        outcome = enqueue(execution_id, job, content, **kwargs)
         cancel.set()
         return outcome
 
-    monkeypatch.setattr(sched, "_deliver_result", deliver_then_cancel)
+    monkeypatch.setattr("cron.delivery_queue.enqueue", deliver_then_cancel)
 
     assert sched.run_one_job(job, cancel_event=cancel) is True
 
@@ -207,7 +211,8 @@ def _drive_heartbeat_thread(monkeypatch, *, misses, steal=False):
     monkeypatch.setattr(sched, "_FIRE_CLAIM_MISS_CONFIRM_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)
-    monkeypatch.setattr(sched, "_deliver_result", lambda job, content, **kw: delivered.append(content))
+    monkeypatch.setattr("cron.delivery_queue.enqueue",
+                        lambda execution_id, job, content, **kw: (delivered.append(content), {"status": "pending"})[1])
     return sched, job, hb, delivered, run_cancel
 
 
@@ -227,7 +232,7 @@ def test_heartbeat_miss_mid_run_keeps_completed_run(temp_home, monkeypatch, miss
     assert run_cancel == [latched], "only a confirmed miss reaches the run's cancel event"
     assert delivered == ["the report"]
     record = get_job(job["id"])
-    assert record["last_status"] == "ok"
+    assert record["last_status"] == "delivery_queued"  # queued success, never the interrupted error
     assert record["last_error"] is None
     assert get_execution(job["execution_id"])["status"] == "completed"
 

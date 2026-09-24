@@ -9,9 +9,9 @@ Two failures on a Windows desktop install talking to a remote gateway:
    path as argv, rewritten to forward slashes the way the delivery runner's
    argv is — the tracked local backend runs commands through Git Bash there.
 
-2. ``local_delivery_command`` hardcoded ``"hermes"``, relying on PATH —
+2. the delivery runner argv hardcoded ``"hermes"``, relying on PATH —
    which service contexts (systemd units, desktop launchers, non-login
-   SSH shells) do not provide, so delivery died with ENOENT. It now
+   SSH shells) do not provide, so delivery died with ENOENT. ``_hermes_cli``
    resolves the CLI next to this gateway's own interpreter (the venv
    bin/Scripts sibling), falling back to the bare name. The #93091
    turn-lock recognition in bot_mode_dm matches the CLI element by
@@ -50,10 +50,7 @@ def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     sibling.chmod(0o755)
     monkeypatch.setattr("sys.executable", str(bin_dir / "python"))
 
-    argv = bot_relay.local_delivery_command("ops", "query.json")
-    assert argv[0] == str(sibling)
-    assert argv[1:3] == ["-p", "ops"]
-    assert argv[argv.index("--query-file") + 1] == "query.json"
+    assert bot_relay._hermes_cli() == str(sibling)
 
 
 def test_local_delivery_uses_shutil_which_when_no_sibling(tmp_path, monkeypatch):
@@ -67,8 +64,7 @@ def test_local_delivery_uses_shutil_which_when_no_sibling(tmp_path, monkeypatch)
         bot_relay.shutil, "which", lambda name: which_hit if name == "hermes" else None
     )
 
-    argv = bot_relay.local_delivery_command("ops", "query.json")
-    assert argv[0] == which_hit
+    assert bot_relay._hermes_cli() == which_hit
 
 
 def test_local_delivery_falls_back_to_bare_name(tmp_path, monkeypatch):
@@ -77,9 +73,7 @@ def test_local_delivery_falls_back_to_bare_name(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.executable", str(empty / "python"))
     monkeypatch.setattr(bot_relay.shutil, "which", lambda name: None)
 
-    argv = bot_relay.local_delivery_command("ops", "query.json")
-    assert argv[0] == "hermes"
-    assert argv[1:3] == ["-p", "ops"]
+    assert bot_relay._hermes_cli() == "hermes"
 
 
 def test_delivery_lock_recognizes_resolved_cli_paths(tmp_path, monkeypatch):

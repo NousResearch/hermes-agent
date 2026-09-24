@@ -17,6 +17,7 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
+import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
@@ -32,8 +33,10 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
+import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -437,7 +440,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
   syncThemeToTerminalBackground()
 
-  const { rpc } = ctx.gateway
+  const { gw, rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, bellOnPrompt, stdout, sys } = ctx.system
 
@@ -450,7 +453,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   }
 
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
-  const { setInput } = ctx.composer
+  const { setInput, enqueue } = ctx.composer
   const { submitLiteralRef, submitRef } = ctx.submission
   const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
 
@@ -655,18 +658,27 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return sys('startup query skipped: no active session')
       }
 
+      const destination = captureDestination()
+      const attachments: ImageAttachment[] = []
+
       if (STARTUP_IMAGE) {
         try {
-          await rpc('image.attach', { path: STARTUP_IMAGE, session_id: sid })
+          if (gw.isCanonical) {
+            const image = await stageImagePath(STARTUP_IMAGE, gw, destination)
+            attachments.push({ path: image.path, mime: image.mime })
+          } else {
+            await rpc('image.attach', { path: STARTUP_IMAGE, session_id: sid })
+          }
         } catch (e) {
-          sys(`startup image attach failed: ${rpcErrorMessage(e)}`)
+          return sys(`startup image attach failed: ${rpcErrorMessage(e)}`)
         }
       }
 
       // Startup queries are arbitrary launcher/script text (Omarchy prompted
       // launches, `hermes --tui -q "…"`) — submit LITERALLY, bypassing the
       // slash/!/interpolation dispatcher, matching one-shot's semantics.
-      submitLiteralRef.current(STARTUP_QUERY || 'What do you see in this image?')
+      if (!isCurrentDestination(destination)) { return sys('startup query skipped: active session changed') }
+      submitLiteralRef.current(STARTUP_QUERY || 'What do you see in this image?', attachments)
     }, 0)
   }
 
@@ -794,6 +806,43 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
+    // Lifecycle authority is local to an owner epoch. Only attachment RPC
+    // snapshots replace that epoch; delayed push events cannot reset it.
+    const current = getUiState().info
+    const execution = (ev.payload ?? {}) as { execution_epoch?: string; execution_generation?: number }
+
+    const genericError = ev.type === 'error' &&
+      execution.execution_epoch === undefined && execution.execution_generation === undefined
+
+    const lifecycle = !genericError && ['session.info', 'message.start', 'message.complete', 'error'].includes(ev.type)
+
+    if (lifecycle && current?.execution_generation !== undefined) {
+      const incoming = (ev.payload ?? {}) as { execution_epoch?: string; execution_generation?: number }
+
+      if (
+        incoming.execution_epoch !== current.execution_epoch ||
+        typeof incoming.execution_generation !== 'number' ||
+        !Number.isSafeInteger(incoming.execution_generation) ||
+        incoming.execution_generation < current.execution_generation
+      ) {
+        return
+      }
+
+      if (ev.type !== 'session.info') {
+        patchUiState({ info: { ...current, execution_generation: incoming.execution_generation } })
+      }
+    }
+
+    if (ev.type === 'approval.settled' || ev.type === 'clarify.settled') {
+      const kind = ev.type === 'approval.settled' ? 'approval' : 'clarify'
+      const promptId = ev.payload?.prompt_id
+
+      patchOverlayState(previous => previous[kind]?.sharedControl?.prompt_id === promptId
+        ? { ...previous, [kind]: null } : previous)
+
+      return
+    }
+
     switch (ev.type) {
       case 'connection.request':
         if (ev.payload) {
@@ -824,17 +873,38 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'session.info': {
-        let info = ev.payload as SessionInfo | undefined
+        const current = getUiState().info
+        const incoming = ev.payload as SessionInfo | undefined
 
-        if (!info) {
+        if (!incoming) {
           return
+        }
+
+        if (incoming.profile_name && current?.profile_name && incoming.profile_name !== current.profile_name) {
+          return
+        }
+
+        let info: SessionInfo = { ...current, ...incoming }
+
+        // A busy-time admission painted no bubble at submit; paint it when the
+        // authority starts it, so it lands after the previous assistant reply.
+        for (const started of newlyStartedRows(current?.pending_submissions, incoming.pending_submissions)) {
+          markBubbleShown(started.input_id)
+          appendMessage({ role: 'user', text: started.user })
         }
 
         // A replayed snapshot can be the only terminal signal after reconnect.
         // Missing running on older gateways must not clear a live turn.
-        if (info.running === false) {
+        if (incoming.running === true) {
+          patchUiState({ busy: true, status: 'running…' })
+        }
+
+        if (incoming.running === false) {
           turnController.clearStatusTimer()
-          turnController.idle()
+          // The authority settles the row before it publishes the final, so this snapshot
+          // can land a frame ahead of `message.complete`; the trail (tool rows, reasoning)
+          // stays parked for that final to archive instead of being dropped here.
+          turnController.idle({ keepTurnArchive: true })
           setStatus('ready')
         }
 
@@ -860,6 +930,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'session.replay_gap':
+        // The authority retired this subscription (fanout overflow) while the
+        // socket stayed healthy, so no reconnect will ever re-attach it and the
+        // turn's completion can no longer arrive. Only the focused session
+        // reaches here (the sid filter above dropped the rest; activating one
+        // of those later gets a fresh subscription anyway). Re-attach through
+        // the resume path — same as desktop's replay-gap consumer — for an
+        // authoritative snapshot + fresh subscription; the draft and pending
+        // inputs stay fenced to their captured destination.
+        if (sid) {
+          resumeById(sid)
+        }
+
+        return
       case 'session.usage': {
         // Live usage tick while a turn runs (see tui_gateway
         // _start_usage_ticker) — keeps the status-bar context window current
@@ -1103,7 +1187,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        const destination = captureDestination()
         void getFullConfigOnce().then(cfg => {
+          if (!isCurrentDestination(destination)) {
+            enqueue?.(text, text, destination)
+
+            return
+          }
+
           const submitMode = normalizeVoiceSubmitMode(cfg?.config?.voice?.submit_mode)
 
           if (submitMode === 'draft') {
@@ -1116,7 +1207,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           // is committed before submit reads it; invalid config also falls
           // back to this established direct-submit behavior.
           setInput('')
-          setTimeout(() => submitRef.current(text), 0)
+          setTimeout(() => {
+            if (isCurrentDestination(destination)) {
+              submitRef.current(text)
+            } else {
+              enqueue?.(text, text, destination)
+            }
+          }, 0)
         })
 
         return
@@ -1354,6 +1451,67 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
           return changed ? next : prev
         })
+
+        return
+      }
+
+      // Canonical gateways (`gateway/session_pending_controls.py`) publish
+      // generation-bound shared controls as events carrying `prompt_id`; they
+      // are answered through approval.respond / clarify.respond, never through
+      // a server→client request frame (that is the legacy tui_gateway path in
+      // createServerRequestHandler).
+      case 'clarify.request': {
+        const shared = ev.payload
+
+        if (!shared?.prompt_id || !ev.session_id || typeof shared.execution_generation !== 'number') {
+          return
+        }
+
+        const sharedControl = { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id }
+
+        const batch = (shared.questions ?? [])
+          .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
+          .map(q => ({
+            choices: q.choices && q.choices.length > 0 ? q.choices : null,
+            multiSelect: q.multi_select === true,
+            qid: q.qid,
+            question: q.question.trim()
+          }))
+
+        patchOverlayState({
+          clarify: batch.length
+            ? { answers: shared.answers ?? {}, choices: null, question: '', questions: batch, requestId: shared.prompt_id, sharedControl }
+            : { choices: shared.choices ?? null, question: shared.question ?? '', requestId: shared.prompt_id, sharedControl }
+        })
+        setStatus('waiting for input…')
+        ringPromptBell()
+
+        return
+      }
+
+      case 'approval.request': {
+        const shared = ev.payload
+
+        if (!shared?.prompt_id || !ev.session_id || typeof shared.execution_generation !== 'number') {
+          return
+        }
+
+        const sharedControl = { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id }
+
+        patchOverlayState({
+          approval: {
+            // Only an explicit false (tirith warning) drops the permanent-allow option.
+            allowPermanent: shared.allow_permanent !== false,
+            choices: shared.choices,
+            command: String(shared.command ?? ''),
+            description: String(shared.description ?? 'dangerous command'),
+            requestId: shared.prompt_id,
+            sharedControl,
+            smartDenied: shared.smart_denied === true
+          }
+        })
+        setStatus('approval needed')
+        ringPromptBell()
 
         return
       }
@@ -1613,6 +1771,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'error':
+        // Build/RPC failures are not authority to settle a versioned turn.
+        if (genericError && current?.execution_generation !== undefined) {
+          sys(`error: ${String(ev.payload?.message || 'unknown error')}`)
+
+          return
+        }
+
         turnController.recordError()
         flashPet('failed')
 

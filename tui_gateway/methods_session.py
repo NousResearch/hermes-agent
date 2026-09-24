@@ -260,7 +260,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
             try:
-                db.delete_session(new_key)
+                db.discard_unadmitted_session(new_key)
             except Exception:
                 logger.debug("branch seed compensation delete failed for %s", new_key, exc_info=True)
         raise
@@ -302,7 +302,7 @@ def _seed_row(record: dict) -> None:
     if not record.get("_branch_seed_persisted"):
         with contextlib.suppress(Exception), _session_db(record) as db:
             if db is not None:
-                db.delete_session(key)
+                db.discard_unadmitted_session(key)
         return
     try:
         if title := record.get("pending_title"):

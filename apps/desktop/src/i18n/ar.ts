@@ -1496,6 +1496,18 @@ export const ar = defineLocale({
   },
   messaging: {
     search: 'بحث',
+    filterStatus: 'الحالة',
+    filterStatusAll: 'الكل',
+    filterStatusAttention: 'يحتاج انتباهًا',
+    filterStatusConnected: 'متصل',
+    filterStatusError: 'أخطاء',
+    filterStatusInactive: 'غير نشط',
+    sortBy: 'الترتيب',
+    sortDefault: 'افتراضي',
+    sortNameAsc: 'الاسم أ–ي',
+    sortNameDesc: 'الاسم ي–أ',
+    sortStatus: 'الحالة',
+    searchOperatorsHint: 'يدعم البحث status:connected و sort:status',
     loading: 'جار التحميل...',
     loadFailed: 'فشل التحميل',
     states: {

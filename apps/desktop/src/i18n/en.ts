@@ -2812,6 +2812,18 @@ export const en: Translations = {
 
   messaging: {
     search: 'Search messaging...',
+    filterStatus: 'Status',
+    filterStatusAll: 'All',
+    filterStatusAttention: 'Needs attention',
+    filterStatusConnected: 'Connected',
+    filterStatusError: 'Errors',
+    filterStatusInactive: 'Inactive',
+    sortBy: 'Sort',
+    sortDefault: 'Default',
+    sortNameAsc: 'Name A–Z',
+    sortNameDesc: 'Name Z–A',
+    sortStatus: 'Status',
+    searchOperatorsHint: 'Search supports status:connected and sort:status',
     loading: 'Loading messaging platforms...',
     loadFailed: 'Messaging platforms failed to load',
     states: {

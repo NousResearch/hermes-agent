@@ -2018,6 +2018,18 @@ export const ru = defineLocale({
   },
   messaging: {
     search: 'Поиск в сообщениях...',
+    filterStatus: 'Статус',
+    filterStatusAll: 'Все',
+    filterStatusAttention: 'Требует внимания',
+    filterStatusConnected: 'Подключено',
+    filterStatusError: 'Ошибки',
+    filterStatusInactive: 'Неактивно',
+    sortBy: 'Сортировка',
+    sortDefault: 'По умолчанию',
+    sortNameAsc: 'Имя А–Я',
+    sortNameDesc: 'Имя Я–А',
+    sortStatus: 'Статус',
+    searchOperatorsHint: 'В поиске доступны status:connected и sort:status',
     loading: 'Загрузка платформ сообщений...',
     loadFailed: 'Не удалось загрузить платформы сообщений',
     states: {

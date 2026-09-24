@@ -9,6 +9,13 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
@@ -26,7 +33,6 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
-import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
@@ -42,6 +48,14 @@ import { ListRow } from '../settings/primitives'
 import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import {
+  filterAndSortMessagingPlatforms,
+  type MessagingSortMode,
+  type MessagingStatusFilter,
+  messagingStatusFilter,
+  parseMessagingQuery,
+  setMessagingQueryToken
+} from './messaging-list'
 import { PlatformAvatar } from './platform-icon'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
@@ -61,20 +75,17 @@ const PILL_TONE: Record<StatusTone, string> = {
 const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>
   state ? m.states[state] || state.replace(/_/g, ' ') : m.unknown
 
-function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
-  if (!enabled) {
-    return 'muted'
+function stateTone(platform: MessagingPlatformInfo): StatusTone {
+  switch (messagingStatusFilter(platform)) {
+    case 'connected':
+      return 'good'
+    case 'error':
+      return 'bad'
+    case 'inactive':
+      return 'muted'
+    default:
+      return 'warn'
   }
-
-  if (state === 'connected') {
-    return 'good'
-  }
-
-  if (state === 'fatal' || state === 'startup_failed') {
-    return 'bad'
-  }
-
-  return 'warn'
 }
 
 const trimEdits = (edits: Record<string, string>): Record<string, string> =>
@@ -310,23 +321,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
   const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
 
+  const parsedListQuery = useMemo(() => parseMessagingQuery(query), [query])
+
   const visiblePlatforms = useMemo(() => {
     if (!platforms) {
       return []
     }
 
-    const q = normalize(query)
-
-    if (!q) {
-      return platforms
-    }
-
-    return platforms.filter(platform =>
-      [platform.id, platform.name, platform.description, platform.state]
-        .filter(Boolean)
-        .some(value => String(value).toLowerCase().includes(q))
-    )
-  }, [platforms, query])
+    return filterAndSortMessagingPlatforms(platforms, query, state => stateLabel(state, m))
+  }, [m, platforms, query])
 
   async function handleToggle(platform: MessagingPlatformInfo, enabled: boolean) {
     setSaving(`enabled:${platform.id}`)
@@ -502,6 +505,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
+      filters={
+        platforms && platforms.length > 0 ? (
+          <MessagingListControls
+            onSortChange={sort => setQuery(current => setMessagingQueryToken(current, 'sort', sort))}
+            onStatusChange={status => setQuery(current => setMessagingQueryToken(current, 'status', status))}
+            sort={parsedListQuery.sort}
+            status={parsedListQuery.status}
+          />
+        ) : undefined
+      }
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
       searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
@@ -605,6 +618,89 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       />
     </PageSearchShell>
   )
+}
+
+
+function MessagingListControls({
+  onSortChange,
+  onStatusChange,
+  sort,
+  status
+}: {
+  onSortChange: (sort: MessagingSortMode) => void
+  onStatusChange: (status: MessagingStatusFilter) => void
+  sort: MessagingSortMode
+  status: MessagingStatusFilter
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const statusLabels: Record<MessagingStatusFilter, string> = {
+    all: m.filterStatusAll,
+    attention: m.filterStatusAttention,
+    connected: m.filterStatusConnected,
+    error: m.filterStatusError,
+    inactive: m.filterStatusInactive
+  }
+  const sortLabels: Record<MessagingSortMode, string> = {
+    default: m.sortDefault,
+    'name-asc': m.sortNameAsc,
+    'name-desc': m.sortNameDesc,
+    status: m.sortStatus
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="xs" variant={status === 'all' ? 'ghost' : 'secondary'}>
+            {m.filterStatus}: {statusLabels[status]}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuRadioGroup onValueChange={value => onStatusChange(value as MessagingStatusFilter)} value={status}>
+            {(['all', 'connected', 'attention', 'error', 'inactive'] as const).map(value => (
+              <DropdownMenuRadioItem key={value} value={value}>
+                <StatusDot tone={value === 'all' ? 'muted' : statusFilterTone(value)} />
+                <span>{statusLabels[value]}</span>
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="xs" variant={sort === 'default' ? 'ghost' : 'secondary'}>
+            {m.sortBy}: {sortLabels[sort]}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuRadioGroup onValueChange={value => onSortChange(value as MessagingSortMode)} value={sort}>
+            {(['default', 'name-asc', 'name-desc', 'status'] as const).map(value => (
+              <DropdownMenuRadioItem key={value} value={value}>
+                {sortLabels[value]}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <span className="text-[0.65rem] text-(--ui-text-tertiary)">{m.searchOperatorsHint}</span>
+    </>
+  )
+}
+
+function statusFilterTone(status: Exclude<MessagingStatusFilter, 'all'>): StatusTone {
+  switch (status) {
+    case 'connected':
+      return 'good'
+    case 'error':
+      return 'bad'
+    case 'inactive':
+      return 'muted'
+    default:
+      return 'warn'
+  }
 }
 
 function PlatformRow({

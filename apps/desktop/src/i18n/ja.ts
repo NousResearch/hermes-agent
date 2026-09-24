@@ -1860,6 +1860,18 @@ export const ja = defineLocale({
 
   messaging: {
     search: 'メッセージングを検索...',
+    filterStatus: '状態',
+    filterStatusAll: 'すべて',
+    filterStatusAttention: '要対応',
+    filterStatusConnected: '接続済み',
+    filterStatusError: 'エラー',
+    filterStatusInactive: '非アクティブ',
+    sortBy: '並び順',
+    sortDefault: '既定',
+    sortNameAsc: '名前 A–Z',
+    sortNameDesc: '名前 Z–A',
+    sortStatus: '状態',
+    searchOperatorsHint: '検索では status:connected と sort:status も使用できます',
     loading: 'メッセージングプラットフォームを読み込み中...',
     loadFailed: 'メッセージングプラットフォームの読み込みに失敗しました',
     states: {

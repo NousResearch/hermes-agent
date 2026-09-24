@@ -2643,6 +2643,18 @@ export const zh = defineLocale({
 
   messaging: {
     search: '搜索消息平台…',
+    filterStatus: '状态',
+    filterStatusAll: '全部',
+    filterStatusAttention: '需要关注',
+    filterStatusConnected: '已连接',
+    filterStatusError: '错误',
+    filterStatusInactive: '未启用',
+    sortBy: '排序',
+    sortDefault: '默认',
+    sortNameAsc: '名称 A–Z',
+    sortNameDesc: '名称 Z–A',
+    sortStatus: '状态',
+    searchOperatorsHint: '搜索支持 status:connected 和 sort:status',
     loading: '正在加载消息平台…',
     loadFailed: '消息平台加载失败',
     states: {

@@ -2108,6 +2108,18 @@ export const zhHant = defineLocale({
 
   messaging: {
     search: '搜尋訊息平台…',
+    filterStatus: '狀態',
+    filterStatusAll: '全部',
+    filterStatusAttention: '需要注意',
+    filterStatusConnected: '已連線',
+    filterStatusError: '錯誤',
+    filterStatusInactive: '未啟用',
+    sortBy: '排序',
+    sortDefault: '預設',
+    sortNameAsc: '名稱 A–Z',
+    sortNameDesc: '名稱 Z–A',
+    sortStatus: '狀態',
+    searchOperatorsHint: '搜尋支援 status:connected 與 sort:status',
     loading: '正在載入訊息平台…',
     loadFailed: '訊息平台載入失敗',
     states: {

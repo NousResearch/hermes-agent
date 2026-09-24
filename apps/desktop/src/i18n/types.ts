@@ -2404,6 +2404,18 @@ export interface Translations {
 
   messaging: {
     search: string
+    filterStatus: string
+    filterStatusAll: string
+    filterStatusAttention: string
+    filterStatusConnected: string
+    filterStatusError: string
+    filterStatusInactive: string
+    sortBy: string
+    sortDefault: string
+    sortNameAsc: string
+    sortNameDesc: string
+    sortStatus: string
+    searchOperatorsHint: string
     loading: string
     loadFailed: string
     states: Record<string, string>

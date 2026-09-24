@@ -20,7 +20,7 @@
  *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...] }
  *   { type: 'stage',     name, state: 'running'|'succeeded'|'skipped'|'failed',
  *                        json?, durationMs?, error? }
- *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // raw line from install.ps1
+ *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // one installer line, escapes stripped
  *   { type: 'complete',  marker: <written marker payload> }
  *   { type: 'failed',    stage?, error }     // bootstrap aborted
  *
@@ -37,6 +37,10 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import https from 'node:https'
 import path from 'node:path'
+
+// Relative, not `@hermes/shared/ansi`: the electron bundle is built by esbuild
+// with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
+import { stripAnsi } from '../../shared/src/ansi'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
@@ -58,15 +62,20 @@ type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
  * (all-zero) install stamps still produce a marker that
  * isBootstrapComplete() accepts (pinnedCommit length >= 7).
  */
-function resolveCheckoutHead(activeRoot: string | null | undefined, opts: { execGit?: ExecGitFn } = {}): string | null {
+function resolveCheckoutHead(
+  activeRoot: string | null | undefined,
+  opts: { execGit?: ExecGitFn; gitBinary?: string } = {}
+): string | null {
   if (!activeRoot) {
     return null
   }
 
+  // Bare 'git' takes the first PATH hit, which can exist yet be unlaunchable
+  // (Intel-only build on Apple Silicon); main.ts passes its probed binary.
   const run: ExecGitFn =
     opts.execGit ||
     ((args, cwd) =>
-      execFileSync('git', args, {
+      execFileSync(opts.gitBinary || 'git', args, {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -456,6 +465,18 @@ function resolveWindowsPowerShell() {
   return 'powershell.exe'
 }
 
+// install.sh (and the git/curl/uv children it drives) writes SGR colours,
+// cursor/erase sequences, OSC titles and \r progress redraws into the pipe as
+// if it were a TTY. The install overlay renders each line as plain text, so
+// strip them ONCE here, at the emitter: the main-process log ring, the
+// renderer's Details panel and "Copy output" all read the same clean line
+// (#112675). \r redraws collapse to the last frame a terminal would show.
+function cleanInstallerLogLine(raw: string): string {
+  const frames = raw.split('\r').map(stripAnsi).filter(Boolean)
+
+  return frames.length ? frames[frames.length - 1] : ''
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
@@ -508,7 +529,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       let nl
 
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
-        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stdoutBuf.slice(0, nl))
         stdoutBuf = stdoutBuf.slice(nl + 1)
 
         if (line) {
@@ -524,7 +545,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       let nl
 
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
-        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stderrBuf.slice(0, nl))
         stderrBuf = stderrBuf.slice(nl + 1)
 
         if (line) {
@@ -547,12 +568,15 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       }
 
       // Flush any trailing bytes
-      if (stdoutBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' } as any)
+      const stdoutTail = cleanInstallerLogLine(stdoutBuf)
+      const stderrTail = cleanInstallerLogLine(stderrBuf)
+
+      if (stdoutTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutTail, stream: 'stdout' } as any)
       }
 
-      if (stderrBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' } as any)
+      if (stderrTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrTail, stream: 'stderr' } as any)
       }
 
       resolve({ stdout, stderr, code, signal, killed } as any)
@@ -602,7 +626,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       let nl
 
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
-        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stdoutBuf.slice(0, nl))
         stdoutBuf = stdoutBuf.slice(nl + 1)
 
         if (line) {
@@ -618,7 +642,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       let nl
 
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
-        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stderrBuf.slice(0, nl))
         stderrBuf = stderrBuf.slice(nl + 1)
 
         if (line) {
@@ -640,12 +664,15 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
         abortSignal.removeEventListener('abort', onAbort)
       }
 
-      if (stdoutBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      const stdoutTail = cleanInstallerLogLine(stdoutBuf)
+      const stderrTail = cleanInstallerLogLine(stderrBuf)
+
+      if (stdoutTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutTail, stream: 'stdout' })
       }
 
-      if (stderrBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
+      if (stderrTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrTail, stream: 'stderr' })
       }
 
       resolve({ stdout, stderr, code, signal, killed })
@@ -690,7 +717,17 @@ function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = t
   return args
 }
 
-async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp, pinCommit }) {
+async function fetchManifest({
+  scriptPath,
+  installerKind,
+  emit,
+  hermesHome,
+  activeRoot,
+  installStamp,
+  pinCommit,
+  abortSignal
+}) {
+  abortSignal?.throwIfAborted()
   const isPosix = installerKind === 'posix'
 
   const args = isPosix
@@ -700,12 +737,17 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: '__manifest__',
+    abortSignal,
     hermesHome
   })
 
   if (result.code !== 0) {
+    // The tail lands in the Setup failure banner, not the log ring, so strip
+    // the installer's colour/OSC bytes here too (#112675).
+    const tail = stripAnsi(result.stderr || result.stdout).trim()
+
     throw new Error(
-      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`
+      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`
     )
   }
 
@@ -865,7 +907,8 @@ async function runBootstrap(opts) {
     logRoot,
     onEvent,
     abortSignal,
-    writeMarker // callback to write the bootstrap-complete marker; main.ts provides
+    writeMarker, // callback to write the bootstrap-complete marker; main.ts provides
+    gitBinary // probed git path from main.ts; bare 'git' when absent
   } = opts
 
   // Bail before spawning anything if the user already cancelled — otherwise an
@@ -928,6 +971,8 @@ async function runBootstrap(opts) {
 
     // 1. Resolve the platform installer.
     const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit })
+    abortSignal?.throwIfAborted()
+
     const installerKind = scriptInfo.kind || 'powershell'
 
     // 2. Fetch manifest
@@ -938,8 +983,11 @@ async function runBootstrap(opts) {
       hermesHome,
       activeRoot,
       installStamp,
-      pinCommit
+      pinCommit,
+      abortSignal
     })
+
+    abortSignal?.throwIfAborted()
 
     emit({
       type: 'manifest',
@@ -981,7 +1029,9 @@ async function runBootstrap(opts) {
     // not real pins -- resolve HEAD from the checkout we just installed so
     // isBootstrapComplete() (pinnedCommit.length >= 7) accepts the marker
     // instead of re-running bootstrap on every launch (#50823 review).
-    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot)
+    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot, {
+      resolveHead: root => resolveCheckoutHead(root, { gitBinary })
+    })
 
     if (!pinnedCommit) {
       emit({
@@ -1007,12 +1057,18 @@ async function runBootstrap(opts) {
 
     return { ok: true, marker }
   } catch (err) {
+    if (abortSignal?.aborted) {
+      emit({ type: 'failed', error: 'bootstrap cancelled by user' })
+
+      return { ok: false, cancelled: true }
+    }
+
     emit({ type: 'failed', error: err.message || String(err) })
 
     return { ok: false, error: err.message || String(err) }
   } finally {
     try {
-      runLog.stream.end()
+      await new Promise<void>(resolve => runLog.stream.end(resolve))
     } catch {
       void 0
     }
@@ -1023,6 +1079,7 @@ export {
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
+  cleanInstallerLogLine,
   hasExistingGitCheckout,
   installedAgentInstallScript,
   installRefForStamp,

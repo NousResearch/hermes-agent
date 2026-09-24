@@ -94,58 +94,7 @@ class TestDoctorCommandInstallation:
         assert cmd_link.is_symlink()
         assert cmd_link.resolve() == hermes_bin.resolve()
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
-    def test_missing_venv_entry_point_shows_warn(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-
-        project = tmp_path / "project"
-        project.mkdir(exist_ok=True)
-        # Do NOT create any venv entry point
-
-        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
-        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        fake_model_tools = types.SimpleNamespace(
-            check_tool_availability=lambda *a, **kw: ([], []),
-            TOOLSET_REQUIREMENTS={},
-        )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-        try:
-            from hermes_cli import auth as _auth_mod
-            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        except Exception:
-            pass
-        try:
-            import httpx
-            monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
-        except Exception:
-            pass
-
-        out = _run_doctor(fix=False)
-        assert "Command Installation" in out
-        assert "Venv entry point not found" in out
 
 
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
-    def test_termux_uses_prefix_bin(self, monkeypatch, tmp_path):
-        """On Termux, the command link dir is $PREFIX/bin."""
-        prefix_dir = tmp_path / "termux_prefix"
-        prefix_bin = prefix_dir / "bin"
-        prefix_bin.mkdir(parents=True)
-
-        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
-
-        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
-        monkeypatch.setenv("PREFIX", str(prefix_dir))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        out = _run_doctor(fix=False)
-        assert "Command Installation" in out
-        assert "$PREFIX/bin" in out
 

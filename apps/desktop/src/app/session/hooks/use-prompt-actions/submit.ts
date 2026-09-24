@@ -1,3 +1,4 @@
+import type { PromptSubmitResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -21,7 +22,9 @@ import {
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
+import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
+  $activeSessionId,
   $sessions,
   resolveComposerSessionKey,
   setActiveSessionId,
@@ -37,12 +40,14 @@ import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { finalizeInterruptedMessages } from './rewind'
+import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
   isProviderSetupError,
   isSessionBusyError,
+  isSessionNotOwnedError,
   isTargetSessionBusy,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
@@ -59,6 +64,7 @@ interface SubmitPromptDeps {
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
+  onRuntimeRecovered?: (runtimeId: string) => void
   requestGateway: GatewayRequest
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -66,7 +72,7 @@ interface SubmitPromptDeps {
   syncAttachmentsForSubmit: (
     sessionId: string,
     attachments: ComposerAttachment[],
-    options?: { updateComposerAttachments?: boolean }
+    options?: { storedSessionId?: null | string; updateComposerAttachments?: boolean }
   ) => Promise<{ attachments: ComposerAttachment[]; sessionId: string }>
   updateSessionState: (
     sessionId: string,
@@ -105,6 +111,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
+    onRuntimeRecovered,
     requestGateway,
     runtimeIdByStoredSessionIdRef,
     resumeStoredSession,
@@ -127,6 +134,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const attachments = (options?.attachments ?? scope.readAttachments()).filter((a): a is ComposerAttachment =>
         Boolean(a)
       )
+
+      const titlePreview = attachments.find(
+        a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
+      )?.titlePreview
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -204,9 +215,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Queue drains carry their source session explicitly. A background drain
       // must never inherit the currently selected session after the user moves
       // to another chat.
-      const targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
+      let targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
 
-      const targetStartedInCurrentView =
+      // A read-only stored-transcript open (#94724: owner unresolvable under
+      // registry topology) has no routable live runtime — refuse the send
+      // with the explanation rather than minting a prompt on a backend that
+      // never owned the session.
+      if (isStoredTranscriptReadOnly(targetStoredSessionId)) {
+        notify({ kind: 'info', message: copy.readOnlyTranscriptSendBlocked })
+
+        return false
+      }
+
+      let targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current
 
       // A queued/background drain whose runtime binding was reaped must NOT
@@ -273,9 +294,24 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           startingActiveSessionId !== routedRuntimeId)
       )
 
+      // For an ordinary foreground submit, the durable route is the authority
+      // when renderer selection publication is stale after reconnect. Pin the
+      // operation to that route before any recovery; explicit queue/tile targets
+      // remain authoritative and never inherit the foreground route.
+      if (!options?.storedSessionId && routedSessionNeedsResume && routedStoredSessionId) {
+        targetStoredSessionId = routedStoredSessionId
+        targetStartedInCurrentView = true
+      }
+
       let startingStoredSessionId = routedSessionNeedsResume
         ? routedStoredSessionId
         : (selectedStoredSessionId ?? routedStoredSessionId)
+
+      // Selection publishes independently from the durable route. Keep its
+      // entry snapshot as the drift baseline instead of rewriting history to
+      // the routed target: an already-stale ref is not evidence that the user
+      // switched chats while this submit was in flight.
+      let startingSelectedStoredSessionId = selectedStoredSessionId
 
       let startingRouteToken = getRouteToken()
 
@@ -294,7 +330,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           ? sessionContextDrift({
               startRouteToken: startingRouteToken,
               nowRouteToken: getRouteToken(),
-              startSelectedStoredId: startingStoredSessionId,
+              startSelectedStoredId: startingSelectedStoredSessionId,
               nowSelectedStoredId: selectedStoredSessionIdRef.current,
               submitTargetStoredId: startingStoredSessionId,
               composerScope: options?.composerScope,
@@ -356,6 +392,36 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           scope.setBusy(false)
           scope.setAwaitingResponse(false)
         }
+      }
+
+      // Point the pane at a runtime this submit just resumed for its stored
+      // session. ChatView renders the `$sessionStates` slice named by
+      // `$activeSessionId`, while the optimistic row and every stream event
+      // land in the resumed runtime's slice — pinning only the ref left the
+      // chat painting the dead runtime, so the prompt, its reply, and every
+      // later turn stayed invisible until a relaunch (#71733, #117867).
+      // `session.resume` omits messages, so carry the transcript the pane is
+      // showing into the empty slice (same conversation only — lineage-
+      // matched, since compression rotates the tip id) instead of collapsing
+      // the thread to the new prompt until the next refresh.
+      const rebindPaneToResumedRuntime = (sid: string, storedId: string) => {
+        const paneRuntimeId = $activeSessionId.get()
+        const paneState = paneRuntimeId && paneRuntimeId !== sid ? $sessionStates.get()[paneRuntimeId] : undefined
+        const sessions = $sessions.get()
+
+        if (
+          paneState?.messages.length &&
+          paneState.storedSessionId &&
+          resolveComposerSessionKey(paneState.storedSessionId, sessions) ===
+            resolveComposerSessionKey(storedId, sessions)
+        ) {
+          const carried = paneState.messages
+
+          updateSessionState(sid, state => (state.messages.length ? state : { ...state, messages: carried }), storedId)
+        }
+
+        activeSessionIdRef.current = sid
+        setActiveSessionId(sid)
       }
 
       // Idempotent optimistic insert — re-running with the resolved sessionId
@@ -510,7 +576,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         scope.setMessages(current => [...current, buildUserMessage()])
       }
 
-      if (!sessionId && routedStoredSessionId && routedSessionNeedsResume) {
+      if (!options?.storedSessionId && !sessionId && routedStoredSessionId && routedSessionNeedsResume) {
         // The URL still names a durable conversation, but a profile
         // swap/reconnect left its volatile session binding incomplete or
         // cross-wired. Run the full profile-aware resume path. Creating here
@@ -526,26 +592,35 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (routedResumeDrift) {
           console.warn('[submit-drift-abort]', routedResumeDrift, { phase: 'post-routed-resume' })
 
+          // The high-level resume may have already published a fresh runtime
+          // for this durable session. Don't strand it: record it so the next
+          // action targeting this stored session reuses it (#91276).
+          const publishedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
+
+          if (publishedRuntimeId) {
+            registerRecoveredRuntime(routedStoredSessionId, publishedRuntimeId)
+          }
+
           return abortForSessionSwitch(null)
         }
 
         const recoveredRuntimeId = activeSessionIdRef.current
         const validatedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
 
-        // Recovery only succeeded when both sides of the cache agree that the
-        // live runtime belongs to the durable routed session. A failed profile
-        // swap may leave the previous profile's runtime active, while a recycled
-        // runtime id may leave a cross-wired stored-session mapping.
+        // Adopt the high-level resume only after its renderer-side ownership
+        // publications agree. Those refs/caches update independently, so a
+        // successful resume can legitimately return before they settle. That
+        // is not a failed recovery and not evidence of navigation: leave the
+        // runtime unresolved and let the direct, profile-aware session.resume
+        // rung below return an authoritative id for this exact durable target.
         if (
-          !recoveredRuntimeId ||
-          recoveredRuntimeId !== validatedRuntimeId ||
-          selectedStoredSessionIdRef.current !== routedStoredSessionId
+          recoveredRuntimeId &&
+          recoveredRuntimeId === validatedRuntimeId &&
+          selectedStoredSessionIdRef.current === routedStoredSessionId
         ) {
-          return abortForSessionSwitch(null)
+          sessionId = recoveredRuntimeId
+          seedOptimistic(sessionId)
         }
-
-        sessionId = recoveredRuntimeId
-        seedOptimistic(sessionId)
       }
 
       if (!sessionId && targetStoredSessionId) {
@@ -556,19 +631,33 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         try {
           // Re-register on the session's OWNING profile — resuming on whichever
           // profile is live would fork the conversation into the wrong DB (#67603).
-          const resumeProfile = await resolveSessionProfile(targetStoredSessionId)
+          // A runtime a previous drift-aborted recovery already minted for this
+          // exact stored session is reused instead of resuming again.
+          const cachedRuntimeId = takeRecoveredRuntime(targetStoredSessionId)
 
-          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: targetStoredSessionId,
-            source: 'desktop',
-            omit_messages: true,
-            ...(resumeProfile ? { profile: resumeProfile } : {})
-          })
+          const resumed = cachedRuntimeId
+            ? { session_id: cachedRuntimeId }
+            : await singleFlightSessionResume(targetStoredSessionId, async () => {
+                const resumeProfile = await resolveSessionProfile(targetStoredSessionId)
+
+                return requestGateway<{ session_id: string }>('session.resume', {
+                  session_id: targetStoredSessionId,
+                  source: 'desktop',
+                  omit_messages: true,
+                  ...(resumeProfile ? { profile: resumeProfile } : {})
+                })
+              })
 
           const resumeDrift = sessionDriftReason()
 
           if (resumeDrift) {
             console.warn('[submit-drift-abort]', resumeDrift, { phase: 'post-resume' })
+
+            // Keep the freshly-bound runtime findable for the next action on
+            // this stored session instead of stranding it for the reaper.
+            if (resumed?.session_id) {
+              registerRecoveredRuntime(targetStoredSessionId, resumed.session_id)
+            }
 
             return abortForSessionSwitch(sessionId)
           }
@@ -577,7 +666,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             sessionId = resumed.session_id
 
             if (targetIsCurrentView()) {
-              activeSessionIdRef.current = sessionId
+              rebindPaneToResumedRuntime(sessionId, targetStoredSessionId)
             }
           }
         } catch {
@@ -655,7 +744,17 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Re-pin the baseline to the created chat for the rest of the
         // pipeline; the closures (seedOptimistic et al) see the new value.
         startingStoredSessionId = selectedStoredSessionIdRef.current
+        startingSelectedStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
+        // The target too: it was captured BEFORE the create (null for a fresh
+        // draft) and seedOptimistic hands it to updateSessionState as the
+        // stored id, which the state cache reads as a deliberate DETACH — so
+        // the freshly bound stored↔runtime mapping was severed the moment the
+        // chat existed. Every later session-scoped RPC then failed to
+        // translate the runtime id to the stored id, never saw the session's
+        // tile route / owner hint / row, probed REST by a runtime id, and fell
+        // to the ambient socket — the fresh-chat owner loss behind #94071.
+        targetStoredSessionId = selectedStoredSessionIdRef.current
 
         seedOptimistic(sessionId)
       }
@@ -666,6 +765,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // plain text survived sleep/wake but images reported "session not
         // found". The attach path recovers and reports the live id back here.
         const attachResult = await syncAttachmentsForSubmit(sessionId, attachments, {
+          storedSessionId: targetStoredSessionId,
           updateComposerAttachments: usingComposerAttachments
         })
 
@@ -702,12 +802,17 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // rather than at Hermes. The gateway turns this into a per-turn hint
           // to read the window underneath and work in it.
           ...($hudMode.get() && { surface: 'hud' }),
+          // A GPT-Live delegation: the text is a voice transcript and the reply
+          // will be spoken by the voice model. Wins over HUD for this turn.
+          ...(options?.surface && { surface: options.surface }),
+          ...(options?.surface && options.voiceContext && { voice_context: options.voiceContext }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for
           // the next turn untouched — without it, losing the settle race
           // (client saw idle, server still unwinding) redirects or interrupts
           // the live turn with text the user explicitly queued.
-          ...(options?.fromQueue && { queued: true })
+          ...(options?.fromQueue && { queued: true }),
+          ...(titlePreview && { title_preview: titlePreview })
         })
 
         // On sleep/wake the gateway's in-memory session may have been cleared
@@ -720,20 +825,36 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         try {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
-          await withSessionNotFoundResume(
+          const submitted = await withSessionNotFoundResume(
             sessionId,
             recoverStoredSessionId,
             liveId =>
               withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                requestGateway<PromptSubmitResult>(
+                  'prompt.submit',
+                  submitParams(liveId),
+                  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                )
               ),
             {
               requestGateway,
               driftReason: sessionDriftReason,
               onRecovered: recoveredId => {
-                if (targetIsCurrentView()) {
-                  activeSessionIdRef.current = recoveredId
-                  setActiveSessionId(recoveredId)
+                if (onRuntimeRecovered) {
+                  onRuntimeRecovered(recoveredId)
+                } else {
+                  // Publish stored-to-runtime ownership before retrying the
+                  // session-scoped request. The window router needs this
+                  // binding to keep a recovered remote runtime on the gateway
+                  // that owns its durable session.
+                  if (recoverStoredSessionId) {
+                    updateSessionState(recoveredId, state => state, recoverStoredSessionId)
+                  }
+
+                  if (targetIsCurrentView()) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
                 }
               }
             },
@@ -742,6 +863,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // instead of erroring out and losing the session binding.
             { alsoTimeout: true }
           )
+
+          const rowId = submitted.result?.user_row_id
+
+          if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
+            // The worker may finish before this acknowledgement arrives. Bind
+            // only this send's optimistic occurrence; never reset live state or
+            // assume the newest user row still belongs to this RPC.
+            updateSessionState(submitted.sessionId, state => {
+              const index = state.messages.findIndex(message => message.id === optimisticId && message.role === 'user')
+
+              if (index < 0 || state.messages[index].rowId === rowId) {
+                return state
+              }
+
+              return {
+                ...state,
+                messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
+              }
+            })
+          }
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
             console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
@@ -781,6 +922,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const message = inlineErrorMessage(err, copy.promptFailed)
         const occurredAt = Date.now() / 1000
+        // Another surface owns the session (#106217): a deterministic gateway
+        // refusal, so the error card drops Retry and offers a new session.
+        const notOwned = isSessionNotOwnedError(err)
 
         updateSessionState(
           sessionId,
@@ -793,6 +937,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 role: 'assistant',
                 parts: [],
                 error: message || copy.promptFailed,
+                ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,
                 timestamp: occurredAt
@@ -829,6 +974,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       getRoutedStoredSessionId,
       getRuntimeIdForStoredSession,
       getRouteToken,
+      onRuntimeRecovered,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
       resumeStoredSession,

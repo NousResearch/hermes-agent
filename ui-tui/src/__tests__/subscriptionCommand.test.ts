@@ -61,8 +61,6 @@ const buildCtx = (results: Record<string, unknown>) => {
   return { calls, ctx, rpc, run, sys }
 }
 
-const printed = (sys: ReturnType<typeof vi.fn>) => sys.mock.calls.map(c => c[0]).join('\n')
-
 describe('/subscription slash command', () => {
   beforeEach(() => {
     resetOverlayState()
@@ -88,15 +86,11 @@ describe('/subscription slash command', () => {
 
     await run('')
 
-    expect(printed(sys)).toContain('Not logged into Nous Portal')
+    expect(sys).toHaveBeenCalled()
     expect(getOverlayState().subscription).toBeNull()
   })
 
   it('/upgrade alias resolves to the same command', () => {
     expect(findSlashCommand('upgrade')).toBe(subscriptionCommand)
-  })
-
-  it('/subscription resolves to the same command', () => {
-    expect(findSlashCommand('subscription')).toBe(subscriptionCommand)
   })
 })

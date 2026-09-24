@@ -1,56 +1,14 @@
-import { QueryClient } from '@tanstack/react-query'
-import { act, cleanup, render } from '@testing-library/react'
-import { useEffect, useRef } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ClientSessionState } from '@/app/types'
-import { createClientSessionState } from '@/lib/chat-runtime'
-import type { RpcEvent } from '@/types/hermes'
-
+import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
-
-import { useMessageStream } from './index'
 
 const SID = 'stream-session'
 
-let handleEvent: ((event: RpcEvent) => void) | null = null
-let states: Map<string, ClientSessionState>
-
-function Harness() {
-  const activeSessionIdRef = useRef<string | null>(SID)
-  const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
-  const queryClientRef = useRef(new QueryClient())
-
-  const stream = useMessageStream({
-    activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
-    queryClient: queryClientRef.current,
-    refreshHermesConfig: vi.fn(async () => undefined),
-    refreshSessions: vi.fn(async () => undefined),
-    sessionStateByRuntimeIdRef,
-    updateSessionState: (sessionId, updater) => {
-      const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()
-      const next = updater(current)
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
-
-      return next
-    }
-  })
-
-  useEffect(() => {
-    handleEvent = stream.handleGatewayEvent
-    states = sessionStateByRuntimeIdRef.current
-  }, [stream.handleGatewayEvent])
-
-  return null
-}
+let stream: MessageStreamHarness
 
 describe('stream delta delivery', () => {
-  beforeEach(() => {
-    handleEvent = null
-    states = new Map()
-  })
-
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
@@ -64,7 +22,7 @@ describe('stream delta delivery', () => {
     const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
     vi.useFakeTimers()
 
-    render(<Harness />)
+    stream = renderMessageStream(SID)
     await act(async () => {
       await Promise.resolve()
     })
@@ -72,7 +30,7 @@ describe('stream delta delivery', () => {
     // Reach the frame-gated branch: it is only taken once the coalescing floor
     // has already elapsed since the previous flush. Send one delta, let it
     // flush, then idle past the floor so the NEXT delta schedules immediately.
-    act(() => handleEvent?.({ payload: { text: 'first ' }, session_id: SID, type: 'message.delta' }))
+    act(() => stream.handleEvent({ payload: { text: 'first ' }, session_id: SID, type: 'message.delta' }))
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
     })
@@ -80,13 +38,13 @@ describe('stream delta delivery', () => {
       await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS * 2)
     })
 
-    act(() => handleEvent?.({ payload: { text: 'and the rest' }, session_id: SID, type: 'message.delta' }))
+    act(() => stream.handleEvent({ payload: { text: 'and the rest' }, session_id: SID, type: 'message.delta' }))
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
     })
 
-    expect(states.get(SID)?.messages.at(-1)?.parts).toMatchObject([{ type: 'text', text: 'first and the rest' }])
+    expect(stream.state()?.messages.at(-1)?.parts).toMatchObject([{ type: 'text', text: 'first and the rest' }])
     // The flush must not have depended on a frame: this mock parks every rAF
     // callback, yet the text arrived. runFlush still registers its
     // adaptive-floor measurement callback here; that one is allowed to wait

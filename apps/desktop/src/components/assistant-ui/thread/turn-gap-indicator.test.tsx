@@ -2,47 +2,20 @@
 // is armed, but the tail bubble has settled — a sealed interim row, or a turn
 // whose last message completed while the agent kept going. The transcript used
 // to show nothing there, and the seconds went uncounted.
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { type ThreadMessage } from '@assistant-ui/react'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-timer'
 import { $activeSessionId, $busy, $messages, $turnStartedAt } from '@/store/session'
 
+import { stubThreadEnvironment, ThreadRuntime, userMessage } from '../test-utils'
+
 import { Thread } from '.'
-
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
-
-Element.prototype.scrollTo = function scrollTo() {}
-
-Element.prototype.animate = function animate() {
-  return { cancel() {}, finished: Promise.resolve() } as unknown as Animation
-}
+stubThreadEnvironment()
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 const sessionId = 'session-turn-gap'
-
-function user(id: string, text: string): ThreadMessage {
-  return {
-    id,
-    role: 'user',
-    content: [{ type: 'text', text }],
-    attachments: [],
-    createdAt,
-    metadata: { custom: {} }
-  } as ThreadMessage
-}
 
 function assistant(id: string, content: unknown[], running: boolean): ThreadMessage {
   return {
@@ -63,19 +36,11 @@ const toolCall = (toolName: string, settled: boolean) => ({
   ...(settled ? { result: 'ok' } : {})
 })
 
-function Harness({ messages }: { messages: ThreadMessage[] }) {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages,
-    isRunning: messages.at(-1)?.status?.type === 'running',
-    onNew: async () => {}
-  })
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
-  )
-}
+const Harness = ({ messages }: { messages: ThreadMessage[] }) => (
+  <ThreadRuntime messages={messages}>
+    <Thread />
+  </ThreadRuntime>
+)
 
 const timerText = (value: string) => screen.getAllByText((_, node) => node?.textContent === value)
 
@@ -106,7 +71,9 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
     // is busy, so the transcript owes the user a line and a count — measured
     // from the last thing the turn produced, not from when the row appeared.
     const { container } = render(
-      <Harness messages={[user('u1', 'do the thing'), assistant('a1', [{ type: 'text', text: 'On it.' }], false)]} />
+      <Harness
+        messages={[userMessage('u1', 'do the thing'), assistant('a1', [{ type: 'text', text: 'On it.' }], false)]}
+      />
     )
 
     act(() => vi.advanceTimersByTime(7_000))
@@ -117,7 +84,7 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
 
   it('times the gap between a finished tool call and the next thing', () => {
     const { container } = render(
-      <Harness messages={[user('u1', 'read it'), assistant('a1', [toolCall('read_file', true)], true)]} />
+      <Harness messages={[userMessage('u1', 'read it'), assistant('a1', [toolCall('read_file', true)], true)]} />
     )
 
     act(() => vi.advanceTimersByTime(9_000))
@@ -128,7 +95,7 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
 
   it('stays silent under a tool call still in flight — that row has its own timer', () => {
     const { container } = render(
-      <Harness messages={[user('u1', 'run it'), assistant('a1', [toolCall('terminal', false)], true)]} />
+      <Harness messages={[userMessage('u1', 'run it'), assistant('a1', [toolCall('terminal', false)], true)]} />
     )
 
     act(() => vi.advanceTimersByTime(9_000))
@@ -140,11 +107,44 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
     $busy.set(false)
 
     const { container } = render(
-      <Harness messages={[user('u1', 'do the thing'), assistant('a1', [{ type: 'text', text: 'Done.' }], false)]} />
+      <Harness
+        messages={[userMessage('u1', 'do the thing'), assistant('a1', [{ type: 'text', text: 'Done.' }], false)]}
+      />
     )
 
     act(() => vi.advanceTimersByTime(7_000))
 
     expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
+  })
+
+  it('keeps one live region across working/idle flips so screen readers do not re-announce it', () => {
+    const { container } = render(
+      <Harness
+        messages={[userMessage('u1', 'do the thing'), assistant('a1', [{ type: 'text', text: 'On it.' }], false)]}
+      />
+    )
+
+    act(() => vi.advanceTimersByTime(7_000))
+    const row = container.querySelector<HTMLElement>('[data-slot="aui_turn-activity"]')
+    expect(row?.dataset.state).toBe('active')
+    // The ticking timer must not feed the live region.
+    const hidden = [...(row?.querySelectorAll('[aria-hidden="true"]') ?? [])].map(n => n.textContent)
+    expect(hidden.some(text => /\d+s/.test(text ?? ''))).toBe(true)
+
+    act(() => $busy.set(false))
+    // Idle: same node, still an exposed live region — visually hidden via
+    // sr-only, never display:none / [hidden], which would drop it from the
+    // accessibility tree and re-announce on the next flip.
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBe(row)
+    expect(row?.dataset.state).toBe('idle')
+    expect(row?.hidden).toBe(false)
+    expect(row?.classList.contains('hidden')).toBe(false)
+    expect(row?.getAttribute('aria-live')).toBe('polite')
+    expect(row?.textContent).toBe('')
+    expect(row?.getAttribute('aria-label')).toBeFalsy()
+
+    act(() => $busy.set(true))
+    act(() => vi.advanceTimersByTime(7_000))
+    expect(container.querySelector('[data-slot="aui_turn-activity"][data-state="active"]')).toBe(row)
   })
 })

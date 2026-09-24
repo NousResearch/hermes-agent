@@ -37,8 +37,9 @@ def test_desktop_local_serve_shape_spares_fixed_port_and_non_serve():
         "hermes serve --host 127.0.0.1 --port 9119"
     )
     assert not _is_desktop_local_serve_cmdline("hermes gateway run --replace")
+    # "serve" inside another token is not the serve subcommand (token matcher, not substring).
     assert not _is_desktop_local_serve_cmdline(
-        "vim notes about hermes serve --port 0"
+        "hermes kanban --preserve-cache --host 127.0.0.1 --port 0"
     )
 
 
@@ -77,13 +78,13 @@ def test_reap_only_kills_ppid1_local_serves():
             side_effect=lambda pid: ppids.get(pid),
         ),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
             sleep_fn=lambda _s: None,
             signal_term=15,
             signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
         )
 
     assert set(result["matched"]) == {111, 444}
@@ -99,7 +100,6 @@ def test_reap_passes_child_pid_exclude_to_scan():
             "hermes_cli.dashboard_procs._scan_dashboard_processes",
             return_value=[],
         ) as scan,
-        patch("sys.platform", "darwin"),
         patch.dict(os.environ, {"HERMES_DESKTOP_CHILD_PID": "999,111"}, clear=False),
     ):
         result = _reap_orphaned_desktop_local_serves(sleep_fn=lambda _s: None)
@@ -158,6 +158,28 @@ def test_lock_owned_serve_pids_reads_valid_backend_lock(tmp_path):
         json.dumps({**_valid_lock_payload(8888, other_oid, nonce), "schemaVersion": 99})
     )
     assert _lock_owned_serve_pids(base_dir=lock_root) == {7777}
+
+
+def test_lock_owned_serve_pids_sees_root_home_locks_from_a_profile_home(tmp_path, monkeypatch):
+    """A profile backend (``HERMES_HOME=<root>/profiles/<name>``) must still see the Desktop's SSH
+    locks, which live under ``<root>/desktop-ssh`` — otherwise its reaper kills the sibling
+    profile's live SSH backend on every profile switch (#89811)."""
+    import hermes_constants
+
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "flocki"
+    profile_home.mkdir(parents=True)
+    oid = "f" * 32
+    nonce = "d" * 16
+    (root / "desktop-ssh" / oid).mkdir(parents=True)
+    (root / "desktop-ssh" / oid / "backend.lock.json").write_text(
+        json.dumps(_valid_lock_payload(7777, oid, nonce))
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root)
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None, raising=False)
+
+    assert _lock_owned_serve_pids() == {7777}
 
 
 def test_valid_lockfile_payload_rejects_wrong_owner_and_shape():
@@ -226,7 +248,6 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
             side_effect=lambda pid: ppids.get(pid),
         ),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
@@ -234,6 +255,7 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
             signal_term=15,
             signal_kill=9,
             lock_owned_pids_fn=lambda: lock_owned,
+            process_age_seconds_fn=lambda _pid: 600.0,
         )
 
     # Only the genuine orphan (666) is reaped; the lock-owned remote (555) lives.
@@ -241,6 +263,104 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
     assert set(terms) == {666}
     assert 555 not in terms
     assert set(result["killed"]) == {666}
+
+
+def test_reap_spares_young_backend_until_desktop_can_write_lock():
+    """A concurrently-starting sibling has no lock yet but is not an orphan."""
+    scanned = [(777, "hermes serve --isolated --host 127.0.0.1 --port 0")]
+    terms: list[int] = []
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            return None
+        if sig == 15:
+            terms.append(pid)
+        return None
+
+    with (
+        patch(
+            "hermes_cli.dashboard_procs._scan_dashboard_processes",
+            return_value=scanned,
+        ),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 2.0,
+        )
+
+    assert result["matched"] == []
+    assert result["killed"] == []
+    assert terms == []
+
+
+def test_reap_spares_backend_when_process_age_is_unknown():
+    scanned = [(778, "hermes serve --isolated --host 127.0.0.1 --port 0")]
+    terms: list[int] = []
+
+    def fake_age(_pid):
+        raise RuntimeError("process disappeared during age probe")
+
+    with (
+        patch(
+            "hermes_cli.dashboard_procs._scan_dashboard_processes",
+            return_value=scanned,
+        ),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=lambda pid, sig: terms.append(pid) if sig == 15 else None),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=fake_age,
+        )
+
+    assert result["matched"] == []
+    assert result["killed"] == []
+    assert terms == []
+
+
+def test_reap_age_boundary_makes_180_second_orphan_eligible():
+    scanned = [
+        (779, "hermes serve --isolated --host 127.0.0.1 --port 0"),
+        (780, "hermes serve --isolated --host 127.0.0.1 --port 0"),
+    ]
+    terms: list[int] = []
+    live = {779, 780}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if pid in live:
+                return None
+            raise ProcessLookupError()
+        if sig == 15:
+            terms.append(pid)
+            live.discard(pid)
+        return None
+
+    ages = {779: 179.999, 780: 180.0}
+    with (
+        patch(
+            "hermes_cli.dashboard_procs._scan_dashboard_processes",
+            return_value=scanned,
+        ),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=lambda pid: ages[pid],
+        )
+
+    assert result["matched"] == [780]
+    assert result["killed"] == [780]
+    assert terms == [780]
 
 
 def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
@@ -273,7 +393,6 @@ def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
             return_value=1,
         ),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
@@ -285,3 +404,40 @@ def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
 
     assert terms == []
     assert result["matched"] == []
+
+
+def test_reap_kills_descendants_of_killed_roots_but_spares_a_failed_roots_subtree():
+    """#112631: a SIGKILLed backend never ran PTY_REGISTRY.close_all(), so the reaper sweeps its
+    surviving hosted-TUI children — but only for roots it actually killed. A root whose own kill
+    raised (EPERM: not ours) keeps its subtree intact instead of being orphaned half-way."""
+    scanned = [
+        (111, "hermes serve --host 127.0.0.1 --port 0"),  # ours: killed, child 1111 swept
+        (444, "hermes serve --host 127.0.0.1 --port 0"),  # not ours: EPERM, child 4444 spared
+    ]
+    descendants = {1111: (111, 5.0), 4444: (444, 6.0)}
+    start_times = {1111: 5.0, 4444: 6.0}
+    sent: list[tuple[int, int]] = []
+
+    def fake_kill(pid, sig):
+        if pid == 444:
+            raise PermissionError("Operation not permitted")
+        sent.append((pid, sig))
+
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("hermes_cli.dashboard_procs._posix_descendants", return_value=descendants) as snap,
+        patch("gateway.status.get_process_start_time", side_effect=start_times.get),
+        patch("psutil.pid_exists", return_value=True),
+        patch("os.kill", side_effect=fake_kill),
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None, signal_term=15, signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
+        )
+
+    snap.assert_called_once_with([111, 444])  # snapshotted before the kill reparents them
+    assert result["killed"] == [111] and result["failed"] == [444]
+    assert (1111, 9) in sent, "surviving child of the killed backend was not swept"
+    assert not any(pid == 4444 for pid, _ in sent), "child of a root we could not kill was swept"

@@ -97,25 +97,74 @@ def _presets_stale() -> bool:
     return False
 
 
-def _stop_state_server(state: dict) -> None:
-    """Best-effort stop of the server the state file points at (an incumbent this process doesn't
-    supervise). The state pid is ours by contract — the file only ever describes the managed
-    server."""
+def _stop_state_server(state: dict) -> bool:
+    """Stop the server the state file points at (an incumbent this process doesn't supervise) and
+    report whether it is VERIFIED gone. The state pid is ours by contract — the file only ever
+    describes the managed server.
+
+    The router's per-model children hold the weights resident, so stopping the router alone
+    strands them (each copy is gigabytes). And a caller about to spawn a replacement MUST NOT
+    spawn while any of the tree is still alive: two routers side by side each autoload their own
+    copy of a model (#120691). So enumerate the tree while the parent is still up, stop all of
+    it, escalate to kill, and tell the caller the truth — False means "still here, do not
+    replace it yet"."""
     from hermes_cli.local_runtime.endpoint import _pid_alive
 
+    raw = state.get("pid")
+    if isinstance(raw, bool):
+        return True
     try:
-        pid = int(state.get("pid"))
-        if pid <= 0:
-            return
-        os.kill(pid, signal.SIGTERM)
-    except (TypeError, ValueError, OSError):
-        return
+        pid = int(raw)
+    except (TypeError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+
+    # Children first (the parent must be alive to walk them).
+    try:
+        import psutil
+
+        root = psutil.Process(pid)
+        victims = root.children(recursive=True) + [root]
+    except Exception:  # noqa: BLE001 — already gone, or psutil cannot see it: router pid alone
+        victims = [pid]
+
+    def _alive(v) -> bool:
+        pid = v if isinstance(v, int) else v.pid
+        if not _pid_alive(pid):
+            return False
+        # A zombie still "exists" for pid_exists but holds no port and no weights — reapable
+        # residue of a terminated router counts as stopped.
+        with suppress(Exception):
+            import psutil
+
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        return True
+
+    def _signal(v, *, kill: bool) -> None:
+        with suppress(Exception):
+            if isinstance(v, int):
+                os.kill(v, signal.SIGKILL if kill else signal.SIGTERM)
+            elif kill:
+                v.kill()
+            else:
+                v.terminate()
+
+    for v in victims:
+        _signal(v, kill=False)
     # Give it a moment to release the port and the GPU. Liveness via psutil — on Windows
     # os.kill(pid, 0) TERMINATES the process, it is not a probe.
     for _ in range(50):
-        if not _pid_alive(pid):
-            return
+        if not any(_alive(v) for v in victims):
+            return True
         time.sleep(0.1)
+    for v in victims:
+        _signal(v, kill=True)
+    for _ in range(20):
+        if not any(_alive(v) for v in victims):
+            return True
+        time.sleep(0.1)
+    return not any(_alive(v) for v in victims)
 
 
 def refresh_local_runtime() -> bool:
@@ -133,7 +182,11 @@ def refresh_local_runtime() -> bool:
             if state is None:
                 return False
             logger.info("bouncing adopted llama-server (pid=%s) to rescan models", state.get("pid"))
-            _stop_state_server(state)
+            if not _stop_state_server(state):
+                logger.warning("adopted llama-server (pid=%s) has not stopped; skipping the "
+                               "bounce rather than booting a second router beside it",
+                               state.get("pid"))
+                return False
         else:
             shutdown_local_runtime()
         return ensure_local_runtime(load_config(), force=True) is not None
@@ -300,7 +353,13 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 return None
             logger.info("running server's presets predate the staged models; "
                         "replacing it so every model launches with a policy")
-            _stop_state_server(state)
+            if not _stop_state_server(state):
+                # Never boot a second router beside a live incumbent (#120691): each would
+                # autoload its own copy of the same model. A stale-policy incumbent is the
+                # lesser evil — the next refresh/restart replaces it once it actually stops.
+                logger.warning("incumbent llama-server (pid=%s) has not stopped; keeping it "
+                               "rather than booting a second router beside it", state.get("pid"))
+                return None
 
         try:
             from hermes_cli.local_runtime.binaries import (

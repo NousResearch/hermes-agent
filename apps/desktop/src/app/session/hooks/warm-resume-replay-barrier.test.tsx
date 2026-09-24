@@ -245,3 +245,36 @@ it('waits for reconnect replay before activating and reading warm history', asyn
     client.close()
   }
 })
+
+it('still settles a warm resume through session.activate when its replay socket is lost', async () => {
+  const { result, client, requestGateway } = await mountWithPendingReplay()
+
+  requestGateway.mockImplementation(async (method: string) => {
+    if (method === 'session.activate') {
+      throw new Error('session not found')
+    }
+
+    return snapshot
+  })
+
+  try {
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = result.current.actions.resumeSession(storedId, true)
+    })
+    expect(activateCalls(requestGateway)).toHaveLength(0)
+
+    await act(async () => {
+      client.invalidate()
+      await pending
+    })
+
+    // A lost socket is not proof the runtime is alive or gone: activation
+    // decides, and a gone runtime falls back to a cold resume instead of
+    // leaving the view on an unrebound warm cache.
+    expect(activateCalls(requestGateway)).toHaveLength(1)
+    expect(requestGateway.mock.calls.some(([method]) => method === 'session.resume')).toBe(true)
+  } finally {
+    client.close()
+  }
+})

@@ -1293,8 +1293,17 @@ export function useSessionActions({
           try {
             const replay = pendingSessionReplay(cachedRuntimeId)
 
-            if (replay && (!(await replay) || !isCurrentResume())) {
-              return
+            // Only ordering matters here. A lost socket (false) still goes on
+            // to session.activate so its existing branches own the outcome:
+            // degraded warm cache on a transport error, cold resume when the
+            // runtime is gone, or a normal rebind on a redialed socket (whose
+            // history publication is re-gated after the REST read below).
+            if (replay) {
+              await replay
+
+              if (!isCurrentResume()) {
+                return
+              }
             }
 
             let activated: SessionResumeResult | null = null

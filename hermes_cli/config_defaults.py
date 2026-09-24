@@ -2650,7 +2650,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 47,  # Config schema version - bump this when adding new required fields
+    "_config_version": 48,  # Config schema version - bump this when adding new required fields
 }
 
 

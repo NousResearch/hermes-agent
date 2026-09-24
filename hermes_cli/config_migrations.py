@@ -766,6 +766,10 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "admitted to the target profile's running gateway and tracked by receipt, so cron no "
             "longer runs (or times out) a Bot Chat turn of its own."),
         extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
+    # Runtime and main both used v46 for different migrations. Even a config
+    # already advanced to v47 can still carry the old disabled-server spelling.
+    # Reusing the idempotent conversion leaves already-migrated choices intact.
+    (48, _migrate_to_46),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

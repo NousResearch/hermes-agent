@@ -84,7 +84,8 @@ def begin_runtime_epoch(db, *, instance_id: str) -> int:
 
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
-                        request_id: str, payload: dict, intent: str = 'queue') -> dict:
+                        request_id: str, payload: dict, intent: str = 'queue',
+                        _authorize_write=None) -> dict:
     for value in (principal_id, session_id, request_id):
         _text(value)
     if intent not in ('queue', 'steer', 'redirect'):
@@ -94,11 +95,19 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
     retired = retry_terminal_admission(db, epoch=epoch, principal_id=principal_id, session_id=session_id,
         request_id=request_id, payload=payload, intent=intent)
     if retired is not None:
+        if _authorize_write is not None:
+            def authorize_retired(conn):
+                _epoch(conn, epoch)
+                if _authorize_write(conn) is not True:
+                    raise RuntimeStoreError('permission_denied')
+            db._execute_write(authorize_retired)
         return retired
     digest = admission_fingerprint(canonical_target=session_id, payload={'input': json.loads(encoded), 'intent': intent})
     def write(conn):
         _epoch(conn, epoch)
         _session(conn, session_id)
+        if _authorize_write is not None and _authorize_write(conn) is not True:
+            raise RuntimeStoreError('permission_denied')
         old = conn.execute('''SELECT * FROM session_admissions
             WHERE principal_id=? AND target_session_id=? AND request_id=?''', (principal_id, session_id, request_id)).fetchone()
         if old is not None:

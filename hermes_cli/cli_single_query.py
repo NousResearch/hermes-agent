@@ -125,9 +125,7 @@ def _sync_cli_session_id_from_agent(cli) -> None:
 # ``failure_reason`` values that say nothing about the task itself: the provider is walled,
 # down or unreachable, or the account is out of credit, so a Kanban worker signals "try
 # later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
-_TRANSIENT_PROVIDER_REASONS = frozenset({
-    "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
-})
+from hermes_cli.turn_exit import TRANSIENT_PROVIDER_REASONS as _TRANSIENT_PROVIDER_REASONS
 
 
 # ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
@@ -137,9 +135,7 @@ _TRANSIENT_PROVIDER_REASONS = frozenset({
 # ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
 # ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
 # header change heals it, never a retry.
-_TERMINAL_PROVIDER_REASONS = frozenset({
-    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
-})
+from hermes_cli.turn_exit import TERMINAL_PROVIDER_REASONS as _TERMINAL_PROVIDER_REASONS
 
 
 def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -> int:
@@ -157,24 +153,13 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -
     (EX_CONFIG): the dispatcher blocks the card at once.
     """
     from cli import _TERMINAL_PROVIDER_REASONS, _TRANSIENT_PROVIDER_REASONS
-    if not isinstance(result, dict):
-        if credentials_rate_limited and os.environ.get("HERMES_KANBAN_TASK"):
-            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
-            return KANBAN_RATE_LIMIT_EXIT_CODE
-        return 1
-    if result.get("interrupted"):
-        return 130
-    if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
-        return 0
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        reason = result.get("failure_reason")
-        if reason in _TRANSIENT_PROVIDER_REASONS:
-            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
-            return KANBAN_RATE_LIMIT_EXIT_CODE
-        if reason in _TERMINAL_PROVIDER_REASONS:
-            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
-            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
-    return 1
+    from hermes_cli.turn_exit import turn_exit_code
+    return turn_exit_code(
+        result, kanban_worker=bool(os.environ.get("HERMES_KANBAN_TASK")),
+        credentials_rate_limited=credentials_rate_limited,
+        transient_reasons=_TRANSIENT_PROVIDER_REASONS,
+        terminal_reasons=_TERMINAL_PROVIDER_REASONS,
+    )
 
 
 def _run_quiet_single_query(cli, effective_query, emitter=None):

@@ -459,14 +459,8 @@ client.update_collection(
 ## Common issues
 
 **Slow search with filters:**
-```python
-# Create payload index for filtered fields
-client.create_payload_index(
-    collection_name="docs",
-    field_name="category",
-    field_schema=PayloadSchemaType.KEYWORD
-)
-```
+Create an index for every field used in filters. Use the payload-indexing
+procedure above rather than duplicating a second configuration example here.
 
 **Out of memory:**
 ```python

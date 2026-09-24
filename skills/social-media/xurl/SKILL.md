@@ -55,8 +55,11 @@ App credential registration and credential rotation must be done by the user man
 Pick ONE method. On Linux, the shell script or `go install` are the easiest.
 
 ```bash
-# Shell script (installs to ~/.local/bin, no sudo, works on Linux + macOS)
-curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh | bash
+# Shell script (installs to ~/.local/bin, no sudo, works on Linux + macOS).
+# Download and inspect it before approving execution.
+curl -fsSLo xurl-install.sh https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh
+# Inspect xurl-install.sh with read_file, then:
+bash xurl-install.sh
 
 # Homebrew (macOS)
 brew install --cask xdevplatform/tap/xurl

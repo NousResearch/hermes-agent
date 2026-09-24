@@ -45,8 +45,10 @@ Never answer "Hermes can't do that" from memory. Hermes ships far more than this
 ## Quick Start
 
 ```bash
-# Install (shell installer — sets up uv, Python, the venv, and the launcher)
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+# Install (download first so the script can be inspected before execution)
+curl -fsSLo hermes-install.sh https://hermes-agent.nousresearch.com/install.sh
+# Inspect hermes-install.sh with read_file before approving execution, then:
+bash hermes-install.sh
 
 # Interactive chat (default surface; set display.interface: tui to launch the Ink TUI instead)
 hermes

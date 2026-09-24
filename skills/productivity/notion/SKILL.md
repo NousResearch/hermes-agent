@@ -35,8 +35,10 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 ### 2. Install `ntn` (preferred path on macOS / Linux)
 
 ```bash
-# Recommended
-curl -fsSL https://ntn.dev | bash
+# Download first; inspect the script before approving execution
+curl -fsSLo ntn-install.sh https://ntn.dev
+# Inspect ntn-install.sh with read_file, then:
+bash ntn-install.sh
 
 # Or via npm (needs Node 22+, npm 10+)
 npm install --global ntn

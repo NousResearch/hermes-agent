@@ -26,7 +26,7 @@ from hermes_constants import get_hermes_home
 _NO_REPLAY = (0, 0, False, None)
 # How long a resize drag holds output before its next width change runs a recovery anyway,
 # that long after the change (seconds): output freezes about their sum plus one signal interval.
-_RESIZE_HOLD_MAX = 0.85
+_RESIZE_HOLD_MAX = 0.7
 _RESIZE_SETTLE = 0.03
 
 

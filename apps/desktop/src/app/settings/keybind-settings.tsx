@@ -46,6 +46,14 @@ interface KeybindSettingsProps {
 export function KeybindSettings({ subpage }: KeybindSettingsProps = {}) {
   useSettingDeepLink('keybinds', page => subpage === undefined || page === subpage)
 
+  if (subpage === 'send-behavior') {
+    return (
+      <SettingsContent>
+        <ComposerSendSettings />
+      </SettingsContent>
+    )
+  }
+
   if (subpage === 'hud-gesture') {
     return (
       <SettingsContent>
@@ -184,7 +192,6 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
         </div>
       ) : (
         <div className="px-2 py-1.5">
-          <ComposerSendSettings />
           {KEYBIND_CATEGORIES.map(category => {
             const actions = actionList.filter(
               action => action.category === category && action.id !== KEYBIND_PANEL_ACTION

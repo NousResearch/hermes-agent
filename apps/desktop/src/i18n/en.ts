@@ -467,6 +467,7 @@ export const en: Translations = {
     details: 'Details',
     copyDetail: 'Copy detail',
     copyDetailFailed: 'Could not copy notification detail',
+    compressDeferredDone: 'Context compression finished',
     backendOutOfDateTitle: 'Backend out of date',
     backendOutOfDateMessage:
       'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
@@ -618,6 +619,7 @@ export const en: Translations = {
     rebind: 'Rebind',
     reset: 'Reset to default',
     resetAll: 'Reset all',
+    clear: 'Clear',
     pressKey: 'Press a key…',
     set: 'set',
     conflictWith: label => `Also bound to “${label}”`,
@@ -812,6 +814,7 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
+      sessions: 'Sessions',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
@@ -1345,7 +1348,7 @@ export const en: Translations = {
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
-        'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop dictation"). The voice.record_key config value only applies to the CLI and TUI.',
+        'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
       showOptions: 'Show options'
     },
     hudModifier: {
@@ -2005,9 +2008,10 @@ export const en: Translations = {
         notice: {
           loggedOut: {
             title: 'Connect your Nous account',
-            message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
-            action: 'Open portal ↗'
+            message: 'Sign in with your Nous account to see your balance, plan and usage here.',
+            action: 'Sign in'
           },
+          openPortal: 'Open portal ↗',
           noCard: {
             title: 'No payment method on file',
             message:
@@ -4569,6 +4573,11 @@ export const en: Translations = {
     remotePickerTitle: 'Choose remote folder',
     remotePickerDescription: 'Browse folders on the connected backend.',
     remotePickerSelect: 'Select folder',
+    remotePickerNewFolder: 'New folder',
+    remotePickerFolderName: 'Folder name',
+    remotePickerCreateFolder: 'Create folder',
+    remotePickerInvalidFolderName: 'Enter a single folder name, without slashes.',
+    remotePickerCreateFolderFailed: error => `Could not create the folder (${error}).`,
     folderTip: cwd => cwd,
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',

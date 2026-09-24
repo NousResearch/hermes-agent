@@ -180,8 +180,10 @@ def _model_title_upgrade_enabled() -> bool:
 def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
-    A ``custom`` main route (llama.cpp, Ollama, vLLM, LM Studio…) whose ``auxiliary.title_generation``
-    is not pinned elsewhere shares one local server between the streaming main request and the
+    A self-hosted main route (``_is_self_hosted_provider``: custom, lmstudio, local and their aliases)
+    whose ``auxiliary.title_generation`` is not pinned elsewhere (a pin naming the same custom route —
+    ``custom:<name>``, bare ``<name>`` or its display name — is not "elsewhere", #120558)
+    shares one local server between the streaming main request and the
     concurrent ``response_format: json_schema`` title request. Single-slot servers then serve the
     title grammar/completion into the main turn: the user's reply arrives as ``{"title": ...}``, is
     persisted as a genuine assistant row and replayed, and the model adopts the format (#117296).
@@ -189,18 +191,49 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     Hosted providers multiplex requests independently and keep the turn-start timing.
     """
     provider = str((main_runtime or {}).get("provider") or "").strip().lower()
-    if provider != "custom":
+    if not _is_self_hosted_provider(provider):
         return False
     try:
         cfg = _title_config()
+        pinned_provider = str(cfg.get("provider") or "").strip().lower()
+        main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
+        if pinned_provider not in ("", "auto") and not _title_pin_may_share_endpoint(
+                pinned_provider, provider, main_base_url):
+            return False
     except Exception:
         return True
-    pinned_provider = str(cfg.get("provider") or "").strip().lower()
     pinned_base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
-    main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
-    if pinned_provider and pinned_provider not in ("", "auto", "custom"):
-        return False
     return not pinned_base_url or pinned_base_url == main_base_url
+
+
+def _is_self_hosted_provider(provider: str) -> bool:
+    """``custom``, a named ``custom:<name>`` route, LM Studio or ``local`` (vllm/llama.cpp): one local server per route.
+
+    Normalised here so the main route and the title pin resolve aliases (``ollama``, ``lm-studio``…) the same way.
+    """
+    from hermes_cli.providers import normalize_provider
+    provider = normalize_provider(provider)
+    return provider in ("custom", "lmstudio", "local") or provider.startswith("custom:")
+
+
+def _title_pin_may_share_endpoint(pinned_provider: str, main_provider: str, main_base_url: str) -> bool:
+    """A title pin that can land on the turn's own self-hosted server (only its ``base_url`` can prove otherwise).
+
+    Hosted pins (``openrouter``…) multiplex and never share the slot. A pin to ``custom``/``lmstudio``/``local``/any
+    ``custom:<name>`` is assumed to share until the caller compares ``base_url``, and a bare ``<name>`` /
+    display-name pin is the same endpoint when it aliases the main ``custom:<name>`` route
+    (``hermes_cli.providers.custom_provider_aliases`` — the resolver's own identity set) or resolves to a
+    configured custom entry serving ``main_base_url`` (a keyed ``providers:`` entry's display name does not
+    alias its ``custom:<key>`` id).
+    """
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    from hermes_cli.providers import custom_provider_aliases, resolve_custom_provider
+    if _is_self_hosted_provider(pinned_provider):
+        return True
+    if custom_provider_aliases(pinned_provider) & custom_provider_aliases(main_provider):
+        return True
+    pdef = resolve_custom_provider(pinned_provider, get_compatible_custom_providers(load_config_readonly()))
+    return bool(pdef and main_base_url and pdef.base_url.strip().rstrip("/") == main_base_url)
 
 
 def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:
@@ -725,7 +758,7 @@ def maybe_auto_title(
         kwargs=upgrade_kwargs,
     )
     if title_upgrade_must_wait_for_turn(main_runtime):
-        logger.debug("Auto-title upgrade deferred past the turn: shares the custom endpoint with the main request")
+        logger.debug("Auto-title upgrade deferred past the turn: shares the self-hosted endpoint with the main request")
         return upgrade
     start_title_upgrade(upgrade)
     return upgrade

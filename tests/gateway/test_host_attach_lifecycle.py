@@ -159,7 +159,7 @@ def test_a_standalone_owner_is_the_per_profile_topology_not_a_refusal(tmp_path, 
     monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
                         lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
 
-    with caplog.at_level("WARNING", logger="gateway.host_attach"):
+    with caplog.at_level("INFO", logger="gateway.host_attach"):
         assert host_attach.decide(tmp_path / "root" / "profiles" / "nous").outcome == host_attach.START
     assert any("migrate --multiplex" in r.getMessage() for r in caplog.records), "the converge hint is logged"
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None

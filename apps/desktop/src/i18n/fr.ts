@@ -829,6 +829,7 @@ export const fr = defineLocale({
       keysSettings: 'Paramètres',
       mcp: 'MCP',
       archivedChats: 'Conversations archivées',
+      sessions: 'Sessions',
       about: 'À propos',
       billing: 'Facturation',
       notifications: 'Notifications',
@@ -2389,9 +2390,11 @@ export const fr = defineLocale({
         notice: {
           loggedOut: {
             title: 'Connectez votre compte Nous',
-            message: 'Exécutez /portal dans la TUI ou ouvrez le portail Nous pour connecter votre compte.',
-            action: 'Ouvrir le portail ↗'
+            message:
+              'Connectez-vous avec votre compte Nous pour voir ici votre solde, votre offre et votre utilisation.',
+            action: 'Se connecter'
           },
+          openPortal: 'Ouvrir le portail ↗',
           noCard: {
             title: 'Aucun moyen de paiement enregistré',
             message:
@@ -5069,6 +5072,11 @@ export const fr = defineLocale({
     remotePickerTitle: 'Choisir un dossier distant',
     remotePickerDescription: 'Parcourez les dossiers sur le backend connecté.',
     remotePickerSelect: 'Sélectionner le dossier',
+    remotePickerNewFolder: 'Nouveau dossier',
+    remotePickerFolderName: 'Nom du dossier',
+    remotePickerCreateFolder: 'Créer le dossier',
+    remotePickerInvalidFolderName: 'Saisissez un seul nom de dossier, sans barre oblique.',
+    remotePickerCreateFolderFailed: error => `Impossible de créer le dossier (${error}).`,
     folderTip: cwd => cwd,
     openFolder: 'Ouvrir le dossier',
     refreshTree: "Actualiser l'arbre",

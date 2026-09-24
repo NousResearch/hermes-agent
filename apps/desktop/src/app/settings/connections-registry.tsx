@@ -69,6 +69,17 @@ interface EditorState {
   headers: { name: string; stored: boolean; value: string }[]
 }
 
+/**
+ * The auth mode the editor saves. A Hermes Cloud gateway signs in through its
+ * OAuth session and never keeps a pasted token (the main process drops one),
+ * so cloud is always oauth whatever the shared editor state last held for a
+ * remote; token auth left a hand-registered cloud entry with no credential
+ * (#89529).
+ */
+function editorAuthMode(editor: Pick<EditorState, 'authMode' | 'kind'>): EditorState['authMode'] {
+  return editor.kind === 'cloud' ? 'oauth' : editor.authMode
+}
+
 function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
   return {
     id: conn.id,
@@ -277,8 +288,9 @@ export function ConnectionsRegistrySection() {
     setConnectionsRegistry(next)
   }, [])
 
-  const editorUrl = editor?.kind === 'remote' ? coerceRemoteUrlScheme(editor.url) : ''
-  const editorWantsOauth = editor?.kind === 'remote' && editor.authMode === 'oauth'
+  const editorIsGateway = editor?.kind === 'remote' || editor?.kind === 'cloud'
+  const editorUrl = editor && editorIsGateway ? coerceRemoteUrlScheme(editor.url) : ''
+  const editorWantsOauth = Boolean(editor && editorIsGateway && editorAuthMode(editor) === 'oauth')
   const authProviderShape = deriveRemoteAuthProviderShape(authProbe?.providers, t.boot.failure.identityProvider)
 
   // Probe only while the sign-in row is on screen, and debounce it so typing a
@@ -428,7 +440,7 @@ export function ConnectionsRegistrySection() {
 
         if (editor.kind === 'remote' || editor.kind === 'cloud') {
           payload.url = editor.url
-          payload.authMode = editor.authMode
+          payload.authMode = editorAuthMode(editor)
 
           if (editor.token.trim()) {
             payload.token = editor.token.trim()
@@ -850,35 +862,36 @@ export function ConnectionsRegistrySection() {
                   title={t.settings.gateway.tokenTitle}
                 />
               )}
-              {editor.authMode === 'oauth' && (
-                <ListRow
-                  action={
-                    oauthConnected ? (
-                      <Pill tone="primary">
-                        <Check className="size-3" /> {t.settings.gateway.signedIn}
-                      </Pill>
-                    ) : (
-                      <Button disabled={signingIn || !editorUrl} onClick={() => void signInOauth()} size="sm">
-                        {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                        {authProviderShape.isPassword
-                          ? t.settings.gateway.signIn
-                          : t.settings.gateway.signInWith(authProviderShape.providerLabel)}
-                      </Button>
-                    )
-                  }
-                  description={
-                    oauthConnected
-                      ? authProviderShape.isPassword
-                        ? t.settings.gateway.authSignedInPassword
-                        : t.settings.gateway.authSignedInOauth
-                      : authProviderShape.isPassword
-                        ? t.settings.gateway.authNeedsPassword
-                        : t.settings.gateway.authNeedsOauth(authProviderShape.providerLabel)
-                  }
-                  title={t.settings.gateway.authTitle}
-                />
-              )}
             </>
+          )}
+
+          {editorWantsOauth && (
+            <ListRow
+              action={
+                oauthConnected ? (
+                  <Pill tone="primary">
+                    <Check className="size-3" /> {t.settings.gateway.signedIn}
+                  </Pill>
+                ) : (
+                  <Button disabled={signingIn || !editorUrl} onClick={() => void signInOauth()} size="sm">
+                    {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                    {authProviderShape.isPassword
+                      ? t.settings.gateway.signIn
+                      : t.settings.gateway.signInWith(authProviderShape.providerLabel)}
+                  </Button>
+                )
+              }
+              description={
+                oauthConnected
+                  ? authProviderShape.isPassword
+                    ? t.settings.gateway.authSignedInPassword
+                    : t.settings.gateway.authSignedInOauth
+                  : authProviderShape.isPassword
+                    ? t.settings.gateway.authNeedsPassword
+                    : t.settings.gateway.authNeedsOauth(authProviderShape.providerLabel)
+              }
+              title={t.settings.gateway.authTitle}
+            />
           )}
 
           {(editor.kind === 'remote' || editor.kind === 'cloud') && (

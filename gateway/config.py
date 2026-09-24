@@ -508,6 +508,19 @@ class StreamingConfig:
     # fresh-message replacement path; set >0 to opt in.
     fresh_final_after_seconds: float = 0.0
 
+    @property
+    def globally_enabled(self) -> bool:
+        """The ``streaming.enabled`` master switch (``transport: off`` also disables)."""
+        return bool(self.enabled) and self.transport != "off"
+
+    def enabled_for(self, platform_override: Any) -> bool:
+        """Effective streaming for one platform.
+
+        ``platform_override`` is ``display.platforms.<plat>.streaming`` (``None`` = follow global).
+        A per-platform value can only narrow the global switch, never enable streaming on its own.
+        """
+        return self.globally_enabled and (platform_override is None or bool(platform_override))
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 

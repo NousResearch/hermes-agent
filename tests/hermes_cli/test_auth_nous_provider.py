@@ -684,6 +684,134 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     assert exc_info.value.relogin_required is True
 
 
+@pytest.mark.parametrize(
+    "status_code, body, headers, expected_code, expected_terminal",
+    [
+        (500, None, {}, "temporarily_unavailable", False),
+        (503, None, {}, "temporarily_unavailable", False),
+        (599, None, {}, "temporarily_unavailable", False),
+        (429, {"code": "429", "message": "rate limited"}, {}, None, False),
+        (404, {"message": "not found"}, {}, None, False),
+        (400, ValueError("not json"), {}, None, False),
+        (401, {"message": "unauthorized"}, {}, "invalid_grant", True),
+        (403, ValueError("not json"), {}, "invalid_grant", True),
+        (400, ["not", "a", "dict"], {}, None, False),
+        (401, "unauthorized", {}, "invalid_grant", True),
+        # Vercel Security Checkpoint in front of the Portal (#120602): the edge, not the token
+        # endpoint, refused the request -- the refresh token is still good.
+        (403, ValueError("not json"), {"x-vercel-mitigated": "deny"}, "upstream_blocked", False),
+        (429, ValueError("not json"), {"x-vercel-mitigated": "challenge", "Retry-After": "30"},
+         "upstream_blocked", False),
+        # A 401 is the token endpoint speaking even behind the edge header: stays terminal.
+        (401, ValueError("not json"), {"x-vercel-mitigated": "deny"}, "invalid_grant", True),
+    ],
+)
+def test_refresh_token_exchange_error_classification(
+    status_code, body, headers, expected_code, expected_terminal
+):
+    """A Portal 5xx is transient even when its body is not OAuth JSON (#120976), and a
+    non-5xx body that carries no OAuth ``error`` code must not be treated as a dead grant --
+    except a 401/403, which always means the refresh token itself was rejected, unless the
+    403/429 carries ``x-vercel-mitigated`` (the edge firewall answered, not the Portal; #120602)."""
+    from hermes_cli.auth import _is_terminal_nous_refresh_error, _refresh_access_token
+
+    class _FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.headers = dict(headers)
+
+        def json(self):
+            if body is None:
+                raise AssertionError("5xx refresh handling must not parse response.json()")
+            if isinstance(body, Exception):
+                raise body
+            return body
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="refresh-still-valid",
+        )
+
+    assert exc_info.value.code == expected_code
+    assert exc_info.value.relogin_required is expected_terminal
+    assert _is_terminal_nous_refresh_error(exc_info.value) is expected_terminal
+    if expected_code in {"temporarily_unavailable", "upstream_blocked"}:
+        assert exc_info.value.retryable is True
+    if "Retry-After" in headers:
+        assert exc_info.value.retry_after == 30.0
+
+
+@pytest.mark.parametrize(
+    ("status_code", "headers", "json_body", "expected_code"),
+    [
+        (503, {}, {}, "temporarily_unavailable"),
+        (403, {"x-vercel-mitigated": "deny"}, None, "upstream_blocked"),
+        (429, {"x-vercel-mitigated": "challenge"}, None, "upstream_blocked"),
+    ],
+    ids=["portal-503", "edge-deny-403", "edge-challenge-429"],
+)
+def test_runtime_refresh_503_preserves_nous_oauth_credentials(
+    tmp_path, monkeypatch, status_code, headers, json_body, expected_code
+):
+    """The real runtime resolver must not quarantine a still-valid refresh token or demand a
+    re-login during a Portal outage (#120976) or a Vercel Security Checkpoint deny/challenge on
+    the token endpoint (#120602)."""
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.auth_nous as auth_nous
+
+    hermes_home = tmp_path / "hermes"
+    access_token = _invoke_jwt(seconds=3600)
+    refresh_token = "refresh-still-valid"
+    _setup_nous_auth(
+        hermes_home,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class _FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.headers = headers
+
+        def json(self):
+            if json_body is None:
+                raise ValueError("edge block page is not JSON")
+            return json_body
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr(auth_nous, "_nous_http_client", lambda *args: _FakeClient())
+
+    with pytest.raises(AuthError) as exc_info:
+        auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+
+    state = auth_mod.get_provider_auth_state("nous")
+    assert state["access_token"] == access_token
+    assert state["refresh_token"] == refresh_token
+    assert "last_auth_error" not in state
+    assert exc_info.value.code == expected_code
+    assert exc_info.value.relogin_required is False
+    assert exc_info.value.retryable is True
+
+
 def test_refresh_token_exchange_sends_refresh_token_header():
     """Nous refresh tokens must be sent in a header so sandbox proxies can
     substitute placeholder credentials without parsing form bodies.
@@ -965,5 +1093,3 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
-
-

@@ -495,6 +495,22 @@ def _secure_file(path):
         pass
 
 
+def seed_config_file(config_path: Path, template: Optional[Path] = None) -> bool:
+    """Create a missing config.yaml the way the installers do: copy cli-config.yaml.example (the display keys
+    there are commented out), else write stripped DEFAULT_CONFIG. Never DEFAULT_CONFIG verbatim -- the gateway
+    merges no defaults, so every written display key becomes a global that beats each platform's own default
+    (#121230). Shared by ``hermes config edit`` and ``hermes doctor --fix`` so the seeders cannot drift.
+    Returns True when the template was copied (the fallback, like save_config, writes get_config_path())."""
+    template = template or get_project_root() / "cli-config.yaml.example"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if template.exists():
+        shutil.copy2(template, config_path)
+        _secure_file(config_path)
+        return True
+    save_config(DEFAULT_CONFIG)
+    return False
+
+
 def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
     A SOUL.md the user actually customized is never touched."""
@@ -910,14 +926,12 @@ def _coerce_config_version(value: Any) -> int:
     return max(version, 0)
 
 
-def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
-    """Return ``(current_version, latest_version)`` from the raw on-disk config.
-    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
-    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
-    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
-    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
-    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
-    be mistaken for an up-to-date config."""
+def _read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[Optional[int], int]:
+    """Single raw read behind ``check_config_version()``: ``(stamp, latest_version)`` where
+    *stamp* is ``None`` when config.yaml parsed but carries no ``_config_version`` key (a
+    never-stamped current-schema file, not an ancient install — ``migrate_config()`` gives it only
+    the legacy-key steps). A missing file, or malformed YAML under a tolerant caller, reads as
+    ``latest`` exactly as ``check_config_version()`` always reported it."""
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
     if not config_path.exists():
@@ -945,7 +959,21 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
                 f"a mapping, got {type(config).__name__}"
             )
         config = {}
+    if "_config_version" not in config:
+        return None, latest
     return _coerce_config_version(config.get("_config_version")), latest
+
+
+def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
+    """Return ``(current_version, latest_version)`` from the raw on-disk config.
+    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
+    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
+    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
+    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
+    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
+    be mistaken for an up-to-date config. A file with no version key reads as 0."""
+    stamp, latest = _read_config_version_stamp(raise_on_parse_error=raise_on_parse_error)
+    return (0 if stamp is None else stamp), latest
 
 
 # ---- Config structure validation ----
@@ -1299,7 +1327,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
     # which must not happen when the migration will be refused for malformed YAML.
-    current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
+    stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
+    current_ver = 0 if stamp is None else stamp
 
     try:
         fixes = sanitize_env_file()
@@ -1310,17 +1339,14 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Auto-migration support floor (v12): an EXPLICIT on-disk ``_config_version`` below the
     # floor is NOT migrated and NOT rewritten — surface a message and leave the file untouched
-    # (deep-merge supplies defaults at read time). A config with NO version key is a fresh
-    # minimal config, not an ancient install: it gets the normal ladder and a version stamp.
+    # (deep-merge supplies defaults at read time). A config with NO version key is not an
+    # ancient install: it gets only the legacy-key steps and a version stamp.
     # Missing/unparseable files never trip the floor gate.
     # Imported lazily because the steps call back into this module.
     from hermes_cli.config_migrations import (
         SUPPORT_FLOOR_VERSION, run_migrations, support_floor_message)
 
-    try:
-        has_explicit_version = "_config_version" in read_user_config_raw()
-    except Exception:
-        has_explicit_version = False
+    has_explicit_version = stamp is not None
     floor_refused = (
         has_explicit_version and current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver)
     if floor_refused:
@@ -1331,7 +1357,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if not quiet:
             print(f"  ⚠ {msg}")
     else:
-        run_migrations(current_ver, results, quiet)
+        run_migrations(current_ver, results, quiet, unversioned=not has_explicit_version)
 
     _disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)
@@ -3029,7 +3055,7 @@ def edit_config():
         return
     config_path = get_config_path()
     if not config_path.exists():
-        save_config(DEFAULT_CONFIG, strip_defaults=False)
+        seed_config_file(config_path)
         print(f"Created {config_path}")
 
     # Windows lands on notepad even without Git Bash/nano; POSIX prefers nano/vim, which headless

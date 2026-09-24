@@ -23,6 +23,148 @@ export const dropdownMenuSectionLabel = 'px-2.5 pt-1 pb-0.5 text-[0.625rem] font
 // is a filter keystroke and is stopped so the menu's typeahead doesn't hijack it.
 const DROPDOWN_NAV_KEYS = new Set(['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'])
 
+// Radix highlights a row by FOCUSING it on hover (MenuItemImpl's pointermove
+// calls item.focus()). In a menu with a DropdownMenuSearch, that pulls the
+// caret out of the field mid-word (#53980). So while the field holds focus,
+// rows cancel the pointermove (Radix skips its handler when the event is
+// defaultPrevented) and set `data-highlighted` themselves. Once focus is
+// elsewhere, e.g. arrowed onto a row, Radix hover applies as usual.
+function searchHoldsFocus(row: HTMLElement): boolean {
+  const active = row.ownerDocument.activeElement
+
+  return Boolean(
+    active?.closest('[data-slot="dropdown-menu-search"]') && row.closest('[role="menu"]')?.contains(active)
+  )
+}
+
+const searchHoverClass = 'data-[highlighted]:bg-(--ui-control-active-background) data-[highlighted]:text-foreground'
+
+type RowPointerHandlers = Pick<React.HTMLAttributes<HTMLDivElement>, 'onPointerLeave' | 'onPointerMove'>
+
+function useSearchSafeHover(
+  { onPointerLeave, onPointerMove }: RowPointerHandlers,
+  { enter, leave }: { enter?: () => void; leave?: () => void } = {}
+) {
+  const [hovered, setHovered] = React.useState(false)
+
+  return {
+    ...(hovered ? { 'data-highlighted': '' } : {}),
+    onPointerLeave: (event: React.PointerEvent<HTMLDivElement>) => {
+      onPointerLeave?.(event)
+
+      if (event.defaultPrevented || event.pointerType !== 'mouse') {
+        return
+      }
+
+      setHovered(false)
+
+      // Radix's leave handler focuses the menu surface: same theft.
+      if (searchHoldsFocus(event.currentTarget)) {
+        event.preventDefault()
+        leave?.()
+      }
+    },
+    onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => {
+      onPointerMove?.(event)
+
+      if (event.defaultPrevented || event.pointerType !== 'mouse') {
+        return
+      }
+
+      const held = searchHoldsFocus(event.currentTarget)
+
+      setHovered(held)
+
+      if (held) {
+        event.preventDefault()
+        enter?.()
+      }
+    }
+  }
+}
+
+// Cancelling the pointermove also skips Radix's submenu hover-open, and Radix
+// closes an open submenu only when focus moves to another row, which no longer
+// happens. The menu re-creates both with Radix's delay as the travel grace:
+// one hover-opened submenu at a time, closed when another row is hovered
+// unless the pointer reaches the submenu first.
+const SUBMENU_HOVER_DELAY_MS = 100
+
+type SetSubOpen = (open: boolean) => void
+
+function createHoverSubmenus() {
+  let current: SetSubOpen | null = null
+  let pending: SetSubOpen | null = null
+  let openTimer = 0
+  let closeTimer = 0
+
+  const cancelOpen = () => {
+    window.clearTimeout(openTimer)
+    pending = null
+  }
+
+  const keep = () => {
+    window.clearTimeout(closeTimer)
+    closeTimer = 0
+  }
+
+  return {
+    cancelOpen,
+    dispose: () => {
+      cancelOpen()
+      keep()
+    },
+    enterSub: (setOpen: SetSubOpen, open: boolean) => {
+      keep()
+
+      if (open) {
+        cancelOpen()
+        current = setOpen
+
+        return
+      }
+
+      if (pending === setOpen) {
+        return
+      }
+
+      cancelOpen()
+      pending = setOpen
+      openTimer = window.setTimeout(() => {
+        pending = null
+
+        if (current !== setOpen) {
+          current?.(false)
+        }
+
+        current = setOpen
+        setOpen(true)
+      }, SUBMENU_HOVER_DELAY_MS)
+    },
+    enterRow: () => {
+      cancelOpen()
+
+      if (current && !closeTimer) {
+        closeTimer = window.setTimeout(() => {
+          closeTimer = 0
+          current?.(false)
+          current = null
+        }, SUBMENU_HOVER_DELAY_MS)
+      }
+    },
+    keep
+  }
+}
+
+const HoverSubmenusContext = React.createContext<ReturnType<typeof createHoverSubmenus> | null>(null)
+const SubOpenContext = React.createContext<{ open: boolean; setOpen: SetSubOpen } | null>(null)
+
+function useRowSearchHover(props: RowPointerHandlers) {
+  const hoverSubmenus = React.useContext(HoverSubmenusContext)
+
+  return useSearchSafeHover(props, { enter: () => hoverSubmenus?.enterRow() })
+}
+
 function DropdownMenu({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
   return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
 }
@@ -49,6 +191,8 @@ function DropdownMenuSearch({
 }: Omit<React.ComponentProps<'input'>, 'type'> & {
   onValueChange?: (value: string) => void
 }) {
+  const hoverSubmenus = React.useContext(HoverSubmenusContext)
+
   return (
     <div className="px-2.5 py-1.5" data-slot="dropdown-menu-search">
       <input
@@ -65,6 +209,10 @@ function DropdownMenuSearch({
           if (!DROPDOWN_NAV_KEYS.has(event.key)) {
             event.stopPropagation()
           }
+
+          // Radix focuses a submenu that opens after a keypress; a hover-open
+          // still pending while the user types would take the caret with it.
+          hoverSubmenus?.cancelOpen()
 
           onKeyDown?.(event)
         }}
@@ -92,23 +240,28 @@ function DropdownMenuContent({
   // lives outside the dialog's React context. Nested menus still inherit the
   // enclosing dialog; everything else falls back to document.body.
   const container = usePopoverPortalContainer(portalContainer)
+  const [hoverSubmenus] = React.useState(createHoverSubmenus)
+
+  React.useEffect(() => hoverSubmenus.dispose, [hoverSubmenus])
 
   return (
     <DropdownMenuPrimitive.Portal container={container}>
-      <DropdownMenuPrimitive.Content
-        className={cn(
-          menuSurfaceClass,
-          menuMotionClass,
-          'z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-36 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto',
-          className
-        )}
-        // Keep the menu inside the viewport: Radix flips/shifts away from edges
-        // (avoidCollisions defaults on); the padding stops it kissing the edge.
-        collisionPadding={collisionPadding}
-        data-slot="dropdown-menu-content"
-        sideOffset={sideOffset}
-        {...props}
-      />
+      <HoverSubmenusContext.Provider value={hoverSubmenus}>
+        <DropdownMenuPrimitive.Content
+          className={cn(
+            menuSurfaceClass,
+            menuMotionClass,
+            'z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-36 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto',
+            className
+          )}
+          // Keep the menu inside the viewport: Radix flips/shifts away from edges
+          // (avoidCollisions defaults on); the padding stops it kissing the edge.
+          collisionPadding={collisionPadding}
+          data-slot="dropdown-menu-content"
+          sideOffset={sideOffset}
+          {...props}
+        />
+      </HoverSubmenusContext.Provider>
     </DropdownMenuPrimitive.Portal>
   )
 }
@@ -126,11 +279,14 @@ function DropdownMenuItem({
   inset?: boolean
   variant?: 'default' | 'destructive'
 }) {
+  const hoverProps = useRowSearchHover(props)
+
   return (
     <DropdownMenuPrimitive.Item
       className={cn(
         menuItemClass,
         menuItemFocusClass,
+        searchHoverClass,
         "data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-7 data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive dark:data-[variant=destructive]:focus:bg-destructive/20 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary) data-[variant=destructive]:*:[svg]:text-destructive!",
         className
       )}
@@ -138,6 +294,7 @@ function DropdownMenuItem({
       data-slot="dropdown-menu-item"
       data-variant={variant}
       {...props}
+      {...hoverProps}
     />
   )
 }
@@ -148,17 +305,21 @@ function DropdownMenuCheckboxItem({
   checked,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
+  const hoverProps = useRowSearchHover(props)
+
   return (
     <DropdownMenuPrimitive.CheckboxItem
       checked={checked}
       className={cn(
         menuItemClass,
         menuItemFocusClass,
+        searchHoverClass,
         'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className
       )}
       data-slot="dropdown-menu-checkbox-item"
       {...props}
+      {...hoverProps}
     >
       {children}
       <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center pl-2 text-foreground">
@@ -177,16 +338,20 @@ function DropdownMenuRadioItem({
   children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
+  const hoverProps = useRowSearchHover(props)
+
   return (
     <DropdownMenuPrimitive.RadioItem
       className={cn(
         menuItemClass,
         menuItemFocusClass,
+        searchHoverClass,
         'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className
       )}
       data-slot="dropdown-menu-radio-item"
       {...props}
+      {...hoverProps}
     >
       {children}
       <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center pl-2 text-foreground">
@@ -233,8 +398,34 @@ function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<'spa
   )
 }
 
-function DropdownMenuSub({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
-  return <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} />
+function DropdownMenuSub({
+  defaultOpen = false,
+  onOpenChange,
+  open: openProp,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
+  // Owned here (still honouring a controlled `open`) so a sub trigger can
+  // hover-open it while a menu search keeps focus; see createHoverSubmenus.
+  const [openState, setOpenState] = React.useState(defaultOpen)
+  const open = openProp ?? openState
+  const onOpenChangeRef = React.useRef(onOpenChange)
+
+  React.useEffect(() => {
+    onOpenChangeRef.current = onOpenChange
+  })
+
+  const setOpen = React.useCallback((next: boolean) => {
+    setOpenState(next)
+    onOpenChangeRef.current?.(next)
+  }, [])
+
+  const sub = React.useMemo(() => ({ open, setOpen }), [open, setOpen])
+
+  return (
+    <SubOpenContext.Provider value={sub}>
+      <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" onOpenChange={setOpen} open={open} {...props} />
+    </SubOpenContext.Provider>
+  )
 }
 
 function DropdownMenuSubTrigger({
@@ -248,15 +439,25 @@ function DropdownMenuSubTrigger({
   /** Suppress the trailing caret — for triggers that own their right-side affordance. */
   hideChevron?: boolean
 }) {
+  const sub = React.useContext(SubOpenContext)
+  const hoverSubmenus = React.useContext(HoverSubmenusContext)
+
+  const hoverProps = useSearchSafeHover(props, {
+    enter: () => sub && hoverSubmenus?.enterSub(sub.setOpen, sub.open),
+    leave: () => hoverSubmenus?.cancelOpen()
+  })
+
   return (
     <DropdownMenuPrimitive.SubTrigger
       className={cn(
+        searchHoverClass,
         "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[inset]:pl-7 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary)",
         className
       )}
       data-inset={inset}
       data-slot="dropdown-menu-sub-trigger"
       {...props}
+      {...hoverProps}
     >
       {children}
       {!hideChevron && <Codicon className="ml-auto text-(--ui-text-tertiary)" name="chevron-right" size="1rem" />}
@@ -267,8 +468,11 @@ function DropdownMenuSubTrigger({
 function DropdownMenuSubContent({
   className,
   collisionPadding = 8,
+  onPointerMove,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  const hoverSubmenus = React.useContext(HoverSubmenusContext)
+
   return (
     // Portal the submenu out of the parent Content so it escapes that Content's
     // `overflow` clip. Without this, a submenu opening from a scrollable menu
@@ -290,6 +494,11 @@ function DropdownMenuSubContent({
         // the submenu never gets clipped.
         collisionPadding={collisionPadding}
         data-slot="dropdown-menu-sub-content"
+        onPointerMove={event => {
+          // The pointer made it into the submenu: cancel a pending hover close.
+          hoverSubmenus?.keep()
+          onPointerMove?.(event)
+        }}
         {...props}
       />
     </DropdownMenuPrimitive.Portal>

@@ -858,6 +858,7 @@ class TestConfigSupportFloor:
 
     def test_registry_has_no_targets_below_floor(self):
         from hermes_cli.config_migrations import (
+            LEGACY_KEY_STEPS,
             MIGRATIONS,
             SUPPORT_FLOOR_VERSION,
         )
@@ -867,6 +868,9 @@ class TestConfigSupportFloor:
         # v12's own step is retained: a config AT v11 is refused, but a
         # config AT v12 must still receive every remaining migration.
         assert MIGRATIONS[0][0] == 12
+        # The unversioned allowlist is a parallel registry of ints: every entry must name a
+        # step that exists on the ladder, or an unversioned config silently drifts.
+        assert LEGACY_KEY_STEPS <= {target for target, _ in MIGRATIONS}
 
     # ── Parity fixtures ──────────────────────────────────────────────
     # Expected outputs captured by running migrate_config from origin/main

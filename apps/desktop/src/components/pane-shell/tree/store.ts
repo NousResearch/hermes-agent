@@ -596,8 +596,18 @@ export function closeFocusedSessionTab(): boolean {
  *  A tool panel's closer is its visibility STORE, so routing Close through
  *  `closeTreePane` only collapsed the zone to a rail — the tab stayed put and
  *  Close read as a no-op. Dismiss first so the store listener's collapse lands
- *  on an absent pane instead of minimizing a shared zone's surviving sibling. */
+ *  on an absent pane instead of minimizing a shared zone's surviving sibling.
+ *  That listener is then a no-op, so an ACTIVE tab sharing the chat's zone
+ *  hands its slot over here, by the same rule the toggle uses — otherwise
+ *  removePane fronts whichever neighbour filled the gap (#79002). */
 export function closeToolPane(paneId: string) {
+  const group = paneGroup(paneId)
+  const handoff = group?.active === paneId ? chatZoneHandoff(group, paneId) : null
+
+  if (group && handoff) {
+    activateTreePane(group.id, handoff)
+  }
+
   dismissTreePane(paneId)
   paneClosers[paneId]?.()
 }
@@ -1808,6 +1818,31 @@ function paneGroup(paneId: string) {
   return tree ? findGroupOfPane(tree, paneId) : null
 }
 
+/** Who takes the active slot when `paneId` steps out of the front of a SHARED
+ *  zone that also hosts the uncloseable (workspace) pane: the workspace —
+ *  New Session semantics — never an arbitrary adjacent sibling.
+ *  [workspace, files, review, terminal] with the terminal active must land on
+ *  workspace, not on review via `panes[at - 1]`, which stranded the user on a
+ *  tool pane. Null when the zone has no uncloseable pane (a pure tool
+ *  zone keeps its own rule). Shared by collapse (toggle) and Close (tab ✕). */
+function chatZoneHandoff(group: { panes: string[] }, paneId: string): null | string {
+  const anchor = group.panes.find(isUncloseablePane)
+
+  if (!anchor) {
+    return null
+  }
+
+  if (anchor !== paneId) {
+    return anchor
+  }
+
+  // Defensive: the uncloseable pane itself (never bound to a tool toggle
+  // store) — fall back to the sibling.
+  const at = group.panes.indexOf(paneId)
+
+  return group.panes[at - 1] ?? group.panes[at + 1] ?? null
+}
+
 /** Collapse/restore a pane's ZONE to a minimized rail — its tab stays visible.
  *  Store-driven (one-way): a tool panel's $open store mirrors here via
  *  bindPaneCollapse, so a toggle collapses rather than hides. */
@@ -1825,23 +1860,11 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   // on every boot (broke collapse persistence).
   if (group.panes.length > 1) {
     if (collapsed && group.active === paneId) {
-      if (group.panes.some(isUncloseablePane)) {
-        // Workspace can't minimize (strands the app) → hand the active slot to
-        // the uncloseable (workspace) pane rather than an arbitrary adjacent
-        // sibling. [workspace, files, review, terminal] with the terminal
-        // active must land on workspace (New Session semantics), not on review
-        // via `panes[at - 1]` — which left the user stranded on a tool pane
-        // and (before the overlay fix) the terminal visually foreground.
-        const anchor = group.panes.find(isUncloseablePane)
-        const at = group.panes.indexOf(paneId)
+      // Workspace can't minimize (strands the app) → hand it the active slot.
+      const handoff = chatZoneHandoff(group, paneId)
 
-        if (anchor && anchor !== paneId) {
-          activateTreePane(group.id, anchor)
-        } else {
-          // Defensive: collapsing the uncloseable pane itself (never bound to
-          // a tool toggle store) — fall back to the sibling.
-          activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
-        }
+      if (handoff) {
+        activateTreePane(group.id, handoff)
       } else {
         setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }

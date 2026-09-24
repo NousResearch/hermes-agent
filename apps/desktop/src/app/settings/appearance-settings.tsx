@@ -73,6 +73,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
+import { AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
@@ -1050,6 +1051,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           <PetSettings />
         </div>
       )}
+
+      {/* Plugin-provided appearance controls — the sanctioned seam for a
+          plugin that used to inject nodes into this page. Top-level page only:
+          a deep-link subpage shows one built-in section, and a plugin card is
+          not that section. */}
+      {subpage === undefined && <AppearanceExtraSlot />}
     </SettingsContent>
   )
 }

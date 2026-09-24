@@ -10,10 +10,12 @@ import {
   desktopPluginFolderName,
   detectPluginComponents,
   findDesktopEntry,
+  installDesktopPluginFromGit,
   probePluginRepo,
   resolvePluginGitUrl,
   resolveSubdirWithin
 } from './desktop-plugin-install'
+import { PACKAGE_MARKER } from './desktop-plugins-root'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -148,5 +150,66 @@ describe('probePluginRepo', () => {
     const result = await probePluginRepo('git', `${pathToFileURL(repo).href}#integrations/hermes`)
 
     expect(result).toMatchObject({ ok: true, agent: true, agentName: 'nested-agent' })
+  })
+})
+
+describe('installDesktopPluginFromGit', () => {
+  const roots: string[] = []
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /** A git repo whose root is one plugin: `desktop/plugin.js` plus, when
+   *  `agentName` is given, the agent half that makes it a unified package. */
+  function pluginRepo(agentName: null | string): string {
+    const repo = mkdtemp('hermes-plugin-install-')
+    roots.push(repo)
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
+
+    fs.mkdirSync(path.join(repo, 'desktop'), { recursive: true })
+    fs.writeFileSync(path.join(repo, 'desktop', 'plugin.js'), 'export function register() {}\n')
+
+    if (agentName) {
+      fs.writeFileSync(path.join(repo, 'plugin.yaml'), `name: ${agentName}\n`)
+      fs.writeFileSync(path.join(repo, '__init__.py'), 'def register(ctx): pass\n')
+    }
+
+    git('init', '-q')
+    git('add', '.')
+    git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qm', 'init')
+
+    return repo
+  }
+
+  it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {
+    // Without the marker the Plugins page has no evidence that this copy is the
+    // agent row's desktop half: the row sits on "copying…" while the copy shows
+    // up as a second, default-enabled standalone row, and reconcile refuses to
+    // re-copy the folder ever again.
+    const repo = pluginRepo('hermes-talk')
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result).toMatchObject({ ok: true, pluginName: 'hermes-talk' })
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'hermes-talk', PACKAGE_MARKER), 'utf8'))
+    expect(marker.package).toBe('hermes-talk')
+    expect(marker.repo).toBe(pathToFileURL(repo).href)
+  })
+
+  it('leaves a desktop-only repo unmarked so it stays a standalone plugin', async () => {
+    const repo = pluginRepo(null)
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result.ok).toBe(true)
+    expect(fs.existsSync(path.join(appRoot, String(result.pluginName), 'plugin.js'))).toBe(true)
+    expect(fs.existsSync(path.join(appRoot, String(result.pluginName), PACKAGE_MARKER))).toBe(false)
   })
 })

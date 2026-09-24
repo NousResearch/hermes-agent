@@ -507,6 +507,7 @@ export interface SessionCreateResponse {
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
+  messages_omitted?: boolean
   session_id: string
   stored_session_id?: string
 }
@@ -838,6 +839,9 @@ export interface StarmapMemoryCard {
   timestamp?: null | number
   title: string
   body: string
+  /** Digest of the card's text, carried in its node id so an edit names this card and not
+   *  whatever now sits at its index. Absent on an imported or pre-fingerprint graph. */
+  fingerprint?: string
 }
 
 export interface StarmapGraph {

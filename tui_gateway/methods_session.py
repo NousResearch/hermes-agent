@@ -331,8 +331,9 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
-@method("session.create")
-def _(rid, params: dict) -> dict:
+def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
+    """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
+    transcript server-side and omits it from the reply."""
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
@@ -344,6 +345,22 @@ def _(rid, params: dict) -> dict:
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
+    if copy_parent_history:
+        if not parent_session_id:
+            return _err(rid, 4008, "parent_session_id is required when copying parent history")
+        # Whole-session desktop branches must not serialize the parent's transcript
+        # through the renderer. Read the durable display projection here, where the
+        # owning state.db already lives, and keep the full copy server-side.
+        with _profile_db(params) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5008)
+            try:
+                _, display_history = db.get_resume_conversations(parent_session_id)
+            except Exception as exc:
+                return _err(rid, 4008, f"nothing to branch — {exc}")
+        history = _visible_branch_history(display_history)
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
     # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
     explicit_cwd = False
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
@@ -401,13 +418,26 @@ def _(rid, params: dict) -> dict:
     override = session_model_override or {}
     messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
-        "session_id": sid, "stored_session_id": key, "message_count": len(messages), "messages": messages,
+        "session_id": sid, "stored_session_id": key, "message_count": len(messages),
+        **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _session_default_model(_sessions[sid]),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
+
+
+@method("session.create")
+def _(rid, params: dict) -> dict:
+    return _create_session(rid, params)
+
+
+@method("session.branch_stored")
+def _(rid, params: dict) -> dict:
+    """Whole-session branch of a stored parent without routing its transcript through the client
+    (a distinct method so an older gateway answers "unknown method" instead of an empty branch)."""
+    return _create_session(rid, params, copy_parent_history=True)
 
 
 def _unarchive_recoverable(db, session_id: str) -> bool:
@@ -2044,8 +2074,7 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
     return history or _visible_branch_history(in_memory_history)
 
 
-@_session_method("session.branch", live=True)
-def _(rid, params: dict, session: dict) -> dict:
+def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
     # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
     with _session_db(session) as db:
         if db is None:
@@ -2071,9 +2100,24 @@ def _(rid, params: dict, session: dict) -> dict:
         agent = _build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
-    return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
-                     "message_count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home")),
-                     "info": _session_info(agent, _sessions.get(new_sid))})
+    response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
+                "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
+    if omit_messages:
+        response["messages_omitted"] = True
+    else:
+        response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
+    return _ok(rid, response)
+
+
+@_session_method("session.branch", live=True)
+def _(rid, params: dict, session: dict) -> dict:
+    return _branch_live(rid, params, session)
+
+
+@_session_method("session.branch_whole", live=True)
+def _(rid, params: dict, session: dict) -> dict:
+    """Whole-history ``session.branch`` that doesn't echo the copied transcript back."""
+    return _branch_live(rid, params, session, omit_messages=True)
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
@@ -2146,6 +2190,10 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
+        # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool
+        # row (#64578). 'rejected' makes the client queue it as a normal next prompt.
+        if verb == "steer" and not session.get("running"):
+            return _ok(rid, {"status": "rejected", "text": text})
         return _apply_correction(rid, session, verb, text, accepted_status)
 
 

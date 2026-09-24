@@ -1713,7 +1713,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         "metadata when answering questions about what model/provider is active.]")
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
-    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
         history[:] = [h for h in history if not _is_model_switch_marker(h)]
@@ -1726,7 +1726,10 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
-                db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                from agent.context_compressor import _DB_PERSISTED_MARKER
+                entry["_row_id"] = db.append_message(
+                    session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                entry[_DB_PERSISTED_MARKER] = True
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
 
@@ -3361,6 +3364,7 @@ from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: 
 from . import (  # noqa: E402
     methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
+    plugin_inject as _plugin_inject,
     rpc_dispatch as _rpc_dispatch,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
@@ -3384,7 +3388,7 @@ from . import (  # noqa: E402
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
-    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _rpc_dispatch,
+    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,

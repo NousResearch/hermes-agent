@@ -438,6 +438,7 @@ export const ar = defineLocale({
       keysSettings: 'الإعدادات',
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
+      sessions: 'الجلسات',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -909,7 +910,7 @@ export const ar = defineLocale({
       invalidJson: 'JSON غير صالح',
       voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
       voiceShortcutHintDesc:
-        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف الإملاء»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -2859,6 +2860,11 @@ export const ar = defineLocale({
     remotePickerTitle: 'اختر مجلدا بعيدا',
     remotePickerDescription: 'استعرض المجلدات على الخادم الخلفي المتصل.',
     remotePickerSelect: 'تحديد المجلد',
+    remotePickerNewFolder: 'مجلد جديد',
+    remotePickerFolderName: 'اسم المجلد',
+    remotePickerCreateFolder: 'إنشاء المجلد',
+    remotePickerInvalidFolderName: 'أدخل اسم مجلد واحد بدون شرطات مائلة.',
+    remotePickerCreateFolderFailed: error => `تعذر إنشاء المجلد: ${error}`,
     folderTip: cwd => cwd,
     openFolder: 'فتح مجلد',
     refreshTree: 'تحديث الشجرة',

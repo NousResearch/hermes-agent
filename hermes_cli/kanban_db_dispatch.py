@@ -2179,7 +2179,25 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+
+    Side effect: ``deploy_guard.check_deploy_branch()`` runs on every tick
+    (gated by ``HERMES_DEPLOY_GUARD``, default ``warn``). When the running
+    tree is on a non-canonical branch the dispatcher logs a structured
+    WARNING + writes a stderr banner — the same path that hid Friday's
+    restored gates for ~15 minutes before they were silently checked out
+    (t_7161d9a9). The guard is intentionally never fatal: a stalled board
+    is worse than a drifted one, and the visible warning surfaces faster
+    than an exception that the cron pump would silently swallow. To force
+    an abort on drift, set ``HERMES_DEPLOY_GUARD=strict`` (raises
+    ``DeployBranchDriftError`` from the guard call here).
     """
+    try:
+        from hermes_cli.deploy_guard import check_deploy_branch
+        check_deploy_branch()
+    except Exception:
+        # A guard import / parse failure must never block a tick.
+        pass
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,

@@ -438,6 +438,7 @@ export const ar = defineLocale({
       keysSettings: 'الإعدادات',
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
+      sessions: 'الجلسات',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',

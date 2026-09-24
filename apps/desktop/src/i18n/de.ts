@@ -830,6 +830,7 @@ export const de = defineLocale({
       keysSettings: 'Einstellungen',
       mcp: 'MCP',
       archivedChats: 'Archivierte Chats',
+      sessions: 'Sessions',
       about: 'Über',
       billing: 'Abrechnung',
       notifications: 'Benachrichtigungen',

@@ -523,6 +523,7 @@ export const zh = defineLocale({
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
+      sessions: '会话',
       about: '关于',
       billing: '账单',
       notifications: '通知',

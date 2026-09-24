@@ -682,6 +682,7 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      sessions: string
       about: string
       billing: string
       notifications: string

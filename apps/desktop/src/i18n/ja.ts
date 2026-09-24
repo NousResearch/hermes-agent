@@ -424,6 +424,7 @@ export const ja = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
+      sessions: 'セッション',
       about: '情報',
       billing: '請求',
       notifications: '通知',

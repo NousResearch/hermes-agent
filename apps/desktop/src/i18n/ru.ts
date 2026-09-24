@@ -480,6 +480,7 @@ export const ru = defineLocale({
       keysSettings: 'Настройки',
       mcp: 'MCP',
       archivedChats: 'Архив чатов',
+      sessions: 'Сеансы',
       about: 'О программе',
       billing: 'Оплата',
       notifications: 'Уведомления'

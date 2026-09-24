@@ -812,6 +812,7 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
+      sessions: 'Sessions',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',

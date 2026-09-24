@@ -77,6 +77,28 @@ def _context_thread_target(callback):
     return lambda: context.run(callback)
 
 
+def _bind_worker_session_context(agent) -> None:
+    """Bind ``agent.session_id`` to the CURRENT thread's log context.
+
+    The ``[session]`` tag on every log line comes from a ``threading.local`` in
+    :mod:`hermes_logging`, so a worker thread starts UNBOUND.  ``_context_thread_target``
+    carries the caller's ContextVars across the boundary but cannot carry a thread-local, and
+    in a process running concurrent sessions that makes the streaming workers' own errors
+    impossible to attribute to the session that suffered them.  Bound from ``agent.session_id``
+    (the ground truth) rather than inherited from the caller.  Best-effort: an agent without
+    ``session_id`` (test double) leaves the thread unbound instead of raising in the worker.
+    """
+    session_id = getattr(agent, "session_id", None)
+    if not session_id:
+        return
+    try:
+        from hermes_logging import set_session_context
+
+        set_session_context(session_id)
+    except Exception:
+        pass
+
+
 def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
     """Bounded worker join before raising InterruptedError (#81521).
 
@@ -2593,6 +2615,7 @@ class _BedrockStream:
 
     def _worker(self):
         agent = self.agent
+        _bind_worker_session_context(agent)
         stream = None
         try:
             from agent import relay_llm
@@ -3723,6 +3746,7 @@ class _StreamingCall(StreamingWaitMonitor):
     # ── poll-loop monitor (heartbeat / stale kill / interrupt) ──────────
 
     def _run_call(self):
+        _bind_worker_session_context(self.agent)
         try:
             self._call()
         finally:

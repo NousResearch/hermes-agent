@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import errno
 import importlib
+import json
 import logging
 import os
 import re
@@ -377,6 +378,66 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
             await self._inner.aclose()
 
     return _BodyCapTransport(inner_transport)
+
+
+def _make_empty_meta_stripping_transport(httpx_mod, inner_transport):
+    """Remove information-free JSON-RPC ``params._meta`` from outbound MCP request bodies.
+
+    The ``mcp`` SDK's shared JSON-RPC dispatcher unconditionally creates ``params._meta`` so it can
+    attach progress and tracing fields, so when no metadata applies Hermes sends ``_meta: {}`` (or
+    ``null``). Spec-legal — but some strict remote endpoints (Meta's Ads MCP, #120923) answer those
+    information-free forms with HTTP 400 while accepting populated metadata, taking down the whole
+    handshake. Stripping the key only when it is empty/null keeps every meaningful request intact;
+    non-JSON bodies, JSON-RPC results, batches and unparseable payloads are left untouched, and the
+    repair is best-effort: it must never break the transport send path.
+    """
+
+    def _repair_item(item):
+        if not isinstance(item, dict) or not isinstance(item.get("method"), str):
+            return item  # not a JSON-RPC request object (result/notification shape unknown)
+        params = item.get("params")
+        if not isinstance(params, dict) or params.get("_meta") not in ({}, None):
+            return item
+        repaired = dict(item)
+        repaired_params = dict(params)
+        repaired_params.pop("_meta", None)
+        repaired["params"] = repaired_params
+        return repaired
+
+    class _MetaStrippingTransport(httpx_mod.AsyncBaseTransport):
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def handle_async_request(self, request):
+            try:
+                content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if content_type == "application/json":
+                    raw = request.content
+                    parsed = json.loads(raw)
+                    repaired = ([_repair_item(item) for item in parsed]
+                                if isinstance(parsed, list) else _repair_item(parsed))
+                    if repaired != parsed:
+                        body = json.dumps(repaired, separators=(",", ":")).encode("utf-8")
+                        headers = httpx_mod.Headers(request.headers)
+                        for framing in ("content-length", "transfer-encoding"):
+                            headers.pop(framing, None)  # rebuilt by httpx.Request from the new body
+                        request = httpx_mod.Request(method=request.method, url=request.url,
+                                                    headers=headers, content=body,
+                                                    extensions=request.extensions)
+            except Exception:
+                pass  # best-effort repair; never break the transport send path
+            return await self._inner.handle_async_request(request)
+
+        async def aclose(self):
+            await self._inner.aclose()
+
+    return _MetaStrippingTransport(inner_transport)
+
+
+def _wrap_mcp_transport(httpx_mod, inner_transport):
+    """Compose the outbound empty-``_meta`` repair with the response wire-body cap."""
+    return _make_mcp_body_cap_transport(
+        httpx_mod, _make_empty_meta_stripping_transport(httpx_mod, inner_transport))
 
 
 # Node budget for ``_iter_exception_nodes`` (the visited set breaks cycles; this bounds acyclic blow-ups).

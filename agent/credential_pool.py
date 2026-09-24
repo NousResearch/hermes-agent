@@ -2592,6 +2592,13 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
 
 
 def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
+    # A named profile with no local Nous singleton borrows root pool rows only
+    # when its provider pool is empty. Seeding the root singleton into a local
+    # API-key pool would persist a second, independently rotating OAuth grant.
+    providers = auth_store.get("providers")
+    if (_global_auth_file_path() is not None
+            and not (isinstance(providers, dict) and isinstance(providers.get("nous"), dict))):
+        return
     state = _load_provider_state(auth_store, "nous")
     has_runtime_material = bool(
         isinstance(state, dict)

@@ -148,13 +148,14 @@ def test_nous_clone_borrows_root_without_forking_oauth(fleet):
     assert "nous" not in cloned["providers"]
     assert [row["id"] for row in cloned["credential_pool"]["nous"]] == ["key"]
     fleet["use"](kid)
-    assert {entry.refresh_token for entry in load_pool("nous").entries() if entry.refresh_token} == {"rt-root"}
+    assert {entry.id for entry in load_pool("nous").entries()} == {"key"}
     assert all(not row.get("refresh_token") for row in
                json.loads((kid / "auth.json").read_text())["credential_pool"]["nous"])
     assert json.loads((root / "auth.json").read_text())["credential_pool"]["nous"][0]["refresh_token"] == "rt-root"
 
 def test_nous_existing_fork_heals_only_proven_lineage(fleet):
     from agent.credential_pool import load_pool
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
 
     root = fleet["root"] / "auth.json"
     store = json.loads(root.read_text())
@@ -176,7 +177,8 @@ def test_nous_existing_fork_heals_only_proven_lineage(fleet):
         access_token="at-new", refresh_token="rt-new", expires_at=new_exp)
     (kid / "auth.json").write_text(json.dumps(fork))
     fleet["use"](kid)
-    assert {row.refresh_token for row in load_pool("nous").entries() if row.refresh_token} == {"rt-new"}
+    assert heal_forked_single_use_oauth_grants("nous")["adopted"] is True
+    assert {row.id for row in load_pool("nous").entries()} == {"static"}
     healed = json.loads((kid / "auth.json").read_text())
     owner = json.loads(root.read_text())
     assert [row["id"] for row in healed["credential_pool"]["nous"]] == ["static"]

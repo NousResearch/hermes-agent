@@ -530,17 +530,20 @@ def _is_binary_file(path: Path) -> bool:
 def _build_folder_listing(path: Path, cwd: Path, limit: int = 200, display_base: Path | None = None) -> str:
     # The target may sit outside cwd when the caller widened allowed_root: show it relative to
     # cwd when possible, else relative to the allowed root, else the absolute path.
+    # ``as_posix`` because the header is a rendered label, not a path to open: the trailing "/"
+    # and the entry lines below are forward-slash, so a native separator made the first line read
+    # "pkg\sub/" on Windows — two conventions inside one token, in text the model is given.
     shown: str | None = None
     for base in (cwd, display_base):
         if base is None:
             continue
         try:
-            shown = f"{path.relative_to(base)}/"
+            shown = f"{path.relative_to(base).as_posix()}/"
             break
         except ValueError:
             continue
     if shown is None:
-        shown = f"{path}/"
+        shown = f"{path.as_posix()}/"
     lines = [shown]
     entries = _iter_visible_entries(path, cwd, limit=limit)
     for entry in entries:

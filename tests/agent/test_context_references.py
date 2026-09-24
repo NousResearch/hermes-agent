@@ -647,3 +647,35 @@ async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_n
     assert "PASTED-BODY-MARKER" in result.message
     assert "LOOKALIKE-SECRET" not in result.message
     assert "outside the allowed workspace" in "\n".join(result.warnings)
+
+
+def test_nested_folder_listing_header_is_slash_spelled(tmp_path: Path):
+    """The header is a rendered label, not a path to open. Its trailing "/" and the entry
+    lines under it are forward-slash, so a native separator put two conventions inside one
+    token on Windows (``pkg\\sub/``) in text the model is handed. Single-level targets never
+    showed it, because a one-part relative path has no separator at all."""
+    from agent.context_references import preprocess_context_references
+
+    nested = tmp_path / "pkg" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "a.py").write_text("x\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        "Review @folder:pkg/sub", cwd=tmp_path, context_length=100_000,
+    )
+
+    assert result.expanded and not result.warnings
+    assert "\npkg/sub/\n" in result.message
+    assert "\\" not in result.message
+
+
+def test_folder_listing_outside_cwd_header_is_slash_spelled(tmp_path: Path):
+    """The absolute fallback carried the same split: ``C:\\proj\\shared/`` on Windows."""
+    from agent.context_references import _build_folder_listing
+
+    target = tmp_path / "shared" / "deep"
+    target.mkdir(parents=True)
+    (target / "b.txt").write_text("y\n", encoding="utf-8")
+
+    header = _build_folder_listing(target, tmp_path / "elsewhere").splitlines()[0]
+    assert header.endswith("/") and "\\" not in header

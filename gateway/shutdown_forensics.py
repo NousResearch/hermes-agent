@@ -225,23 +225,43 @@ def check_systemd_timing_alignment(
             "mismatch": timeout_stop_sec < expected}
 
 
+def _systemd_unit_is_loaded(fields: Dict[str, str]) -> bool:
+    """A not-found unit still prints the compiled TimeoutStopUSec default."""
+    return fields.get("LoadState") == "loaded" or bool(fields.get("FragmentPath"))
+
+
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of a loaded ``unit_name``, in microseconds.
+
+    ``--user`` first. ``systemctl --user show`` exits 0 for a unit that is
+    not installed and prints ``LoadState=not-found`` plus the compiled
+    default (90s). Treating that as the live timeout hides a loaded system
+    unit and warns the operator to run ``gateway install --force``.
+    """
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=LoadState", "--property=FragmentPath",
+                 "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        if result.returncode != 0:
+            continue
+        fields: Dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            fields[key.strip()] = value.strip()
+        if not _systemd_unit_is_loaded(fields):
+            continue
+        value = fields.get("TimeoutStopUSec", "")
+        timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+        if timeout_us is not None:
+            return timeout_us
     return None
 
 

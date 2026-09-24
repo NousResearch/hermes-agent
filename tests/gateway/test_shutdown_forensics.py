@@ -181,3 +181,57 @@ class TestParseSystemdDuration:
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
 
+
+class _Show:
+    def __init__(self, stdout: str, returncode: int = 0) -> None:
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = ""
+
+
+def test_not_found_user_unit_does_not_hide_the_loaded_system_unit(monkeypatch):
+    """A missing user unit still prints the compiled 90s default. That must not win."""
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        if "--user" in cmd:
+            return _Show(
+                "LoadState=not-found\nFragmentPath=\nTimeoutStopUSec=1min 30s\n"
+            )
+        return _Show(
+            "LoadState=loaded\n"
+            "FragmentPath=/etc/systemd/system/hermes-gateway.service\n"
+            "TimeoutStopUSec=3min 30s\n"
+        )
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+    assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+    assert any("--user" in cmd for cmd in seen)
+    assert any("--user" not in cmd for cmd in seen)
+
+
+def test_unloaded_unit_on_both_managers_is_undeterminable(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return _Show("LoadState=not-found\nFragmentPath=\nTimeoutStopUSec=1min 30s\n")
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+    assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+
+def test_loaded_user_unit_still_wins(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if "--user" in cmd:
+            return _Show(
+                "LoadState=loaded\n"
+                "FragmentPath=/home/me/.config/systemd/user/hermes-gateway.service\n"
+                "TimeoutStopUSec=4min\n"
+            )
+        raise AssertionError("system manager must not be queried when the user unit is loaded")
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+    assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 240 * 1_000_000
+

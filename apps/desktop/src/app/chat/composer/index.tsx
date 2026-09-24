@@ -101,7 +101,7 @@ import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
-import { isRedoShortcut, isUndoShortcut } from './undo-history'
+import { isCoalescableTypingInput, isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
 import {
   chipTypedUrlOnSpace,
@@ -561,7 +561,7 @@ export function ChatBar({
       return
     }
 
-    recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+    recordUndoPoint({ coalesce: isCoalescableTypingInput(inputType) })
   }
 
   // Cut never reaches the handler above: React's onBeforeInput is a

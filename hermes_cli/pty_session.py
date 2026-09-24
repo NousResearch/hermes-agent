@@ -12,6 +12,8 @@ from typing import Callable, Dict, Optional, Tuple
 
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
+# Kept for callers that still import the name; the session no longer writes it into the PTY
+# (the byte lands in the composer as a literal "l" and a repaint comes from SIGWINCH instead).
 TUI_FORCE_REDRAW = b"\x0c"
 
 
@@ -103,7 +105,8 @@ class PtySession:
         """Attach a browser terminal and replay buffered PTY output.
 
         The TUI renders differentially on an alternate screen, so a bounded ANSI tail is not a
-        self-contained frame; ``force_redraw`` asks the live TUI for one full redraw after replay.
+        self-contained frame; ``force_redraw`` asks the live TUI for one full repaint after replay
+        (by re-asserting the last known geometry, never by writing a control byte into the input).
         """
         if self._ws is not ws:
             await _close_ws(self._ws, WS_CLOSE_SUPERSEDED)
@@ -120,7 +123,24 @@ class PtySession:
                 self.detach(ws)
                 return False
         if force_redraw:
-            return await self.write(ws, TUI_FORCE_REDRAW)
+            # A browser terminal cannot rebuild an alternate-screen frame from a
+            # differential tail, so a reattach has to ask the live TUI for a full
+            # repaint. Writing Ctrl+L (0x0C) for that is what leaked a stray "l":
+            # Ink's key parser treats the control byte as printable and inserts it
+            # into the composer, so every refresh prefixed the next message with
+            # one (three refreshes -> "lll" + the typed text). Re-asserting the
+            # last known geometry instead makes Ink re-render the whole frame on
+            # SIGWINCH, leaving the input line untouched.
+            size = getattr(self.bridge, "_pty_last_size", None)
+            if size:
+                try:
+                    self.bridge.resize(cols=size[0], rows=size[1])
+                except Exception:
+                    pass
+            # The write is now a pure liveness probe: a dead PTY has to report
+            # False so the caller replaces the session. Zero bytes still goes
+            # through write()'s supersede bookkeeping, it just adds no keystroke.
+            return await self.write(ws, b"")
         return True
 
     def detach(self, ws) -> None:

@@ -1189,8 +1189,15 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     # notices the half-open tunnel (#101626). Its client count is tracked at the ASGI boundary so
     # the idle watchdog can retire the backend once nothing is connected.
     served_app = app
-    ping_interval, ping_timeout = (None, None) if _is_loopback else (
-        _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    # Honour an explicitly configured dashboard.ws_ping_* even when the bind
+    # host is loopback. A dashboard behind a reverse proxy is reached over
+    # 127.0.0.1 from uvicorn's point of view, so the loopback branch used to
+    # disable pings entirely and idle sockets were silently reclaimed.
+    _explicit_ws_ping = ("ws_ping_interval" in _dash_cfg) or ("ws_ping_timeout" in _dash_cfg)
+    ping_interval, ping_timeout = (
+        (None, None) if (_is_loopback and not _explicit_ws_ping) else (
+            _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    )
     if ssh_isolated:
         from hermes_cli.web_server_idle_exit import (
             TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S, IdleClientTracker, wrap_asgi_with_ws_tracking)

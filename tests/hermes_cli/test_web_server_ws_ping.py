@@ -102,11 +102,33 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     """
     captured = _stub_uvicorn(monkeypatch)
 
+    # Hermetic: drop whatever dashboard.ws_ping_* the developer's config.yaml holds, so this
+    # case only asserts the loopback default rather than the machine it runs on.
+    monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {}})
+
     # Loopback bind => no auth gate, so this reaches the Config constructor.
     web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
 
     assert captured["ws_ping_interval"] is None
     assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_honours_explicit_ws_ping_on_loopback(monkeypatch):
+    """An explicitly configured ping survives a loopback bind.
+
+    A dashboard behind a reverse proxy looks like 127.0.0.1 to uvicorn, so the loopback rule
+    used to switch the ping off and idle sockets were silently reclaimed by the proxy or an
+    operator NAT. When the operator spells the cadence out in the config, that wins.
+    """
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setattr(
+        web_server, "load_config", lambda: {"dashboard": {"ws_ping_interval": 25, "ws_ping_timeout": 15}}
+    )
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] == 25.0
+    assert captured["ws_ping_timeout"] == 15.0
 
 
 def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(monkeypatch):

@@ -71,7 +71,9 @@ async def test_attach_token_reuses_same_session(pty_keepalive_harness):
     with client.websocket_connect("/api/pty?attach=TOK1") as ws2:
         ws2.send_bytes(b"again")
     assert len(pty_keepalive_harness) == 1                # reattached, did not respawn
-    assert bytes(pty_keepalive_harness.bridges[0].written) == b"hi\x0cagain"
+    # A reattach replays into the same PTY without injecting a redraw byte: Ctrl+L
+    # would be inserted into the composer as a literal "l".
+    assert bytes(pty_keepalive_harness.bridges[0].written) == b"hiagain"
 
 
 @pytest.mark.asyncio

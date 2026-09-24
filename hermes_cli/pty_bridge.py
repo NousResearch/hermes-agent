@@ -213,8 +213,19 @@ class PtyBridge:
         """
         if self._closed:
             return
+        cols = _clamp_dimension(cols, _MAX_COLS)
+        rows = _clamp_dimension(rows, _MAX_ROWS)
+        # Skip a no-op resize. Every browser page (re)connect re-sends the same
+        # geometry (verified: both sides report 100x33), and the redundant
+        # TIOCSWINSZ makes the TUI re-layout for nothing — which leaks a stray
+        # "l" into its input line, once per refresh. Dedupe lives on the bridge
+        # (PTY lifetime), not the per-connection session, so reconnects can't
+        # lose the memory of the last size.
+        if (cols, rows) == getattr(self, "_pty_last_size", None):
+            return
+        self._pty_last_size = (cols, rows)
         # struct winsize: rows, cols, xpixel, ypixel (all unsigned short)
-        winsize = struct.pack("HHHH", _clamp_dimension(rows, _MAX_ROWS), _clamp_dimension(cols, _MAX_COLS), 0, 0)
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
         try:
             fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
         except OSError:

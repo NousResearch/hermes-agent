@@ -2650,8 +2650,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        # Summarizer-input bounds; defaults preserve prior behavior. Deployments may override via
+        # ``compression.tool_arg_head_chars`` / ``compression.tool_arg_min_chars`` config options;
+        # the compressor reads these per call so config-refresh takes effect without a restart.
+        tool_arg_head_chars: int = 1200, tool_arg_min_chars: int = 1500,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        # Deployment-overridable summarizer-input bounds. Instance attributes shadow the class
+        # constants below so a deployment can widen/narrow tool-arg truncation via the
+        # ``compression.tool_arg_head_chars`` / ``compression.tool_arg_min_chars`` config options.
+        self._TOOL_ARGS_HEAD = tool_arg_head_chars
+        self._TOOL_ARGS_MAX = tool_arg_min_chars
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -3297,6 +3306,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     _CONTENT_MAX = 6000       # total chars per message body
     _CONTENT_HEAD = 4000      # chars kept from the start
     _CONTENT_TAIL = 1500      # chars kept from the end
+    # tool-arg bounds default to the historical constants; deployments may override via the
+    # compression.tool_arg_head_chars and compression.tool_arg_min_chars config options,
+    # which are read on every call so config-refresh takes effect without a process restart.
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
     # Aggregate cap applied after per-message limits; class alias so subclasses/tests can override.

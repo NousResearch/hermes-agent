@@ -1509,6 +1509,13 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         enabled=_cfg_flag(cfg, "enabled", True),
         target_ratio=target_ratio,
         protect_last=protect_last,
+        # Summarizer-input bounds; defaults preserve prior behavior (1200 / 1500) and a
+        # deployment can override via compression.tool_arg_head_chars /
+        # compression.tool_arg_min_chars. Floored at 0 so a zeroed value cannot produce a
+        # negative slice bound inside the compressor. The compressor reads these on every
+        # call, so a config refresh takes effect without restarting the process.
+        tool_arg_head_chars=max(0, _parse_config_int(cfg.get("tool_arg_head_chars", 1200), 1200)),
+        tool_arg_min_chars=max(0, _parse_config_int(cfg.get("tool_arg_min_chars", 1500), 1500)),
         # "lean" keeps a clamped 2.5%/10K-25K verbatim tail (continuity rides the summary);
         # "legacy" restores the 0.20*threshold tail. Unknown → lean inside the compressor.
         tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
@@ -1958,6 +1965,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,
             proactive_prune_tokens=cs.proactive_prune_tokens,
+            tool_arg_head_chars=cs.tool_arg_head_chars,
+            tool_arg_min_chars=cs.tool_arg_min_chars,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,

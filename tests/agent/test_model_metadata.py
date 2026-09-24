@@ -1152,6 +1152,79 @@ class TestGetModelContextLength:
         )
         assert ctx == 321_000
 
+    # ── Custom anthropic_messages route: extra_headers + Anthropic /v1/models ──
+
+    def test_custom_anthropic_messages_route_probes_anthropic_v1_models_with_extra_headers(self):
+        """A ``custom_providers`` entry declaring ``api_mode: anthropic_messages`` must query the
+        Anthropic-shaped ``/v1/models`` endpoint (not the generic OpenAI-shaped ``/models`` probe)
+        and must attach the route's ``extra_headers`` — an Access-gated proxy answers every other
+        request with a login-page redirect, never a usable catalog."""
+        from agent import model_metadata as mm
+        custom = [{
+            "name": "cf", "base_url": "https://proxy.example/t", "api_mode": "anthropic_messages",
+            "extra_headers": {"CF-Access-Client-Id": "id-value", "CF-Access-Client-Secret": "secret-value"},
+        }]
+        captured = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            captured["url"] = url
+            captured["headers"] = headers
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"data": [{"id": "claude-opus-5-5", "max_input_tokens": 1_000_000}]}
+            return resp
+
+        with (
+            patch.object(mm, "get_cached_context_length", return_value=None),
+            patch.object(mm, "fetch_endpoint_model_metadata") as mock_openai_probe,
+            patch.object(mm.model_metadata_http, "get") as mock_get,
+        ):
+            mock_get.side_effect = fake_get
+            ctx = get_model_context_length(
+                "claude-opus-5-5", base_url="https://proxy.example/t",
+                api_key="sk-ant-api-test", provider="custom:cf", custom_providers=custom,
+            )
+
+        assert ctx == 1_000_000
+        assert captured["url"] == "https://proxy.example/t/v1/models?limit=1000"
+        assert captured["headers"]["CF-Access-Client-Id"] == "id-value"
+        assert captured["headers"]["CF-Access-Client-Secret"] == "secret-value"
+        assert captured["headers"]["anthropic-version"] == "2023-06-01"
+        mock_openai_probe.assert_not_called()
+
+    def test_oauth_bearer_is_sent_only_on_the_custom_anthropic_messages_route(self):
+        """An OAuth setup-token goes out as a bearer on the custom ``anthropic_messages`` route (often
+        the only credential an Access-gated route carries), while the native probe keeps skipping it
+        without a request, as it has since #2158."""
+        from agent import model_metadata as mm
+        custom = [{"name": "cf", "base_url": "https://proxy.example/t", "api_mode": "anthropic_messages"}]
+        oauth_token = "sk-ant-" + "oat" + "-test-token"
+        captured = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            captured["headers"] = headers
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"data": [{"id": "claude-opus-5-5", "max_input_tokens": 1_000_000}]}
+            return resp
+
+        with (
+            patch.object(mm, "get_cached_context_length", return_value=None),
+            patch.object(mm.model_metadata_http, "get") as mock_get,
+        ):
+            mock_get.side_effect = fake_get
+            ctx = get_model_context_length(
+                "claude-opus-5-5", base_url="https://proxy.example/t",
+                api_key=oauth_token, provider="custom:cf", custom_providers=custom,
+            )
+            assert ctx == 1_000_000
+            assert captured["headers"]["Authorization"] == f"Bearer {oauth_token}"
+            assert "x-api-key" not in captured["headers"]
+
+            mock_get.reset_mock()
+            assert mm._query_anthropic_context_length("claude-opus-5-5", "https://api.anthropic.com", oauth_token) is None
+            mock_get.assert_not_called()
+
 
 # =========================================================================
 # Bedrock context resolution — must run BEFORE custom-endpoint probe

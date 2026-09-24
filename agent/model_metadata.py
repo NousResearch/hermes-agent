@@ -1661,17 +1661,36 @@ def _normalize_model_version(model: str) -> str:
     return model.replace(".", "-")
 
 
-def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> Optional[int]:
-    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped.
+def _query_anthropic_context_length(
+    model: str, base_url: str, api_key: Any, extra_headers: Optional[Dict[str, str]] = None,
+    allow_oauth_bearer: bool = False,
+) -> Optional[int]:
+    """Anthropic /v1/models max_input_tokens. An OAuth setup-token (sk-ant-oat*) 401s as
+    ``x-api-key`` and is skipped unless ``allow_oauth_bearer`` — then it goes out as an
+    ``Authorization`` bearer, which this endpoint accepts (verified live 2026-09-25). Only the custom
+    ``anthropic_messages`` route opts in; the native route keeps the skip it has had since #2158.
+    ``extra_headers`` are a ``custom_providers`` route's own headers (e.g. Cloudflare Access): an
+    Access-gated proxy redirects every request that lacks them to its login page.
 
     ``api_key`` may be a ``key_cmd`` callable token source; the metadata probe never mints — a
-    callable is not a Console key, so the lookup is skipped like an OAuth token (#114967).
+    callable is not a Console key, so the lookup is skipped (#114967).
     """
-    if not api_key or not isinstance(api_key, str) or api_key.startswith("sk-ant-oat"):
+    if not api_key or not isinstance(api_key, str):
+        return None
+    is_oauth = api_key.startswith("sk-ant-oat")
+    if is_oauth and not allow_oauth_bearer:
         return None
     try:
         base = base_url.rstrip("/").removesuffix("/v1")
-        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+        headers = {"anthropic-version": "2023-06-01"}
+        if is_oauth:
+            headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            headers["x-api-key"] = api_key
+        # Route-specific headers last, so the most specific config level wins — same rule as the
+        # SDK client builder (agent/anthropic_adapter.py::_new_sdk_client).
+        if extra_headers:
+            headers.update(extra_headers)
         resp = model_metadata_http.get(f"{base}/v1/models?limit=1000", headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify(base_url))
         if resp.status_code != 200:
             return None
@@ -2040,6 +2059,42 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     return DEFAULT_FALLBACK_CONTEXT
 
 
+def _is_anthropic_messages_route(base_url: str, provider: str, custom_providers: list | None) -> bool:
+    """True when *base_url* is routed as ``api_mode: anthropic_messages`` — a ``custom_providers``
+    entry declaring it explicitly, or the native ``anthropic`` provider itself. Mirrors
+    :func:`_is_codex_route`: the transport, not the hostname, decides which live-catalog shape the
+    endpoint speaks (an Access-gated Cloudflare Worker proxy has no recognizable Anthropic hostname)."""
+    if (provider or "").strip().lower() == "anthropic":
+        return True
+    if not base_url:
+        return False
+    with contextlib.suppress(Exception):  # config unreadable → not a known Anthropic route
+        from hermes_cli.config import get_custom_provider_api_mode
+        return get_custom_provider_api_mode(base_url, custom_providers) == "anthropic_messages"
+    return False
+
+
+def _resolve_custom_anthropic_route_context_length(
+    model: str, base_url: str, api_key: str, provider: str, custom_providers: list | None,
+) -> int:
+    """Step 2 for a custom ``api_mode: anthropic_messages`` route: the endpoint speaks Anthropic's
+    ``/v1/models`` shape, not the generic OpenAI-compatible ``/models`` — probing the wrong shape
+    against an Access-gated proxy gets a login-page redirect on every request, never a catalog.
+    Route ``extra_headers`` (e.g. Cloudflare Access) are attached so the probe passes the same gate
+    the chat traffic does. ``allow_oauth_bearer=True``: an OAuth setup-token is often the only
+    credential such a route carries, and a successful probe is persisted (step 1) so it runs once
+    per model and endpoint, unlike the native step 4 which never persists. Falls through to the
+    ordinary custom-endpoint ladder on any miss."""
+    with contextlib.suppress(Exception):  # config unreadable -> ordinary custom-endpoint ladder
+        from hermes_cli.config import get_custom_provider_extra_headers
+        extra_headers = get_custom_provider_extra_headers(base_url, custom_providers)
+        ctx = _query_anthropic_context_length(model, base_url, api_key, extra_headers=extra_headers, allow_oauth_bearer=True)
+        if ctx:
+            _save_unless_skipped(model, base_url, ctx, provider)
+            return ctx
+    return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+
+
 def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
     """Step 2 for a custom ``api_mode: codex_responses`` route — a Codex proxy on a generic URL.
     The Codex OAuth table (with the opted-in ``-900k`` bump) answers first: the proxy's own /models
@@ -2218,6 +2273,10 @@ def get_model_context_length(
     # (HERMES_CODEX_BASE_URL, model.base_url, custom api_mode: codex_responses) the URL looks
     # generic while the window is still the Codex OAuth one (#116191).
     codex_route = _is_codex_route(provider, base_url, custom_providers)
+    # An anthropic_messages route is keyed on its transport too: a custom_providers entry can
+    # declare it on any hostname (e.g. an Access-gated Cloudflare Worker proxy), and the endpoint
+    # then speaks Anthropic's /v1/models shape, not the generic OpenAI-compatible one.
+    anthropic_route = _is_anthropic_messages_route(base_url, provider, custom_providers)
     # 1. Persistent cache (LM Studio / Codex routes excluded — see _skip_persistent_context_cache).
     cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not codex_route and not _skip_persistent_context_cache(base_url, provider) else None
     validated = _validate_cached_context_length(model, base_url, cached, api_key=api_key) if cached is not None else None
@@ -2238,8 +2297,11 @@ def get_model_context_length(
     # report a provider-imposed limit (Copilot: 128k) rather than the window. The native
     # openai-codex provider skips it too even on a proxy URL — step 5 runs its live catalog probe.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and (provider or "").strip().lower() != "openai-codex":
-        resolve = _resolve_custom_codex_route_context_length if codex_route else _resolve_custom_endpoint_context_length
-        return resolve(model, base_url, api_key, provider)
+        if codex_route:
+            return _resolve_custom_codex_route_context_length(model, base_url, api_key, provider)
+        if anthropic_route:
+            return _resolve_custom_anthropic_route_context_length(model, base_url, api_key, provider, custom_providers)
+        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)

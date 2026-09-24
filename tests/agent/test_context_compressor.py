@@ -133,10 +133,12 @@ class TestSummarizeToolResultClarify:
         summary = _summarize_tool_result("clarify", "{}", content)
 
         # Strictly below the prune floor so a later prune pass can never
-        # re-summarize the preserved answer away (idempotency below).
-        assert len(summary) == _PRUNE_MIN_CHARS - 1
+        # re-summarize the preserved answer away (idempotency below). The exact
+        # length varies with the digit width of the elision marker's counts.
+        assert len(summary) <= _PRUNE_MIN_CHARS - 1
         assert summary.startswith('[clarify] user responded: "AAA')
-        assert summary.endswith("...[truncated]")
+        assert _COMPRESSION_MARKER_PREFIX in summary
+        assert summary.endswith("⟫")
         assert (
             _summarize_tool_result("clarify", "{}", summary)
             == "[clarify] asked user a question"

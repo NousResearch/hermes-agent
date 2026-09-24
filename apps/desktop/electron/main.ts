@@ -539,7 +539,7 @@ import {
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
-import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
+import { cwdCandidates, isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
@@ -5128,17 +5128,15 @@ function resolveHermesCwd() {
   // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
   // on macOS). Sessions spawned there leave files inside the app bundle
   // and bewilder users when "where did my files go?" is the install dir.
-  // The user-configurable default project directory wins over everything,
-  // followed by env hints (only honored when packaged if they point at a
-  // real directory), then the home dir.
-  const candidates = [
-    readDefaultProjectDir(),
-    process.env.HERMES_DESKTOP_CWD,
-    IS_PACKAGED ? null : process.env.INIT_CWD,
-    IS_PACKAGED ? null : process.cwd(),
-    !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
-    app.getPath('home')
-  ]
+  // The user-configurable default project directory and explicit Desktop cwd
+  // win over the home dir. Do not use source-run cwd hints here: they point at
+  // the Hermes checkout and make every desktop terminal treat the install tree
+  // as its project context.
+  const candidates = cwdCandidates({
+    defaultProjectDir: readDefaultProjectDir(),
+    desktopCwd: process.env.HERMES_DESKTOP_CWD,
+    homeDir: app.getPath('home')
+  })
 
   for (const candidate of candidates) {
     if (!candidate) {

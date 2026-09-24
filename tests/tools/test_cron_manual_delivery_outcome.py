@@ -49,18 +49,34 @@ def test_completion_uses_real_execution_outcome(
     assert f"Delivery target: {expected_target}" in completion["summary"]
 
 
-@pytest.mark.parametrize("outcome", [None, "unrecognized", "suppressed", "queued"])
-def test_completion_does_not_infer_delivery_from_a_later_job_record(monkeypatch, outcome):
+@pytest.mark.parametrize("outcome,target", [
+    (None, "telegram:123"), ("unrecognized", "telegram:123"),
+    ("suppressed", "telegram:123"), ("queued", "telegram:123"), (None, "local"),
+])
+def test_completion_does_not_infer_delivery_from_a_later_job_record(monkeypatch, outcome, target):
     from tools import cronjob_tools as tool
 
+    if target == "local":
+        from cron import jobs, scheduler
+
+        def fail_dispatch(job):
+            raise RuntimeError("fixture worker dispatch failure")
+
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", fail_dispatch)
+        job = jobs.create_job(prompt="fixture", schedule="every 1h", deliver="local")
+        result = tool._execute_job_now(job)
+        assert not result["success"]
+        assert result["delivery_outcome"] is None
+    else:
+        result = {"success": True, "delivery_outcome": outcome}
     monkeypatch.setattr(tool, "get_job", lambda job_id: {
         "last_status": "ok", "last_delivery_error": None,
     })
     monkeypatch.setattr(tool, "_latest_job_output_excerpt", lambda job_id: None)
-    result = {"success": True, "delivery_outcome": outcome}
     summary = tool._manual_run_completion(
-        result, "fixture", "fixture", "telegram:123", time.time()
+        result, "fixture", "fixture", target, time.time()
     )["summary"]
     assert "delivered there" not in summary
     assert "delivery confirmed" not in summary
+    assert "saved locally" not in summary
     assert ("unverified" in summary or "suppressed" in summary)

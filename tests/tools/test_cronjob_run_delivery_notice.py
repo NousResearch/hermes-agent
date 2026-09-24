@@ -9,10 +9,8 @@ that was appended UNCONDITIONALLY for non-local targets — even when
 job record because the post-run delivery (telegram/discord/…) failed. The
 calling agent then relayed "all good" over a failed delivery.
 
-The note must follow the refreshed job record: a set ``last_delivery_error``
-means delivery FAILED with the error text surfaced; an empty/missing error
-keeps the legacy wording byte-for-byte (zero regression), and local jobs
-always say saved-locally.
+The exact execution outcome is authoritative. Legacy error details still
+surface, but a missing outcome cannot confirm delivery or local persistence.
 """
 
 import contextlib
@@ -128,8 +126,8 @@ def _drain_completion_event(delegation_id):
 class TestDeliveryNote:
     """``_manual_run_delivery_note`` — the summary-line wording contract."""
 
-    def test_local_always_saved_locally_only(self):
-        expected = " (output saved locally only)"
+    def test_local_without_an_outcome_does_not_claim_persistence(self):
+        expected = " (local-only output; persistence unverified)"
         assert _manual_run_delivery_note("local", {}) == expected
         # Local jobs never deliver — a stale delivery error must not leak in.
         assert (
@@ -213,6 +211,6 @@ class TestRunnerSummaryWiring:
                 evt = _drain_completion_event(res["delegation_id"])
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
-        assert "Delivery target: local (output saved locally only)" in summary
+        assert "Delivery target: local (local-only output; persistence unverified)" in summary
         assert "delivered there by the job itself" not in summary
 

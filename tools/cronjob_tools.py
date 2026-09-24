@@ -171,10 +171,11 @@ def _manual_run_delivery_note(
         return f" (⚠ delivery FAILED: {str(refreshed['last_delivery_error'])[:200]})"
     if outcome in suffixes and (deliver != "local" or outcome != "suppressed"):
         return f" ({suffixes[outcome]})"
-    # Falsy deliver ("", stored JSON null) is normalized to "local" at fire time -> saved
-    # locally. Whitespace-only values fall through so the fire-time "no target" error surfaces.
+    # Local configuration alone cannot prove persistence after a dispatch failure.
     if not deliver or deliver == "local":
-        return " (output saved locally only)"
+        if outcome == "suppressed":
+            return " (output saved locally only)"
+        return " (local-only output; persistence unverified)"
     err = str(refreshed.get("last_delivery_error") or "").strip()
     if not err:
         if refreshed.get("last_delivery_queued"):

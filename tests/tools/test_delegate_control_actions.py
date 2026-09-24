@@ -744,17 +744,27 @@ def test_control_action_not_blocked_at_spawn_cap():
         LoopCapConfig,
         ToolCallGuardrailConfig,
         ToolCallGuardrailController,
+        _set_active_subagent_guardrail,
+        reserve_subagent_spawns,
     )
 
     cfg = ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=1))
     ctl = ToolCallGuardrailController(cfg)
     # Exhaust the cap with a spawn
     assert ctl.before_call("delegate_task", {"goal": "a"}).action == "allow"
+    _set_active_subagent_guardrail(ctl)
+    with reserve_subagent_spawns(1) as reservation:
+        reservation.commit()
+    _set_active_subagent_guardrail(None)
     # A second spawn is blocked
     assert ctl.before_call("delegate_task", {"goal": "b"}).action == "block"
     # Control actions still pass on a fresh controller after cap exhaustion
     ctl2 = ToolCallGuardrailController(cfg)
     assert ctl2.before_call("delegate_task", {"goal": "a"}).action == "allow"
+    _set_active_subagent_guardrail(ctl2)
+    with reserve_subagent_spawns(1) as reservation:
+        reservation.commit()
+    _set_active_subagent_guardrail(None)
     assert (
         ctl2.before_call(
             "delegate_task", {"action": "stop", "subagent_id": "x"}

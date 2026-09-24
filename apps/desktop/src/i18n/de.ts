@@ -1150,6 +1150,10 @@ export const de = defineLocale({
       userBubbleTitle: 'Nachrichten-Blase',
       userBubbleDesc:
         'Wie durchsichtig Ihre eigenen Nachrichten sind. Bei 0 deckend; bei 100 bleibt nur die Kontur übrig.',
+      textDirectionTitle: 'Textrichtung',
+      textDirectionDesc:
+        'Legt die Schreibrichtung von Chatnachrichten und Eingabefeld fest. Auto richtet sich nach dem ersten Buchstaben jedes Absatzes; wählen Sie eine Richtung, wenn gemischter Text falsch ausgerichtet ist. Code bleibt immer linksläufig.',
+      textDirection: { auto: 'Auto', rtl: 'Rechts nach links', ltr: 'Links nach rechts' },
       introSplashTitle: 'Intro-Splash',
       introSplashDesc: 'Das Wortzeichen und der Prompt, die bei einem leeren Chat angezeigt werden.',
       reactionsTitle: 'Nachrichten-Reaktionen',

@@ -1148,6 +1148,10 @@ export const es = defineLocale({
       backdropDesc: 'La tenue imagen de la estatua detrás de la conversación.',
       userBubbleTitle: 'Burbuja de mensaje',
       userBubbleDesc: 'Cuánta transparencia tienen tus propios mensajes. Opaca en 0; en 100 solo queda el contorno.',
+      textDirectionTitle: 'Dirección del texto',
+      textDirectionDesc:
+        'Cómo eligen su dirección los mensajes del chat y el campo de escritura. Auto sigue la primera letra de cada párrafo; elige una dirección cuando un texto mixto se alinee mal. El código siempre va de izquierda a derecha.',
+      textDirection: { auto: 'Auto', rtl: 'De derecha a izquierda', ltr: 'De izquierda a derecha' },
       introSplashTitle: 'Pantalla de bienvenida',
       introSplashDesc: 'El logotipo y la indicación que se muestran en un chat vacío.',
       reactionsTitle: 'Reacciones a mensajes',

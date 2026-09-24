@@ -1152,6 +1152,10 @@ export const fr = defineLocale({
       backdropDesc: "L'image de statue discrète derrière la conversation.",
       userBubbleTitle: 'Bulle des messages',
       userBubbleDesc: 'Transparence de vos messages : fond opaque à 0 ; seul le contour reste visible à 100.',
+      textDirectionTitle: 'Sens du texte',
+      textDirectionDesc:
+        "Sens d'écriture des messages et du champ de saisie. Auto suit la première lettre de chaque paragraphe ; choisissez un sens quand un texte mixte s'aligne mal. Le code reste toujours de gauche à droite.",
+      textDirection: { auto: 'Auto', rtl: 'De droite à gauche', ltr: 'De gauche à droite' },
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
       reactionsTitle: 'Réactions aux messages',

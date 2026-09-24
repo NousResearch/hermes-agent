@@ -2262,14 +2262,29 @@ class TestMemoryProviderExternalPaths:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: dst_home)
 
+        # Record the chmod tightening.  Asserting the resulting st_mode only
+        # pins the guarantee on POSIX — on NTFS os.chmod merely toggles the
+        # read-only bit and stat() reports 0o666 — so pin the CALL on every
+        # platform and keep the on-disk check where the bits are meaningful.
+        import hermes_cli.backup as _backup_mod
+        chmods: list[tuple[str, int]] = []
+        real_chmod = _backup_mod.os.chmod
+
+        def _spy_chmod(p, m, *a, **k):
+            chmods.append((str(p), m))
+            return real_chmod(p, m, *a, **k)
+
         from hermes_cli.backup import run_import
-        run_import(Namespace(zipfile=str(zip_path), force=True))
+        with patch.object(_backup_mod.os, "chmod", _spy_chmod):
+            run_import(Namespace(zipfile=str(zip_path), force=True))
 
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
-        # Credential-shaped file tightened.
-        assert (restored.stat().st_mode & 0o777) == 0o600
+        # Credential-shaped file tightened to owner-only.
+        assert (str(restored), 0o600) in chmods, chmods
+        if os.name != "nt":
+            assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
 

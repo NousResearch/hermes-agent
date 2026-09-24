@@ -888,21 +888,50 @@ def test_shared_store_seat_belt_refuses_real_home_under_pytest(monkeypatch):
 
 def test_shared_store_write_and_read_roundtrip(shared_store_env):
     """Write → read must preserve refresh_token + OAuth URLs."""
+    import os as _os
+    import stat as _stat
+    from unittest.mock import patch as _patch
+
     from hermes_cli.auth import (
         _nous_shared_store_path,
         _read_shared_nous_state,
         _write_shared_nous_state,
     )
 
+    # Capture how the store file is CREATED.  The guarantee (#19673, #21148)
+    # is that the refresh_token file is opened O_CREAT|O_EXCL with an
+    # owner-only mode, closing the TOCTOU window a write-then-chmod would
+    # leave.  Asserting the resulting st_mode only pins that on POSIX — NTFS
+    # reports 0o666 because os.chmod there only toggles the read-only bit —
+    # so the creation call itself is pinned on every platform, and the
+    # on-disk bits are additionally pinned where they are meaningful.
+    opens: list[tuple[str, int, int]] = []
+    real_open = _os.open
+
+    def _spy_open(path, flags, mode=0o777, **kwargs):
+        opens.append((str(path), flags, mode))
+        return real_open(path, flags, mode, **kwargs)
+
     state = _full_state_fixture()
-    _write_shared_nous_state(state)
+    with _patch.object(_os, "open", _spy_open):
+        _write_shared_nous_state(state)
 
     path = _nous_shared_store_path()
     assert path.is_file()
 
-    # Permissions should be 0600 where the platform supports it.
-    mode = path.stat().st_mode & 0o777
-    assert mode == 0o600 or mode == 0o644  # 0o644 on platforms without chmod
+    creations = [
+        (p, f, m) for p, f, m in opens if f & _os.O_CREAT and f & _os.O_EXCL
+    ]
+    assert creations, f"store was not created with O_CREAT|O_EXCL: {opens!r}"
+    for _p, _f, m in creations:
+        assert m & 0o777 == _stat.S_IRUSR | _stat.S_IWUSR, (
+            f"store created with mode {m:#o}, expected 0o600"
+        )
+
+    if _os.name != "nt":
+        # Where the filesystem records POSIX mode bits, the file on disk must
+        # really be owner-only.
+        assert path.stat().st_mode & 0o777 == 0o600
 
     loaded = _read_shared_nous_state()
     assert loaded is not None

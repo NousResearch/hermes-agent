@@ -1001,7 +1001,10 @@ class LocalEnvironment(BaseEnvironment):
         from hermes_cli.config import load_config_readonly
 
         terminal_cfg = (load_config_readonly() or {}).get("terminal") or {}
-        if "local_exec_broker" in terminal_cfg:
+        if not sys.platform.startswith("linux"):
+            self._local_exec_broker_socket = None
+            self._local_exec_broker_uid = None
+        elif "local_exec_broker" in terminal_cfg:
             broker_cfg = terminal_cfg["local_exec_broker"]
             broker_socket = (
                 broker_cfg.get("socket") if isinstance(broker_cfg, dict) else None

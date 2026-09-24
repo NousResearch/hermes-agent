@@ -1686,6 +1686,29 @@ def test_present_invalid_local_exec_broker_config_fails_closed(
         LocalEnvironment(cwd=str(tmp_path), timeout=1)
 
 
+def test_nonlinux_local_environment_ignores_broker_config(tmp_path, monkeypatch):
+    import tools.environments.local as local
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "terminal:\n"
+        "  local_exec_broker:\n"
+        "    socket: /run/hermes-broker/broker.sock\n"
+        f"    uid: {os.geteuid()}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(local.sys, "platform", "darwin")
+
+    env = local.LocalEnvironment(cwd=str(tmp_path), timeout=1)
+    try:
+        assert env._local_exec_broker_socket is None
+        assert env._local_exec_broker_uid is None
+    finally:
+        env.cleanup()
+
+
 @pytest.mark.linux_only
 @pytest.mark.parametrize("broker_uid", ("null", "-1", "true", "'1000'"))
 def test_local_exec_broker_config_requires_non_negative_integer_uid(

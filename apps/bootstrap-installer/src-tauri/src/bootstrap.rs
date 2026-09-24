@@ -46,6 +46,10 @@ pub struct StartBootstrapArgs {
     /// bootstrap-runner passes false to avoid building-while-running.
     #[serde(default = "default_true")]
     pub include_desktop: bool,
+    /// Checkout and build the desktop client only. Skips the agent runtime
+    /// (venv, CLI, config, setup, gateway). Implies include-desktop.
+    #[serde(default)]
+    pub desktop_only: bool,
     /// Optional override for HERMES_HOME. Tests use this; production
     /// almost always falls back to the OS default.
     pub hermes_home: Option<String>,
@@ -507,6 +511,7 @@ async fn run_bootstrap(
         ?pin,
         kind = ?kind,
         include_desktop = args.include_desktop,
+        desktop_only = args.desktop_only,
         "bootstrap starting"
     );
 
@@ -564,8 +569,12 @@ async fn run_bootstrap(
     let manifest_args = build_pin_args(&script);
     let mut manifest_args_full = vec!["-Manifest".to_string()];
     manifest_args_full.extend(manifest_args.clone());
-    if args.include_desktop {
+    let build_desktop = args.include_desktop || args.desktop_only;
+    if build_desktop {
         manifest_args_full.push("-IncludeDesktop".to_string());
+    }
+    if args.desktop_only {
+        manifest_args_full.push("-DesktopOnly".to_string());
     }
 
     let mut manifest_cancel_rx = None;
@@ -668,8 +677,11 @@ async fn run_bootstrap(
             "-Json".to_string(),
         ];
         stage_args.extend(manifest_args.clone());
-        if args.include_desktop {
+        if args.include_desktop || args.desktop_only {
             stage_args.push("-IncludeDesktop".to_string());
+        }
+        if args.desktop_only {
+            stage_args.push("-DesktopOnly".to_string());
         }
 
         // A Windows PowerShell host can occasionally terminate with raw status

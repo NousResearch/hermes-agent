@@ -299,8 +299,16 @@ export async function initialize(): Promise<void> {
 // Actions
 // ---------------------------------------------------------------------------
 
-export async function startInstall(opts?: { branch?: string }): Promise<void> {
+// Retries from the failure screen call startInstall() with no args, so the
+// last welcome choice has to stick. Install passes false explicitly.
+let installDesktopOnly = false
+
+export async function startInstall(opts?: { branch?: string; desktopOnly?: boolean }): Promise<void> {
   const fake = fakeMode()
+
+  if (opts && 'desktopOnly' in opts) {
+    installDesktopOnly = Boolean(opts.desktopOnly)
+  }
 
   if (fake) {
     void runFakeBoot(fake === 'failure' ? 'failure' : 'install')
@@ -317,6 +325,7 @@ export async function startInstall(opts?: { branch?: string }): Promise<void> {
       commit: null,
       branch: opts?.branch ?? null,
       include_desktop: true,
+      desktop_only: installDesktopOnly,
       hermes_home: null
     }
   })

@@ -83,6 +83,7 @@ STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+DESKTOP_ONLY=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -148,6 +149,12 @@ while [[ $# -gt 0 ]]; do
             INCLUDE_DESKTOP=true
             shift
             ;;
+        --desktop-only|-DesktopOnly)
+            # Client build only: no venv, CLI, config, setup wizard, or gateway.
+            DESKTOP_ONLY=true
+            INCLUDE_DESKTOP=true
+            shift
+            ;;
         --dir)
             INSTALL_DIR="$2"
             INSTALL_DIR_EXPLICIT=true
@@ -184,6 +191,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --json         Print a JSON result frame for --stage"
             echo "  --non-interactive  Skip stages that require user input"
             echo "  --include-desktop  Also build the desktop app (apps/desktop -> Hermes.app)"
+            echo "  --desktop-only Limit the stage manifest to the desktop client"
+            echo "                   (checkout + desktop build; no agent runtime)."
+            echo "                   Implies --include-desktop."
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -350,6 +360,13 @@ EOF
 }
 
 emit_manifest() {
+    # --desktop-only is the bootstrap "Connect to existing Hermes" path.
+    # The public Mac app is the Tauri shell, so the client still has to be
+    # checked out and built. Agent-runtime stages stay off this list.
+    if [ "$DESKTOP_ONLY" = true ]; then
+        printf '%s\n' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+        return
+    fi
     # Stage-Desktop is included only with --include-desktop, mirroring
     # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
     # a GUI install ends up with a launchable app; the Electron app's own
@@ -3769,6 +3786,16 @@ require_install_dir() {
 run_stage_body() {
     local stage="$1"
 
+    if [ "$DESKTOP_ONLY" = true ]; then
+        case "$stage" in
+            prerequisites|repository|desktop|complete) ;;
+            *)
+                log_error "Stage '$stage' is not part of a desktop-only install"
+                return 2
+                ;;
+        esac
+    fi
+
     case "$stage" in
         prerequisites)
             print_banner
@@ -3847,7 +3874,11 @@ run_stage_body() {
             # isn't on PATH here. check_node re-adds it (or installs if missing)
             # so install_desktop can find npm instead of silently skipping.
             check_node
-            install_desktop_voice_deps
+            # Voice extras pip-install into INSTALL_DIR/venv. A connect-only
+            # install has no venv and must not create one here.
+            if [ "$DESKTOP_ONLY" != true ]; then
+                install_desktop_voice_deps
+            fi
             install_desktop
             ;;
         complete)

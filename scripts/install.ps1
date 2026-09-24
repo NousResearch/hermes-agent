@@ -72,7 +72,12 @@ param(
     #   * The canonical CLI one-liner (irm | iex) omits the flag too;
     #     terminal users don't need a desktop binary built for them, and
     #     `hermes desktop` already builds on demand.
-    [switch]$IncludeDesktop
+    [switch]$IncludeDesktop,
+
+    # Limit -Manifest / -Stage to the desktop client: git, Node, checkout,
+    # desktop build, and the bootstrap marker. No Python venv, hermes CLI,
+    # config, setup wizard, or gateway. Implies -IncludeDesktop.
+    [switch]$DesktopOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -4858,6 +4863,12 @@ function Write-Completion {
 # implements it.  ``Title`` is what UIs show; ``Category`` lets UIs group
 # stages; ``NeedsUserInput`` tells UIs "this stage prompts -- either skip it
 # or arrange to provide answers another way."
+# -DesktopOnly is the bootstrap "Connect to existing Hermes" path. The
+# published Mac app is the Tauri shell, so the client is still built here.
+if ($DesktopOnly) {
+    $IncludeDesktop = $true
+}
+
 $InstallStages = @(
     @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
@@ -4889,6 +4900,10 @@ $InstallStages += @(
     @{ Name = "configure";        Title = "Configuring API keys and models";      Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Configure" }
     @{ Name = "gateway";          Title = "Starting messaging gateway";           Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Gateway" }
 )
+if ($DesktopOnly) {
+    $DesktopOnlyStageNames = @("git", "node", "repository", "desktop", "bootstrap-marker")
+    $InstallStages = @($InstallStages | Where-Object { $DesktopOnlyStageNames -contains $_.Name })
+}
 
 # Stage workers -- thin wrappers that delegate to the existing Install-* /
 # Test-* / Invoke-* functions while preserving their error semantics.  Kept
@@ -4925,7 +4940,11 @@ function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
-function Stage-Desktop          { Install-DesktopVoiceDeps; Install-Desktop }
+function Stage-Desktop          {
+    # Voice extras pip-install into the agent venv. Connect-only must not create one.
+    if (-not $DesktopOnly) { Install-DesktopVoiceDeps }
+    Install-Desktop
+}
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }

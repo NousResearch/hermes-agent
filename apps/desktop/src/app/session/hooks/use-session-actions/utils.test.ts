@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  type ChatMessagePart,
+  chatMessageText,
+  textPart,
+  toChatMessages,
+  upsertToolPart
+} from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -964,6 +971,165 @@ describe('preserveLocalPendingTurnMessages', () => {
         message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-after')
       )
     )
+  })
+
+  it('assigns a tool-only leading split fragment to its own durable source row', () => {
+    const rows: SessionMessage[] = [
+      {
+        id: 30,
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'call-before', function: { name: 'read_file', arguments: '{}' } }]
+      },
+      { id: 31, role: 'tool', content: 'read complete', tool_call_id: 'call-before' },
+      {
+        id: 50,
+        role: 'assistant',
+        content: 'After correction',
+        tool_calls: [{ id: 'call-after', function: { name: 'patch', arguments: '{}' } }]
+      },
+      { id: 51, role: 'tool', content: 'patch complete', tool_call_id: 'call-after' }
+    ]
+
+    const stored = toChatMessages(rows)
+    expect(stored).toHaveLength(1)
+    expect(stored[0].rowId).toBe(50)
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Investigate', { rowId: 10 }),
+      streamingMsg('assistant-stream-before', '', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+        interim: true,
+        pending: false
+      }),
+      msg('user-correction', 'user', 'Check the tests too'),
+      streamingMsg('assistant-stream-after', 'After correction', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-after', toolName: 'patch' }]
+      })
+    ]
+
+    const reconciled = reconcileDurableHistory(stored, previous)
+    const before = reconciled.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-before')
+    )
+    const after = reconciled.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-after')
+    )
+
+    expect(before?.rowId).toBe(30)
+    expect(after?.rowId).toBe(50)
+  })
+
+  it('merges live tool completion metadata before dropping an equal-result duplicate', () => {
+    const rows: SessionMessage[] = [
+      {
+        id: 30,
+        role: 'assistant',
+        content: 'Before correction',
+        tool_calls: [{ id: 'call-before', function: { name: 'read_file', arguments: '{}' } }]
+      },
+      { id: 31, role: 'tool', content: 'read complete', tool_call_id: 'call-before' },
+      {
+        id: 50,
+        role: 'assistant',
+        content: 'After correction',
+        tool_calls: [{ id: 'call-after', function: { name: 'patch', arguments: '{}' } }]
+      },
+      { id: 51, role: 'tool', content: 'patch complete', tool_call_id: 'call-after' }
+    ]
+
+    let liveAfterParts = upsertToolPart([], { name: 'patch', tool_id: 'call-after' }, 'running', 1)
+    liveAfterParts = upsertToolPart(
+      liveAfterParts,
+      {
+        name: 'patch',
+        tool_id: 'call-after',
+        result: 'patch complete',
+        error: true,
+        duration_s: 7
+      },
+      'complete',
+      2
+    )
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Investigate', { rowId: 10 }),
+      streamingMsg('assistant-stream-before', 'Before correction', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+        interim: true,
+        pending: false
+      }),
+      msg('user-correction', 'user', 'Check the tests too'),
+      streamingMsg('assistant-stream-after', '', { parts: liveAfterParts })
+    ]
+
+    const reconciled = reconcileDurableHistory(toChatMessages(rows), previous)
+    const retained = reconciled
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'tool-call' && part.toolCallId === 'call-after')
+
+    expect(retained?.type).toBe('tool-call')
+    if (retained?.type !== 'tool-call') {
+      throw new Error('call-after was not retained')
+    }
+
+    expect(retained.isError).toBe(true)
+    expect(retained.toolResultMetadata).toMatchObject({ error: true, duration_s: 7 })
+    expect(
+      reconciled
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolCallId === 'call-after')
+    ).toHaveLength(1)
+  })
+
+  it('keeps reactions only on the split fragment that owns their durable row', () => {
+    const rows: SessionMessage[] = [
+      {
+        id: 30,
+        role: 'assistant',
+        content: 'Before correction',
+        tool_calls: [{ id: 'call-before', function: { name: 'read_file', arguments: '{}' } }]
+      },
+      { id: 31, role: 'tool', content: 'read complete', tool_call_id: 'call-before' },
+      {
+        id: 50,
+        role: 'assistant',
+        content: 'After correction',
+        tool_calls: [{ id: 'call-after', function: { name: 'patch', arguments: '{}' } }]
+      },
+      { id: 51, role: 'tool', content: 'patch complete', tool_call_id: 'call-after' }
+    ]
+
+    const stored = toChatMessages(rows)
+    expect(stored).toHaveLength(1)
+    expect(stored[0].rowId).toBe(30)
+    stored[0] = { ...stored[0], reactions: [{ emoji: '👍', author: 'user', at: 1 }] }
+
+    const previous = [
+      msg('stored-prompt', 'user', 'Investigate', { rowId: 10 }),
+      streamingMsg('assistant-stream-before', 'Before correction', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-before', toolName: 'read_file' }],
+        interim: true,
+        pending: false
+      }),
+      msg('user-correction', 'user', 'Check the tests too'),
+      streamingMsg('assistant-stream-after', 'After correction', {
+        parts: [{ type: 'tool-call', toolCallId: 'call-after', toolName: 'patch' }]
+      })
+    ]
+
+    const reconciled = reconcileDurableHistory(stored, previous)
+    const before = reconciled.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-before')
+    )
+    const after = reconciled.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-after')
+    )
+
+    expect(before?.rowId).toBe(30)
+    expect(before?.reactions).toEqual([{ emoji: '👍', author: 'user', at: 1 }])
+    expect(after?.rowId).toBe(50)
+    expect(after?.reactions).toBeUndefined()
   })
 
   it('keeps two unpersisted corrections between three tool rounds in one hydrated fold', () => {

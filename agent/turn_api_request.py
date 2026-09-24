@@ -118,11 +118,19 @@ def _fire_pre_api_request_hook(
                 middleware_trace=list(_llm_middleware_trace),
                 request=agent._api_request_payload_for_hook(api_kwargs),
             )
-            _apply_request_mutations(
-                api_kwargs, _results,
-                api_call_count=api_call_count,
-                session_id=getattr(agent, "session_id", "") or "",
-            )
+            # Its own guard, not the observer body's: a plugin's returned dict must never be able to
+            # abort the request, but a failure here is a broken plugin result, so it is logged
+            # rather than swallowed like a failed hook invocation.
+            try:
+                _apply_request_mutations(
+                    api_kwargs, _results,
+                    api_call_count=api_call_count,
+                    session_id=getattr(agent, "session_id", ""),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "pre_api_request mutation step failed (%s): %s", type(exc).__name__, exc,
+                )
     except Exception:
         pass
 

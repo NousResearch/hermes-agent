@@ -113,3 +113,26 @@ def test_apply_request_mutations_handles_non_dict_and_noop_results():
     assert api_kwargs["reasoning_effort"] == "low"  # last writer wins
     assert "seen" not in api_kwargs
     assert api_kwargs["messages"] == [{"role": "user", "content": "x"}]
+
+
+def test_a_failing_mutation_is_logged_and_never_fatal(agent, caplog):
+    """The mutation step has its own guard: it logs, and the request still goes out.
+
+    Without it, a malformed plugin result would be swallowed by the observer body's bare except
+    and leave no trace of why the knob it asked for was not applied.
+    """
+    import agent.turn_api_request as turn_api_request
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("plugin result exploded")
+
+    with (
+        caplog.at_level("WARNING", logger="agent.conversation_loop"),
+        patch.object(turn_api_request, "_apply_request_mutations", side_effect=_boom),
+    ):
+        kwargs = _wire_kwargs(agent, {"reasoning_effort": "low"})
+
+    assert agent.client.chat.completions.create.called, "the request must still be issued"
+    # The key is absent rather than "low": the mutation never ran, so nothing set it.
+    assert kwargs.get("reasoning_effort") != "low", "the failed mutation must not be applied"
+    assert "plugin result exploded" in caplog.text, "the failure must be visible in the logs"

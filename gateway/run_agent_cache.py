@@ -16,7 +16,7 @@ from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.run_shutdown import _log_suppressed
-from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli.config import cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -42,26 +42,30 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+# Signature marker for a key the user never wrote; distinct from any value YAML can express.
+_ABSENT = "<absent>"
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``
-        is the raw file (no DEFAULT_CONFIG merge), so absent keys and non-dict sections take the
-        DEFAULT_CONFIG value — what the agent was actually built with — while an explicit ``null`` stays
-        None so opting out of a non-None default still rebuilds. Includes the live tool registry
-        generation: MCP reloads mutate the registry without touching config.yaml."""
+        is the raw file (no DEFAULT_CONFIG merge) and presence is part of what the agent was built with:
+        an absent ``threshold_tokens`` is the shipped cap that yields to user-authored ratios, an
+        explicit value is absolute, and ``null`` opts out — three different agents, so absent keys carry
+        their own marker rather than the default value. Includes the live tool registry generation: MCP
+        reloads mutate the registry without touching config.yaml."""
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
-            default = cfg_get(DEFAULT_CONFIG, section, key)
             section_val = cfg.get(section)
             if section == "checkpoints" and isinstance(section_val, bool):
                 # Legacy ``checkpoints: true``: a live toggle must still rebuild the cached agent.
-                out[f"{section}.{key}"] = section_val if key == "enabled" else default
+                out[f"{section}.{key}"] = section_val if key == "enabled" else _ABSENT
             else:
-                out[f"{section}.{key}"] = cfg_get(cfg, section, key, default=default)
+                out[f"{section}.{key}"] = cfg_get(cfg, section, key, default=_ABSENT)
         try:
             from tools.registry import registry
             out["tools.registry_generation"] = getattr(registry, "_generation", None)

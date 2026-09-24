@@ -245,6 +245,12 @@ class TestUnicodeNormalized:
         assert strategy == "unicode_normalized"
         assert new == "value = x\u2014@\u2014y\n", f"Got {new!r}"
 
+        # Same boundary class for a 3-char expansion (ellipsis -> '...').
+        new, count, strategy, err = fuzzy_find_and_replace("a\u2026b\n", "a...b", "a..X.b")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "a\u2026X\u2026b\n", f"Got {new!r}"
+
 
 class TestUnicodeSpaceAndMinusNormalized:
     """Space-separator family + Unicode minus normalization.

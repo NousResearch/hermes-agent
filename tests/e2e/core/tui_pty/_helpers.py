@@ -41,6 +41,8 @@ TITLE = "Scripted session title"
 # Right-edge scrollbar glyphs the Ink TUI paints in the last column of its transcript viewport.
 _SCROLLBAR = "│┃║▐▕█░▒▓"
 _DIGITS = re.compile(r"\d")
+_SPINNER = re.compile(r"[\u2800-\u28ff]")
+_STATUS_BAR = re.compile(r"│ fake model")
 
 # A quiet sandbox: no update probe, no title call eating scripted turns, no memory/skills noise.
 BASE_CONFIG = (
@@ -257,10 +259,13 @@ class TmuxTui:
         assert self.alive(), f"hermes exited while waiting for {what}\n{self.dump()}"
 
     def wait_quiet(self, idle: float = 1.0, timeout: float = 45.0) -> None:
-        """A settled frame: unchanged (ignoring ticking digits) for ``idle`` seconds."""
+        """A settled frame: unchanged for ``idle`` seconds, ignoring what ticks on its own while a
+        card waits for the human (digits of clocks, braille spinners, the status bar's rotating
+        verb)."""
         def frame() -> str:
             self.track()
-            return _DIGITS.sub("#", "\n".join(self.rows()))
+            rows = [r for r in self.rows() if not _STATUS_BAR.search(r)]
+            return _SPINNER.sub("#", _DIGITS.sub("#", "\n".join(rows)))
         state = {"frame": frame(), "since": time.monotonic()}
 
         def settled() -> bool:

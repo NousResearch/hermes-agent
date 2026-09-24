@@ -726,12 +726,14 @@ def _join_tier(parts: List[Optional[str]]) -> str:
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
-    guidance and the coding brief), ``context`` (caller ``system_message``, project
-    context files, workspace snapshot and remaining workspace guidance) and
-    ``volatile`` (skills index, memory, user profile, external memory block,
-    timestamp line, runtime environment hints).  Worktree-dependent blocks follow project context so a
-    shared context file can remain in the longest common prefix across worktrees.
-    Never re-rendered mid-session."""
+    guidance and the coding brief), ``volatile`` (skills index, memory, user profile,
+    external memory block, session-scoped platform/posture blocks, timestamp line,
+    runtime environment hints) and ``context`` (caller ``system_message``, project
+    context files, workspace snapshot).  Tiers render in that order (stable, volatile,
+    context) so implicit longest-prefix caches keep the shared scaffold: per-platform
+    and per-session blocks trail the prompt, so a new session on a different platform
+    or chat reuses the stable+volatile prefix instead of re-prefilling from the first
+    platform-dependent byte.  Never re-rendered mid-session."""
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
@@ -765,15 +767,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_parts.append(system_message)
     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
     if coding_workspace_parts:
-        context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
-    else:
-        # Preserve the stable placement for non-workspace sessions; there is no
-        # worktree snapshot whose later position would improve their prefix.
-        stable_parts.extend([*coding_trailing_parts, *post_workspace_parts])
-    # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
-    # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
-    # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
+        context_parts.extend(coding_workspace_parts)
+    # ── Volatile tier (most likely to differ on a rebuild; kept ahead of the
+    # context tier so the shared stable+volatile prefix survives a new session,
+    # platform or chat) ──
+    # Skills are runtime-mutable, so the index leads the volatile band: on a
+    # longest-prefix backend an unchanged index stays inside the reused prefix;
+    # a changed one re-prefills from here.
     volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
+    # Session-scoped posture blocks (env probe, bot-mode, profile line, platform
+    # hint) and the coding trailing guidance trail the memory band: they differ
+    # per platform/chat, so they must NOT sit in the stable prefix or every new
+    # session re-prefills from the first platform-dependent byte.
+    volatile_parts.extend([*coding_trailing_parts, *post_workspace_parts])
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
@@ -789,14 +795,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
 def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
     """Assemble the full prompt; cached on ``agent._cached_system_prompt`` and
-    only rebuilt after compression.  Tiers are ordered stable -> context ->
-    volatile so implicit longest-prefix caches keep the unchanged scaffold."""
+    only rebuilt after compression.  Tiers are ordered stable -> volatile ->
+    context so implicit longest-prefix caches keep the unchanged scaffold: the
+    per-session context tier (caller system message, project files, workspace
+    snapshot) is the tail, the most session-specific block."""
     parts = build_system_prompt_parts(agent, system_message=system_message)
     agent._cached_system_prompt_static = parts["stable"]
     # Surface context-file truncation warnings in chat, not only in logs.
     for warning in drain_truncation_warnings():
         agent._emit_diagnostic_status(warning)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    return "\n\n".join(p for p in (parts["stable"], parts["volatile"], parts["context"]) if p)
 
 
 def invalidate_system_prompt(agent: Any) -> None:

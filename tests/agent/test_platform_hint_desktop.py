@@ -24,13 +24,16 @@ from agent.system_prompt import (
 )
 
 
-def _stable_prompt(agent):
+def _volatile_prompt(agent):
+    # The session-scoped platform hint now lives in the volatile band (it
+    # differs per platform/chat, so it must not break the shared stable
+    # prefix) — read from here, not the stable tier.
     with (
         patch("agent.prompt_builder.load_soul_md", return_value=""),
         patch("agent.prompt_builder.build_environment_hints", return_value=""),
         patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
-        return build_system_prompt_parts(agent)["stable"]
+        return build_system_prompt_parts(agent)["volatile"]
 
 
 def _make_agent(platform="", **overrides):
@@ -62,7 +65,7 @@ def _make_agent(platform="", **overrides):
 
 
 
-class TestPlatformHintResolutionInStablePrompt:
+class TestPlatformHintResolutionInVolatilePrompt:
     """End-to-end through ``build_system_prompt_parts`` — the platform tag on
     the agent drives BOTH which PLATFORM_HINTS entry gets appended AND
     whether the embedded-pane clarifier follows it. The desktop-hint block
@@ -71,20 +74,20 @@ class TestPlatformHintResolutionInStablePrompt:
     def test_desktop_platform_yields_desktop_hint_no_tui_framing(self, monkeypatch):
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
-        stable = _stable_prompt(_make_agent(platform="desktop"))
-        assert PLATFORM_HINTS["desktop"] in stable
-        assert "terminal UI" not in stable
-        assert "Runtime surface:" not in stable
-        assert "embedded terminal pane" not in stable
+        volatile = _volatile_prompt(_make_agent(platform="desktop"))
+        assert PLATFORM_HINTS["desktop"] in volatile
+        assert "terminal UI" not in volatile
+        assert "Runtime surface:" not in volatile
+        assert "embedded terminal pane" not in volatile
 
 
     def test_embedded_tui_yields_tui_hint_with_clarifier(self, monkeypatch):
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        stable = _stable_prompt(_make_agent(platform="tui"))
-        assert PLATFORM_HINTS["tui"] in stable
-        assert "embedded terminal pane" in stable
-        assert "Shift-drag" in stable or "Option-drag" in stable or "⌥" in stable
+        volatile = _volatile_prompt(_make_agent(platform="tui"))
+        assert PLATFORM_HINTS["tui"] in volatile
+        assert "embedded terminal pane" in volatile
+        assert "Shift-drag" in volatile or "Option-drag" in volatile or "⌥" in volatile
 
 
 

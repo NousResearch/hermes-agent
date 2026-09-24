@@ -1418,7 +1418,7 @@ class TestSendTypingReadReceiptOptOut:
 
     @pytest.mark.asyncio
     async def test_no_cached_wamid_is_noop(self):
-        adapter = _make_config_adapter(send_read_receipts=False)
+        adapter = _make_config_adapter()  # default-enabled: reaches the cache guard
         adapter._http_client = _fake_http()
 
         await adapter.send_typing("15551234567")  # no wamid cached, must not raise
@@ -1430,7 +1430,7 @@ def _load_cloud_with_yaml(yaml_body, monkeypatch, tmp_path):
     """Real config path: tmp config.yaml + only the two credential env vars."""
     from unittest.mock import patch
 
-    (tmp_path / "config.yaml").write_text(yaml_body)
+    (tmp_path / "config.yaml").write_text(yaml_body, encoding="utf-8")
     monkeypatch.setenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "1234567890")
     monkeypatch.setenv("WHATSAPP_CLOUD_ACCESS_TOKEN", "test-token")
     monkeypatch.delenv("WHATSAPP_CLOUD_SEND_READ_RECEIPTS", raising=False)

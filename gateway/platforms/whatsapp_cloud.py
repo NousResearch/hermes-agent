@@ -202,7 +202,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_CLOUD_GROUP_ALLOW_FROM",), _get_wsecret)
         self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(raw_groups))
         self._mention_patterns = self._compile_mention_patterns()
-        self._send_read_receipts = is_truthy_value(extra.get("send_read_receipts", True), default=True)
+        self._send_read_receipts: bool = is_truthy_value(extra.get("send_read_receipts", True), default=True)
         # Webhook dedup state (in-memory, FIFO-evicted) and counters.
         self._seen_wamids: "OrderedDict[str, bool]" = OrderedDict()
         self._duplicate_count = self._accepted_count = self._rejected_signature_count = 0

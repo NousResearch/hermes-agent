@@ -38,6 +38,7 @@ def _patch_daytona_imports(monkeypatch):
     daytona_mod = _types.ModuleType("daytona")
     daytona_mod.Daytona = MagicMock
     daytona_mod.CreateSandboxFromImageParams = MagicMock
+    daytona_mod.CreateSandboxFromSnapshotParams = MagicMock
     daytona_mod.DaytonaError = type("DaytonaError", (Exception,), {})
     daytona_mod.Resources = MagicMock(name="Resources")
     daytona_mod.SandboxState = _SandboxState
@@ -75,6 +76,7 @@ def make_env(daytona_sdk, monkeypatch):
         list_return=None,
         home_dir="/root",
         persistent=True,
+        snapshot_exists=False,
         **kwargs,
     ):
         sandbox = sandbox or _make_sandbox()
@@ -95,6 +97,8 @@ def make_env(daytona_sdk, monkeypatch):
             mock_client.list.return_value = list_return
         else:
             mock_client.list.return_value = iter([])
+        if not snapshot_exists:
+            mock_client.snapshot.get.side_effect = daytona_sdk.DaytonaError("not found")
 
         daytona_sdk.Daytona = MagicMock(return_value=mock_client)
 
@@ -148,6 +152,29 @@ class TestPersistence:
         env._mock_client.list.assert_not_called()
         env._mock_client.create.assert_called_once()
 
+
+# ---------------------------------------------------------------------------
+# Sandbox source: registry image vs Daytona snapshot
+# ---------------------------------------------------------------------------
+
+class TestSandboxSource:
+    def test_unknown_snapshot_creates_from_image(self, make_env, daytona_sdk):
+        daytona_sdk.CreateSandboxFromImageParams = MagicMock(name="ImageParams")
+        daytona_sdk.CreateSandboxFromSnapshotParams = MagicMock(name="SnapshotParams")
+        make_env(persistent=False)
+        daytona_sdk.CreateSandboxFromImageParams.assert_called_once()
+        assert daytona_sdk.CreateSandboxFromImageParams.call_args.kwargs["image"] == "test-image:latest"
+        daytona_sdk.CreateSandboxFromSnapshotParams.assert_not_called()
+
+
+    def test_existing_snapshot_creates_from_snapshot(self, make_env, daytona_sdk):
+        daytona_sdk.CreateSandboxFromImageParams = MagicMock(name="ImageParams")
+        daytona_sdk.CreateSandboxFromSnapshotParams = MagicMock(name="SnapshotParams")
+        env = make_env(persistent=False, snapshot_exists=True)
+        env._mock_client.snapshot.get.assert_called_once_with("test-image:latest")
+        daytona_sdk.CreateSandboxFromSnapshotParams.assert_called_once()
+        assert daytona_sdk.CreateSandboxFromSnapshotParams.call_args.kwargs["snapshot"] == "test-image:latest"
+        daytona_sdk.CreateSandboxFromImageParams.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # Cleanup

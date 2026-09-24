@@ -230,7 +230,7 @@ terminal:
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
-  daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Registry image or Daytona snapshot name
 ```
 
 `terminal.temp_dir` controls where Hermes puts session temp artifacts on the

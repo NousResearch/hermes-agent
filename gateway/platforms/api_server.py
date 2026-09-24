@@ -109,6 +109,22 @@ def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_pe
     return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
 
+def _approval_request_event(run_id: str, approval_data: Optional[Dict[str, Any]], **fields: Any) -> Dict[str, Any]:
+    """The ``approval.request`` payload every approval surface emits (runs bridge, session stream,
+    chat completions): the flagged command redacted before egress (#48456), the ``_run_event``
+    envelope, and the ``choices`` the client may send back to ``POST /v1/runs/{id}/approval``."""
+    from gateway.platforms.api_server_runs import _run_event
+    event = dict(approval_data or {})
+    if "command" in event:
+        from gateway.run import _redact_approval_command
+        event["command"] = _redact_approval_command(event.get("command"))
+    event.update(_run_event(run_id, "approval.request", **fields, choices=_approval_event_choices(
+        smart_denied=bool(event.get("smart_denied")),
+        allow_session=event.get("allow_session") is not False,
+        allow_permanent=event.get("allow_permanent") is not False)))
+    return event
+
+
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
@@ -3547,16 +3563,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._run_approval_sessions[run_id] = run_id
 
         def _approval_notify(approval_data: Dict[str, Any]) -> None:
-            event = dict(approval_data or {})
-            if "command" in event:
-                from gateway.run import _redact_approval_command
-                event["command"] = _redact_approval_command(event.get("command"))
-            event.update({
-                "message_id": message_id,
-                "choices": _approval_event_choices(
-                    smart_denied=bool(event.get("smart_denied")),
-                    allow_session=event.get("allow_session") is not False,
-                    allow_permanent=event.get("allow_permanent") is not False)})
+            event = _approval_request_event(run_id, approval_data, message_id=message_id)
+            self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
             events.enqueue("approval.request", event)  # executor thread -> loop hop inside
         return _approval_notify
 
@@ -4100,10 +4108,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                             result = agent.run_conversation(**conversation_kwargs)
                     finally:
                         if approval_token is not None:
-                            from tools.approval import unregister_gateway_notify
                             from tools.approval_context import reset_current_session_key
-                            with suppress(Exception):
-                                unregister_gateway_notify(approval_session_key)
+                            _api_runs._unregister_approval_notify(approval_session_key)
                             with suppress(Exception):
                                 reset_current_session_key(approval_token)
                     result, usage = self._finish_turn_result(

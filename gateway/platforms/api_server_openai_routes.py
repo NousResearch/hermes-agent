@@ -538,32 +538,41 @@ class OpenAICompatRoutesMixin:
             requested_provider=overrides.get("requested_provider"), route=route)
         return route, overrides, (_error_response(err, 400) if err else None)
 
-    def _register_stream_approval(self, completion_id, stream_q, session_id):
-        """Expose a streaming completion to ``POST /v1/runs/{completion_id}/approval`` and return
-        the notify callback that pushes ``approval.request`` onto ``stream_q`` (#51871). Keyed by
-        the completion id (never the shared session key) so concurrent turns can't cross-resolve."""
-        from gateway.platforms.api_server import _approval_event_choices
+    def _register_stream_approval(self, request, completion_id, stream_q, session_id) -> tuple:
+        """Expose a streaming completion as a run for ``POST /v1/runs/{completion_id}/approval``
+        (#51871) -> ``(notify, on_done)``. Owner + status are stamped like the session stream, so
+        ``_load_owned_run`` finds it; keyed by the completion id (never the shared session key) so
+        concurrent turns can't cross-resolve. ``on_done`` retires it when the agent task ends."""
+        from gateway.platforms.api_server import _approval_request_event
+        self._run_owners[completion_id] = self._run_idempotency_scope(request)
+        self._set_run_status(completion_id, "running", session_id=session_id or "")
         self._run_approval_sessions[completion_id] = completion_id
 
         def _approval_notify(approval_data):
-            event = dict(approval_data or {})
-            if "command" in event:
-                from gateway.run import _redact_approval_command
-                event["command"] = _redact_approval_command(event.get("command"))
-            event.update({
-                "event": "approval.request", "run_id": completion_id, "session_id": session_id or "",
-                "timestamp": time.time(),
-                "choices": _approval_event_choices(
-                    smart_denied=bool(event.get("smart_denied")),
-                    allow_session=event.get("allow_session") is not False,
-                    allow_permanent=event.get("allow_permanent") is not False)})
+            event = _approval_request_event(completion_id, approval_data, session_id=session_id or "")
+            self._set_run_status(completion_id, "waiting_for_approval", last_event="approval.request",
+                                 approval=event)
             stream_q.put_threadsafe(("__approval__", event))
-        return _approval_notify
 
-    def _spawn_stream_agent(self, stream_q, **run_kwargs) -> tuple:
+        def _on_done(fut):
+            from gateway.platforms.api_server_runs import terminal_run_status
+            self._run_approval_sessions.pop(completion_id, None)
+            if fut.cancelled():
+                status = "cancelled"
+            elif fut.exception() is not None:
+                status = "failed"
+            else:
+                result = (fut.result() or (None,))[0]
+                status = terminal_run_status(result)[0] if isinstance(result, dict) else "completed"
+            self._set_run_status(completion_id, status)
+            self._release_run_owner_if_forgotten(completion_id)
+        return _approval_notify, _on_done
+
+    def _spawn_stream_agent(self, stream_q, *, on_done=None, **run_kwargs) -> tuple:
         """Start ``_run_agent`` for an SSE writer -> ``(agent_task, agent_ref)``. ``agent_ref[0]``
         lets the writer interrupt on disconnect; the EOS sentinel is enqueued from the task's done
-        callback so drain loops never race a polled ``agent_task.done()``."""
+        callback so drain loops never race a polled ``agent_task.done()``. ``on_done(task)`` runs
+        in that same callback, before EOS."""
         def _on_delta(delta):
             # None from the agent is a CLI box-close signal, not EOS — forwarding it would end
             # the stream early. Called from the run_conversation worker thread: put_threadsafe.
@@ -586,7 +595,15 @@ class OpenAICompatRoutesMixin:
         agent_task = asyncio.ensure_future(self._run_agent(
             stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, status_callback=_on_status,
             agent_ref=agent_ref, **run_kwargs))
-        agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
+        def _done(fut):
+            try:
+                if on_done is not None:
+                    on_done(fut)
+            except Exception:
+                logger.debug("[api_server] stream on_done hook failed", exc_info=True)
+            finally:
+                stream_q.put_nowait(None)
+        agent_task.add_done_callback(_done)
         return agent_task, agent_ref
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
@@ -724,20 +741,14 @@ class OpenAICompatRoutesMixin:
 
             # tool_progress_callback deliberately NOT wired: it would duplicate the structured
             # start/complete callbacks (which carry the tool_call id).
-            approval_notify = self._register_stream_approval(completion_id, _stream_q, session_id)
+            # The completion id doubles as the run id; on_done drops the approval mapping once the
+            # turn ends (POST /v1/runs/{id}/approval then answers 409) and sets the terminal status.
+            approval_notify, end_stream_run = self._register_stream_approval(
+                request, completion_id, _stream_q, session_id)
             agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_start_callback=_on_tool_start,
+                _stream_q, on_done=end_stream_run, tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete, approval_notify_callback=approval_notify,
                 approval_session_key=completion_id, **run_kwargs)
-            # The completion id doubles as the run id: drop the approval mapping once the turn
-            # ends so POST /v1/runs/{id}/approval answers 409 rather than resolving stale keys.
-            def _end_stream_run(fut):
-                self._run_approval_sessions.pop(completion_id, None)
-                if completion_id in self._run_statuses:  # terminal state for pollers of this id
-                    failed = not fut.cancelled() and fut.exception() is not None
-                    self._set_run_status(completion_id, "cancelled" if fut.cancelled()
-                                         else "failed" if failed else "completed")
-            agent_task.add_done_callback(_end_stream_run)
             # #13437 identity contract: an explicit-header client keeps addressing the id it
             # sent; the response echoes that stable id while reads/writes adopt the live tip,
             # so a rotation mid-turn (after these headers are prepared) never changes what the

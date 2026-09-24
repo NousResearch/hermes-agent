@@ -3216,6 +3216,14 @@ def block_task(
     toward the loop breaker so a forever-flaky task escalates. True on any
     transition.
 
+    False on any of: no such task; the task isn't currently ``running`` or
+    ``ready`` (most notably ``todo`` -- a gate armed before the task reaches
+    ``ready``, e.g. at graph-creation time, silently never arms, #121582);
+    an already-``blocked`` card with a typed ``block_kind``, a live run, or
+    a kind-less call; or ``expected_run_id`` set on a card with no matching
+    live run. Callers that need the gate to be armed unconditionally must
+    check the return value.
+
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
     is supplied: ``block_kind``/``block_recurrences`` are set and a ``blocked``

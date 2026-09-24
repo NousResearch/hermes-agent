@@ -25,6 +25,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
     text = tmp_path / "normal.txt"
     text.write_text("ordinary readable text", encoding="utf-8")
     db = SessionDB(path)
+    lock_fd = None
     try:
         db.create_session("preview-test", "cli")
         db.append_message("preview-test", "user", "before preview")
@@ -36,7 +37,16 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
                   "wal": wal, "directory": tmp_path}[target_kind]
         conn = db._conn
         assert isinstance(conn, sqlite3.Connection)
+        conn.execute("CREATE TABLE preview_markers (value TEXT)")
+        conn.commit()
         conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO preview_markers VALUES ('first process')")
+        # WAL writers reliably hold -shm locks, but not always a main-file lock.
+        # Hold our own POSIX main-file lock to prove that preview close() does
+        # not cancel any locks on that inode, regardless of SQLite's WAL timing.
+        import fcntl
+        lock_fd = os.open(path, os.O_RDONLY)
+        fcntl.lockf(lock_fd, fcntl.LOCK_SH, 1, 4096)
 
         def posix_locks(file):
             inode = file.stat().st_ino
@@ -72,11 +82,25 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
 
         assert (posix_locks(path), posix_locks(shm)) == before
         assert rival_locked(), "second process entered a still-open write transaction"
-        conn.rollback()
+        conn.commit()
+        code = (
+            "import sqlite3,sys; c=sqlite3.connect(sys.argv[1], timeout=2); "
+            "assert c.execute('SELECT value FROM preview_markers').fetchall() == [('first process',)]; "
+            "c.execute(\"INSERT INTO preview_markers VALUES ('second process')\"); "
+            "c.commit(); c.close()"
+        )
+        rival = subprocess.run([sys.executable, "-c", code, str(path)],
+                               capture_output=True, text=True, timeout=10)
+        assert rival.returncode == 0, rival.stderr
+        assert [row[0] for row in conn.execute(
+            "SELECT value FROM preview_markers ORDER BY rowid"
+        )] == ["first process", "second process"]
         db.append_message("preview-test", "assistant", "after preview")
         assert len(db.get_messages("preview-test")) == 2
     finally:
         db.close()
+        if lock_fd is not None:
+            os.close(lock_fd)
 
 
 def test_closed_database_can_still_be_previewed(tmp_path):

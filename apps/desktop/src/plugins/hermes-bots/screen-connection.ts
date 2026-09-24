@@ -160,7 +160,7 @@ export async function resolveScreenWsUrl(bot: RosterRow, ticket: string): Promis
   // dropped rather than spending a second one-shot ticket.
   const url = new URL(
     await resolveSiblingWsUrl(
-      { connectionId: route?.connectionId ?? null, profile: route?.profile ?? bot.name },
+      { connectionId: route?.connectionId ?? null, profile: route?.targetProfile ?? route?.profile ?? bot.name },
       '/api/display/ws',
       {
         stripGatewayCredential: true

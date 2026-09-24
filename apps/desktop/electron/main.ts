@@ -464,7 +464,7 @@ import {
 } from './update-api-check'
 import { updateCheckAgent } from './update-api-proxy'
 import { waitForUpdateClearance } from './update-gate'
-import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { isMacUpdateProcess, readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
@@ -2469,6 +2469,7 @@ function directoryExists(filePath) {
 // marker's own age ceiling; covers a stuck-but-alive updater).
 const UPDATE_WAIT_TIMEOUT_MS = 20 * 60 * 1000
 const UPDATE_WAIT_POLL_MS = 1000
+
 // How long the desktop lingers on the "updating, don't reopen" overlay after
 // spawning the detached updater, before it quits to release the venv shim. The
 // old 600ms was long enough to register the child process but far too short for
@@ -2490,7 +2491,12 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
 function updateGateDeps() {
   return {
-    hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
+    hasLiveMarker: () =>
+      Boolean(
+        readLiveUpdateMarker(HERMES_HOME, {
+          isExpectedUpdateProcess: IS_MAC ? isMacUpdateProcess : undefined
+        })
+      ),
     isUpdateInFlight: () => updateInFlight,
     isHandoffActive: () => isQuittingForHandoff
   }

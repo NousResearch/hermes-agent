@@ -20,6 +20,7 @@ import path from 'path'
 import { test } from 'vitest'
 
 import {
+  isMacUpdateProcess,
   isPidAlive,
   markerPath,
   readLiveUpdateMarker,
@@ -47,6 +48,24 @@ const DEAD: typeof process.kill = () => {
   throw err
 }
 
+test('macOS update-process check accepts only update hand-off commands', () => {
+  const inspect = (_command: string, _args: string[], _options: object) =>
+    '/bin/bash /Users/me/.hermes/hermes-agent/scripts/desktop-update/posix.sh --daemonized\n'
+
+  const unrelated = (_command: string, _args: string[], _options: object) =>
+    '/Applications/Notes.app/Contents/MacOS/Notes\n'
+
+  assert.equal(isMacUpdateProcess(4242, inspect), true)
+  assert.equal(isMacUpdateProcess(4242, unrelated), false)
+  assert.equal(
+    isMacUpdateProcess(4242, () => {
+      throw new Error('ps unavailable')
+    }),
+    true,
+    'inspection failures must preserve the update gate'
+  )
+})
+
 test('absent marker => no live update', () => {
   const home = tmpHome('absent')
   assert.equal(readLiveUpdateMarker(home, { kill: ALIVE }), null)
@@ -61,6 +80,38 @@ test('live pid within age ceiling => live update reported', () => {
   assert.equal(res.pid, 4242)
   assert.ok(res.ageMs >= 0 && res.ageMs < 10_000)
   assert.ok(fs.existsSync(markerPath(home)), 'a live marker is NOT deleted')
+})
+
+test('a live macOS pid outside the update hand-off is stale and is pruned', () => {
+  const home = tmpHome('unrelated-live-macos-pid')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+
+  assert.equal(
+    readLiveUpdateMarker(home, {
+      kill: ALIVE,
+      now: () => now,
+      isExpectedUpdateProcess: () => false
+    }),
+    null,
+    'PID reuse must not keep the Desktop update gate closed'
+  )
+  assert.ok(fs.existsSync(markerPath(home)) === false, 'an unrelated live pid marker self-heals')
+})
+
+test('an expected macOS hand-off pid remains a live update', () => {
+  const home = tmpHome('expected-live-macos-handoff')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+
+  const res = readLiveUpdateMarker(home, {
+    kill: ALIVE,
+    now: () => now,
+    isExpectedUpdateProcess: pid => pid === 4242
+  })
+
+  assert.equal(res?.pid, 4242)
+  assert.ok(fs.existsSync(markerPath(home)), 'a live hand-off marker is retained')
 })
 
 test('dead pid => no live update and marker is pruned', () => {

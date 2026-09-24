@@ -21,6 +21,7 @@
  */
 
 import fs from 'fs'
+import { execFileSync } from 'node:child_process'
 import path from 'path'
 
 // Even with a live-looking PID, never treat a marker older than this as a live
@@ -52,6 +53,31 @@ export function isPidAlive(pid, kill: typeof process.kill = process.kill.bind(pr
 }
 
 /**
+ * Whether a live macOS PID still belongs to an update hand-off. PID liveness
+ * alone is insufficient after a crashed hand-off because macOS can reuse it
+ * for an unrelated process. Inspection failures remain fail-closed so they
+ * can never interrupt a healthy update.
+ */
+export function isMacUpdateProcess(
+  pid: number,
+  inspectProcess: (command: string, args: string[], options: object) => string | Buffer = execFileSync
+) {
+  try {
+    const command = String(
+      inspectProcess('/bin/ps', ['-o', 'command=', '-p', String(pid)], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1000
+      })
+    ).trim()
+
+    return /(?:scripts\/desktop-update\/posix\.sh|(?:^|\s)hermes\s+update\b|hermes_cli\.main\s+update\b)/.test(command)
+  } catch {
+    return true
+  }
+}
+
+/**
  * Read + interpret the marker.
  *
  * Returns `{ pid, ageMs }` only when an update is GENUINELY still running
@@ -68,11 +94,18 @@ export function readLiveUpdateMarker(
   {
     kill,
     now = Date.now,
-    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS
+    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
+    isExpectedUpdateProcess
   }: {
     now?: () => number
     maxAgeMs?: number
     kill?: typeof process.kill
+    /**
+     * Optional platform-specific identity check for a live marker owner.
+     * Return false only when the PID is positively known not to be an updater;
+     * errors should return true so a healthy update is never interrupted.
+     */
+    isExpectedUpdateProcess?: (pid: number) => boolean
   } = {}
 ) {
   const file = markerPath(hermesHome)
@@ -90,7 +123,19 @@ export function readLiveUpdateMarker(
   const ageMs = Number.isFinite(startedAt) ? now() - startedAt * 1000 : Infinity
   const alive = Number.isInteger(pid) && isPidAlive(pid, kill)
 
-  if (!alive || ageMs > maxAgeMs) {
+  let expected = true
+
+  if (alive && isExpectedUpdateProcess) {
+    try {
+      expected = isExpectedUpdateProcess(pid)
+    } catch {
+      // The identity probe is supplementary. Losing ps permission or a
+      // transient inspection error must not interrupt an active update.
+      expected = true
+    }
+  }
+
+  if (!alive || !expected || ageMs > maxAgeMs) {
     try {
       fs.unlinkSync(file)
     } catch {

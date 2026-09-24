@@ -97,6 +97,12 @@ export function flattenSessionsWithBranches(
   const nestedIds = new Set<string>()
 
   for (const session of sessions) {
+    // Older backends did not project is_branch; retain their existing tree
+    // behavior until the desktop runtime is upgraded.
+    if (session.is_branch === false) {
+      continue
+    }
+
     const parentId = session.parent_session_id?.trim()
 
     if (!parentId) {

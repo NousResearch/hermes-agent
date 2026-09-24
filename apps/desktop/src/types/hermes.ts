@@ -547,8 +547,10 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
-  /** Parent conversation when this row is a /branch fork. */
+  /** Parent session for either a /branch fork or a compression continuation. */
   parent_session_id?: null | string
+  /** True only for a user-created branch, not a compression continuation. */
+  is_branch?: boolean
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the

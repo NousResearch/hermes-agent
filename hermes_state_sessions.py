@@ -16,7 +16,7 @@ from agent.session_activity import (
 )
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
+    _BRANCH_CHILD_SQL, _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
     _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
@@ -1254,6 +1254,7 @@ class SessionSessionsMixin:
         """Project a list_sessions_rich row: shape the preview, drop internal ordering columns."""
         s = cls._session_row_dict(row)
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
+        s["is_branch"] = bool(s["is_branch"])
         s.pop("_effective_last_active", None)
         return s
 
@@ -1288,6 +1289,7 @@ class SessionSessionsMixin:
             f"SELECT {self._compact_session_cols() if compact_rows else 's.*'}"
             + ("" if compact_rows else ", COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved")
             + f",\n                    {_PREVIEW_COL_SQL},\n                    "
+            + f"CASE WHEN {_BRANCH_CHILD_SQL.format(a='s')} THEN 1 ELSE 0 END AS is_branch,\n                    "
         )
         prompt_join = (
             "" if compact_rows else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"

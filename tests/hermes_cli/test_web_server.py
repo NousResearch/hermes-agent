@@ -2336,6 +2336,96 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_profiles_sessions_projects_explicit_branch_marker(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="branch-parent", source="cli")
+            db.create_session(
+                session_id="user-branch",
+                source="cli",
+                parent_session_id="branch-parent",
+                model_config={"_branched_from": "branch-parent"},
+            )
+        finally:
+            db.close()
+
+        response = self.client.get("/api/profiles/sessions?limit=20&offset=0")
+
+        assert response.status_code == 200
+        rows = {row["id"]: row for row in response.json()["sessions"]}
+        assert rows["branch-parent"]["is_branch"] is False
+        assert rows["user-branch"]["is_branch"] is True
+
+    def test_session_list_projects_pre_marker_branches_with_the_canonical_predicate(self):
+        """A pre-marker /branch is still a branch when its parent was sealed as branched.
+
+        The deterministic timestamps deliberately exercise the legacy arm of
+        ``_BRANCH_CHILD_SQL`` rather than the durable ``_branched_from`` marker.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="ordinary-root", source="cli")
+            db.create_session(session_id="explicit-parent", source="cli")
+            db.create_session(
+                session_id="explicit-branch",
+                source="cli",
+                parent_session_id="explicit-parent",
+                model_config={"_branched_from": "explicit-parent"},
+            )
+            db.create_session(session_id="legacy-parent", source="cli")
+            db.create_session(
+                session_id="legacy-branch", source="cli", parent_session_id="legacy-parent"
+            )
+            db.create_session(session_id="compression-parent", source="cli")
+            db.create_session(
+                session_id="compression-continuation",
+                source="cli",
+                parent_session_id="compression-parent",
+            )
+            db._execute_write(lambda conn: conn.execute(
+                """UPDATE sessions
+                   SET started_at = CASE id
+                       WHEN 'ordinary-root' THEN 10
+                       WHEN 'explicit-parent' THEN 20
+                       WHEN 'explicit-branch' THEN 21
+                       WHEN 'legacy-parent' THEN 30
+                       WHEN 'legacy-branch' THEN 41
+                       WHEN 'compression-parent' THEN 50
+                       WHEN 'compression-continuation' THEN 61
+                   END,
+                       ended_at = CASE id
+                       WHEN 'legacy-parent' THEN 40
+                       WHEN 'compression-parent' THEN 60
+                   END,
+                       end_reason = CASE id
+                       WHEN 'legacy-parent' THEN 'branched'
+                       WHEN 'compression-parent' THEN 'compression'
+                   END
+                   WHERE id IN (
+                       'ordinary-root', 'explicit-parent', 'explicit-branch',
+                       'legacy-parent', 'legacy-branch', 'compression-parent',
+                       'compression-continuation'
+                   )"""
+            ))
+
+            rows = {
+                row["id"]: row
+                for row in db.list_sessions_rich(
+                    include_children=True, project_compression_tips=False, limit=20
+                )
+            }
+        finally:
+            db.close()
+
+        assert rows["explicit-branch"]["is_branch"] is True
+        assert rows["legacy-branch"]["is_branch"] is True
+        assert rows["compression-continuation"]["is_branch"] is False
+        assert rows["ordinary-root"]["is_branch"] is False
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""

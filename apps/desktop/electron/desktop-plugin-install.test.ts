@@ -1,7 +1,8 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -9,6 +10,7 @@ import {
   desktopPluginFolderName,
   detectPluginComponents,
   findDesktopEntry,
+  probePluginRepo,
   resolvePluginGitUrl,
   resolveSubdirWithin
 } from './desktop-plugin-install'
@@ -117,5 +119,34 @@ describe('detectPluginComponents', () => {
       agentName: 'dual',
       desktopName: 'desktop'
     })
+  })
+})
+
+describe('probePluginRepo', () => {
+  const roots: string[] = []
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('probes a monorepo subdirectory through the sparse partial clone', async () => {
+    const repo = mkdtemp('hermes-plugin-monorepo-')
+    roots.push(repo)
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
+    const plugin = path.join(repo, 'integrations', 'hermes')
+    fs.mkdirSync(plugin, { recursive: true })
+    fs.writeFileSync(path.join(plugin, 'plugin.yaml'), 'name: nested-agent\n')
+    fs.writeFileSync(path.join(plugin, '__init__.py'), 'def register(ctx): pass\n')
+    fs.writeFileSync(path.join(repo, 'unrelated.bin'), 'x'.repeat(4096))
+    git('init', '-q')
+    git('config', 'uploadpack.allowFilter', 'true')
+    git('add', '.')
+    git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qm', 'init')
+
+    const result = await probePluginRepo('git', `${pathToFileURL(repo).href}#integrations/hermes`)
+
+    expect(result).toMatchObject({ ok: true, agent: true, agentName: 'nested-agent' })
   })
 })

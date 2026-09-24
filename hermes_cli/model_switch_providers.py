@@ -1314,11 +1314,12 @@ def list_picker_providers(
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
-    snapshot filtered against the live catalog) and rows left with no models are dropped — except
-    custom endpoints, where the user may supply their own model set through config.
+    snapshot filtered against the live catalog), led by any ``providers.openrouter.models`` ids the
+    user configured, exactly as every other provider row is. Rows left with no models are dropped —
+    except custom endpoints, where the user may supply their own model set through config.
     ``non_blocking_catalogs`` makes every catalog read cache-only: provider catalogs warm in the
     background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
-    from hermes_cli.model_switch import list_authenticated_providers
+    from hermes_cli.model_switch import _declared_model_ids, list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
@@ -1336,6 +1337,11 @@ def list_picker_providers(
                 live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
             except Exception:
                 live_ids = list(p.get("models", []))
+            # The replacement would otherwise drop a providers.openrouter.models block that the
+            # built-in section already merged into this row (#121903).
+            configured = (user_providers or {}).get("openrouter")
+            if isinstance(configured, dict):
+                live_ids = list(dict.fromkeys([*_declared_model_ids(configured.get("models")), *live_ids]))
             p = dict(p)
             p["models"] = live_ids[:max_models] if max_models is not None else live_ids
             p["total_models"] = len(live_ids)

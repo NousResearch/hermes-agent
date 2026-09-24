@@ -272,3 +272,54 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+# ---------------------------------------------------------------------------
+# providers.openrouter.models survives the OpenRouter row rebuild (#121903)
+# ---------------------------------------------------------------------------
+
+
+def _picker_with_openrouter(monkeypatch, user_providers, *, live, max_models=None):
+    """Run ``list_picker_providers`` over one OpenRouter row plus one DeepSeek control row."""
+    base = [
+        _make_provider("openrouter", "OpenRouter", ["stale/row"]),
+        _make_provider("deepseek", "DeepSeek", ["pinned/extra", "deepseek-chat"]),
+    ]
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers",
+                        lambda **_kw: [dict(r) for r in base], raising=False)
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **_kw: [dict(r) for r in base])
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [(mid, "") for mid in live])
+    rows = model_switch_providers.list_picker_providers(user_providers=user_providers, max_models=max_models)
+    return {r["slug"]: r for r in rows}
+
+
+def test_configured_openrouter_models_lead_the_live_list(monkeypatch):
+    rows = _picker_with_openrouter(
+        monkeypatch, {"openrouter": {"models": ["stealth/pinned", "a/curated"]}},
+        live=["a/curated", "b/curated"])
+    assert rows["openrouter"]["models"] == ["stealth/pinned", "a/curated", "b/curated"]
+    assert rows["openrouter"]["total_models"] == 3
+
+
+def test_configured_openrouter_models_accept_every_declared_shape(monkeypatch):
+    rows = _picker_with_openrouter(
+        monkeypatch, {"openrouter": {"models": {"stealth/mapped": {"context_length": 1000}}}},
+        live=["a/curated"])
+    assert rows["openrouter"]["models"] == ["stealth/mapped", "a/curated"]
+
+
+def test_configured_openrouter_models_count_toward_max_models(monkeypatch):
+    rows = _picker_with_openrouter(
+        monkeypatch, {"openrouter": {"models": ["stealth/pinned"]}},
+        live=["a/curated", "b/curated", "c/curated"], max_models=2)
+    assert rows["openrouter"]["models"] == ["stealth/pinned", "a/curated"]
+    assert rows["openrouter"]["total_models"] == 4
+
+
+def test_openrouter_row_without_configured_models_is_the_live_list(monkeypatch):
+    rows = _picker_with_openrouter(monkeypatch, {"deepseek": {"models": ["pinned/extra"]}},
+                                   live=["a/curated"])
+    assert rows["openrouter"]["models"] == ["a/curated"]  # stale ids still drop out
+    assert rows["deepseek"]["models"] == ["pinned/extra", "deepseek-chat"]  # other rows untouched

@@ -2822,27 +2822,66 @@ _BUILTIN_SUBCOMMANDS = frozenset(
 )
 
 
-def _first_positional_argv() -> str | None:
-    """First non-flag, non-flag-value token in ``sys.argv[1:]`` (skips values of known flags).
+def _first_positional_argv_index() -> int | None:
+    """Index of the first non-flag, non-flag-value token in ``sys.argv``.
 
     Not a full argparse simulation: an unknown ``--foo bar`` may classify
     ``bar`` as positional, which at worst forces a one-time plugin discovery.
     """
-    from hermes_cli._parser import top_level_value_flag_sets
+    from hermes_cli._parser import build_top_level_parser
 
-    required_value_flags, optional_value_flags = top_level_value_flag_sets()
-    value_flags = required_value_flags | optional_value_flags
+    parser = build_top_level_parser()[0]
     argv = sys.argv[1:]
     i = 0
     while i < len(argv):
         tok = argv[i]
         if tok == "--":  # everything after is positional
-            return argv[i + 1] if i + 1 < len(argv) else None
+            return i + 2 if i + 1 < len(argv) else None
+        option_tuples = parser._get_option_tuples(tok) if tok.startswith("-") else []
         if not tok.startswith("-"):
-            return tok
-        # ``--flag=value`` is a single token; a known value flag consumes the next.
-        i += 2 if ("=" not in tok and tok in value_flags and i + 1 < len(argv)) else 1
+            return i + 1
+        if len(option_tuples) != 1:
+            # Unknown/ambiguous options are left to the real parser. Treat the
+            # token itself as an option, not a command or its value.
+            i += 1
+            continue
+        action, _option_string, _separator, explicit_arg = option_tuples[0]
+        if action.nargs == 0 or explicit_arg is not None:
+            i += 1
+        else:
+            i += 2 if i + 1 < len(argv) else 1
     return None
+
+
+def _first_positional_argv() -> str | None:
+    """First non-flag, non-flag-value token in ``sys.argv[1:]``."""
+    index = _first_positional_argv_index()
+    return sys.argv[index] if index is not None else None
+
+
+def _startup_should_warn_pending_fleet_restart() -> bool:
+    """Whether this invocation can usefully surface the interactive update hint.
+
+    Long-lived runtimes inherit stderr from their supervisor, so warning while a
+    freshly restarted gateway or web backend is racing the updater's verification
+    records a false alarm in the service journal. Keep the marker and its checks
+    intact for interactive commands; the updater still owns clearing it.
+    """
+    command = _first_positional_argv()
+    from hermes_cli.update_inventory import _SERVE_KINDS
+
+    if command in _SERVE_KINDS:
+        command_index = _first_positional_argv_index()
+        tail = sys.argv[command_index + 1:] if command_index is not None else []
+        from hermes_cli.subcommands.dashboard import invocation_starts_web_runtime
+
+        return not invocation_starts_web_runtime(command, tail)
+    if command != "gateway":
+        return True
+
+    from gateway.status import looks_like_gateway_command_line
+
+    return not looks_like_gateway_command_line(subprocess.list2cmdline(sys.argv))
 
 
 def _plugin_cli_discovery_needed() -> bool:
@@ -3560,9 +3599,10 @@ def main():
         except Exception:
             pass
         try:
-            from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
+            if _startup_should_warn_pending_fleet_restart():
+                from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
 
-            _warn_pending_fleet_restart_on_startup()
+                _warn_pending_fleet_restart_on_startup()
         except Exception:
             pass
 

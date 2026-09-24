@@ -26,6 +26,9 @@ ACCEPT = [
     "python gateway/run.py",
     "hermes-gateway.exe",
     "hermes gateway",          # bare `hermes gateway` defaults to run
+    "hermes gateway --accept-hooks",  # parent flag preserves the default run
+    "hermes gateway --accept",  # argparse accepts an unambiguous long-option prefix
+    "hermes gateway --accept run",
     "hermes gateway run",
     # profile selector AFTER the `gateway` token (argv is profile-position
     # agnostic — _apply_profile_override strips --profile/-p anywhere)
@@ -43,6 +46,9 @@ ACCEPT = [
 
 REJECT = [
     "python -m tui_gateway",                              # unrelated module
+    "hermes gateway --help",                              # interactive help, not a runtime
+    "hermes gateway --accept-hooks --help",
+    "hermes gateway --unknown-option",                    # argparse rejects it
     "python -m hermes_cli.main gateway status",           # other subcommand
     "python -m hermes_cli.main gateway restart",
     "python -m hermes_cli.main gateway stop",
@@ -56,5 +62,10 @@ REJECT = [
 @pytest.mark.parametrize("cmd", ACCEPT)
 def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True
+
+
+@pytest.mark.parametrize("cmd", REJECT)
+def test_rejects_non_gateway_run(cmd):
+    assert matches(cmd) is False
 
 

@@ -17,6 +17,7 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -719,6 +720,92 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "should_warn"),
+    [
+        (["hermes", "gateway", "run"], False),
+        (["hermes", "gateway", "--accept-hooks"], False),
+        (["hermes_cli/main.py", "gateway", "run", "--replace"], False),
+        (["hermes", "serve", "--host", "127.0.0.1"], False),
+        (["hermes", "--reas", "low", "serve"], False),
+        (["hermes", "--mod", "x", "serve"], False),
+        (["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119"], False),
+        (["hermes", "dashboard", "--host", "register"], False),
+        (["hermes", "serve", "--hos", "127.0.0.1"], False),
+        (["hermes", "serve", "--por", "9119"], False),
+        (["hermes", "serve", "--ssh-owner-n", "abc"], False),
+        (["hermes", "dashboard", "register"], True),
+        (["hermes", "dashboard", "--status"], True),
+        (["hermes", "dashboard", "--stop"], True),
+        (["hermes", "serve", "--status"], True),
+        (["hermes", "serve", "--stop"], True),
+        (["hermes", "serve", "--stat"], True),
+        (["hermes", "serve", "--sto"], True),
+        (["hermes", "serve", "--help"], True),
+        (["hermes", "serve", "--bogus"], True),
+        (["hermes", "serve", "--host"], True),
+        (["hermes", "serve", "--port", "bad"], True),
+        (["hermes", "dashboard", "--bogus"], True),
+        (["hermes", "gateway", "status", "--full"], True),
+        (["hermes", "chat"], True),
+    ],
+)
+def test_startup_pending_restart_hint_is_only_for_client_invocations(
+    monkeypatch, argv, should_warn
+):
+    monkeypatch.setattr(sys, "argv", argv)
+
+    assert hermes_main._startup_should_warn_pending_fleet_restart() is should_warn
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["hermes", "gateway", "run"],
+        ["hermes", "serve", "--host", "127.0.0.1"],
+        ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119"],
+    ],
+)
+def test_daemon_startup_with_pending_restart_marker_has_empty_stderr(
+    monkeypatch, capsys, argv
+):
+    update_cmd._write_fleet_restart_pending_marker()
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(hermes_main, "_set_process_title", lambda: None)
+    monkeypatch.setattr(hermes_main, "_warn_if_unsupervised_pid1", lambda: None)
+    monkeypatch.setattr(hermes_main, "_advertise_agent_env", lambda: None)
+    monkeypatch.setattr(hermes_main, "_cleanup_quarantined_exes", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_sweep_stale_bytecode_if_checkout_changed", lambda: None
+    )
+    monkeypatch.setattr(hermes_main, "_recover_from_interrupted_install", lambda: None)
+    monkeypatch.setattr(hermes_main, "_try_termux_fast_tui_launch", lambda: True)
+
+    hermes_main.main()
+
+    assert capsys.readouterr().err == ""
+
+
+def test_startup_warning_classification_failure_does_not_abort_cli(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+    monkeypatch.setattr(hermes_main, "_set_process_title", lambda: None)
+    monkeypatch.setattr(hermes_main, "_warn_if_unsupervised_pid1", lambda: None)
+    monkeypatch.setattr(hermes_main, "_advertise_agent_env", lambda: None)
+    monkeypatch.setattr(hermes_main, "_cleanup_quarantined_exes", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_sweep_stale_bytecode_if_checkout_changed", lambda: None
+    )
+    monkeypatch.setattr(hermes_main, "_recover_from_interrupted_install", lambda: None)
+    monkeypatch.setattr(
+        hermes_main,
+        "_startup_should_warn_pending_fleet_restart",
+        lambda: (_ for _ in ()).throw(ImportError("partial update")),
+    )
+    monkeypatch.setattr(hermes_main, "_try_termux_fast_tui_launch", lambda: True)
+
+    hermes_main.main()
 
 
 # ── Self-heal: marker left behind by a supervisor-level restart (#105417 / #111272) ──

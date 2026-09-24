@@ -261,6 +261,29 @@ def ensure_mcp_discovery_started() -> None:
     _spawn_discovery(("warning", "Background MCP tool discovery failed to start"))
 
 
+def register_configured_shell_hooks() -> None:
+    """Wire this home's declarative ``hooks:`` onto the plugin manager (idempotent).
+
+    ``main()`` never reached the CLI's hooks block: ``hermes_cli.main._prepare_agent_startup``
+    returns unless ``args.command in _AGENT_COMMANDS`` (``{None, "chat", "acp", "rl"}``), and
+    ``serve`` is not in that set — so the stdio backend this process IS (Desktop, dashboard PTY
+    chat and the TUI all spawn it) ran with every config-declared hook inert, exactly on the
+    surface the agent runs on.
+
+    Consent comes from ``hooks_auto_accept`` / ``HERMES_ACCEPT_HOOKS`` (this backend has no TTY
+    to prompt on); ``accept_hooks=False`` lets ``register_from_config`` resolve both. Never
+    fakes a live guard: an unapproved hook is skipped with the library's own warning, and a
+    registration that raises is logged at WARNING rather than swallowed.
+    """
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.warning("shell-hook registration failed at serve startup", exc_info=True)
+
+
 def _write_or_exit(payload: dict, reason: str) -> None:
     if not write_json(payload):
         _log_exit(reason)
@@ -285,6 +308,11 @@ def main():
 
     # Backgrounded so a dead MCP server can't freeze startup; _make_agent briefly joins it.
     ensure_mcp_discovery_started()
+
+    # Arm this home's declarative shell hooks before advertising readiness, so the very first
+    # turn already runs under them (see register_configured_shell_hooks for why this backend
+    # never got them through the CLI's startup path).
+    register_configured_shell_hooks()
 
     # change_events: clients demote legacy polls; replay_epoch: WS restart detection.
     _write_or_exit({

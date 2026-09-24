@@ -7,6 +7,7 @@ tail/watch/gc/repair).
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import contextlib
 import json
 import os
@@ -180,6 +181,13 @@ def kanban_command(args: argparse.Namespace) -> int:
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":
             return _cmd_repair(args)
+        # Preview is an audit operation: do not run schema migrations or
+        # legacy backfills before opening the board read-only.
+        if action == "reconcile-runs":
+            try:
+                return int(_cmd_reconcile_runs(args) or 0)
+            except (ValueError, RuntimeError, PermissionError, sqlite3.Error) as exc:
+                return _err(f"kanban: {exc}")
         # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
         # "no such table: tasks" on first use from a fresh HERMES_HOME.
         try:
@@ -212,7 +220,7 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
+    "init", "create", "swarm", "assign", "reclaim", "reconcile-runs", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
@@ -609,6 +617,29 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
         ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
     return _ok_or_err(ok, f"cannot reclaim {args.task_id} (not running or unknown id)",
                       f"Reclaimed {args.task_id}")
+
+
+def _cmd_reconcile_runs(args: argparse.Namespace) -> int:
+    connector = kbc.connect_readonly_closing if bool(getattr(args, "dry_run", False)) else kbc.connect_existing_closing
+    with connector() as conn:
+        report = kb.reconcile_terminal_runs(
+            conn,
+            dry_run=bool(getattr(args, "dry_run", False)),
+            reason=args.reason,
+            trusted_claim_host=args.claim_host,
+        )
+    if getattr(args, "json", False):
+        _print_json(report, ascii=True)
+    else:
+        verb = "Eligible" if report["dry_run"] else "Reconciled"
+        rows = report["eligible"] if report["dry_run"] else report["reconciled"]
+        print(f"{verb}: {len(rows)}")
+        for row in rows:
+            print(f"  run {row['run_id']}  task {row['task_id']}  ({row['task_status']})")
+        print(f"Skipped live: {len(report['skipped_live'])}")
+        print(f"Skipped unverifiable: {len(report['skipped_unverifiable'])}")
+        print(f"Skipped current: {len(report['skipped_current'])}")
+    return 0
 
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
@@ -1327,7 +1358,7 @@ _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
     "assign": _cmd_assign, "set-model": _cmd_set_model,
-    "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
+    "reclaim": _cmd_reclaim, "reconcile-runs": _cmd_reconcile_runs, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,

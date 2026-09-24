@@ -2109,15 +2109,22 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
         kb.claim_task(conn, t, claimer=f"{host}:worker")
         # A verified spawn: an uncaptured fingerprint would (correctly) refuse the signal.
         monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
-        kbd._set_worker_pid(conn, t, 54321)
+        worker_pid = os.getpid()
+        kbd._set_worker_pid(conn, t, worker_pid)
 
-        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        state = {"alive": True}
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: state["alive"])
         signalled = []
+
+        def _signal(pid, sig):
+            signalled.append((pid, sig))
+            state["alive"] = False
+
         assert kb.archive_task(
-            conn, t, signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+            conn, t, signal_fn=_signal,
         ) is True
 
-        assert signalled and signalled[0][0] == 54321
+        assert signalled and signalled[0][0] == worker_pid
 
         row = conn.execute(
             "SELECT payload FROM task_events "
@@ -2125,7 +2132,7 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
             (t,),
         ).fetchone()
         payload = json.loads(row["payload"])
-        assert payload["prev_pid"] == 54321
+        assert payload["prev_pid"] == worker_pid
         assert payload["host_local"] is True
         assert payload["termination_attempted"] is True
         assert payload["terminated"] is True

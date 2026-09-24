@@ -11,6 +11,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
@@ -2571,6 +2572,12 @@ def reclaim_task(
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"])
+    if _worker_survived_termination(termination):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, int(time.time()), termination,
+            reason="manual_reclaim_worker_alive",
+        )
+        return False
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
@@ -2589,6 +2596,137 @@ def reclaim_task(
     # Operator intervention = fresh retry budget (own txn, runs after commit).
     _clear_failure_counter(conn, task_id)
     return True
+
+
+def reconcile_terminal_runs(
+    conn: sqlite3.Connection, *, dry_run: bool = False, reason: Optional[str] = None,
+    trusted_claim_host: Optional[str] = None, worker_alive_fn=None, now: Optional[int] = None,
+) -> dict:
+    """Close detached ``running`` ledger rows for terminal tasks.
+
+    This is deliberately narrower than :func:`reclaim_task`: only ``done`` or
+    ``archived`` tasks qualify, the run must not be the task's current run, and
+    a row whose recorded worker is still alive or cannot be proven dead is
+    never changed. Task state is left untouched. Each repair is recorded as a
+    run-scoped audit event.
+
+    ``worker_alive_fn`` and ``now`` are deterministic test seams; production
+    callers use the dispatcher's fingerprint-aware liveness check and wall time.
+    """
+    _assert_not_delegated_child_mutation()
+    if worker_alive_fn is None:
+        from hermes_cli import kanban_db_dispatch as kbd
+        worker_alive_fn = kbd._worker_liveness
+
+    reason_text = (reason or "operator reconciliation").strip() or "operator reconciliation"
+    local_host = _claimer_id().rsplit(":", 1)[0]
+    supplied_host = (trusted_claim_host or "").strip()
+    if supplied_host and supplied_host != local_host:
+        raise ValueError(
+            f"trusted claim host must equal this host ({local_host!r}), got {supplied_host!r}"
+        )
+    trusted_host = local_host
+    ended_at = int(time.time()) if now is None else int(now)
+    report = {
+        "dry_run": bool(dry_run),
+        "eligible": [],
+        "reconciled": [],
+        "skipped_live": [],
+        "skipped_unverifiable": [],
+        "skipped_current": [],
+    }
+
+    def _scan_and_optionally_update() -> None:
+        rows = conn.execute(
+            """
+            SELECT r.id AS run_id, r.task_id, r.claim_lock,
+                   r.worker_pid, r.worker_started_at,
+                   r.error AS prior_error, typeof(r.error) AS prior_error_type,
+                   CAST(r.error AS BLOB) AS prior_error_raw,
+                   r.metadata AS prior_metadata, typeof(r.metadata) AS prior_metadata_type,
+                   CAST(r.metadata AS BLOB) AS prior_metadata_raw,
+                   t.status AS task_status, t.current_run_id
+              FROM task_runs r
+              JOIN tasks t ON t.id = r.task_id
+             WHERE r.status = 'running'
+               AND r.ended_at IS NULL
+               AND t.status IN ('done', 'archived')
+             ORDER BY r.id
+            """
+        ).fetchall()
+        for row in rows:
+            entry = {
+                "run_id": int(row["run_id"]),
+                "task_id": row["task_id"],
+                "task_status": row["task_status"],
+                "worker_pid": _opt_int(row["worker_pid"]),
+            }
+            if row["current_run_id"] is not None and int(row["current_run_id"]) == entry["run_id"]:
+                report["skipped_current"].append(entry)
+                continue
+            claim_lock = str(row["claim_lock"] or "")
+            claim_host = claim_lock.rsplit(":", 1)[0] if ":" in claim_lock else ""
+            if not claim_lock or not trusted_host or claim_host != trusted_host:
+                report["skipped_unverifiable"].append(entry)
+                continue
+            liveness = worker_alive_fn(row["worker_pid"], row["worker_started_at"])
+            if liveness is True:
+                report["skipped_live"].append(entry)
+                continue
+            if liveness is not False:
+                report["skipped_unverifiable"].append(entry)
+                continue
+            report["eligible"].append(entry)
+            if dry_run:
+                continue
+
+            metadata = {"reason": reason_text, "task_status": row["task_status"]}
+            if row["prior_error_type"] != "null":
+                metadata["prior_error_raw"] = _preserve_audit_value(
+                    row["prior_error"], row["prior_error_raw"], row["prior_error_type"],
+                )
+            if row["prior_metadata_type"] != "null":
+                raw_metadata = bytes(row["prior_metadata_raw"])
+                metadata["prior_metadata_raw"] = _preserve_audit_value(
+                    row["prior_metadata"], raw_metadata, row["prior_metadata_type"],
+                )
+            cur = conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'reconciled', outcome = 'ledger_reconciled',
+                       ended_at = ?, claim_expires = NULL, error = ?, metadata = ?
+                 WHERE id = ? AND status = 'running' AND ended_at IS NULL
+                """,
+                (
+                    ended_at,
+                    f"historical_terminal_run_reconciled: {reason_text}",
+                    _json_or_null(metadata), entry["run_id"],
+                ),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(f"run {entry['run_id']} changed during reconciliation")
+            _append_event(
+                conn, entry["task_id"], "run_ledger_reconciled",
+                {"run_id": entry["run_id"], "task_status": row["task_status"], "reason": reason_text},
+                run_id=entry["run_id"],
+            )
+            report["reconciled"].append(entry)
+
+    if dry_run:
+        _scan_and_optionally_update()
+    else:
+        with write_txn(conn):
+            _scan_and_optionally_update()
+    return report
+
+
+def _preserve_audit_value(value: Any, raw: Any, storage_type: str) -> Any:
+    """Return a JSON-safe, lossless representation for legacy audit cells."""
+    return {
+        "storage_type": storage_type,
+        "encoding": "base64",
+        "data": base64.b64encode(bytes(raw)).decode("ascii"),
+    }
 
 
 def reassign_task(

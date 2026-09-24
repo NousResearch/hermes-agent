@@ -308,6 +308,83 @@ def reap_worker_zombies() -> "list[int]":
     return reaped
 
 
+def _primary_pid_liveness(pid: int) -> Optional[bool]:
+    """Existence probe whose errors remain unknown instead of becoming death."""
+    # Preserve the long-standing test/integration seam exported by kanban_db.
+    # Avoid recursion when it still points at this module's own wrapper.
+    legacy_probe = getattr(_kb, "_pid_alive", None)
+    if callable(legacy_probe) and legacy_probe is not _pid_alive:
+        try:
+            return bool(legacy_probe(pid))
+        except Exception:
+            return None
+    try:
+        import psutil  # type: ignore
+        try:
+            process = psutil.Process(int(pid))
+            return bool(process.is_running())
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return True
+        except (OSError, RuntimeError):
+            return None
+    except ImportError:
+        pass
+    if os.name == "posix":
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return None
+        return True
+    return None
+
+
+def _pid_liveness(pid: Optional[int]) -> Optional[bool]:
+    """Tri-state host PID probe: alive, dead, or inconclusive.
+
+    The primary existence check can prove absence. Secondary zombie probes may
+    prove death, but their own failure is uncertainty rather than absence.
+    """
+    if not pid or pid <= 0:
+        return False
+    primary = _primary_pid_liveness(int(pid))
+    if primary is not True:
+        return primary
+    if sys.platform == "linux":
+        try:
+            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("State:"):
+                        return False if "Z" in line.split(":", 1)[1] else True
+            return None
+        except (FileNotFoundError, PermissionError, OSError):
+            return None
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(int(pid))],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=1,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            return None
+        if proc.returncode != 0:
+            return None
+        stat = (proc.stdout or "").strip()
+        if not stat:
+            return None
+        return "Z" not in stat
+    return True
+
+
 def _pid_alive(pid: Optional[int]) -> bool:
     """Return True if ``pid`` is still running on this host.
 
@@ -321,41 +398,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
     ``/proc/<pid>/status`` and treat ``State: Z`` as dead; macOS: ask ``ps``
     for the BSD ``stat`` field and treat ``Z`` as dead.
     """
-    if not pid or pid <= 0:
-        return False
-    from gateway.status import _pid_exists
-    if not _pid_exists(int(pid)):
-        return False
-    if sys.platform == "linux":
-        try:
-            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("State:"):
-                        # "State:\tZ (zombie)" → dead
-                        if "Z" in line.split(":", 1)[1]:
-                            return False
-                        break
-        except (FileNotFoundError, PermissionError, OSError):
-            # proc entry gone → already reaped; treat as dead.
-            pass
-    elif sys.platform == "darwin":
-        try:
-            proc = subprocess.run(
-                ["ps", "-o", "stat=", "-p", str(int(pid))],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=1,
-                check=False,
-            )
-            if proc.returncode != 0:
-                return False
-            if "Z" in (proc.stdout or "").strip():
-                return False
-        except (OSError, subprocess.SubprocessError, TimeoutError):
-            # If the secondary probe fails, keep the kill(0) answer.
-            pass
-    return True
+    return _pid_liveness(pid) is not False
 
 
 # ``worker_started_at`` value for a spawn whose fingerprint could not be captured. Distinct from the
@@ -372,28 +415,96 @@ def _process_fingerprint(pid: int) -> Optional[str]:
     reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
     from gateway.drain_control import current_instantiation_epoch
     from gateway.status import get_process_start_time
+    epoch = _worker_instantiation_epoch(current_instantiation_epoch())
     start = get_process_start_time(int(pid))
-    if start is None:
+    if not epoch or start is None:
         return None
-    return f"{current_instantiation_epoch()}|{start}"
+    return f"{epoch}|{start}"
+
+
+def _worker_instantiation_epoch(epoch: str) -> Optional[str]:
+    """Return a complete boot witness, with a non-Linux boot-time fallback."""
+    value = str(epoch or "").strip()
+    if value:
+        if ":" not in value:
+            return None
+        boot_id, pid1_start = value.split(":", 1)
+        if boot_id and pid1_start:
+            return value
+        return None
+    try:
+        import psutil  # type: ignore
+        boot = float(psutil.boot_time())
+        return f"boot-time:{int(round(boot * 100))}" if boot > 0 else None
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _complete_worker_epoch(epoch: str) -> bool:
+    """Whether a persisted epoch has both witness components."""
+    value = str(epoch or "").strip()
+    if ":" not in value:
+        return False
+    left, right = value.split(":", 1)
+    return bool(left and right)
+
+
+def _worker_epochs_match(recorded: str, current: str) -> Optional[bool]:
+    """Compare complete boot witnesses; clock-derived macOS witnesses tolerate drift."""
+    if not _complete_worker_epoch(recorded) or not _complete_worker_epoch(current):
+        return None
+    if recorded.startswith("boot-time:") and current.startswith("boot-time:"):
+        try:
+            return abs(int(recorded.split(":", 1)[1]) - int(current.split(":", 1)[1])) <= 200
+        except ValueError:
+            return None
+    return recorded == current
+
+
+def _worker_liveness(pid: Optional[int], started_at) -> Optional[bool]:
+    """Tri-state worker identity probe: True, False, or unknown (None).
+
+    An unreadable fingerprint for a live PID is unknown rather than death.
+    Cleanup callers must never treat that uncertainty as permission.
+    """
+    pid_state = _pid_liveness(pid)
+    if pid_state is False:
+        return False
+    if pid_state is None:
+        return None
+    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+        return True
+    if started_at is None:
+        return None
+    if isinstance(started_at, str) and "|" in started_at:
+        current = _process_fingerprint(int(pid))
+        if current is None:
+            return None
+        try:
+            recorded_epoch, recorded_start = started_at.split("|", 1)
+            current_epoch, current_start = current.split("|", 1)
+            epoch_match = _worker_epochs_match(recorded_epoch, current_epoch)
+            if epoch_match is None:
+                return None
+            from gateway.status import start_time_fingerprints_match
+            return epoch_match and start_time_fingerprints_match(recorded_start, current_start)
+        except (TypeError, ValueError):
+            return None
+    # Start-only legacy fingerprints have no reboot witness. They cannot prove
+    # identity and therefore cannot authorize signalling or claim release.
+    return None
 
 
 def _worker_alive(pid: Optional[int], started_at) -> bool:
-    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the fingerprint
-    recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated process can own
-    the number, so bare existence is never enough to extend a claim or to signal. A legacy row without
-    a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
-    rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
-    (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
-    refuses to signal it."""
-    if not _kb._pid_alive(pid):
-        return False
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        return True
-    return not _pid_recycled(pid, started_at)
+    """Conservative boolean view of :func:`_worker_liveness`.
+
+    Unknown means alive so a transient probe failure cannot release a claim,
+    signal a stranger, or close a ledger row beside a possibly-live worker.
+    """
+    return _worker_liveness(pid, started_at) is not False
 
 
-def _pid_recycled(pid: Optional[int], started_at) -> bool:
+def _pid_recycled(pid: Optional[int], started_at) -> Optional[bool]:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
     recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
@@ -403,15 +514,24 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+        current = _process_fingerprint(int(pid))
+        if current is None:
+            return None
+        try:
+            recorded_epoch, recorded_start = started_at.split("|", 1)
+            current_epoch, current_start = current.split("|", 1)
+            from gateway.status import start_time_fingerprints_match
+            return recorded_epoch != current_epoch or not start_time_fingerprints_match(recorded_start, current_start)
+        except (TypeError, ValueError):
+            return None
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
     current = get_process_start_time(int(pid))
     if current is None:
         return True
     try:
-        return not _start_times_agree(current, started_at)
+        return not start_time_fingerprints_match(started_at, current)
     except (TypeError, ValueError):
-        return True
+        return None
 
 
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
@@ -469,14 +589,16 @@ def _terminate_reclaimed_worker(
     kill = _kill_fn(signal_fn)
     if kill is None:
         return info
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
+    if started_at == UNVERIFIED_WORKER_FINGERPRINT or started_at is None:
         info["signal_refused"] = True
-        info["terminated"] = not _kb._pid_alive(pid)
+        info["terminated"] = _pid_liveness(pid) is False
         return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+    liveness = _worker_liveness(pid, started_at)
+    if liveness is None:
+        info["signal_refused"] = True
+        return info
+    if liveness is False:
         info["terminated"] = True
-        info["pid_recycled"] = True
         return info
 
     info["termination_attempted"] = True
@@ -493,11 +615,15 @@ def _terminate_reclaimed_worker(
     if _poll_worker_exit(pid, started_at):
         info["terminated"] = True
         return info
-    if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
-            return info
-        info["sigkill"] = True
-    info["terminated"] = not _worker_alive(pid, started_at)
+    liveness = _worker_liveness(pid, started_at)
+    if liveness is not True:
+        info["signal_refused"] = liveness is None
+        info["terminated"] = liveness is False
+        return info
+    if not _sigkill(kill, pid):
+        return info
+    info["sigkill"] = True
+    info["terminated"] = _worker_liveness(pid, started_at) is False
     return info
 
 
@@ -681,7 +807,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         pid = int(row["worker_pid"])
         tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
-        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+        if started_at in (UNVERIFIED_WORKER_FINGERPRINT, None) and _kb._pid_alive(pid):
             # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
             # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
             _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
@@ -692,13 +818,30 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # mismatch) is never signalled: the worker is already gone.
         killed = False
         kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
+        liveness = _worker_liveness(pid, started_at)
+        if liveness is None:
+            _kb._log.warning("kanban: task %s worker pid %s identity is inconclusive; not released", tid, pid)
+            continue
+        if liveness is True:
+            if kill is None:
+                continue
+            try:
                 kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                continue
             # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+            if not _poll_worker_exit(pid, started_at):
+                liveness = _worker_liveness(pid, started_at)
+                if liveness is None:
+                    continue
+                if liveness is True:
+                    killed = _sigkill(kill, pid)
+                    if not killed:
+                        continue
+            if _worker_liveness(pid, started_at) is not False:
+                continue
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):

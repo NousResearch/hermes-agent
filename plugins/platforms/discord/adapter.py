@@ -4894,6 +4894,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if str(entry).strip().isdigit()
         }
 
+    def _discord_group_allow_all(self) -> bool:
+        """Whether this profile explicitly opens guild senders via group_allow_from."""
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        return isinstance(extra, dict) and "*" in self._gate_csv_set(extra.get("group_allow_from"))
+
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
         The env mirror of ``_allowed_user_ids`` doesn't survive the per-turn .env hot-reload, so the
@@ -5536,6 +5541,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
@@ -5560,6 +5566,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 session_key=session_key, confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             return {"content": content, "embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build)
 
@@ -5599,6 +5606,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
+                view.group_allow_all = self._discord_group_allow_all()
             else:
                 hint = "Reply in this channel with your answer."
                 view = None
@@ -5625,6 +5633,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             content = self._self_contained_prompt_content("☤ **Update Needs Your Input**", f"{prompt}{default_hint}")
             return {"content": content, "embed": embed, "view": view}, view
         result = await self._send_prompt(chat_id, metadata, _build)
@@ -5657,6 +5666,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 session_key=session_key, on_model_selected=on_model_selected,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_model_picker")
 
@@ -5675,6 +5685,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 choices=choices, on_choice_selected=on_choice_selected,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_choice_picker")
 
@@ -6162,6 +6173,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
 def _component_check_auth(
     interaction, allowed_user_ids: Optional[set], allowed_role_ids: Optional[set],
+    *, group_allow_all: bool = False,
 ) -> bool:
     """Shared user-or-role OR authorization for component button clicks.
     Allow on: DISCORD/GATEWAY_ALLOW_ALL_USERS, user in DISCORD/GATEWAY_ALLOWED_USERS, a role in the
@@ -6170,6 +6182,13 @@ def _component_check_auth(
     user = getattr(interaction, "user", None)
     if user is None or getattr(user, "id", None) is None:
         return False
+    # ``group_allow_from: ['*']`` is group-scoped, so it must never open a DM
+    # component. Discord leaves guild_id unset for DM interactions.
+    if group_allow_all and (
+        getattr(interaction, "guild_id", None) is not None
+        or getattr(interaction, "guild", None) is not None
+    ):
+        return True
     # Scope-aware reads: interaction tasks inherit the owning profile's secret-scope contextvar;
     # under multiplex a raw os.getenv could return ANOTHER profile's allow-all flag.
     # Scope-aware reads (issue #72348): component interactions are dispatched from discord.py tasks
@@ -6250,11 +6269,15 @@ def _define_discord_view_classes() -> None:
             super().__init__(timeout=timeout)
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.group_allow_all = False
             self.resolved = False
             self._message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                group_allow_all=self.group_allow_all,
+            )
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click; True when it may proceed."""

@@ -987,6 +987,149 @@ function Ensure-NodeExeOnPath {
     return $true
 }
 
+# Registry location of the persisted User PATH.  Script-scope so the
+# PowerShell tests can point the helpers below at a scratch key and drive the
+# real call sites without ever touching HKCU\Environment\Path.
+$script:UserPathRegistrySubKey = "Environment"
+$script:UserPathRegistryName = "Path"
+
+# Read the persisted User PATH *unexpanded*, together with its registry value
+# kind, for every read-modify-write of that value.
+#
+# [Environment]::GetEnvironmentVariable("Path", "User") expands %VARS% on read
+# and SetEnvironmentVariable always writes REG_SZ.  Round-tripping through that
+# pair rewrote an entry such as "%USERPROFILE%\.cargo\bin" as a literal path
+# and flipped the value from REG_EXPAND_SZ to REG_SZ -- after which Windows no
+# longer expands any %VAR% entry another tool adds later.  Keep in lockstep
+# with hermes_cli/_install_repair.py (_read_user_path_raw /
+# _write_user_path_raw) and hermes_cli/uninstall.py, which already hold this
+# discipline for `hermes update` and `hermes uninstall`.
+#
+# Session refreshes ($env:Path = ...) are a different job and keep the
+# expanding .NET read: a process environment wants expanded values.
+#
+# Writable is $false when a Path value EXISTS but is not a string (a
+# REG_MULTI_SZ or binary value some tool left behind).  Callers must then skip
+# the write: treating an unreadable value as "empty" and writing from that
+# would replace the user's whole PATH with only our entries, which is what the
+# .NET getter's null led the old code to do.
+function Get-UserPathRaw {
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:UserPathRegistrySubKey)
+    if (-not $key) { return @{ Value = ""; Kind = $kind; Writable = $true } }
+    try {
+        $value = $key.GetValue(
+            $script:UserPathRegistryName,
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -eq $value) { return @{ Value = ""; Kind = $kind; Writable = $true } }
+        if ($value -isnot [string]) { return @{ Value = ""; Kind = $kind; Writable = $false } }
+        return @{ Value = $value; Kind = $key.GetValueKind($script:UserPathRegistryName); Writable = $true }
+    } finally {
+        $key.Close()
+    }
+}
+
+# One message for every call site that has to leave an unreadable User PATH
+# alone, naming what the user can add by hand.
+function Write-UserPathNotWritable {
+    param([string[]]$Entries)
+
+    Write-Warn ("User PATH is stored as a non-text registry value, so it was left untouched. " +
+        "Add manually: " + ($Entries -join ";"))
+}
+
+# Write the persisted User PATH back with the value kind it was read with
+# (REG_EXPAND_SZ when the value did not exist yet, the Windows default for
+# Path), then tell running processes the environment changed.
+function Set-UserPathRaw {
+    param(
+        [string]$Value,
+        [Microsoft.Win32.RegistryValueKind]$Kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:UserPathRegistrySubKey)
+    try {
+        $key.SetValue($script:UserPathRegistryName, $Value, $Kind)
+    } finally {
+        $key.Close()
+    }
+    Send-EnvironmentChanged
+}
+
+# The comparison form of one raw User PATH entry.  Entries are matched on
+# their expanded spelling -- exactly what the expanding .NET read used to hand
+# these call sites -- while the raw text is what gets written back.
+function Expand-UserPathEntry {
+    param([string]$Entry)
+
+    if (-not $Entry) { return $Entry }
+    return [Environment]::ExpandEnvironmentVariables($Entry)
+}
+
+# Broadcast WM_SETTINGCHANGE("Environment") so Explorer -- and every shell it
+# launches afterwards -- picks up the new User PATH without a logoff.  This is
+# the same call [Environment]::SetEnvironmentVariable makes internally; a
+# direct registry write skips it, so it has to be sent by hand.  Best-effort:
+# a failed broadcast only delays visibility, it must never fail the install.
+function Send-EnvironmentChanged {
+    try {
+        $type = Get-EnvBroadcastType
+        if (-not $type) { return }
+        $HWND_BROADCAST = [IntPtr]0xffff
+        $WM_SETTINGCHANGE = 0x001A
+        $result = [UIntPtr]::Zero
+        [void]$type::SendMessageTimeout(
+            $HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "Environment", 0, 1000, [ref]$result)
+    } catch {
+    }
+}
+
+# The P/Invoke type behind Send-EnvironmentChanged, compiled on first use.
+# Split out so the PowerShell tests can prove it compiles under both pwsh 7 and
+# Windows PowerShell 5.1 without sending a real broadcast: the sender swallows
+# every error by design, so a wrong signature would otherwise fail silently.
+function Get-EnvBroadcastType {
+    $known = ([System.Management.Automation.PSTypeName]'HermesInstall.EnvBroadcast').Type
+    if ($known) { return $known }
+    Add-Type -Namespace 'HermesInstall' -Name 'EnvBroadcast' -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+    return ([System.Management.Automation.PSTypeName]'HermesInstall.EnvBroadcast').Type
+}
+
+# Append each missing directory to the persisted User PATH.
+#
+# The split is wrapped in @() on purpose.  An `if` used as an expression
+# unrolls its output, so without it a User PATH holding a single entry arrives
+# as a [string] and an empty one as $null -- and `+=` then CONCATENATES:
+# "C:\only-entry" became "C:\only-entryC:\git\cmdC:\git\bin...", one glued,
+# invalid entry that also destroyed the entry the user had.  Existing entries,
+# empty segments included, keep their position and their raw spelling.
+function Add-UserPathEntries {
+    param([string[]]$Entries)
+
+    $rawUserPath = Get-UserPathRaw
+    if (-not $rawUserPath.Writable) {
+        Write-UserPathNotWritable -Entries $Entries
+        return
+    }
+    $userPathItems = @(if ($rawUserPath.Value) { $rawUserPath.Value -split ";" })
+    $expandedItems = @($userPathItems | ForEach-Object { Expand-UserPathEntry $_ })
+    $changed = $false
+    foreach ($entry in $Entries) {
+        if ($expandedItems -notcontains $entry) {
+            $userPathItems += $entry
+            $expandedItems += $entry
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        Set-UserPathRaw -Value ($userPathItems -join ";") -Kind $rawUserPath.Kind
+    }
+}
+
 # Put the Hermes-managed Node dir at the FRONT of the persisted User PATH.
 #
 # Appending is not enough: it leaves a pre-existing system Node ahead of the
@@ -1011,14 +1154,19 @@ function Set-ManagedNodeFirstOnUserPath {
 
     if (-not $NodeDir) { return }
 
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $rawUserPath = Get-UserPathRaw
+    if (-not $rawUserPath.Writable) {
+        Write-UserPathNotWritable -Entries @($NodeDir)
+        return
+    }
+    $userPath = $rawUserPath.Value
     $items = if ($userPath) { @($userPath -split ";") } else { @() }
 
-    $rest = @($items | Where-Object { $_ -ne $NodeDir })
+    $rest = @($items | Where-Object { (Expand-UserPathEntry $_) -ne $NodeDir })
     $updated = (@($NodeDir) + $rest) -join ";"
 
     if ($updated -ne $userPath) {
-        [Environment]::SetEnvironmentVariable("Path", $updated, "User")
+        Set-UserPathRaw -Value $updated -Kind $rawUserPath.Kind
     }
 }
 
@@ -1676,18 +1824,7 @@ function Install-Git {
             "$gitDir\bin",
             "$gitDir\usr\bin"
         )
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
-        $changed = $false
-        foreach ($entry in $newPathEntries) {
-            if ($userPathItems -notcontains $entry) {
-                $userPathItems += $entry
-                $changed = $true
-            }
-        }
-        if ($changed) {
-            [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
-        }
+        Add-UserPathEntries -Entries $newPathEntries
 
         $version = & $gitExe --version
         Write-Success "Git $version installed to $gitDir (portable, user-scoped)"
@@ -3333,8 +3470,38 @@ function Set-PathVariable {
         $hermesBin = "$HermesHome\bin"
         Install-HermesCommandLaunchers -Root $InstallDir -Destination $hermesBin | Out-Null
     }
-    
-    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+
+    Set-HermesBinOnUserPath -HermesBin $hermesBin
+
+    # Set HERMES_HOME so the Python code finds config/data in the right place.
+    # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
+    # of the Unix default ~/.hermes
+    $currentHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
+    if (-not $currentHermesHome -or $currentHermesHome -ne $HermesHome) {
+        [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
+        Write-Success "Set HERMES_HOME=$HermesHome"
+    }
+    $env:HERMES_HOME = $HermesHome
+
+    # Update current session
+    $env:Path = "$hermesBin;$env:Path"
+
+    Write-Success "hermes command ready"
+}
+
+# The persisted-User-PATH half of Set-PathVariable, split out so the
+# PowerShell tests can drive it against a scratch registry key: strip the
+# legacy launcher entries, then make sure the managed binary dir is present.
+function Set-HermesBinOnUserPath {
+    param([string]$hermesBin)
+
+    $rawUserPath = Get-UserPathRaw
+    if (-not $rawUserPath.Writable) {
+        Write-UserPathNotWritable -Entries @($hermesBin)
+        return
+    }
+    $currentPath = $rawUserPath.Value
+    $removedLegacy = $false
 
     # Migrate older layouts off the user PATH:
     #   venv\Scripts     -- shadowed the user's python (#83797)
@@ -3346,39 +3513,34 @@ function Set-PathVariable {
     if (-not $NoVenv) {
         $legacyEntries = @("$InstallDir\venv\Scripts", "$InstallDir\bin")
         $items = @(($currentPath -split ';') | Where-Object { $_ })
-        $cleaned = @($items | Where-Object { $legacyEntries -notcontains $_ })
+        $cleaned = @($items | Where-Object { $legacyEntries -notcontains (Expand-UserPathEntry $_) })
         if ($cleaned.Count -ne $items.Count) {
             $currentPath = $cleaned -join ";"
-            [Environment]::SetEnvironmentVariable("Path", $currentPath, "User")
-            Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
+            $removedLegacy = $true
         }
     }
-    
-    if ($currentPath -notlike "*$hermesBin*") {
-        [Environment]::SetEnvironmentVariable(
-            "Path",
-            "$hermesBin;$currentPath",
-            "User"
-        )
+
+    # Presence is judged on the expanded spelling (a user may have stored
+    # "%LOCALAPPDATA%\hermes\bin"); the raw text is what gets written back.
+    $addBin = [Environment]::ExpandEnvironmentVariables("$currentPath") -notlike "*$hermesBin*"
+    if ($addBin) {
+        # No trailing ";" when there was nothing before: an empty PATH element
+        # means "the current directory" to Git Bash, MSYS and Cygwin.
+        $currentPath = if ($currentPath) { "$hermesBin;$currentPath" } else { $hermesBin }
+    }
+
+    # One write and one broadcast, however many of the two steps applied.
+    if ($removedLegacy -or $addBin) {
+        Set-UserPathRaw -Value $currentPath -Kind $rawUserPath.Kind
+    }
+    if ($removedLegacy) {
+        Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
+    }
+    if ($addBin) {
         Write-Success "Added to user PATH: $hermesBin"
     } else {
         Write-Info "PATH already configured"
     }
-    
-    # Set HERMES_HOME so the Python code finds config/data in the right place.
-    # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
-    # of the Unix default ~/.hermes
-    $currentHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
-    if (-not $currentHermesHome -or $currentHermesHome -ne $HermesHome) {
-        [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
-        Write-Success "Set HERMES_HOME=$HermesHome"
-    }
-    $env:HERMES_HOME = $HermesHome
-    
-    # Update current session
-    $env:Path = "$hermesBin;$env:Path"
-    
-    Write-Success "hermes command ready"
 }
 
 function Write-BootstrapMarker {

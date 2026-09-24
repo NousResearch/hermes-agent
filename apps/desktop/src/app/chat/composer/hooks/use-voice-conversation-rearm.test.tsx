@@ -296,7 +296,8 @@ describe('useVoiceConversation playback rearm', () => {
 
     await waitFor(() =>
       expect(mocks.playSpeechText).toHaveBeenCalledWith('Fallback reply', {
-        source: 'voice-conversation'
+        source: 'voice-conversation',
+        syncOnly: true
       })
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
@@ -311,7 +312,8 @@ describe('useVoiceConversation playback rearm', () => {
 
     await waitFor(() =>
       expect(mocks.playSpeechText).toHaveBeenCalledWith('The first sentence is ready.', {
-        source: 'voice-conversation'
+        source: 'voice-conversation',
+        syncOnly: true
       })
     )
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
@@ -320,7 +322,8 @@ describe('useVoiceConversation playback rearm', () => {
 
     await waitFor(() =>
       expect(mocks.playSpeechText).toHaveBeenCalledWith('The second sentence is ready.', {
-        source: 'voice-conversation'
+        source: 'voice-conversation',
+        syncOnly: true
       })
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
@@ -343,6 +346,49 @@ describe('useVoiceConversation playback rearm', () => {
 
     await waitFor(() => expect(hook.result.current.status).toBe('idle'))
     expect(mocks.playSpeechText).toHaveBeenCalledTimes(1)
+    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('speaks a sealed interim bubble while a tool is still running', async () => {
+    mocks.useFallbackSpeech()
+    let releaseSubmit: () => void = () => {}
+    let response: null | { id: string; pending: boolean; text: string } = null
+
+    const hook = renderHook(
+      ({ busy, enabled }) =>
+        useVoiceConversation({
+          busy,
+          consumePendingResponse: vi.fn(),
+          enabled,
+          onSubmit: async () => {
+            await new Promise<void>(resolve => {
+              releaseSubmit = resolve
+            })
+            // Interim bubble sealed (trimmed, no trailing space); tool running.
+            response = { id: 'reply-edge', pending: false, text: 'I will check the file for you now.' }
+          },
+          onTranscribeAudio: async () => 'Hello',
+          pendingResponse: () => response
+        }),
+      { initialProps: { busy: false, enabled: false } }
+    )
+
+    hook.rerender({ busy: false, enabled: true })
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      mocks.triggerSilence()
+    })
+    hook.rerender({ busy: true, enabled: true })
+    await act(async () => {
+      releaseSubmit()
+    })
+
+    await waitFor(() =>
+      expect(mocks.playSpeechText).toHaveBeenCalledWith('I will check the file for you now.', {
+        source: 'voice-conversation',
+        syncOnly: true
+      })
+    )
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })
 })

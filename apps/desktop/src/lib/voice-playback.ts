@@ -72,6 +72,10 @@ function currentState(
  *  halves → the active (connection, profile). */
 export interface VoicePlaybackOptions extends OwnerScope {
   messageId?: string | null
+  /** Skip the client-direct/stream rungs and POST straight to /api/audio/speak.
+   *  For callers whose stream path (client-direct, else WS relay) already
+   *  answered `fallback` this reply; the relay may not have been probed. */
+  syncOnly?: boolean
   source: VoicePlaybackSource
 }
 
@@ -675,7 +679,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
   try {
     // Ladder: client-direct synthesis (profile's own TTS, no gateway audio
     // hop) → streaming WS relay → POST data-URL fallback.
-    const direct = await directTtsConfig(options).catch(() => null)
+    const direct = options.syncOnly ? null : await directTtsConfig(options).catch(() => null)
 
     if (direct && isCurrent()) {
       const session = openClientDirectSpeechSession(direct, options)
@@ -699,7 +703,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
       return false
     }
 
-    const streamUrl = await resolveSpeakStreamUrl(options)
+    const streamUrl = options.syncOnly ? null : await resolveSpeakStreamUrl(options)
 
     if (streamUrl && isCurrent()) {
       const outcome = await playSpeechStream(streamUrl, speakableText, options)

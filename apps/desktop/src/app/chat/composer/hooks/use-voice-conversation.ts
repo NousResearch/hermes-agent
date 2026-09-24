@@ -501,10 +501,16 @@ export function useVoiceConversation({
         ensureBargeMonitor()
         playing = true
 
-        const playback = playSpeechText(sentence, { ...ownerRef.current, source: 'voice-conversation' })
-        const sentenceStartSequence = $voicePlayback.get().sequence
-        ownedSequence = sentenceStartSequence
-        speechStartSequenceRef.current = sentenceStartSequence
+        // The stream path (client-direct, else WS relay) already answered
+        // `fallback` or was unavailable for this reply — POST each sentence
+        // straight to /api/audio/speak (same server TTS) instead of re-probing.
+        const playback = playSpeechText(sentence, {
+          ...ownerRef.current,
+          source: 'voice-conversation',
+          syncOnly: true
+        })
+        ownedSequence = $voicePlayback.get().sequence
+        speechStartSequenceRef.current = ownedSequence
         let playbackFailed = false
 
         void playback
@@ -525,7 +531,7 @@ export function useVoiceConversation({
               return
             }
 
-            const stopped = $voicePlayback.get().sequence > sentenceStartSequence
+            const stopped = $voicePlayback.get().sequence > ownedSequence
 
             if (bargedRef.current || stopped) {
               finishFallback(bargedRef.current, stopped && !bargedRef.current)
@@ -555,9 +561,12 @@ export function useVoiceConversation({
           sourceLength = response.text.length
         }
 
-        if (!response.pending && !busyRef.current && !responseFinished) {
-          responseFinished = true
+        if (!response.pending && !responseFinished) {
+          // A sealed interim bubble while a tool runs: speak its trimmed last
+          // sentence now (mirrors feedSpeechSession's session.flush) instead
+          // of holding it for the whole tool run. Finished only once idle.
           speechQueue.push(...sentenceBuffer.flush())
+          responseFinished = !busyRef.current
         }
 
         playNext()

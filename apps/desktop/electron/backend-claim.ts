@@ -24,7 +24,11 @@ import { electronProcessStartMarker } from './parent-process-identity'
 import { isPidAlive } from './update-marker'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
-export function execText(command: string, args: string[], { timeout = 3000 } = {}): Promise<string> {
+export function execText(
+  command: string,
+  args: string[],
+  { timeout = 3000, keepStdinOpen = false }: { timeout?: number; keepStdinOpen?: boolean } = {}
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
       if (error) {
@@ -38,7 +42,10 @@ export function execText(command: string, args: string[], { timeout = 3000 } = {
     })
 
     // These probes are noninteractive; do not leave readers waiting for input.
-    child.stdin?.end()
+    // Windows OpenSSH hangs for `ssh -G` when its stdin is a closed pipe.
+    if (!keepStdinOpen) {
+      child.stdin?.end()
+    }
   })
 }
 

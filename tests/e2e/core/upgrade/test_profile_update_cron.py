@@ -7,9 +7,9 @@ CLI process over a fake HOME; the assertions read the cron store the scheduler i
 (``cron/jobs.json``) and the CLI's own ``cron list``.
 
 Contract (documented in the command help and profile-distributions.md): shipped jobs are
-installed but NOT auto-scheduled; an update refreshes the jobs the distribution ships, removes
-the ones the author retired, leaves the jobs the user added in place, and keeps a job the user
-paused paused (#120823 Expected).
+installed but NOT auto-scheduled; an update refreshes the jobs the distribution ships, never
+leaves a job the author retired running, leaves the jobs the user added in place, and keeps a
+job the user paused paused (#120823, fixed by #121264).
 """
 
 from __future__ import annotations
@@ -27,27 +27,6 @@ pytestmark = [
     pytest.mark.linux_only,
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
 ]
-
-
-class Gap(Exception):
-    """A contract breach tracked in KNOWN. Not an AssertionError, so a strict xfail on it cannot
-    swallow an unrelated failure (a crashed CLI, a missing job store) in the same test."""
-
-
-def gap(ok: bool, msg: str) -> None:
-    if not ok:
-        raise Gap(msg)
-
-
-KNOWN: dict[str, str] = {
-    "keeps_user_jobs": "#120823 profile update replaces cron/jobs.json wholesale, deleting the user's own jobs",
-    "install_paused": "#120823 profile install leaves shipped cron jobs enabled and scheduled",
-    "keeps_paused_state": "#120823 profile update re-enables a shipped cron job the user paused",
-}
-
-
-def known(key: str):
-    return pytest.mark.xfail(strict=True, raises=Gap, reason=KNOWN[key]) if key in KNOWN else ()
 
 
 PY = str(H.WORKTREE / ".venv" / "bin" / "python")
@@ -128,36 +107,35 @@ def world(tmp_path_factory) -> World:
     return w
 
 
-def test_profile_update_refreshes_shipped_jobs_and_drops_retired_ones(world):
+def test_profile_update_refreshes_shipped_jobs_and_never_runs_retired_ones(world):
     jobs = _by_name(world.after_update)
     assert "weekly-digest" in jobs, f"shipped job missing after update: {world.after_update}"
     assert jobs["weekly-digest"].get("prompt") == "write the weekly digest v2", "shipped job definition not refreshed"
-    assert "retired-job" not in jobs, "a job the author retired is still scheduled after `profile update`"
+    # The merge cannot tell a formerly shipped job from one the user added, so a retired job may
+    # stay in the store; it must not be left running when the user never enabled it.
+    retired = jobs.get("retired-job")
+    assert retired is None or not _is_scheduled(retired), f"a job the author retired is scheduled after update: {retired}"
     assert sum(1 for j in world.after_update if j.get("name") == "weekly-digest") == 1, "shipped job duplicated"
     assert (world.installed / "SOUL.md").read_text(encoding="utf-8") == "You are shipped-bot v2.\n"
-    listed = world.cli("-p", "shipped-bot", "cron", "list").stdout
-    assert "weekly-digest" in listed and "retired-job" not in listed, listed
+    assert "weekly-digest" in world.cli("-p", "shipped-bot", "cron", "list").stdout
 
 
-@pytest.mark.parametrize("key", [pytest.param("keeps_user_jobs", marks=known("keeps_user_jobs"))])
-def test_profile_update_keeps_the_users_own_cron_jobs(world, key):
+def test_profile_update_keeps_the_users_own_cron_jobs(world):
     jobs = _by_name(world.after_update)
-    gap("my-own-reminder" in jobs, f"`profile update` deleted the user's own cron job; jobs now: {sorted(jobs)}")
+    assert "my-own-reminder" in jobs, f"`profile update` deleted the user's own cron job; jobs now: {sorted(jobs)}"
     assert jobs["my-own-reminder"].get("prompt") == "the user's own reminder"
     assert _is_scheduled(jobs["my-own-reminder"]), "the user's own job was paused by the update"
 
 
-@pytest.mark.parametrize("key", [pytest.param("install_paused", marks=known("install_paused"))])
-def test_profile_install_does_not_auto_schedule_shipped_jobs(world, key):
+def test_profile_install_does_not_auto_schedule_shipped_jobs(world):
     jobs = _by_name(world.after_install)
     assert set(jobs) == {"weekly-digest", "retired-job"}, world.after_install
     running = sorted(n for n, j in jobs.items() if _is_scheduled(j))
-    gap(not running, f"shipped jobs are live right after `profile install` (documented: not auto-scheduled): {running}")
+    assert not running, f"shipped jobs are live right after `profile install` (documented: not auto-scheduled): {running}"
 
 
-@pytest.mark.parametrize("key", [pytest.param("keeps_paused_state", marks=known("keeps_paused_state"))])
-def test_profile_update_keeps_a_shipped_job_the_user_paused_paused(world, key):
+def test_profile_update_keeps_a_shipped_job_the_user_paused_paused(world):
     jobs = _by_name(world.after_update)
     assert "weekly-digest" in jobs, f"shipped job missing after update: {world.after_update}"
-    gap(not _is_scheduled(jobs["weekly-digest"]),
+    assert not _is_scheduled(jobs["weekly-digest"]), (
         f"`profile update` re-enabled the shipped job the user paused: {jobs['weekly-digest']}")

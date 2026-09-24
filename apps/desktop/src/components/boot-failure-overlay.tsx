@@ -207,11 +207,11 @@ export function BootFailureOverlay() {
     try {
       const desktop = window.hermesDesktop
 
-      await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
-
       let connected: boolean
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
+        // The ladder drops this gateway's lapsed cookies itself — logging out
+        // here as well would fire the IPC twice for the cloud path.
         const outcome = await reestablishCloudAgentSession(desktop, remoteReauth.url)
 
         if (outcome === 'portal-incomplete') {
@@ -226,6 +226,8 @@ export function BootFailureOverlay() {
 
         connected = true
       } else {
+        await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
+
         connected = (await desktop?.oauthLoginConnectionConfig(remoteReauth.url))?.connected === true
       }
 

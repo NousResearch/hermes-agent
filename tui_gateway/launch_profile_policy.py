@@ -21,13 +21,46 @@ import contextlib
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, Optional
+from types import MappingProxyType
+from typing import Dict, Iterator, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_snapshot: Optional[Dict[str, str]] = None
+
+
+@dataclass(frozen=True)
+class LaunchProfileAuthority:
+    """One observation of the launch environment and the home identity it owns."""
+
+    env: Mapping[str, str]
+    home: Path
+
+
+_authority: Optional[LaunchProfileAuthority] = None
+
+
+def _live_launch_env() -> Dict[str, str]:
+    """Snapshot process values and pin a missing shell ``PWD`` to the capture cwd."""
+    snapshot = dict(os.environ)
+    if "PWD" not in snapshot:
+        snapshot["PWD"] = os.getcwd()
+    return snapshot
+
+
+def capture_launch_authority() -> LaunchProfileAuthority:
+    """Freeze launch values and resolved home atomically; the first capture wins."""
+    global _authority
+    with _lock:
+        if _authority is None:
+            from hermes_constants import get_routing_process_hermes_home
+
+            snapshot = _live_launch_env()
+            home = get_routing_process_hermes_home(snapshot)
+            _authority = LaunchProfileAuthority(MappingProxyType(snapshot), home)
+        return _authority
 
 
 def capture_launch_env() -> Dict[str, str]:
@@ -36,18 +69,14 @@ def capture_launch_env() -> Dict[str, str]:
     Called at activation, immediately before the first secondary home is registered as
     served — the last moment ambient env is provably the launch profile's.
     """
-    global _snapshot
-    with _lock:
-        if _snapshot is None:
-            _snapshot = dict(os.environ)
-        return dict(_snapshot)
+    return dict(capture_launch_authority().env)
 
 
 def activate_multi_profile_hosting() -> None:
     """This process now hosts a profile home other than its launch home: freeze the launch env
     and make unscoped credential reads fail closed (``get_secret`` raises instead of borrowing)."""
     from agent.secret_scope import set_multiplex_active
-    capture_launch_env()
+    capture_launch_authority()
     set_multiplex_active(True)
 
 
@@ -64,7 +93,7 @@ def _servable_profile_homes() -> set:
 
     homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)
              if name == "default" or named_profile_has_servable_identity(home)}
-    homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
+    homes.add(launch_home().resolve())
     return homes
 
 
@@ -109,12 +138,32 @@ def activate_multi_profile_hosting_eagerly() -> bool:
     return True
 
 
-def _launch_env() -> Dict[str, str]:
+def launch_env() -> Dict[str, str]:
     """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
     (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
     miss values the launch process still bridges at startup)."""
+    return dict(launch_authority().env)
+
+
+def launch_authority() -> LaunchProfileAuthority:
+    """Return the captured authority once published, otherwise a pre-activation live view."""
     from agent.secret_scope import is_multiplex_active
-    return capture_launch_env() if is_multiplex_active() else dict(os.environ)
+    from hermes_constants import get_routing_process_hermes_home
+
+    with _lock:
+        if _authority is not None:
+            return _authority
+        if not is_multiplex_active():
+            env = _live_launch_env()
+            home = get_routing_process_hermes_home(env)
+            return LaunchProfileAuthority(MappingProxyType(env), home)
+    # A harness may flip multiplexing directly without calling activation.
+    return capture_launch_authority()
+
+
+def launch_home() -> Path:
+    """Resolved launch-profile home from the same observation as :func:`launch_env`."""
+    return launch_authority().home
 
 
 def launch_terminal_env() -> Dict[str, str]:
@@ -143,42 +192,47 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
     nothing in the files shadows them.
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
-    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
+    scope = {k: v for k, v in launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
 
 
 @contextlib.contextmanager
-def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
-    """Bind the launch profile's own runtime scope for one body: HERMES_HOME override naming the
-    launch home, ``launch_secret_scope``, and its terminal policy over the frozen launch
-    ``TERMINAL_*`` overlay. For hosts whose launch-profile bodies are not RPC sessions (the
-    standalone messaging gateway after a hosted room activated multiplexing, #112878).
+def launch_profile_runtime_scope(
+    launch_home: "str | Path | None" = None,
+) -> Iterator[None]:
+    """Bind the launch profile's own runtime scope for one body: frozen home identity,
+    launch secret scope, and terminal policy over the frozen ``TERMINAL_*`` overlay. For hosts whose
+    launch-profile bodies are not RPC sessions (the standalone messaging gateway after a hosted
+    room activated multiplexing, #112878).
 
     The home override is bound even though the launch home IS the process home: under multiplexing
     "override unset" is the fail-closed signal for an UNBOUND context (``serves_routed_profile``,
     plugin runtime bindings such as OMH's ``pre_tool_call`` gate, per-home slots keyed on the
     override), so a launch-profile turn without it was indistinguishable from no turn at all and
-    every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
-    (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
+    every plugin hook it fired saw an unscoped process (#118538). ``launch_home`` remains for caller
+    compatibility but cannot override the captured authority."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
-    home = Path(launch_home)
-    home_token = secret_token = terminal_token = None
+    del launch_home
+    home = launch_authority().home
+    home_token = set_hermes_home_override(str(home))
     try:
-        home_token = set_hermes_home_override(str(home))
-        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
-        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
-        yield
-    finally:
-        if terminal_token is not None:
-            reset_terminal_scope(terminal_token)
-        if secret_token is not None:
+        secret_token = set_secret_scope(launch_secret_scope(home))
+        try:
+            terminal_token = install_profile_terminal_scope(
+                home, env_overlay=launch_terminal_env()
+            )
+            try:
+                yield
+            finally:
+                reset_terminal_scope(terminal_token)
+        finally:
             reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
+    finally:
+        reset_hermes_home_override(home_token)
 
 
 def launch_profile_scope_if_multiplexed():
@@ -196,8 +250,7 @@ def launch_profile_scope_if_multiplexed():
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
         return contextlib.nullcontext()
-    from hermes_constants import get_process_hermes_home
-    return launch_profile_runtime_scope(get_process_hermes_home())
+    return launch_profile_runtime_scope()
 
 
 @contextlib.asynccontextmanager

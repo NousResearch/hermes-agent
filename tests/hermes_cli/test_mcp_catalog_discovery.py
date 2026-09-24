@@ -37,7 +37,7 @@ def catalog_client(tmp_path, monkeypatch):
     from agent import secret_scope
     from tui_gateway import launch_profile_policy
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(launch_profile_policy, "_authority", None)
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN

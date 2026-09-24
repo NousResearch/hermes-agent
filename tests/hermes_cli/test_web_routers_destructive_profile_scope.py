@@ -28,20 +28,20 @@ def _multiplex_state_is_per_test():
 
     Entered single-profile (so a leak from an earlier module cannot make an unnamed
     request 400 by accident) and restored exactly as found, including the frozen launch
-    env snapshot activation captures.
+    env authority activation captures.
     """
     import agent.secret_scope as secret_scope
     from tui_gateway import launch_profile_policy
 
     was_active = secret_scope.is_multiplex_active()
-    snapshot = launch_profile_policy._snapshot
+    authority = launch_profile_policy._authority
     secret_scope.set_multiplex_active(False)
-    launch_profile_policy._snapshot = None
+    launch_profile_policy._authority = None
     try:
         yield
     finally:
         secret_scope.set_multiplex_active(was_active)
-        launch_profile_policy._snapshot = snapshot
+        launch_profile_policy._authority = authority
 
 
 @pytest.fixture

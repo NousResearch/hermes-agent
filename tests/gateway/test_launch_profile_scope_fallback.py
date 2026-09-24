@@ -29,7 +29,7 @@ def multiplexing_host(tmp_path, monkeypatch):
     (launch / ".env").write_text(f"{POISON}=launch-dotenv\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(launch_profile_policy, "_authority", None)
     launch_profile_policy.activate_multi_profile_hosting()
     # A secondary's context poisons the process env AFTER activation; the frozen snapshot must win.
     monkeypatch.setenv(POISON, "secondary-poison")

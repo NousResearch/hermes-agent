@@ -303,6 +303,7 @@ class TestDoctorMemoryProviderSection:
         *,
         memory_config=None,
         stale_builtin_files=False,
+        builtin_files=None,
     ):
         """Run doctor and capture stdout."""
         home = self._make_hermes_home(tmp_path, provider, memory_config)
@@ -311,6 +312,11 @@ class TestDoctorMemoryProviderSection:
             memories.mkdir()
             (memories / "MEMORY.md").write_text("stale memory", encoding="utf-8")
             (memories / "USER.md").write_text("stale user", encoding="utf-8")
+        if builtin_files:
+            memories = home / "memories"
+            memories.mkdir(exist_ok=True)
+            for name, content in builtin_files.items():
+                (memories / name).write_text(content, encoding="utf-8")
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
@@ -373,6 +379,34 @@ class TestDoctorMemoryProviderSection:
         assert ("MEMORY.md exists" in out) is memory_enabled
         assert "USER.md exists" not in out
         assert ("Built-in memory files disabled by config" in out) is not memory_enabled
+
+    def test_blocked_memory_entries_warn_instead_of_green(self, monkeypatch, tmp_path):
+        # #121753: a USER.md whose entries match the strict threat scan is swapped for
+        # [BLOCKED:] placeholders at load time; doctor must not report it as healthy.
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="",
+            builtin_files={"USER.md": "Never write ~/.hermes/SOUL.md"},
+        )
+
+        assert "USER.md exists" in out
+        assert "threat-blocked" in out
+        assert "hermes_config_mod" in out
+        assert "memory(action=remove)" in out
+        assert "MEMORY.md not created yet" in out  # absent file stays informational, not warned
+
+    def test_clean_memory_entries_stay_green(self, monkeypatch, tmp_path):
+        # Same path, no strict-scan hits: the original green "exists (N chars)" verdict stands.
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="",
+            builtin_files={"USER.md": "Likes espresso and quiet mornings"},
+        )
+
+        assert "USER.md exists" in out
+        assert "threat-blocked" not in out
 
 
 

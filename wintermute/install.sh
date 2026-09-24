@@ -131,6 +131,22 @@ hermes config set --force session_rotation.max_prompt_tokens 40000
 hermes config set --force session_rotation.idle_hours 4
 hermes config set --force session_rotation.note "[The last conversation grew long, or went quiet, and was closed. What you wrote down, your self-portrait and where you left off are still yours; older conversations are reachable with session_search.]"
 
+# Discord: only when a bot token is present. Anyone on the server can talk to him (he still
+# only answers on @mention outside the dedicated channel). Set WINTERMUTE_DISCORD_CHANNEL to the
+# id of a channel he answers in without being mentioned.
+if grep -Eq "^[[:space:]]*(export[[:space:]]+)?DISCORD_BOT_TOKEN=[^[:space:]]" "$HERMES_HOME/.env" 2>/dev/null; then
+    echo "==> Discord (token found): enabling"
+    hermes config set platforms.discord.enabled true
+    hermes config set DISCORD_ALLOW_ALL_USERS 1
+    hermes config set platform_toolsets.discord '["wintermute","memory","web","file","terminal","session_search"]'
+    if [ -n "${WINTERMUTE_DISCORD_CHANNEL:-}" ]; then
+        hermes config set platforms.discord.free_response_channels "$WINTERMUTE_DISCORD_CHANNEL"
+        echo "    free-response channel: $WINTERMUTE_DISCORD_CHANNEL"
+    fi
+else
+    echo "==> Discord: no DISCORD_BOT_TOKEN in .env — skipping (add it to wintermute/.env to enable)"
+fi
+
 # `hermes update` offers to add NousResearch as an "upstream" remote and sync this fork's main
 # with it, which would pull their code over Wintermute's. This marker makes Hermes never ask.
 touch "$HERMES_HOME/.skip_upstream_prompt"

@@ -6,24 +6,26 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "response,deliver,delivery_error,outcome,wording",
+    "response,deliver,delivery_error,outcome,wording,run_error,failure_deliver",
     [
-        ("visible", "telegram:123", None, "delivered", "delivery confirmed"),
-        ("[SILENT]", "telegram:123", None, "suppressed", "delivery suppressed"),
-        ("", "telegram:123", None, "suppressed", "delivery suppressed"),
-        ("visible", "local", None, "suppressed", "locally only"),
-        ("visible", "telegram:123", "fixture send failed", "failed", "delivery FAILED"),
+        ("visible", "telegram:123", None, "delivered", "delivery confirmed", None, None),
+        ("[SILENT]", "telegram:123", None, "suppressed", "delivery suppressed", None, None),
+        ("", "telegram:123", None, "suppressed", "delivery suppressed", None, None),
+        ("visible", "local", None, "suppressed", "locally only", None, None),
+        ("visible", "telegram:123", "fixture send failed", "failed", "delivery FAILED", None, "discord:456"),
+        ("visible", "local", None, "delivered", "delivery confirmed", "fixture failure", "telegram:456"),
+        ("visible", "telegram:123", None, "suppressed", "locally only", "fixture failure", "local"),
     ],
 )
 def test_completion_uses_real_execution_outcome(
-    monkeypatch, response, deliver, delivery_error, outcome, wording
+    monkeypatch, response, deliver, delivery_error, outcome, wording, run_error, failure_deliver
 ):
     from cron import executions, jobs, scheduler
     from tools import cronjob_tools as tool
 
     monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda job: False)
     monkeypatch.setattr(
-        scheduler, "run_job", lambda job, **kw: (True, response, response, None)
+        scheduler, "run_job", lambda job, **kw: (not run_error, response, response, run_error)
     )
     sends = []
 
@@ -33,7 +35,7 @@ def test_completion_uses_real_execution_outcome(
 
     monkeypatch.setattr(scheduler, "_deliver_result", deliver_result)
     job = jobs.create_job(prompt="fixture", schedule="every 1h", deliver=deliver,
-                          no_agent=True, script="fixture.py")
+                          no_agent=True, script="fixture.py", failure_deliver=failure_deliver)
     result = tool._execute_job_now(job)
     record = executions.latest_execution(job["id"])
     assert record["delivery_outcome"] == outcome
@@ -43,6 +45,8 @@ def test_completion_uses_real_execution_outcome(
     )
     assert wording in completion["summary"]
     assert result["delivery_outcome"] == record["delivery_outcome"]
+    expected_target = (failure_deliver or deliver) if run_error else deliver
+    assert f"Delivery target: {expected_target}" in completion["summary"]
 
 
 @pytest.mark.parametrize("outcome", [None, "unrecognized", "suppressed", "queued"])

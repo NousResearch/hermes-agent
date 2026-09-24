@@ -1467,7 +1467,7 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
 
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None,
+    commit_started_at: float | None = None, persisted: bool = False,
 ) -> None:
     """Emit one content-free JSON log line for a compression attempt."""
     with _swallow('failed to emit compression attempt telemetry: %s'):
@@ -1486,7 +1486,7 @@ def _emit_compression_attempt_telemetry(
             total_duration_ms=int((time.monotonic() - started_at) * 1000), commit_status=commit_status,
             split_status=split_status,
             execution_scope="in_memory" if getattr(agent, "_session_db", None) is None else "session",
-            persisted=split_status in {"in_place_committed", "rotated_committed"},
+            persisted=persisted,
         )
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
@@ -3310,7 +3310,7 @@ def _compression_child_source(agent: Any, parent_session_id: str) -> str:
 
 def _publish_rotated_compaction(
     agent: Any, messages: list, compressed: list, *, new_system_prompt: str, lease: _CompressionLease,
-    old_session_id: str, compressed_user_turn_outcome: str,
+    old_session_id: str, compressed_user_turn_outcome: str, commit_outcome: Optional["_CommitOutcome"] = None,
 ) -> None:
     """Rotate the session: flush the parent, publish the child, re-point the agent.
     Flushes current-turn msgs to the OLD session, passing the durable prefix (messages[:persist idx]) so
@@ -3354,6 +3354,8 @@ def _publish_rotated_compaction(
         watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
         watermark_ceiling=_foreign_tail_ceiling,
     )
+    if commit_outcome is not None:
+        commit_outcome.persisted = True
     # `already_present` stamping is done by run_agent's _sync_persisted_markers;
     # this branch covers inserted/merged only; direct callers must use that wrapper.
     if compressed_user_turn_outcome in {"inserted", "merged"}:
@@ -3608,6 +3610,7 @@ class _CommitOutcome:
     old_session_id: Optional[str] = None
     split_status: str = "not_applicable"
     session_commit_succeeded: bool = False
+    persisted: bool = False
     compacted_in_place: bool = False
     made_progress: bool = False
 
@@ -3690,6 +3693,7 @@ def _commit_compaction(
     session_commit_succeeded = False
     compacted_in_place = False
     commit_started_at = time.monotonic()
+    durable_outcome = _CommitOutcome(compressed=compressed, commit_started_at=commit_started_at)
     split_status = "not_applicable"
     old_session_id: Optional[str] = None  # bound only once rotation begins
     if agent._session_db:
@@ -3744,6 +3748,8 @@ def _commit_compaction(
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                 )
                 compressed = persisted
+                # The transcript is durable even if later prompt bookkeeping fails.
+                durable_outcome.persisted = True
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next
                 # flush re-INSERTs the whole compacted transcript, doubling the live set. Reset
@@ -3777,6 +3783,7 @@ def _commit_compaction(
                 _publish_rotated_compaction(
                     agent, messages, compressed, new_system_prompt=new_system_prompt, lease=lease,
                     old_session_id=old_session_id, compressed_user_turn_outcome=compressed_user_turn_outcome,
+                    commit_outcome=durable_outcome,
                 )
                 split_status = "rotated_committed"
                 agent._last_flushed_db_idx = len(compressed)
@@ -3835,7 +3842,7 @@ def _commit_compaction(
                 )
     return _CommitOutcome(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
-        split_status=split_status, session_commit_succeeded=session_commit_succeeded,
+        split_status=split_status, session_commit_succeeded=session_commit_succeeded, persisted=durable_outcome.persisted,
         compacted_in_place=compacted_in_place, made_progress=made_progress,
     )
 
@@ -4228,7 +4235,7 @@ def compress_context(
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
-            commit_started_at=commit.commit_started_at,
+            commit_started_at=commit.commit_started_at, persisted=commit.persisted,
         )
         return compressed, new_system_prompt
     finally:

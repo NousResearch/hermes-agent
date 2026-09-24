@@ -18,6 +18,8 @@ successful computation from durable transcript changes:
   review and `/btw` forks), or `session` for a DB-bound agent.
 - `persisted` identifies a durable in-place or rotated compaction. A successful
   in-memory fork reports `false`, even when it shares its parent's `session_id`.
+  This flag records the atomic transcript write, so it remains `true` if later
+  prompt bookkeeping fails and the overall attempt is reported as aborted.
 
 Consumers monitoring durable session recovery should require `persisted: true`,
 not just a matching session id and `commit_status: committed`. These fields add no

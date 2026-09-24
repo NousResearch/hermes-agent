@@ -384,7 +384,9 @@ class CLITuiRuntimeMixin:
             key_bindings=kb,
             style=style,
             full_screen=False,
-            mouse_support=False,
+            # Let prompt_toolkit route terminal clicks to the focused input buffer so
+            # mouse-enabled terminals can reposition the editing cursor (#96124).
+            mouse_support=True,
             # 0 (default) avoids fighting terminal auto-scroll in non-fullscreen mode.
             refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)),
             # Erase the bottom chrome on exit instead of freezing a copy into scrollback.

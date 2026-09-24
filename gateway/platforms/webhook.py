@@ -352,11 +352,13 @@ class WebhookAdapter(BasePlatformAdapter):
         """An empty effective secret would make _handle_webhook skip HMAC validation → reject such
         dynamic routes; INSECURE_NO_AUTH is loopback-only."""
         effective_secret = route.get("secret", self._global_secret)
-        if not effective_secret:
+        raw_secrets = [effective_secret] if isinstance(effective_secret, str) else (list(effective_secret) if isinstance(effective_secret, (list, tuple)) else [])
+        secrets = [s for s in raw_secrets if s]
+        if not secrets:
             logger.warning("[webhook] Dynamic route '%s' skipped: 'secret' is missing or empty. Set a valid HMAC "
                            "secret, or use '%s' to explicitly disable auth (testing only).", name, _INSECURE_NO_AUTH)
             return False
-        if effective_secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
+        if _INSECURE_NO_AUTH in secrets and not _is_loopback_host(self._host):
             logger.warning("[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH is only allowed on loopback "
                            "hosts. Current host: '%s'.", name, self._host)
             return False
@@ -457,11 +459,13 @@ class WebhookAdapter(BasePlatformAdapter):
             return None, _json_error("Payload too large", 413)
         # Missing/empty secrets fail closed here too (not only in connect()), so direct handler reuse
         # cannot become an unauthenticated dispatch surface.
-        secret = route_config.get("secret", self._global_secret)
-        if not secret:
+        secret_val = route_config.get("secret", self._global_secret)
+        raw_secrets = [secret_val] if isinstance(secret_val, str) else (list(secret_val) if isinstance(secret_val, (list, tuple)) else [])
+        secrets = [s for s in raw_secrets if s]
+        if not secrets:
             logger.error("[webhook] Route %s has no HMAC secret; refusing request", route_name)
             return None, _json_error("Webhook route is missing an HMAC secret", 403)
-        if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
+        if _INSECURE_NO_AUTH not in secrets and not any(self._validate_signature(request, raw_body, s) for s in secrets):
             logger.warning("[webhook] Invalid signature for route %s", route_name)
             return None, _json_error("Invalid signature", 401)
         return raw_body, None
@@ -720,9 +724,10 @@ class WebhookAdapter(BasePlatformAdapter):
             svix = [_header(name) for name in ("webhook-id", "webhook-timestamp", "webhook-signature")]
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
-        # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.
+        # Linear, Plane (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.
         for provided, expected in (
                 (_header("linear-signature"), lambda: _hex_hmac(secret, body)),
+                (_header("x-plane-signature"), lambda: _hex_hmac(secret, body)),
                 (headers.get("X-Hub-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
                 (headers.get("X-Gitlab-Token", ""), lambda: secret)):
             if provided:

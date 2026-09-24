@@ -1540,31 +1540,6 @@ class TestMatrixDiagnostics:
         assert "diagnostic-secret-recovery-key" not in str(diagnostics)
 
 
-class TestMatrixEncryptedSendFallback:
-    @pytest.mark.asyncio
-    async def test_send_retries_after_e2ee_error(self):
-        """send() should retry with crypto.share_keys() on E2EE errors."""
-        adapter = _make_adapter()
-        adapter._encryption = True
-
-        fake_client = MagicMock()
-        fake_client.send_message_event = AsyncMock(side_effect=[
-            Exception("encryption error"),
-            "$event123",  # mautrix returns EventID string directly
-        ])
-        mock_crypto = MagicMock()
-        mock_crypto.share_keys = AsyncMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        result = await adapter.send("!room:example.org", "hello")
-
-        assert result.success is True
-        assert result.message_id == "$event123"
-        mock_crypto.share_keys.assert_awaited_once()
-        assert fake_client.send_message_event.await_count == 2
-
-
 # ---------------------------------------------------------------------------
 # E2EE: _joined_rooms reference preservation for CryptoStateStore
 # ---------------------------------------------------------------------------
@@ -2639,8 +2614,8 @@ class TestMatrixReconnectDisconnect:
     """connect() must disconnect existing client before reconnecting."""
 
     @pytest.mark.asyncio
-    async def test_connect_calls_disconnect_when_client_already_set(self):
-        """When self._client is set, connect() should call disconnect() first."""
+    async def test_reconnect_closes_old_session_before_replacement(self):
+        """Reconnect closes the exact old session without reentering the lifecycle lock."""
         adapter = _make_adapter()
 
         adapter._client = MagicMock()
@@ -2649,7 +2624,7 @@ class TestMatrixReconnectDisconnect:
         adapter._client.api.session.close = AsyncMock()
         adapter._client.whoami = AsyncMock()
 
-        adapter.disconnect = AsyncMock()
+        old_session = adapter._client.api.session
 
         fake_mautrix_mods = _make_fake_mautrix()
 
@@ -2678,7 +2653,10 @@ class TestMatrixReconnectDisconnect:
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
                     await adapter.connect()
 
-        adapter.disconnect.assert_awaited_once()
+        old_session.close.assert_awaited_once()
+        assert adapter._client is mock_client
+        await adapter.disconnect()
+        mock_client.api.session.close.assert_awaited_once()
 
 
 class TestDeviceIdRecoveryOnReconnect:

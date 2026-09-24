@@ -457,6 +457,102 @@ def _matrix_event_timestamp_seconds(event: Any) -> float:
     return ts / 1000.0 if ts > 10_000_000_000 else ts
 
 
+class _MatrixRateLimitRetryTimeout(TimeoutError):
+    """A rate-limit recovery request may have delivered; do not send a new event."""
+
+
+def _is_matrix_rate_limit(exc: Exception) -> bool:
+    return getattr(exc, "http_status", None) == 429 or getattr(exc, "errcode", None) == "M_LIMIT_EXCEEDED"
+
+
+def _create_matrix_http_api(**kwargs):
+    """Retry only an immutable transaction-ID room event PUT with the exact same bytes."""
+    import math
+    from json import JSONDecodeError
+    from aiohttp import ContentTypeError
+    from mautrix.api import HTTPAPI
+    from mautrix.errors import make_request_error
+
+    class MatrixHTTPAPI(HTTPAPI):
+        @staticmethod
+        def _replay_safe(method, url, content) -> bool:
+            return (str(method) == "PUT" and isinstance(content, (str, bytes, bytearray))
+                    and bool(re.fullmatch(
+                        r"/_matrix/client/(?:v3|r0)/rooms/[^/]+/(?:send/[^/]+|redact/[^/]+)/[^/]+",
+                        url.raw_path)))
+
+        async def request(self, method, path, *args, **request_kwargs):
+            # Disable mautrix's independent connection retry: only our 429 loop may replay.
+            if str(method) == "PUT" and re.fullmatch(
+                r"/?_matrix/client/(?:v3|r0)/rooms/[^/]+/(?:send/[^/]+|redact/[^/]+)/[^/]+",
+                str(path)):
+                request_kwargs["retry_count"] = 0
+            return await super().request(method, path, *args, **request_kwargs)
+
+        async def _send(self, method, url, content, query_params, headers):
+            if not self._replay_safe(method, url, content):
+                return await super()._send(method, url, content, query_params, headers)
+
+            # The caller may still own a bytearray. Pin the body before the first
+            # attempt so a 429 cannot reuse the transaction ID with changed bytes.
+            if isinstance(content, bytearray):
+                content = bytes(content)
+
+            async def once():
+                async with self.session.request(
+                    str(method), url, data=content, params=query_params, headers=headers
+                ) as response:
+                    if 200 <= response.status < 300:
+                        return await response.json(), response
+                    data = {}
+                    try:
+                        data = await response.json()
+                        if not isinstance(data, dict):
+                            data = {}
+                        errcode, message = data["errcode"], data["error"]
+                        unstable = data.get("org.matrix.msc3848.unstable.errcode")
+                    except (JSONDecodeError, ContentTypeError, KeyError):
+                        errcode = message = unstable = None
+                    exc = make_request_error(
+                        http_status=response.status, text=await response.text(),
+                        errcode=errcode, message=message, unstable_errcode=unstable)
+                    setattr(exc, "retry_after_ms", data.get("retry_after_ms"))
+                    raise exc
+
+            deadline = None
+            for attempt in range(3):
+                try:
+                    if deadline is None:
+                        return await once()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise _MatrixRateLimitRetryTimeout("Matrix rate-limit recovery deadline exceeded")
+                    try:
+                        return await asyncio.wait_for(once(), timeout=remaining)
+                    except TimeoutError as exc:
+                        raise _MatrixRateLimitRetryTimeout(
+                            "Matrix send timed out during rate-limit recovery") from exc
+                except Exception as exc:
+                    if not _is_matrix_rate_limit(exc):
+                        raise
+                    if deadline is None:
+                        deadline = time.monotonic() + 30.0
+                    raw = getattr(exc, "retry_after_ms", None)
+                    try:
+                        delay = float(raw) / 1000.0 if not isinstance(raw, bool) else 0.0
+                    except (OverflowError, ValueError, TypeError):
+                        delay = math.inf
+                    if not math.isfinite(delay) or delay <= 0:
+                        delay = float(2 ** attempt)
+                    remaining = deadline - time.monotonic()
+                    if attempt == 2 or delay >= remaining:
+                        raise
+                    await asyncio.sleep(delay)
+            raise AssertionError("unreachable Matrix retry state")
+
+    return MatrixHTTPAPI(**kwargs)
+
+
 def _create_matrix_session(proxy_url: str | None):
     """ClientSession whose proxy applies to *all* requests: mautrix's ``HTTPAPI._send()`` never
     forwards per-request ``proxy=``, so it must be session-level (``proxy=`` for HTTP(S),
@@ -849,6 +945,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._device_id_unverified: bool = False
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
+        self._opening_session: Any = None  # owned before Client construction completes
+        self._lifecycle_lock = asyncio.Lock()
         self._store_dir: Optional[Path] = None  # pinned per profile in connect()
         self._sync_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
@@ -1111,12 +1209,8 @@ class MatrixAdapter(BasePlatformAdapter):
             "Matrix: cannot upload device keys for %s: %s. Try generating a new access token to get a fresh device.",
             client.device_id)
 
-    @staticmethod
-    async def _abort_connect(api: Any, crypto_db: Any = None) -> bool:
-        """Close what connect() opened so far; always False so callers can ``return await``."""
-        if crypto_db is not None:
-            await crypto_db.stop()
-        await api.session.close()
+    async def _abort_connect(self, api: Any, crypto_db: Any = None) -> bool:
+        """The serialized connect owner performs one centralized teardown on False."""
         return False
 
     async def _connect_authenticate(self, client: Any, api: Any) -> bool:
@@ -1210,8 +1304,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 (self._store_dir / "crypto_store.pickle").unlink()
             crypto_db = Database.create(
                 f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
-            await crypto_db.start()
             self._crypto_db = crypto_db
+            await crypto_db.start()
             _acct_id = self._user_id or "hermes"
             # Key on the RESOLVED client.device_id (token's real device), not the configured
             # one, or the Olm account is stored under a key that can never be looked up.
@@ -1255,6 +1349,9 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _e2ee_setup_failed(self, what: str, exc: Exception, api: Any) -> bool:
         """Optional mode: log + disable E2EE and return True; required mode: close + return False."""
         if self._e2ee_mode == "optional":
+            if self._crypto_db is not None:
+                await self._crypto_db.stop()
+                self._crypto_db = None
             logger.warning(
                 "Matrix: failed to %s optional E2EE client; continuing without encrypted-room "
                 "support: %s. %s", what, exc, _E2EE_INSTALL_HINT)
@@ -1315,14 +1412,46 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Matrix: initial sync error: %s", exc)
 
+    async def _settle_lifecycle(self, operation, *, cancel_operation=False):
+        """Cancellation cannot release the lifecycle lease before cleanup settles."""
+        task = asyncio.create_task(operation)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if cancel_operation:
+                task.cancel()
+            caller = asyncio.current_task()
+            while not task.done():
+                if caller is not None:
+                    caller.uncancel()
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            raise
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
+        async def operation():
+            async with self._lifecycle_lock:
+                try:
+                    connected = await self._connect_impl(is_reconnect=is_reconnect)
+                except BaseException:
+                    await self._disconnect_impl()
+                    raise
+                if not connected:
+                    await self._disconnect_impl()
+                return connected
+        return await self._settle_lifecycle(operation(), cancel_operation=True)
+
+    async def _connect_impl(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
-        if self._client is not None:
-            try:
-                await self.disconnect()
-            except Exception as exc:
-                logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
-        from mautrix.api import HTTPAPI
+        # A failed crypto stop can leave an owned DB after its session closed.
+        # Do not create another session (or overwrite _crypto_db) until every
+        # previous owner has settled; a second stop failure fails closed.
+        if self._client is not None or self._opening_session is not None or self._crypto_db is not None:
+            await self._disconnect_impl()
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
         if not self._homeserver:
@@ -1331,13 +1460,16 @@ class MatrixAdapter(BasePlatformAdapter):
         # Resolved here, inside the profile scope, so multiplexed profiles never share it.
         self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
         client_session = _create_matrix_session(self._proxy_url)
-        api = HTTPAPI(base_url=self._homeserver, token=self._access_token or "", client_session=client_session)
+        self._opening_session = client_session
+        api = _create_matrix_http_api(
+            base_url=self._homeserver, token=self._access_token or "", client_session=client_session)
         state_store = MemoryStateStore()
         sync_store = MemorySyncStore()
         client = Client(
             mxid=UserID(self._user_id) if self._user_id else UserID(""), device_id=self._device_id or None,
             api=api, state_store=state_store, sync_store=sync_store)
         self._client = client
+        self._opening_session = None
         if not await self._connect_authenticate(client, api):
             return False
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
@@ -1363,6 +1495,12 @@ class MatrixAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        async def operation():
+            async with self._lifecycle_lock:
+                await self._disconnect_impl()
+        await self._settle_lifecycle(operation())
+
+    async def _disconnect_impl(self) -> None:
         self._closing = True
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -1370,6 +1508,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
                 pass
+        self._sync_task = None
         for tasks in (self._invite_join_tasks.values(), self._reaction_redaction_tasks):
             pending = list(tasks)
             for task in pending:
@@ -1379,15 +1518,32 @@ class MatrixAdapter(BasePlatformAdapter):
                 await asyncio.gather(*pending, return_exceptions=True)
         self._invite_join_tasks.clear()
         self._reaction_redaction_tasks.clear()
-        if getattr(self, "_crypto_db", None):
+        close_errors = []
+        crypto_db = self._crypto_db
+        if crypto_db is not None:
             try:
-                await self._crypto_db.stop()
-            except Exception as exc:
-                logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
-        if self._client:
-            with suppress(Exception):
-                await self._client.api.session.close()
-            self._client = None
+                await crypto_db.stop()
+            except BaseException as exc:
+                close_errors.append(exc)
+            else:
+                if self._crypto_db is crypto_db:
+                    self._crypto_db = None
+        client = self._client
+        session = client.api.session if client is not None else self._opening_session
+        if session is not None:
+            try:
+                await session.close()
+            except BaseException as exc:
+                close_errors.append(exc)
+            else:
+                if self._client is client:
+                    self._client = None
+                if self._opening_session is session:
+                    self._opening_session = None
+        if len(close_errors) > 1:
+            raise BaseExceptionGroup("Matrix disconnect cleanup failed", close_errors)
+        if close_errors:
+            raise close_errors[0]
         logger.info("Matrix: disconnected")
 
     async def send(
@@ -1403,17 +1559,34 @@ class MatrixAdapter(BasePlatformAdapter):
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
-                if not (self._encryption and getattr(self._client, "crypto", None)):
+                from mautrix.errors import EncryptionError, MatrixRequestError
+                # mautrix encrypts before ClientAPI issues the PUT. Only its local
+                # EncryptionError proves this event has not reached the send endpoint.
+                # Even a 2xx response can fail during JSON parsing or event_id lookup;
+                # every other error is final rather than risking a fresh transaction.
+                if not (isinstance(exc, EncryptionError) and self._encryption
+                        and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
-                    return SendResult(success=False, error=str(exc))
-                try:  # E2EE error: retry once after sharing keys
+                    return SendResult(
+                        success=False, error=str(exc),
+                        error_kind="rate_limited" if _is_matrix_rate_limit(exc) else None,
+                        raw_response={
+                            "matrix_send_final": True,
+                            "matrix_send_disposition": (
+                                "rejected" if isinstance(exc, MatrixRequestError) else "unknown")})
+                try:  # Pre-send E2EE failure: retry once after sharing keys
                     await self._client.crypto.share_keys()
                     last_event_id = await self._send_room_message(chat_id, msg_content)
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
-                    return SendResult(success=False, error=str(retry_exc))
+                    return SendResult(success=False, error=str(retry_exc),
+                                      raw_response={"matrix_send_final": True})
         return SendResult(success=True, message_id=last_event_id)
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        return bool(isinstance(result.raw_response, dict)
+                    and result.raw_response.get("matrix_send_final"))
 
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""

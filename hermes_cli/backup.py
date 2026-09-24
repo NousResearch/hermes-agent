@@ -812,8 +812,20 @@ def _import_skipped(rel: str) -> bool:
     state (``_IMPORT_SKIP_NAMES``), an archived SQLite WAL/SHM/journal -- a ``.db`` member is
     page-restored into the live file, and a sidecar from a different database image installed
     beside it would replay a foreign WAL on next open (current backups never ship these, older or
-    hand-built archives might) -- and the empty archive-prefix entry."""
-    return not rel or Path(rel).name in _IMPORT_SKIP_NAMES or rel.endswith(_SQLITE_SIDECAR_SUFFIXES)
+    hand-built archives might)."""
+    return Path(rel).name in _IMPORT_SKIP_NAMES or rel.endswith(_SQLITE_SIDECAR_SUFFIXES)
+
+
+def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
+    """Classify an archive member exactly as the restore does: return ``(rel, skipped)``.
+
+    ``_external/`` members are home-relative and never skipped; every other member is
+    HERMES_HOME-relative after stripping the archive ``prefix``. Shared by the integrity
+    pre-flight and ``_import_members`` so the two cannot disagree on what gets restored."""
+    if member.startswith(_EXTERNAL_PREFIX):
+        return member[len(_EXTERNAL_PREFIX):], False
+    rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
+    return rel, _import_skipped(rel)
 
 
 def _detect_prefix(zf: zipfile.ZipFile) -> str:
@@ -978,17 +990,15 @@ def _import_members(
         # ``_external/`` members restore to their home-relative location (~/.honcho/config.json),
         # NOT under HERMES_HOME; provider configs commonly hold credentials, so tighten to 0600.
         external = member.startswith(_EXTERNAL_PREFIX)
+        rel, skipped = _import_member_rel(member, prefix)
+        if skipped:
+            skipped_runtime.append(rel)
+            continue
         if external:
-            rel = member[len(_EXTERNAL_PREFIX):]
             target = home_dir / rel
             root = home_dir
             tighten = target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES
         else:
-            rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
-            if _import_skipped(rel):
-                if rel:
-                    skipped_runtime.append(rel)
-                continue
             target = hermes_root / rel
             root = hermes_root.resolve()
             tighten = target.name in _SECRET_FILE_NAMES
@@ -1064,9 +1074,7 @@ def run_import(args) -> Optional[int]:
         # must be refused while the home is still untouched, not half-way through the restore.
         print("\nChecking archive integrity ...")
         # Members the restore skips anyway (gateway.pid, WAL sidecars) cannot block it.
-        corrupt = _find_corrupt_members(zf, [
-            m for m in members if m.startswith(_EXTERNAL_PREFIX)
-            or not _import_skipped(m[len(prefix):] if prefix and m.startswith(prefix) else m)])
+        corrupt = _find_corrupt_members(zf, [m for m in members if not _import_member_rel(m, prefix)[1]])
         if corrupt:
             _print_capped(f"Error: backup archive is damaged ({len(corrupt)} member(s) fail to "
                           f"decompress or fail their CRC); nothing was restored:", corrupt, "  ")

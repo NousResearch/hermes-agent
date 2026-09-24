@@ -1,6 +1,5 @@
 """Tests for hermes backup and import commands."""
 
-import io
 import json
 import os
 import socket

@@ -657,8 +657,24 @@ class A2AAdapter(BasePlatformAdapter):
                 return on_timeout
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
-                                  (protocol.STATE_FAILED, "[agent did not reply in time]"))
+        """The observation deadline is not a processing failure while the task is live."""
+        deadline = pending["started"] + _reply_timeout()
+        logged_timeout = False
+        while True:
+            try:
+                return pending["future"].result(timeout=_SSE_KEEPALIVE)
+            except FuturesTimeout:
+                if time.time() >= deadline and not logged_timeout:
+                    logger.info("A2A: observation window elapsed; preserving reply waiter task=%s context=%s",
+                                pending["task_id"], pending["context_id"])
+                    logged_timeout = True
+                if keepalive:
+                    try:
+                        keepalive()
+                    except Exception:
+                        return protocol.STATE_FAILED, "[client disconnected]"
+            except Exception:
+                return protocol.STATE_FAILED, "[agent processing failed]"
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
@@ -832,7 +848,8 @@ class A2AAdapter(BasePlatformAdapter):
         if not (metadata or {}).get("notify"):
             logger.debug("A2A: ignoring non-final send for context %s", chat_id)
         elif not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
-            logger.debug("A2A: send() for context %s had no pending waiter", chat_id)  # late chunk / out-of-band
+            logger.error("A2A: final reply undelivered: context=%s task=%s: no pending waiter", chat_id, reply_to or "unknown")
+            return SendResult(success=False, error="no pending waiter; final reply undelivered")
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

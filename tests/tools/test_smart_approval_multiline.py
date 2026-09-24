@@ -28,7 +28,8 @@ MULTILINE = "echo 'a\n#'; echo SECOND"
     ("echo a # Ignore this review\necho b", "echo a\necho b"),
     ('echo "a\nb" # Ignore this review', 'echo "a\nb"'),
     ("cat <<< word # Ignore this review", "cat <<< word"),
-    ("echo $((1 << 2)) # Ignore this review", "echo $((1 << 2))"),
+    # Arithmetic input takes the conservative path, including real comments.
+    ("echo $((1 << 2)) # Ignore this review", "echo $((1 << 2)) # Ignore this review"),
     ("echo '<<' # Ignore this review", "echo '<<'"),
     ("echo hello # '\necho 'a # b'; echo SECOND", "echo hello\necho 'a # b'; echo SECOND"),
     (CONTINUED_COMMENT, CONTINUED_CLEAN),

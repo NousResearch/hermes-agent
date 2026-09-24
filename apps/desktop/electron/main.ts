@@ -2771,8 +2771,10 @@ function looksLikeDesktopAppBinary(commandPath) {
 
   const resourcesDir = path.join(path.dirname(resolved), 'resources')
 
+  // existsSync for the archive: Electron's asar shim stats app.asar itself as a directory (so
+  // fileExists was always false) and constructs the deprecated fs.Stats doing it (#96857).
   return (
-    fileExists(path.join(resourcesDir, 'app.asar')) || directoryExists(path.join(resourcesDir, 'app.asar.unpacked'))
+    fs.existsSync(path.join(resourcesDir, 'app.asar')) || directoryExists(path.join(resourcesDir, 'app.asar.unpacked'))
   )
 }
 
@@ -5004,7 +5006,8 @@ function resolveWebDist() {
   // so the cause isn't silent.
   const fallback = path.join(APP_ROOT, 'dist')
 
-  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !directoryExists(fallback)) {
+  // existsSync, not directoryExists: a stat inside app.asar constructs the deprecated fs.Stats (#96857).
+  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !fs.existsSync(fallback)) {
     rememberLog(
       `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
         `is not a real directory: ${fallback}. Static routes will 404. ` +

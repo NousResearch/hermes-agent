@@ -30,6 +30,7 @@ def _pool(provider: str) -> CredentialPool:
     pool._current_id = None
     pool._max_concurrent = 2
     pool._unmatched_rotation_streak = 0
+    pool._persisted_token_pairs = {}
     pool.provider = provider
     return pool
 

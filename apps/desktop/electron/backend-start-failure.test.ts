@@ -23,11 +23,11 @@ test('never latches a REMOTE failure so recovery stays retryable without a resta
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: true }), false)
 })
 
-test('the two branches are mutually exclusive (a failure either latches or stays retryable)', () => {
-  for (const attemptedRemote of [true, false]) {
-    const latched = shouldLatchBackendStartFailure({ attemptedRemote })
-    assert.equal(latched, !attemptedRemote)
-  }
+test('never latches a supervisor-owned respawn failure (it has its own bounded crash-loop budget)', () => {
+  // A pre-ready child exit during a supervisor respawn must be able to spend
+  // the remaining crash-loop slots instead of becoming a permanent local latch.
+  assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false, supervisorRecovery: true }), false)
+  assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false, supervisorRecovery: false }), true)
 })
 
 test('latches a CONFIRMED remote reauth failure so the overlay stays clickable', () => {

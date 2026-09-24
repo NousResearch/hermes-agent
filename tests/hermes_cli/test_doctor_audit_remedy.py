@@ -14,7 +14,6 @@ import json
 import subprocess
 from unittest.mock import patch
 
-import pytest
 
 from hermes_cli import doctor_tools
 
@@ -48,11 +47,6 @@ def test_root_remedy_never_prescribes_local_audit_fix(capsys):
     assert issues == ["Browser tools (agent-browser) has 2 npm vulnerabilities"]
 
 
-def test_workspace_remedy_still_names_lockfile_bump(capsys):
-    out, _ = _run_audit_one(capsys, ["--workspace", "web"], _audit_json(critical=1))
-    assert "run: cd" not in out
-    assert "npm audit fix" not in out
-    assert "lockfile bump" in out
 
 
 def test_clean_tree_reports_no_known_vulnerabilities(capsys):

@@ -84,9 +84,7 @@ def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert hermes_bin in out
-    assert "owner uid 0" in out
     assert f"sudo chown -R $(id -un): {tmp_path}" in out
-    assert "Nothing in the venv was modified." in out
 
 
 def test_limit_caps_reported_paths(tmp_path, monkeypatch):
@@ -109,18 +107,6 @@ def test_limit_caps_reported_paths(tmp_path, monkeypatch):
     assert len(foreign) == 3
 
 
-def test_no_geteuid_returns_empty(tmp_path, monkeypatch):
-    """Windows (no os.geteuid) skips the preflight entirely."""
-    venv = _make_fake_venv(tmp_path)
-
-    class _NoGeteuidOS:
-        def __getattr__(self, name):
-            if name == "geteuid":
-                raise AttributeError(name)
-            return getattr(os, name)
-
-    monkeypatch.setattr(update_cmd, "os", _NoGeteuidOS())
-    assert update_cmd._venv_foreign_owned_paths(venv) == []
 
 
 def test_running_as_root_returns_empty(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -430,6 +431,14 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
+# ruamel's emitter can change a double-quoted value when it folds a long line right after an
+# escaped backslash (``D:\\Cent…`` → ``D:\\`` + bare newline): the fold reloads as a literal space
+# and a no-op save mutates the stored value (#119844). Config writes must be value-preserving, so
+# every round-trip emitter in the tree keeps scalars on one line instead of folding (``None``
+# does NOT disable folding on 0.18.x; only a large width does).
+ROUNDTRIP_YAML_WIDTH = 2**31 - 1
+
+
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
@@ -437,16 +446,25 @@ def _roundtrip_load(path: Path):
     from ruamel.yaml.comments import CommentedMap
 
     yaml_rt = YAML(typ="rt")
+    yaml_rt.width = ROUNDTRIP_YAML_WIDTH
     yaml_rt.preserve_quotes = True
     yaml_rt.allow_unicode = True
     yaml_rt.default_flow_style = False
     yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    # PyYAML (every reader in the tree) tolerates duplicate keys (last wins); refusing them here
+    # would turn a file the CLI can read into one it cannot write.
+    yaml_rt.allow_duplicate_keys = True
     data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() else None
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config) -> None:
-    _atomic_write(path, lambda f: yaml_rt.dump(config, f), prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
+def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None) -> None:
+    def _write(f) -> None:
+        yaml_rt.dump(config, f)
+        if extra_content:
+            f.write(extra_content)
+
+    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
 def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
@@ -499,15 +517,39 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
 _YAML11_AMBIGUOUS_WORDS = frozenset({"y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"})
 
 
-def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
+def _rt_value(value: Any) -> Any:
+    """Plain Python value → ruamel node: YAML 1.1-ambiguous strings force-quoted at every depth
+    (a bare ``off`` inside a list reads back as ``False`` just like one at the top level)."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    if isinstance(value, dict):
+        node = CommentedMap()
+        for k, v in value.items():
+            node[k] = _rt_value(v)
+        return node
+    if isinstance(value, (list, tuple)):
+        return CommentedSeq(_rt_value(v) for v in value)
+    if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+        return DoubleQuotedScalarString(value)
+    return value
+
+
+def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
+                               extra_content_on_create: "str | None" = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
-    Comment-safe replacement for ``yaml.safe_dump(cfg, f)``: writes the whole file from
-    ``new_state`` through ruamel round-trip mode so existing comments, key order, quotes and
-    readable Unicode survive.
+    THE writer for ``config.yaml`` (every production caller reaches it through
+    ``hermes_cli.config.atomic_config_write``): the on-disk document is loaded through ruamel
+    round-trip mode and *new_state* is merged onto it, so comments, key order, quotes, blank
+    lines and readable Unicode survive. Only nodes whose value actually changed are reassigned;
+    an untouched scalar or list keeps its inline comments and formatting. Keys absent from
+    *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
+    ``extra_content_on_create`` (commented example blocks) is appended only when the file is
+    being created — re-appending it on every rewrite is how the stock boilerplate replaced
+    users' own comments (#92554).
     """
-    from ruamel.yaml.comments import CommentedMap
-    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
@@ -515,27 +557,43 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
 
     mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
+    creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
     yaml_rt, existing = _roundtrip_load(path)
+
+    def _unchanged(current: Any, value: Any) -> bool:
+        # ``True == 1`` in Python; a bool↔int flip is a real change for YAML readers.
+        return current == value and isinstance(current, bool) is isinstance(value, bool)
+
+    def _merge_seq(dst: CommentedSeq, src: list) -> None:
+        # Element-wise so appending/editing one entry keeps the comments on its siblings.
+        for i, value in enumerate(src):
+            if i < len(dst):
+                _merge_item(dst, i, value)
+            else:
+                dst.append(_rt_value(value))
+        del dst[len(src):]
+
+    def _merge_item(dst, key, value) -> None:
+        current = dst[key]
+        if isinstance(value, dict) and isinstance(current, CommentedMap):
+            _merge(current, value)
+        elif isinstance(value, list) and isinstance(current, CommentedSeq):
+            _merge_seq(current, value)
+        elif not _unchanged(current, value):
+            dst[key] = _rt_value(value)
+        # else: unchanged — keep the existing node and the comments/quoting attached to it
 
     def _merge(dst: CommentedMap, src: dict) -> None:
         for key, value in src.items():
-            if isinstance(value, dict):
-                current = dst.get(key)
-                if not isinstance(current, CommentedMap):
-                    current = CommentedMap()
-                    dst[key] = current
-                _merge(current, value)
-            elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
-                dst[key] = DoubleQuotedScalarString(value)
+            if key in dst:
+                _merge_item(dst, key, value)
             else:
-                dst[key] = value
-        # Keys missing from src are deleted: ``cfg.pop("custom_prompt")`` then save must remove
-        # the key from disk ("explicit absence" semantics of the old _save_cfg pattern).
+                dst[key] = _rt_value(value)
         for key in [k for k in dst if k not in src]:
             del dst[key]
 
     _merge(existing, new_state)
-    _roundtrip_dump(path, yaml_rt, existing)
+    _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:
@@ -555,6 +613,29 @@ _fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
 def fast_safe_load(stream: Any) -> Any:
     """``yaml.safe_load`` (same inputs, same result) using the libyaml C loader when available."""
     return yaml.load(stream, Loader=_fast_yaml_loader)
+
+
+_YAML_FILE_CACHE: dict = {}
+_YAML_FILE_CACHE_LOCK = threading.Lock()
+
+
+def load_yaml_file_readonly(path: Union[str, Path]) -> Any:
+    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_signature` changes.
+
+    Returns the cached object itself — callers must never mutate it. Parse errors propagate and
+    are not cached; a missing file raises ``FileNotFoundError`` like ``open`` does."""
+    path = Path(path)
+    sig = file_signature(path.stat())
+    key = str(path)
+    with _YAML_FILE_CACHE_LOCK:
+        cached = _YAML_FILE_CACHE.get(key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+    with open(path, encoding="utf-8") as f:
+        data = fast_safe_load(f)
+    with _YAML_FILE_CACHE_LOCK:
+        _YAML_FILE_CACHE[key] = (sig, data)
+    return data
 
 
 def _env_number(key: str, default, cast):

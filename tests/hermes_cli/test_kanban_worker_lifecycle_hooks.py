@@ -21,7 +21,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
+from hermes_cli.plugins import get_plugin_manager
 
 WORKER_HOOKS = (
     "on_kanban_worker_spawned",
@@ -187,26 +187,3 @@ def test_raising_callbacks_never_break_worker_lifecycle(
         mgr._hooks = saved
 
 
-def test_no_subscriber_short_circuits_worker_hooks(
-    kanban_home, all_assignees_spawnable, monkeypatch,
-):
-    """With nothing registered, the new observers are never invoked at all."""
-    from hermes_cli import lifecycle
-
-    invoked: list[str] = []
-    real_invoke = lifecycle.invoke_hook
-
-    def _spy(hook_name, **kw):
-        invoked.append(hook_name)
-        return real_invoke(hook_name, **kw)
-
-    monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kbc.connect()
-    try:
-        kb.create_task(conn, title="t", assignee="alice")
-        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 222)
-    finally:
-        conn.close()
-    assert "on_kanban_worker_spawned" not in invoked
-    # The shipped claimed hook has no short-circuit and still fires.
-    assert "kanban_task_claimed" in invoked

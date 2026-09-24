@@ -345,6 +345,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.save_key")
+@_profile_scoped
 @_catch(5034)
 def _(rid, params: dict) -> dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
@@ -365,13 +366,14 @@ def _(rid, params: dict) -> dict:
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    # Under the profile scope the save publishes into the addressed profile's secret scope (and the
+    # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
     save_provider_env_credential(env_var, api_key)
-    os.environ[env_var] = api_key  # so the refreshed inventory sees it
-    # The launch profile's boot record may still say "nothing configured"; the gated picker's
-    # own chat waits on setup.status, so the fresh key must move the record (+ setup.ready).
-    if not params.get("profile"):
-        from hermes_cli.free_tier_bootstrap import reconcile_record
-        reconcile_record()
+    # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
+    # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
+    # leaves it alone when the bound home is another profile's.
+    from hermes_cli.free_tier_bootstrap import reconcile_record
+    reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from hermes_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
@@ -383,6 +385,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.disconnect")
+@_profile_scoped
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""

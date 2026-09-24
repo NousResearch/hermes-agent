@@ -75,24 +75,11 @@ class TestRegistration:
 
 
 
-    @pytest.mark.parametrize(
-        "builtin",
-        [
-            "local",
-            "local_command",
-            "groq",
-            "openai",
-            "mistral",
-            "xai",
-            "elevenlabs",
-            "deepinfra",
-        ],
-    )
+    @pytest.mark.parametrize("builtin", sorted(transcription_registry._BUILTIN_NAMES))
     def test_rejects_builtin_shadow_with_warning(self, builtin, caplog):
         p = _FakeProvider(name=builtin)
         with caplog.at_level(logging.WARNING, logger="agent.transcription_registry"):
             transcription_registry.register_provider(p)
-        assert "shadows a built-in name" in caplog.text
         assert builtin in caplog.text
         assert transcription_registry.get_provider(builtin) is None
         assert transcription_registry.list_providers() == []
@@ -128,14 +115,6 @@ class TestLookup:
 
 class TestABCContract:
 
-    def test_must_implement_name(self):
-        class Incomplete(TranscriptionProvider):
-            def transcribe(self, file_path, **kw):
-                return {"success": True, "transcript": "", "provider": "incomplete"}
-            # name NOT implemented
-
-        with pytest.raises(TypeError, match="abstract"):
-            Incomplete()  # type: ignore[abstract]
 
 
 

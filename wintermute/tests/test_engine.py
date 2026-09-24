@@ -917,3 +917,20 @@ def test_wipe_all_is_a_rebirth(home):
     assert store.read_self() == "" and store.read_kept() == []
     assert not dream.dream_path().exists() and not (home / "MEMORY.md").exists()
     assert _peers() == {}
+
+
+def test_wipe_all_clears_conversations_in_state_db(home):
+    import sqlite3
+    from wintermute_engine import status
+    db = home / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE sessions (id TEXT)")
+    conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT)")
+    conn.execute("INSERT INTO messages VALUES ('s1','user','my name is z')")
+    conn.execute("INSERT INTO sessions VALUES ('s1')")
+    conn.commit(); conn.close()
+    status.wipe(True, confirmed=True)
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    conn.close()

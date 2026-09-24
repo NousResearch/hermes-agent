@@ -466,7 +466,7 @@ def live() -> None:
 
 def wipe(deep: bool, confirmed: bool) -> str:
     what = ("EVERYTHING he has become — emotions, bonds, memory, self-portrait, secrets, "
-            "dreams, journals (SOUL, keys and code are kept)") if deep else \
+            "dreams, journals, and every conversation (SOUL, keys and code are kept)") if deep else \
         "his emotional state — drives, hormones, temperament, entropy, bonds and the curves "\
         "(memory, self-portrait, secrets and journals are kept)"
     if not confirmed:
@@ -478,7 +478,9 @@ def wipe(deep: bool, confirmed: bool) -> str:
     for item in done:
         if item not in seen:
             seen.add(item); ordered.append(item)
-    return green(("Reborn." if deep else "Emotional slate wiped.") + " Erased: ") + ", ".join(ordered)
+    tail = ("\n" + yellow("Now restart the gateway and clear the live chat:  "
+                           "hermes gateway restart   then  /reset in Telegram")) if deep else ""
+    return green(("Reborn." if deep else "Emotional slate wiped.") + " Erased: ") + ", ".join(ordered) + tail
 
 
 def main(args: List[str]) -> int:

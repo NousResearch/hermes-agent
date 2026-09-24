@@ -211,7 +211,7 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
 | `wm graph` / `wm graph 72` | pour chaque valeur sur 48 (ou 72…) h : une barre simple ░ jamais atteint, ▒ plage vécue, █ maintenant, avec min / moyenne / max |
 | `wm forget <peer>` | efface un interlocuteur (ex. `cli:local`) |
 | `wm wipe --yes` | ardoise propre émotionnelle : remet à zéro pulsions, hormones, tempérament, entropie, liens et courbes ; garde mémoire, autoportrait, secrets, journaux |
-| `wm wipe --all --yes` | renaissance : efface **tout** ce qu'il est devenu (plus `MEMORY.md`, autoportrait, secrets, rêves, journaux). Garde SOUL, clés et code. Aucune copie |
+| `wm wipe --all --yes` | renaissance : efface **tout** ce qu'il est devenu — plus `MEMORY.md`, autoportrait, secrets, rêves, journaux, **et toutes les conversations** (state.db, y compris `session_search`). Garde SOUL, clés, code. Aucune copie. Ensuite : `hermes gateway restart` + `/reset` |
 | `wm alerts` | tout ce que le témoin a vu, avec **pourquoi** il l'a fait |
 | `wm ack` / `wm ack soul` | accepter l'état actuel (tout, ou un seul élément) : les cases repassent au vert |
 

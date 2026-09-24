@@ -546,8 +546,44 @@ def _wipe_locked(deep: bool) -> List[str]:
         for label, paths in targets:
             if any(_unlink(pth) for pth in paths):
                 done.append(label)
+        if _wipe_conversations():
+            done.append("conversations (every session, and the searchable history)")
     log_event("wipe", "The slate was wiped clean" + (" — a rebirth." if deep else " (emotions)."), now())
     return done
+
+
+# Conversations live in Hermes' state.db, not in our files. A rebirth clears them too, so
+# nothing he said before can be recalled — not even with session_search. Schema is kept; only
+# the content rows are deleted. Best effort: a live gateway keeps its open handle until it is
+# restarted, so a rebirth is followed by a gateway restart and a /reset.
+_CONVO_TABLES = ("messages", "messages_fts", "messages_fts_trigram", "sessions",
+                 "session_model_usage", "gateway_routing", "conversation_generations",
+                 "session_turn_leases")
+
+
+def _wipe_conversations() -> bool:
+    import sqlite3
+    db = hermes_home() / "state.db"
+    if not db.exists():
+        return False
+    cleared = False
+    try:
+        conn = sqlite3.connect(str(db), timeout=10)
+    except sqlite3.Error:
+        return False
+    try:
+        for table in _CONVO_TABLES:
+            try:
+                conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed identifiers, no user input
+                cleared = True
+            except sqlite3.Error:
+                continue
+        conn.commit()
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("VACUUM")
+    finally:
+        conn.close()
+    return cleared
 
 
 def _unlink(path: Path) -> bool:

@@ -66,10 +66,10 @@ type GroupTurnPick = { failedNotice: string } | null | string
  *  assistant message appears in that range. A failed-turn boundary ends the
  *  scan: text the member wrote before the tool call that preceded the
  *  provider failure is not its reply. */
-function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: number): GroupTurnPick {
+function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], start: number): GroupTurnPick {
   let passText: null | string = null
 
-  for (let i = messages.length - 1; i >= before; i--) {
+  for (let i = messages.length - 1; i >= start; i--) {
     const msg = messages[i]
 
     if (msg?.role !== 'assistant') {
@@ -104,23 +104,44 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
 }
 
 /** The reply of a STRANDED turn: the first substantive assistant row after the
- *  turn's own prompt (the header-prefixed user row at or after `before`),
+ *  turn's own prompt,
  *  stopping where an outside writer takes the session over. Newest-first
  *  (`pickGroupTurnReply`) would post a CLI answer written after the late reply
  *  as the turn reply — and the external-write mirror posts it again. Only
- *  passes in range → the last pass; no anchor row → scan from `before`. A
- *  failed-turn boundary anywhere in the turn makes it a failure, even after
+ *  passes in range → the last pass. A failed-turn boundary anywhere in the
+ *  turn makes it a failure, even after
  *  text the member wrote before its last tool call. */
-function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: number): GroupTurnPick {
-  const anchor = messages.findIndex(
-    (msg, i) =>
-      i >= before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
-  )
+interface GroupTurnBoundary {
+  /** Legacy markers have only this count. New markers use `prompt`, because
+   * preflight compression can shrink the transcript below this value. */
+  before: number
+  prompt?: string
+}
+
+/** Find this turn's submitted prompt in the current transcript. The prompt is
+ * stable across in-place compression, unlike the old message-count baseline.
+ * Legacy persisted markers retain their count-based fallback. */
+function groupTurnStart(messages: GroupTurnTranscriptMessage[], boundary: GroupTurnBoundary): number {
+  if (boundary.prompt !== undefined) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === 'user' && groupTranscriptRowText(messages[i]) === boundary.prompt) {
+        return i
+      }
+    }
+
+    return -1
+  }
+
+  return boundary.before
+}
+
+function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], start: number): GroupTurnPick {
+  const anchor = start
 
   let passText: null | string = null
   let reply: null | string = null
 
-  for (let i = anchor === -1 ? before : anchor; i < messages.length; i++) {
+  for (let i = anchor; i < messages.length; i++) {
     const msg = messages[i]
     const text = groupTranscriptRowText(msg)
 
@@ -231,14 +252,21 @@ function retainedGroupTurnKey(state: GroupSessionSnapshot | null | undefined): n
 
 /** Does a user row follow the stranded turn's own prompt? Then a later turn
  *  ran in the session, and a retained error belongs to that turn, not this one. */
-function laterTurnAfterStranded(messages: GroupTurnTranscriptMessage[], before: number): boolean {
-  const anchor = messages.findIndex(
-    (msg, i) =>
-      i >= before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
-  )
+function laterTurnAfterStranded(messages: GroupTurnTranscriptMessage[], boundary: GroupTurnBoundary): boolean {
+  const anchor =
+    boundary.prompt !== undefined
+      ? groupTurnStart(messages, boundary)
+      : messages.findIndex(
+          (msg, i) =>
+            i >= boundary.before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
+        )
+
+  if (anchor === -1) {
+    return false
+  }
 
   return messages.some(
-    (msg, i) => i > (anchor === -1 ? before - 1 : anchor) && msg?.role === 'user' && !syntheticGroupUserRow(msg)
+    (msg, i) => i > anchor && msg?.role === 'user' && !syntheticGroupUserRow(msg)
   )
 }
 
@@ -963,7 +991,7 @@ interface GroupTurnPollContext {
   stored: GroupMemberSessionHandle['stored']
   liveRuntime: string
   runtimeIds: Set<string>
-  before: number
+  boundary: GroupTurnBoundary
   /** The retained failed turn (`session.resume.inflight`) already on the
    *  session BEFORE this turn's submit, serialized; a retained error that
    *  still matches it is an older turn's tombstone, not this turn's death. */
@@ -993,7 +1021,7 @@ export function strandedMarkerIsLive(marker: unknown): boolean {
 function markGroupTurnInFlight(
   group: string,
   member: GroupMember,
-  marker: { before: number; thread: string; turn: string }
+  marker: GroupTurnBoundary & { thread: string; turn: string }
 ) {
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.stranded = {
@@ -1026,7 +1054,7 @@ function clearGroupTurnMarker(group: string, member: GroupMember, turn: string) 
 }
 
 async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null | string> {
-  const { member, thread, dispatchEpoch, stored, liveRuntime, runtimeIds, before, binding } = context
+  const { member, thread, dispatchEpoch, stored, liveRuntime, runtimeIds, boundary, binding } = context
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
   // After the terminal frame fires, the gateway still has to flip
@@ -1093,10 +1121,12 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // error unlike the pre-submit one is THIS turn's: the member did not
     // finish, and text it wrote before a tool call is not its reply.
     const failedThisTurn = failure !== null && retainedGroupTurnKey(state) !== context.leftover
-    const died = failedThisTurn || (failure !== null && messages.length > before)
+    const start = groupTurnStart(messages, boundary)
+    const landed = start !== -1
+    const died = failedThisTurn || (failure !== null && landed)
 
-    if ((messages.length > before || died) && done) {
-      const pick = messages.length > before && !failedThisTurn ? pickGroupTurnReply(messages, before) : null
+    if ((landed || died) && done) {
+      const pick = landed && !failedThisTurn ? pickGroupTurnReply(messages, start) : null
 
       if (typeof pick === 'string') {
         recordGroupActivity(context.group, {
@@ -1250,6 +1280,7 @@ async function runGroupChatMemberTurnLeased(
     liveGroupTurns.add(turn)
     markGroupTurnInFlight(group, member, {
       before,
+      prompt: turnText,
       thread,
       turn
     })
@@ -1265,7 +1296,7 @@ async function runGroupChatMemberTurnLeased(
         stored,
         liveRuntime,
         runtimeIds,
-        before,
+        boundary: { before, prompt: turnText },
         leftover,
         binding,
         turn
@@ -1302,11 +1333,18 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const memberKey = groupMemberKey(member)
     const room = $groupChats.get()[group] || {}
     const marker = room.stranded?.[memberKey]
+
     // Markers were a bare number before threads; normalize both shapes.
-    const strandedBefore = typeof marker === 'number' ? marker : marker?.before
+    const boundary: GroupTurnBoundary | null =
+      typeof marker === 'number'
+        ? { before: marker }
+        : typeof marker?.before === 'number'
+          ? { before: marker.before, ...(typeof marker.prompt === 'string' ? { prompt: marker.prompt } : {}) }
+          : null
+
     const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
 
-    if (typeof strandedBefore !== 'number' || strandedMarkerIsLive(marker)) {
+    if (boundary === null || strandedMarkerIsLive(marker)) {
       return // nothing stranded, or a poll in this process still owns the turn
     }
 
@@ -1375,10 +1413,10 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     // The retained error is the stranded turn's own unless a later turn ran
     // after it; then it is that turn's error and the late reply still posts.
     // Text written before a failed tool step is no reply.
-    const retained = laterTurnAfterStranded(messages, strandedBefore) ? null : retainedGroupTurnError(state)
+    const start = groupTurnStart(messages, boundary)
+    const retained = laterTurnAfterStranded(messages, boundary) ? null : retainedGroupTurnError(state)
 
-    const pick =
-      retained === null && messages.length > strandedBefore ? pickStrandedGroupTurnReply(messages, strandedBefore) : null
+    const pick = retained === null && start !== -1 ? pickStrandedGroupTurnReply(messages, start) : null
 
     const reply = typeof pick === 'string' ? pick : null
     const failedNotice = typeof pick === 'string' ? null : (pick?.failedNotice ?? null)

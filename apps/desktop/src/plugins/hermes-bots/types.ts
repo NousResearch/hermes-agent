@@ -208,9 +208,9 @@ export interface GroupChat {
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
-   *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
-  stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
+  /** A member turn this Desktop is not (or no longer) polling. New markers retain the submitted
+   *  prompt as the compression-stable harvest boundary; `turn` names the live poll owner. */
+  stranded?: Record<string, number | { before: number; prompt?: string; thread?: string; turn?: string }>
   /** #93813: how far each member's external-write reconcile sweep has read
    *  into that member's per-group session transcript (absolute row index of
    *  the last mirrored row + 1). Persisted so external posts aren't rescanned

@@ -46,9 +46,9 @@ def _await_frame_count(transport, count, timeout=2.0):
 
 
 def _overflow_slow_peer(fan, healthy, slow):
-    """Emit until the slow mailbox overflows; pace healthy one receipt per emit."""
+    """Emit non-streaming frames (a WS peer blocks on each) until the slow mailbox overflows."""
     for n in range(FanoutTransport._MAX_PENDING_FRAMES + 64):
-        frame = {"params": {"type": "message.delta", "n": n}}
+        frame = {"params": {"type": "tool.progress", "n": n}}
         assert fan.write(frame)
         _await_frame_count(healthy, n + 1)
         if not fan.contains(slow):
@@ -93,15 +93,18 @@ class PipeClient:
 
 
 class _SocketWS:
-    """ASGI-ws stand-in for SocketClient: send goes to the socketpair, close is a no-op."""
-    def __init__(self, client):
-        self.client = client
+    """ASGI-ws stand-in: send goes to the socketpair (or never completes when client is None);
+    close records its code."""
+    def __init__(self, client=None):
+        self.client, self.close_codes = client, []
 
     async def send_text(self, payload):
+        if self.client is None:
+            await asyncio.Event().wait()
         await self.client.send_text(payload)
 
     async def close(self, code=1000):
-        return None
+        self.close_codes.append(code)
 
 
 class SocketClient(WSTransport):
@@ -295,18 +298,23 @@ def test_backpressure_never_blocks_later_frames_or_other_subscribers(slow_first,
         assert not fan.write({"after": "close"})
 
 
-
 def test_overflow_closes_only_the_slow_peer_and_healthy_keeps_streaming():
-    class BoomOnClose(RecordingTransport):
-        def close(self):
-            super().close()
-            raise RuntimeError("overflow close exploded")
-
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    stalled_ws = _SocketWS()  # send_text never completes: the real slow WS peer
+    slow = WSTransport(stalled_ws, loop, peer="slow")
     healthy = RecordingTransport()
-    slow = BoomOnClose(delay=30.0)
     fan = FanoutTransport(healthy, slow)
     try:
         last_n = _overflow_slow_peer(fan, healthy, slow)
+        deadline = time.monotonic() + 2.0
+        while not stalled_ws.close_codes and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert stalled_ws.close_codes == [1011]  # the overflow itself aborted the socket
+        slow.abort()  # a second overflow signal must not schedule a second socket close
+        time.sleep(0.05)
+        assert stalled_ws.close_codes == [1011]
         assert slow.closed is True
         assert healthy.closed is False
         assert fan.contains(healthy)
@@ -315,8 +323,10 @@ def test_overflow_closes_only_the_slow_peer_and_healthy_keeps_streaming():
         _await_frame_count(healthy, last_n + 2)
         assert healthy.frames[-1] == after
     finally:
-        slow.release()
         fan.close()
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
 
 
 def test_fanout_close_and_detach_leave_peer_sockets_open():

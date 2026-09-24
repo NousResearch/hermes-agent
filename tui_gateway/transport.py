@@ -239,10 +239,12 @@ class FanoutTransport:
                 return
 
     def _signal_overflow_detach(self, transport: Transport) -> None:
-        # Outside the fanout lock: close() may re-enter contains/detach, and a
-        # WS close must not stall the emit turn or other subscribers.
+        # Outside the fanout lock: abort()/close() may re-enter contains/detach, and
+        # a WS close must not stall the emit turn or other subscribers. WSTransport
+        # aborts (1011 socket close, off-loop safe); other transports just close.
         try:
-            transport.close()
+            abort = getattr(transport, "abort", None)
+            (abort or transport.close)()
         except Exception:
             logger.debug("fanout overflow close failed; membership already dropped", exc_info=True)
 

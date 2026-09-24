@@ -204,6 +204,9 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete — a transform_llm_output hook rewrote the final text after streaming;
+  // it authoritatively replaces the current turn's streamed text even without a prefix match.
+  response_transformed?: boolean
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

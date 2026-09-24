@@ -623,7 +623,8 @@ export function useMessageStream({
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000,
-      persistedTurn?: PersistedTurn | null
+      persistedTurn?: PersistedTurn | null,
+      responseTransformed?: boolean
     ) => {
       let shouldHydrate = false
 
@@ -800,7 +801,17 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+            // A transform_llm_output hook rewrites the final after streaming (e.g. pseudonym
+            // restore), so it may share no prefix with the streamed text yet is still this
+            // turn's authoritative reply: settle it in place rather than append a duplicate.
+            // Gated on sawAssistantPayload so a stale completion can't overwrite an older bubble.
+            const transformedCurrentReply = Boolean(responseTransformed && state.sawAssistantPayload && finalText)
+
+            if (
+              existing.pending ||
+              transformedCurrentReply ||
+              (!interimBoundaryPending && finalText && existingText === finalText)
+            ) {
               nextMessages = settleAt(index)
             } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
               // Settle the interim in place instead of creating a duplicate —

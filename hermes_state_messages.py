@@ -385,6 +385,51 @@ class SessionMessagesMixin:
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
+    def append_external_messages(self, session_id: str, messages: List[Dict[str, Any]], *,
+                                 turn_lease_holder: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Atomically append client-addressed transcript rows and return their durable ids.
+
+        ``platform_message_id`` is intentionally namespaced: platform adapters already use that
+        column, while this API promises idempotency only for a client's session-local id.
+        The probe and insert share the single SQLite write transaction, so two API-server
+        processes cannot both accept the same client id despite the legacy non-unique index.
+        """
+        if not messages:
+            return []
+        prepared = []
+        for message in messages:
+            client_id = message["client_id"]
+            row = {"role": message["role"], "content": message["content"],
+                   "platform_message_id": f"external:{client_id}"}
+            prepared.append((client_id, row, self._message_row_params(
+                session_id, row["role"], row, None, time.time(), keep_reasoning=True)))
+
+        def _do(conn):
+            self._check_transcript_write_guards(conn, session_id, None,
+                                                turn_lease_holder=turn_lease_holder)
+            result, inserted = [], 0
+            last = conn.execute(
+                "SELECT role FROM messages WHERE session_id = ? AND active = 1 "
+                "AND role IN ('user', 'assistant') ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+            last_role = last[0] if last is not None else None
+            for client_id, row, params in prepared:
+                platform_id = row["platform_message_id"]
+                existing = conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
+                    (session_id, platform_id)).fetchone()
+                if existing is None:
+                    if last_role == row["role"]:
+                        raise ValueError("external messages must preserve user/assistant alternation")
+                    message_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+                    inserted += 1
+                    last_role = row["role"]
+                else:
+                    message_id = existing[0]
+                result.append({"client_id": client_id, "id": message_id, "inserted": existing is None})
+            self._bump_session_counters(conn, session_id, inserted, 0, unit=False)
+            return result
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,
                                                  display_metadata: Optional[Dict[str, Any]] = None) -> bool:

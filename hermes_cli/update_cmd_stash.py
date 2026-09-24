@@ -75,7 +75,9 @@ def _print_first_line(text: str) -> None:
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     from hermes_cli.update_cmd import _git_run
-    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
+    # Untracked extensions belong to the user, not the update stash. They do not
+    # prevent tracked edits from being parked and must survive --keep-stash/discard.
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--untracked-files=no"], cwd, check=True)
     if not status.stdout.strip():
         return None
     # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with
@@ -98,7 +100,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
     prev_stash = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd).stdout.strip()
-    push = _git_run(git_cmd, ["stash", "push", "--include-untracked", "-m", stash_name], cwd)
+    push = _git_run(git_cmd, ["stash", "push", "-m", stash_name], cwd)
     _print_nonempty(push.stdout)
     stash_probe = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd)
     stash_ref = stash_probe.stdout.strip()
@@ -112,13 +114,10 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
             print("  (An index entry from `git add -N` is the usual cause of this error; `git add` the")
             print("   paths it names, or `git reset` them, and the update will proceed.)")
             raise subprocess.CalledProcessError(push.returncode, push.args, output=push.stdout, stderr=push.stderr)
-        # Non-zero but entry created: push saved everything yet couldn't delete some untracked files
-        # (e.g. root-owned dir). Not a failure — continue.
+        # Non-zero but entry created: tracked changes were saved, but cleanup was incomplete.
         _print_nonempty(push.stderr)
-        print("  ⚠ Some untracked files could not be removed from the working tree (permission denied).")
-        print("    They were still saved to the stash and were left in place — the update will continue.")
-        # A partially-failed push also skips cleanup of TRACKED modifications; they'd break the following
-        # pull. Safe to reset: all is in the stash.
+        print("  ⚠ Some tracked changes could not be removed from the working tree.")
+        # A partially-failed push may skip cleanup of tracked modifications; they'd break the pull.
         _reset_hard(git_cmd, cwd)
     return stash_ref
 

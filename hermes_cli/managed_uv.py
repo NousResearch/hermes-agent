@@ -1050,6 +1050,8 @@ def repair_vulnerable_runtime(
     venv's ``pyvenv.cfg`` instead (any open handle under the venv makes a directory rename fail
     there) and restores the original config on a failed smoke.
     """
+    if project_root is None and os.environ.get("HERMES_TEST_ISOLATION"):
+        return RuntimeRepairResult("skipped", "implicit checkout runtime repair disabled during tests")
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
     live = Path(venv_dir) if venv_dir is not None else _default_live_venv(root)
     live_python = _venv_python(live)

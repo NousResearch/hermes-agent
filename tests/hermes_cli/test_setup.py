@@ -130,6 +130,11 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+    sdk_requests = []
+    monkeypatch.setattr(
+        "hermes_cli.setup_terminal._ensure_sdk",
+        lambda package, *args, **kwargs: sdk_requests.append(package),
+    )
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
@@ -166,6 +171,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+    assert sdk_requests == ["modal"]
 
 
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the

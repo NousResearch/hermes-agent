@@ -494,6 +494,20 @@ class TestManagedPythonStore:
         assert base_env["PYTHONHOME"] == "/poison/home"
 
 
+def test_isolated_run_does_not_repair_implicit_checkout(monkeypatch):
+    from hermes_cli import managed_uv
+
+    monkeypatch.setenv("HERMES_TEST_ISOLATION", "1")
+
+    def unexpected_lookup(*args, **kwargs):
+        raise AssertionError("test isolation must not inspect the checkout venv")
+
+    monkeypatch.setattr(managed_uv, "_default_live_venv", unexpected_lookup)
+    result = managed_uv.repair_vulnerable_runtime("uv")
+
+    assert result.status == "skipped"
+
+
 @pytest.mark.skipif(sys.platform == "win32",
                     reason="POSIX-only: fixtures build the bin/ (not Scripts/) venv layout")
 class TestRuntimeRepair:

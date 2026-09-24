@@ -206,10 +206,14 @@ function persistTabs() {
 // would resurrect the bucket the rename just deleted.
 let viewKey = 'default'
 
-export const $previewTabs = atom<PreviewTab[]>([])
+// Start from the default bucket so Desktop can render its restored tabs before
+// the focused chat pushes its initial scope.
+export const $previewTabs = atom<PreviewTab[]>([...(tabsByProfile[viewKey] ?? [])])
 
-$previewTabs.subscribe(tabs => {
-  // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
+$previewTabs.listen(tabs => {
+  // `listen` ignores the atom's initial value, so importing this store never
+  // writes a restored bucket back to storage. The bucket is a mutable store of
+  // its own.
   tabsByProfile[viewKey] = [...tabs]
   persistTabs()
 })
@@ -220,7 +224,7 @@ $previewTabs.subscribe(tabs => {
 export function setPreviewScope(scope: string) {
   const next = normalizeProfileKey(scope) || 'default'
 
-  if (next === viewKey) {
+  if (next === viewKey && pendingLegacyTabs === null) {
     return
   }
 

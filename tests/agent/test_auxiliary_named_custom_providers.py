@@ -795,14 +795,8 @@ class TestCustomProviderAliasCollision:
         assert resolved["base_url"] == "https://foreign.example.test/v1"
         assert resolved["api_key"] == "no-key-required"
 
-    def test_bare_durable_key_foreign_override_composes_entry_key_but_not_pool(self, tmp_path, monkeypatch):
-        """Bare-spelling composition covers the entry's own credential ONLY.
-
-        Pool candidates match name-first without origin affinity, so once the
-        URL-only override leaves the configured origin the pool must stay
-        fail-closed even for the bare durable spelling — a live pool key must
-        never travel to a foreign origin (round-2 review blocker).
-        """
+    def test_bare_durable_key_foreign_override_does_not_borrow_pool(self, tmp_path, monkeypatch):
+        """A bare durable spelling cannot authorize a pool key at a foreign origin."""
         _write_config(tmp_path, {
             "providers": {
                 "relay": {
@@ -845,13 +839,8 @@ class TestCustomProviderAliasCollision:
         assert resolved["api_key"] != "durable-pool-key"
         rt_pool.select.assert_not_called()
 
-    def test_bare_durable_key_composes_key_under_url_only_override(self, tmp_path, monkeypatch):
-        """The bare ``providers.<key>`` spelling keeps field-by-field composition.
-
-        Aux path is pinned by test_named_provider_defaults_compose_under_task_overrides;
-        this pins the RUNTIME path to the same contract so the two resolvers
-        cannot diverge on the same config again.
-        """
+    def test_bare_durable_key_foreign_override_does_not_borrow_entry_key(self, tmp_path, monkeypatch):
+        """Runtime and auxiliary routes enforce the same credential-origin boundary."""
         monkeypatch.setenv("NAMED_KEY", "named-key")
         _write_config(tmp_path, {
             "providers": {
@@ -868,7 +857,7 @@ class TestCustomProviderAliasCollision:
             explicit_base_url="https://aux-explicit.example/v1",
         )
         assert resolved["base_url"] == "https://aux-explicit.example/v1"
-        assert resolved["api_key"] == "named-key"
+        assert resolved["api_key"] == "no-key-required"
 
     def test_named_custom_recovery_rejects_foreign_endpoint_override(self, tmp_path):
         """A 401 from a foreign override cannot rotate or expose the configured custom pool."""

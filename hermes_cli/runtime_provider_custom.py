@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.secret_scope import get_secret_str
-from utils import base_url_hostname
+from utils import base_url_hostname, base_url_origin
 
 logger = logging.getLogger("hermes_cli.runtime_provider")
 
@@ -551,30 +551,6 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
-def _is_explicit_custom_identity(requested_provider: str, custom_entry: Dict[str, Any]) -> bool:
-    """True when the requested SPELLING denotes an explicit custom identity.
-
-    Explicit identities — the ``custom:<name>`` namespace, a display alias
-    (entry ``name`` differing from the durable ``providers.<key>``), and
-    ``custom_providers`` entries requested by a spelling other than their
-    lifted ``provider_key`` — bind their saved credentials to the entry's configured origin: an endpoint override that
-    leaves that origin must bring its own key. The bare durable key
-    (``providers.<key>`` requested as ``<key>``) keeps the documented
-    field-by-field composition under task overrides: a URL-only override wins,
-    the entry fills the blanks including the key (pinned by
-    test_named_provider_defaults_compose_under_task_overrides).
-    Shared predicate for the runtime and auxiliary foreign-origin guards —
-    keep them agreeing on ONE trust rule.
-    """
-    requested_norm = _normalize_custom_provider_name(requested_provider or "")
-    if not requested_norm:
-        return False
-    if requested_norm == "custom" or requested_norm.startswith("custom:"):
-        return True
-    provider_key = _normalize_custom_provider_name(_clean(custom_entry.get("provider_key", "")))
-    return not provider_key or requested_norm != provider_key
-
-
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -607,14 +583,9 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     configured_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
     origin_left_configured = bool(
         explicit_base_url and configured_base
-        and _normalize_base_url_for_match(base_url) != _normalize_base_url_for_match(configured_base)
+        and base_url_origin(base_url) != base_url_origin(configured_base)
     )
-    # Full fail-closed (no saved credential at all) only for explicit custom
-    # identities; the bare durable ``providers.<key>`` spelling keeps the
-    # documented field-by-field composition of the ENTRY's own credential.
-    endpoint_overridden = origin_left_configured and _is_explicit_custom_identity(
-        requested_provider, custom_provider
-    )
+    # Saved credentials are origin-bound for every accepted provider spelling.
     # Pool candidates match name-first without origin affinity, so the pool
     # stays fail-closed for EVERY spelling once the destination left the
     # configured origin — a URL-only override must not exfiltrate a pool key.
@@ -631,18 +602,18 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     explicit_key = (explicit_api_key or "").strip()
     candidates = [
         explicit_key,
-        *([] if endpoint_overridden else [
+        *([] if origin_left_configured else [
             _clean(custom_provider.get("api_key", "")),
             _key_env_secret(custom_provider, f"custom provider '{custom_provider.get('name', requested_provider)}'"),
         ]),
-        *rp._host_gated_env_key_candidates(base_url, ollama=False),
+        *([] if origin_left_configured else rp._host_gated_env_key_candidates(base_url, ollama=False)),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
     # ``key_cmd`` credentials are minted per request (short-lived bearers would go stale
     # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
     # explicit --api-key still wins as the one-off recovery escape hatch.
     key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not endpoint_overridden and not rp.has_usable_secret(explicit_key):
+    if key_cmd and not origin_left_configured and not rp.has_usable_secret(explicit_key):
         from agent.command_token_source import build_command_token_provider
         token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
         if token_provider is not None:

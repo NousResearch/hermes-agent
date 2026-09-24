@@ -3461,6 +3461,10 @@ def request_review(
             if binding:
                 # Bind-once, like prepare_acceptance: a retry cannot swap the
                 # task's PR for a green sibling once the handoff has bound it.
+                # The WHERE guard is defensive: write_txn serializes writers
+                # and a racing handoff is already refused by the status
+                # UPDATE's rowcount check above, so the guarded row always
+                # matches here and a rowcount re-check would be dead code.
                 conn.execute(
                     "UPDATE tasks SET completion_contract=? WHERE id=? AND completion_contract=?",
                     (binding, task_id, trow["completion_contract"]),
@@ -3483,6 +3487,9 @@ def request_review(
             if staged:
                 payload["artifacts"] = staged
             if binding:
+                # Audit trail only, no code consumer yet: an operator reading
+                # the event stream can confirm the contract bound at the
+                # review handoff instead of re-deriving it from the task row.
                 payload["contract_bound"] = binding
             _append_event(conn, task_id, "review_requested", payload, run_id=run_id)
     except Exception:

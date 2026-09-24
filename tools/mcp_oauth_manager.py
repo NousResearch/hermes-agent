@@ -355,10 +355,12 @@ class MCPOAuthManager:
             if mtime_ns == entry.last_mtime_ns:
                 return False
             old, entry.last_mtime_ns = entry.last_mtime_ns, mtime_ns
-            if old == 0:
-                # First observation only seeds the baseline. Forcing a
-                # reload here can reset the provider in the middle of its
-                # first auth handshake and tear down HTTP MCP discovery.
+            if old == 0 and getattr(getattr(entry.provider, "context", None), "current_tokens", None) is not None:
+                # First observation with tokens already in memory only seeds the
+                # baseline: the file was written by this process's own first
+                # sign-in, and reloading on the next request would tear down the
+                # live HTTP MCP session. With no tokens in memory (started before
+                # an external `hermes mcp login`), fall through and reload.
                 return False
             # `_initialized` is private SDK API but stable across the pinned versions (>=1.26.0).
             if hasattr(entry.provider, "_initialized"):

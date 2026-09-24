@@ -550,7 +550,7 @@ class SessionTranscriptMixin:
         try:
             # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
             return self._db_for_session_id(session_id).get_messages_as_conversation(
-                session_id, repair_alternation=True)
+                session_id, repair_alternation=True, include_row_ids=True)
         except Exception as e:
             # Empty history is valid data; a failed canonical read is not — live-replay callers
             # must fail closed, not start from [].

@@ -3602,7 +3602,9 @@ def _commit_compaction(
             if in_place:
                 # In-place compaction: same session_id; soft-archive old turns (active=0, still
                 # searchable) + insert `compressed` atomically; no pre-flush (tail already in).
-                from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
+                from agent.context_compressor import (
+                    _DB_PERSISTED_MARKER, PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers,
+                )
                 def row_ids(rows):
                     return tuple(dict.fromkeys(
                         row_id for msg in rows if isinstance(msg, dict)
@@ -3611,13 +3613,21 @@ def _commit_compaction(
                     ))
 
                 held_row_ids = row_ids(messages_before_compression or [])
+                for msg in messages_before_compression or []:
+                    if isinstance(msg, dict) and msg.get(_DB_PERSISTED_MARKER) and not row_ids([msg]):
+                        raise RuntimeError("Persisted compression input lacks durable row provenance")
+                # Synthetic legacy inputs without persistence markers cannot establish
+                # membership; retain the old watermark path for those callers only.
+                provenance_available = bool(held_row_ids) or (
+                    messages_before_compression is not None and len(messages_before_compression) == 1
+                )
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
                 agent._session_db.archive_and_compact(
                     agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=lease.watermark, lock_holder=lease.holder,
                     tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
-                    held_row_ids=held_row_ids or None,
+                    held_row_ids=held_row_ids if provenance_available else None,
                     tail_row_ids=row_ids(m for m in compressed if id(m) in _tail_tagged_ids),
                 )
                 split_status = "in_place_committed"
@@ -3625,6 +3635,12 @@ def _commit_compaction(
                 # flush re-INSERTs the whole compacted transcript, doubling the live set. Reset
                 # the flush identity set so next turn diffs against the COMPACTED transcript.
                 stamp_db_persisted_markers(compressed)
+                # The transaction may have cloned foreign rows after the summary. Reconcile at
+                # this sanctioned cache break so the same client sees the durable continuation.
+                if provenance_available:
+                    compressed = agent._session_db.get_messages_as_conversation(
+                        agent.session_id, repair_alternation=True, include_row_ids=True)
+                    stamp_db_persisted_markers(compressed)
                 agent._flushed_db_message_ids = set()
                 # Rotation-independent signal; the gateway reads this (not an id diff) to
                 # re-baseline transcript handling.

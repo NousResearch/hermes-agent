@@ -6,6 +6,7 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import {
   $canonicalGroupBindings,
   bindAdoptedCanonicalGroup,
+  quarantineCanonicalGroupBindings,
   revokeAdoptedCanonicalGroupsForConnection,
   revokeCanonicalGroupBinding,
   revokeStaleAdoptedCanonicalGroups
@@ -555,6 +556,13 @@ async function persistRoom(
   }
 
   const next = { ...before, [group]: mutate(expected) }
+
+  // Revoke old closures before publishing ownership or awaiting durable storage.
+  // A failed save must not resurrect an already-mounted descriptor alias.
+  if (next[group].shippedAdoption) {
+    quarantineCanonicalGroupBindings(group, next[group].shippedAdoption)
+  }
+
   $groupChats.set(next)
 
   try {
@@ -1163,6 +1171,8 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
 
   const fence = foregroundFence()
   const existing = room.shippedAdoption
+
+  if (existing) { quarantineCanonicalGroupBindings(group, existing) }
 
   if (existing?.state === 'adopted') {
     revokeCanonicalGroupBinding(group)

@@ -1,5 +1,5 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -492,6 +492,7 @@ describe('automatic shipped Group Chat adoption', () => {
   it.each(['remote', 'scoped', 'missing-owner'])('keeps a hydrated %s orphan intact instead of adopting a same-named local replacement', async shape => {
     const transport = backend()
     const record = await releasedRecord()
+    Object.assign(record.Release, { roomId: `r${'1'.repeat(32)}` })
     // A valid local builder must not lend its owner to the unresolved builder.
     record.Release.members.push({ name: 'builder', handle: 'local-builder', connectionId: 'owner-a', remoteSource: true } as any)
     record.Release.members.push({
@@ -507,7 +508,31 @@ describe('automatic shipped Group Chat adoption', () => {
     loaded.chat.$groupChats.set(annotated.rooms)
     const original = structuredClone(annotated.rooms.Release)
     expect(original.members!.at(-1)?.sourceMissing).toBe(true)
+    const route = { connectionId: 'owner-a', profile: 'default' }
+    const room = { room_id: original.roomId!, name: 'Release', members: [] }
+    const oldAlias = loaded.registry.registerCanonicalGroup(route, room)
+    const oldBinding = loaded.registry.$canonicalGroupBindings.get()[oldAlias]
+    expect(oldBinding.isCurrent?.()).toBe(true)
     await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    expect(oldBinding.isCurrent?.()).toBe(false)
+    expect(loaded.registry.registerCanonicalGroup(route, room)).toBe('Release')
+    const { canonicalGroupRequest } = await import('./canonical-groups')
+
+    for (const method of ['groups.send', 'groups.member.resolve', 'groups.member.remove', 'groups.disband']) {
+      await expect(canonicalGroupRequest(oldBinding, method, { room_id: room.room_id }))
+        .rejects.toThrow('no longer current')
+    }
+
+    const view = await import('./group-chat-view')
+
+    for (const group of [oldAlias, 'Release']) {
+      render(<view.GroupChatWorkspace group={group} members={[]} />)
+      expect(screen.queryByRole('textbox')).toBeNull()
+      expect(screen.getByRole('log').textContent).toContain('Keep this shipped history')
+      expect(screen.getByRole('status').textContent).toContain('unresolved source owner')
+      cleanup()
+    }
+
     expect(transport.imports).toHaveLength(0)
     expect(transport.calls.some(call => ['groups.send', 'groups.member.resolve'].includes(call.method))).toBe(false)
     expect(loaded.registry.$canonicalGroupBindings.get()).toEqual({})
@@ -516,6 +541,100 @@ describe('automatic shipped Group Chat adoption', () => {
     expect(retained.log).toEqual(original.log)
     expect(retained.stranded).toEqual(original.stranded)
     expect(retained.shippedAdoption.state).not.toBe('adopted')
+  })
+
+  it.each(['waiting', 'prepared', 'conflict'] as const)('hydrated %s checkpoints block discovery and already-mounted aliases', async stage => {
+    const transport = backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    const original = loaded.chat.$groupChats.get().Release
+    const built = await loaded.adoption.buildShippedGroupImport('Release', original, 'owner-a')
+    const route = { connectionId: 'owner-a', profile: 'default' }
+    const room = { room_id: built.request.room_id, name: 'Release', members: [] }
+    const alias = loaded.registry.registerCanonicalGroup(route, room)
+    const binding = loaded.registry.$canonicalGroupBindings.get()[alias]
+    const view = await import('./group-chat-view')
+    const mounted = render(<view.GroupChatWorkspace group={alias} members={[]} />)
+
+    const checkpoint = {
+      version: 1 as const, state: stage === 'prepared' ? 'prepared' as const : 'waiting' as const,
+      sourceId: built.request.source_id, roomId: room.room_id, requestHash: built.requestHash,
+      ...(stage === 'prepared' ? { route: { ...route, authorityGatewayId: runtime.authority } } : {}),
+      ...(stage === 'conflict' ? { issue: { kind: 'conflict' as const, message: 'Original owner unresolved' } } : {})
+    }
+
+    // Hydration can publish ownership without running a checkpoint writer.
+    await act(async () => {
+      loaded.chat.$groupChats.set({ Release: { ...original, shippedAdoption: checkpoint } })
+    })
+    expect(binding.isCurrent?.()).toBe(false)
+    expect(loaded.registry.registerCanonicalGroup(route, room)).toBe('Release')
+    mounted.rerender(<view.GroupChatWorkspace group={alias} members={[]} />)
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByRole('log').textContent).toContain('Keep this shipped history')
+    const { canonicalGroupRequest } = await import('./canonical-groups')
+    await expect(canonicalGroupRequest(binding, 'groups.send', { room_id: room.room_id })).rejects.toThrow('no longer current')
+    const unrelated = loaded.registry.registerCanonicalGroup(route, { ...room, room_id: 'unrelated-room' })
+    expect(loaded.registry.$canonicalGroupBindings.get()[unrelated].isCurrent?.()).toBe(true)
+    const otherRoute = { ...route, profile: 'other-profile' }
+    const other = loaded.registry.registerCanonicalGroup(otherRoute, room)
+
+    if (stage === 'prepared') {
+      expect(loaded.registry.$canonicalGroupBindings.get()[other].isCurrent?.()).toBe(true)
+    } else {
+      expect(other).toBe('Release')
+    }
+
+    expect(transport.calls.some(call => ['groups.send', 'groups.member.resolve'].includes(call.method))).toBe(false)
+  })
+
+  it.each([false, true])('quarantines aliases before checkpoint storage settles, including rollback: %s', async fail => {
+    const transport = backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    const original = loaded.chat.$groupChats.get().Release
+    const built = await loaded.adoption.buildShippedGroupImport('Release', original, 'owner-a')
+    const route = { connectionId: 'owner-a', profile: 'default' }
+    const room = { room_id: built.request.room_id, name: 'Release', members: [] }
+    const alias = loaded.registry.registerCanonicalGroup(route, room)
+    const binding = loaded.registry.$canonicalGroupBindings.get()[alias]
+    const ctx = scriptedStorage(storage)
+    const write = ctx.storage.set
+    let release!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+
+    const waitingWrite = vi.spyOn(ctx.storage, 'set').mockImplementation(async (key, value) => {
+      if (key === 'group-chats' && (value as Record<string, any>).Release?.shippedAdoption?.state === 'waiting') {
+        await blocked
+
+        if (fail) { throw new Error('checkpoint could not be saved') }
+      }
+
+      return write(key, value)
+    })
+
+    const adoption = loaded.adoption.adoptShippedGroupChats(ctx.storage)
+
+    try {
+      await waitFor(() => expect(waitingWrite).toHaveBeenCalled())
+      expect(binding.isCurrent?.()).toBe(false)
+      expect(loaded.registry.$canonicalGroupBindings.get()[alias]).toBeUndefined()
+      expect(loaded.registry.registerCanonicalGroup(route, room)).toBe('Release')
+      expect(transport.imports).toHaveLength(0)
+    } finally {
+      release()
+      await adoption
+    }
+
+    expect(binding.isCurrent?.()).toBe(false)
+
+    if (fail) {
+      expect(transport.imports).toHaveLength(0)
+      expect(loaded.chat.$groupChats.get().Release.log).toEqual(original.log)
+      expect(loaded.chat.$groupChats.get().Release.shippedAdoption).toBeUndefined()
+    } else {
+      expect(loaded.registry.$canonicalGroupBindings.get().Release.isCurrent?.()).toBe(true)
+    }
   })
 
   it.each([false, true])('canonical discovery reuses the adopted Send lease, refusing replacement before retry: %s', async replace => {

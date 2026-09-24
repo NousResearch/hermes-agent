@@ -41,7 +41,7 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
-import { $canonicalGroupBindings, revokeCanonicalGroupBinding } from './canonical-group-registry'
+import { $canonicalGroupBindings, canonicalGroupRecoveryKey, revokeCanonicalGroupBinding } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { canonicalGroupRequest } from './canonical-groups'
 import {
@@ -82,8 +82,6 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
-import { storedClassicDesktopAuthority } from './group-desktop-authority'
-
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -604,6 +602,11 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const bindings = useValue($canonicalGroupBindings)
   const rooms = useValue($groupChats)
   const binding = bindings[props.group]
+  const recoveryGroup = canonicalGroupRecoveryKey(props.group, rooms, bindings)
+
+  if (recoveryGroup && (recoveryGroup !== props.group || !binding?.adoptionOwner || binding.isCurrent?.() !== true)) {
+    return <GroupExecutionGate {...props} group={recoveryGroup} members={rooms[recoveryGroup]?.members || []} />
+  }
 
   if (binding && binding.isCurrent?.() !== false) {
     const exactAdoptionRoom =

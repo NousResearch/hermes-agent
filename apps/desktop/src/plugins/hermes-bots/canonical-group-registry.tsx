@@ -5,10 +5,66 @@ import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 import { $groupChats } from './group-chat'
-import type { ShippedGroupAdoption } from './types'
+import type { GroupChat, ShippedGroupAdoption } from './types'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
 let bindingGeneration = 0
+
+function adoptionMatchesRoom(adoption: ShippedGroupAdoption, route: CanonicalGroupRoute, roomId: string): boolean {
+  // Before owner resolution the checkpoint cannot safely distinguish routes.
+  // It constrains matching room ids; it never grants authority to any of them.
+  return adoption.roomId === roomId && (!adoption.route || (
+    adoption.route.connectionId === route.connectionId && adoption.route.profile === route.profile
+  ))
+}
+
+function retainedCanonicalGroup(
+  route: CanonicalGroupRoute, roomId: string, rooms: Record<string, GroupChat> = $groupChats.get()
+): string | undefined {
+  return Object.entries(rooms).find(([, room]) =>
+    room.shippedAdoption && adoptionMatchesRoom(room.shippedAdoption, route, roomId)
+  )?.[0]
+}
+
+/** Resolve navigation to retained history, never an executable binding. */
+export function canonicalGroupRecoveryKey(
+  group: string, rooms: Record<string, GroupChat>, bindings: Record<string, CanonicalGroupBinding>
+): string | undefined {
+  if (rooms[group]?.shippedAdoption) { return group }
+
+  const binding = bindings[group]
+
+  if (binding) { return retainedCanonicalGroup(binding, binding.roomId, rooms) }
+
+  // Already-open tabs retain the discovery key after its binding is revoked.
+  const match = /^canonical:([^:]+):([^:]+):(.+)$/.exec(group)
+
+  if (!match) { return undefined }
+
+  try {
+    return retainedCanonicalGroup({
+      connectionId: decodeURIComponent(match[1]), profile: decodeURIComponent(match[2])
+    }, match[3], rooms)
+  } catch {
+    return undefined
+  }
+}
+
+export function quarantineCanonicalGroupBindings(group: string, adoption: ShippedGroupAdoption): void {
+  const current = $canonicalGroupBindings.get()
+  const next = { ...current }
+  let changed = false
+
+  for (const [key, binding] of Object.entries(current)) {
+    if (key === group || adoptionMatchesRoom(adoption, binding, binding.roomId)) {
+      binding.routeOwner?.release()
+      delete next[key]
+      changed = true
+    }
+  }
+
+  if (changed) { $canonicalGroupBindings.set(next) }
+}
 
 export function bindAdoptedCanonicalGroup(
   group: string,
@@ -142,18 +198,14 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
   // Discovery is another door to the retained room, not another execution owner.
   // With no live lease, opening this key uses the existing read-only recovery UI.
   // Never rebuild runtime authority from the durable checkpoint or Send journal.
-  const adopted = Object.entries($groupChats.get()).find(([, retained]) => {
-    const adoption = retained.shippedAdoption
+  const retained = retainedCanonicalGroup(route, room.room_id)
 
-    return adoption?.roomId === room.room_id && adoption.route?.connectionId === route.connectionId &&
-      adoption.route.profile === route.profile
-  })
-
-  if (adopted) { return adopted[0] }
+  if (retained) { return retained }
 
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
   const binding: CanonicalGroupBinding = { ...route, roomId: room.room_id, bindingGeneration: ++bindingGeneration }
-  binding.isCurrent = () => $canonicalGroupBindings.get()[key] === binding
+  binding.isCurrent = () => $canonicalGroupBindings.get()[key] === binding &&
+    !retainedCanonicalGroup(binding, binding.roomId)
   $canonicalGroupBindings.get()[key]?.routeOwner?.release()
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: binding })
 

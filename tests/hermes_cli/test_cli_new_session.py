@@ -563,6 +563,22 @@ def _make_startup_cli(monkeypatch, *, config_yaml, model_cfg,
         return cli_mod.HermesCLI(**flags)
 
 
+class _RecordingAgent:
+    """Minimal agent double: records switch_model routes for the boundary."""
+
+    def __init__(self):
+        self.switch_calls = []
+        self.session_id = "old-agent-session"
+        self.session_start = None
+        self.reasoning_config = None
+
+    def switch_model(self, **kwargs):
+        self.switch_calls.append(kwargs)
+
+    def reset_session_state(self):
+        return None
+
+
 def _boundary_round_trip(cli):
     """Simulate a ``/model --session`` switch, run the wake path, return startup."""
     startup = (cli.model, cli.provider, cli.base_url)
@@ -574,6 +590,7 @@ def _boundary_round_trip(cli):
     cli._explicit_api_key = "sk-session"
     cli._explicit_base_url = "https://session.example/v1"
     cli._pending_one_turn_model_restore = {"sentinel": True}
+    cli.agent = _RecordingAgent()
     cli.new_session(silent=True)
     assert cli._pending_one_turn_model_restore is None
     assert cli._explicit_model_override is False
@@ -642,6 +659,10 @@ def test_startup_model_and_provider_survive_boundary(_offline_route, monkeypatch
     assert (cli.model, cli.provider, cli.base_url) == (
         "startup-model-x", "openrouter", _OPENROUTER_URL)
     assert cli.requested_provider == "openrouter"
+    agent_route = cli.agent.switch_calls[-1]
+    assert (agent_route["new_model"], agent_route["new_provider"],
+            agent_route["base_url"]) == (
+        "startup-model-x", "openrouter", _OPENROUTER_URL)
 
 
 def test_startup_direct_alias_endpoint_survives_boundary(_offline_route, monkeypatch):
@@ -665,6 +686,35 @@ def test_startup_direct_alias_endpoint_survives_boundary(_offline_route, monkeyp
     assert (cli.model, cli.provider, cli.base_url) == (
         "relay-alias-model", "custom", alias_url)
     assert cli.requested_provider == "custom"
+    agent_route = cli.agent.switch_calls[-1]
+    assert (agent_route["new_model"], agent_route["new_provider"],
+            agent_route["base_url"]) == (
+        "relay-alias-model", "custom", alias_url)
+
+
+def test_boundary_restores_startup_endpoint_when_only_base_url_drifted(
+        _offline_route, monkeypatch):
+    """Same model/provider but a foreign endpoint must still reset: the
+    startup base_url is part of the boundary identity for alias startups."""
+    alias_url = "http://127.0.0.1:9999/v1"
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n"
+        "model_aliases:\n  localrelay:\n    model: relay-alias-model\n"
+        f"    provider: custom\n    base_url: {alias_url}\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="localrelay")
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "relay-alias-model", "custom", alias_url)
+
+    cli.base_url = "https://session.example/v1"
+    cli.new_session(silent=True)
+
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "relay-alias-model", "custom", alias_url)
 
 
 def test_startup_foreign_label_alias_endpoint_survives_boundary(
@@ -693,14 +743,8 @@ def test_startup_foreign_label_alias_endpoint_survives_boundary(
     assert cli.provider == cli.requested_provider
 
 
-def test_startup_alias_with_mismatched_provider_keeps_endpoint(
-        _offline_route, monkeypatch):
-    """``--model <url-bearing alias> --provider <different provider>``: startup
-    keeps the alias endpoint, so the boundary must restore it (not the
-    explicit provider's default host) with the same credential startup used."""
-    import os
-
-    alias_url = "http://127.0.0.1:9997/v1"
+def _make_mismatch_cli(monkeypatch, alias_url="http://127.0.0.1:9997/v1"):
+    """Real CLI for ``--model <url-bearing alias> --provider openrouter``."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
     yaml_text = (
         "model:\n  default: config-default-model\n  provider: openrouter\n"
@@ -715,6 +759,15 @@ def test_startup_alias_with_mismatched_provider_keeps_endpoint(
     assert (cli.model, cli.provider, cli.requested_provider,
             cli.base_url, cli.api_key) == (
         "mismatch-model", "openrouter", "openrouter", alias_url, "sk-openrouter")
+    return cli, alias_url
+
+
+def test_startup_alias_with_mismatched_provider_keeps_endpoint(
+        _offline_route, monkeypatch):
+    """``--model <url-bearing alias> --provider <different provider>``: startup
+    keeps the alias endpoint, so the boundary must restore it (not the
+    explicit provider's default host) with the same credential startup used."""
+    cli, alias_url = _make_mismatch_cli(monkeypatch)
     startup_route = (cli.model, cli.provider, cli.requested_provider,
                      cli.base_url, cli.api_key)
 
@@ -724,6 +777,60 @@ def test_startup_alias_with_mismatched_provider_keeps_endpoint(
             cli.base_url, cli.api_key) == startup_route
     assert cli.base_url != _OPENROUTER_URL
     assert cli.api_key != "sk-session"
+
+
+def _assert_no_leaked_key_at_alias_endpoint(cli, alias_url):
+    """The (endpoint, key) pair must never be the alias host with a key that
+    was resolved for another endpoint (session or explicit provider)."""
+    assert not (
+        cli.base_url == alias_url
+        and cli.api_key in ("sk-session", "sk-openrouter"))
+
+
+def test_mismatched_alias_resolver_failure_keeps_consistent_route(
+        _offline_route, monkeypatch):
+    """Resolver blow-up during the endpoint restore must fail closed: the
+    session keeps switch_model's consistent (endpoint, key) pair instead of
+    sending a foreign key to the alias host."""
+    import hermes_cli.runtime_provider as _rp
+
+    cli, alias_url = _make_mismatch_cli(monkeypatch)
+
+    def _boom(**kw):
+        if kw.get("explicit_base_url") == alias_url:
+            raise RuntimeError("transient credential outage")
+        return {"api_key": "sk-openrouter", "base_url": _OPENROUTER_URL,
+                "api_mode": "chat_completions"}
+
+    monkeypatch.setattr(_rp, "resolve_runtime_provider", _boom)
+    _boundary_round_trip(cli)
+
+    _assert_no_leaked_key_at_alias_endpoint(cli, alias_url)
+    assert cli.base_url == _OPENROUTER_URL
+    assert (cli.model, cli.provider) == ("mismatch-model", "openrouter")
+
+
+def test_mismatched_alias_empty_key_keeps_consistent_route(
+        _offline_route, monkeypatch):
+    """A resolver that returns no key for the alias endpoint must also fail
+    closed — no foreign key rides to the restored host."""
+    import hermes_cli.runtime_provider as _rp
+
+    cli, alias_url = _make_mismatch_cli(monkeypatch)
+
+    def _no_alias_key(**kw):
+        if kw.get("explicit_base_url") == alias_url:
+            return {"api_key": "", "base_url": alias_url,
+                    "api_mode": "chat_completions"}
+        return {"api_key": "sk-openrouter", "base_url": _OPENROUTER_URL,
+                "api_mode": "chat_completions"}
+
+    monkeypatch.setattr(_rp, "resolve_runtime_provider", _no_alias_key)
+    _boundary_round_trip(cli)
+
+    _assert_no_leaked_key_at_alias_endpoint(cli, alias_url)
+    assert cli.base_url == _OPENROUTER_URL
+    assert (cli.model, cli.provider) == ("mismatch-model", "openrouter")
 
 
 def test_no_flags_boundary_uses_config_default(_offline_route, monkeypatch):

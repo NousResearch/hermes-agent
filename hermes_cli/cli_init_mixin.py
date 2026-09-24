@@ -202,6 +202,9 @@ class CLIInitMixin:
         # alias + mismatched --provider case the switch pipeline cannot express;
         # no api_key is stored — endpoints re-resolve credentials at the boundary.
         # Invariant: the five _startup_* attrs below are always set together here.
+        # Contract: these constructor args ARE the launch selection (cli.py passes
+        # the --model/--provider flags; no internal caller passes a temporary
+        # model here — resume guards explicit -m via _explicit_model_override).
         if model or provider:
             self._startup_model = self.model or None
             self._startup_provider = self.requested_provider or None

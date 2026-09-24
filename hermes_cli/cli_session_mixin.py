@@ -69,9 +69,13 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     # getattr: unbound test doubles may lack startup attrs.
     _startup_model = getattr(cli, "_startup_model", None)
     _startup_provider = getattr(cli, "_startup_provider", None)
-    if _startup_model and _startup_model == getattr(cli, "model", None) and (
-            not _startup_provider or _startup_provider == getattr(cli, "provider", None)):
-        return  # already on the startup route (also skips alias replay: name != id)
+    _startup_input = getattr(cli, "_startup_model_input", None)
+    _startup_base_url = getattr(cli, "_startup_base_url", None)
+    if (_startup_model and _startup_model == getattr(cli, "model", None)
+            and (not _startup_provider or _startup_provider == getattr(cli, "provider", None))
+            and (not _startup_input or not _startup_base_url
+                 or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
+        return  # already on the startup route (alias replay skipped: name != id)
     _model_config = CLI_CONFIG.get("model", {})
     if isinstance(_model_config, dict):
         _raw_default = _model_config.get("default") or _model_config.get("model") or ""
@@ -81,7 +85,6 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     _config_model, _ = _split_model_config_default(_raw_default)
     # Launch flags are the baseline the boundary resets TO, not an override it
     # resets away (#74329).
-    _startup_input = getattr(cli, "_startup_model_input", None)
     if _startup_input:
         # Direct-alias startup: replay the alias name so the switch pipeline
         # restores the alias endpoint + credential; the resolved id cannot
@@ -112,7 +115,6 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
             custom_providers=CLI_CONFIG.get("custom_providers"))
         if not r.success:
             return
-        _startup_base_url = getattr(cli, "_startup_base_url", None)
         if (_startup_base_url and _startup_input
                 and getattr(cli, "_startup_provider_input", None)
                 and _startup_model and r.new_model == _startup_model
@@ -121,8 +123,10 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
             # Alias + mismatched explicit --provider: the switch pipeline cannot
             # express the alias endpoint under a foreign provider (no adoption in
             # _route_explicit_provider), but startup runs there. Restore the
-            # startup endpoint and re-resolve its credential with the
-            # constructor's lazy inputs — never a stored secret.
+            # startup endpoint only with a credential freshly resolved FOR it
+            # (constructor's lazy inputs — never a stored secret, never the
+            # replaced session/provider key). Otherwise fail closed to the
+            # switch result, whose endpoint + key are at least consistent.
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider as _resolve_rt
                 _startup_rt = _resolve_rt(
@@ -130,12 +134,18 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                     explicit_base_url=_startup_base_url) or {}
             except Exception:
                 _startup_rt = {}
-                logger.debug("/new model reset to session baseline failed", exc_info=True)
-            r.base_url = _startup_base_url
+                logger.debug(
+                    "Could not re-resolve the credential for the startup alias endpoint %s; keeping %s route",
+                    _startup_base_url, r.target_provider, exc_info=True)
             if _startup_rt.get("api_key"):
+                r.base_url = _startup_base_url
                 r.api_key = _startup_rt["api_key"]
-            if _startup_rt.get("api_mode"):
-                r.api_mode = _startup_rt["api_mode"]
+                if _startup_rt.get("api_mode"):
+                    r.api_mode = _startup_rt["api_mode"]
+            else:
+                logger.debug(
+                    "Could not re-resolve the credential for the startup alias endpoint %s; keeping %s route",
+                    _startup_base_url, r.target_provider)
         if cli.agent:
             cli.agent.switch_model(
                 new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,

@@ -1245,7 +1245,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     const fieldItems = [
       ...settingsCatalog.subpageEntries,
-      ...settingsCatalog.appearanceEntries,
+      ...settingsCatalog.settingEntries,
       ...settingsCatalog.configEntries
     ].map(settingsEntryItem)
 
@@ -1366,7 +1366,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         heading: cc.settingsFields,
         items: [
           ...settingsCatalog.subpageEntries,
-          ...settingsCatalog.appearanceEntries,
+          ...settingsCatalog.settingEntries,
           ...settingsCatalog.configEntries
         ].map(settingsEntryItem)
       })

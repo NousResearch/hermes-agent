@@ -49,6 +49,8 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, ListRowSkeleton, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 export function ConfigSettings({
   activeSectionId,
@@ -320,6 +322,8 @@ function ConfigSettingsInner({
   const [searchParams, setSearchParams] = useSearchParams()
   const targetField = searchParams.get('field')
 
+  useSettingDeepLink(`config:${activeSectionId}`, page => subpage === undefined || page === subpage)
+
   useEffect(() => {
     if (!targetField || !config || !schema) {
       return
@@ -468,12 +472,14 @@ function ConfigSettingsInner({
           <ToggleRow
             checked={keepAwake}
             description={c.keepAwakeDesc}
+            id={settingElementId(SETTING_IDS.advanced.keepAwake)}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
           />
           <ToggleRow
             checked={disableF12}
             description={c.disableF12Desc}
+            id={settingElementId(SETTING_IDS.advanced.disableF12)}
             label={c.disableF12Title}
             onChange={setDisableF12}
           />
@@ -592,6 +598,7 @@ function AttachmentSizeSetting() {
         </div>
       }
       description={c.attachmentSizeDesc}
+      id={settingElementId(SETTING_IDS.chat.attachmentSize)}
       title={c.attachmentSizeTitle}
     />
   )

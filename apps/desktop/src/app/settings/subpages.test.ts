@@ -2,16 +2,17 @@ import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
 
-import {
-  APPEARANCE_SETTING_IDS,
-  APPEARANCE_SETTINGS,
-  APPEARANCE_SUBPAGES,
-  appearanceSearchTargets,
-  appearanceSubpageForSetting
-} from './appearance-subpages'
 import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
 import { SECTIONS } from './constants'
 import { OTHER_SUBPAGES } from './other-subpages'
+import {
+  manifestView,
+  type ManifestViewKey,
+  SETTING_IDS,
+  settingDefinition,
+  SETTINGS_MANIFEST,
+  settingSearchTargets
+} from './settings-manifest'
 import { settingsSearchTargetQuery } from './settings-search'
 import { resolveSettingsSubpage, settingsSubpages } from './subpages'
 import type { SettingsView } from './types'
@@ -57,8 +58,10 @@ describe('settings subpage routing', () => {
 
     const cases: [SettingsView, string, string][] = [
       ['config:model', 'aux=vision', 'auxiliary'],
-      ['keybinds', 'setting=hud-modifier', 'hud-gesture'],
-      ['keybinds', 'page=shortcuts&setting=hud-modifier', 'hud-gesture'],
+      ['keybinds', 'setting=keybinds.hud-modifier', 'hud-gesture'],
+      ['keybinds', 'page=shortcuts&setting=keybinds.hud-modifier', 'hud-gesture'],
+      ['notifications', 'setting=notifications.completion-sound', 'sounds'],
+      ['config:advanced', 'setting=advanced.keep-awake', 'desktop'],
       ['sessions', 'session=archived-id', 'archived'],
       ['vault', 'kind=login', 'credentials'],
       ['vault', 'label=Example', 'credentials'],
@@ -71,31 +74,45 @@ describe('settings subpage routing', () => {
     }
   })
 
-  it('makes every Appearance row a routed, translated palette hit', () => {
-    const subpages = APPEARANCE_SUBPAGES.map(page => page.id)
+  it('makes every manifest row a routed, translated palette hit on a real page', () => {
+    for (const viewKey of Object.keys(SETTINGS_MANIFEST) as ManifestViewKey[]) {
+      const view = manifestView(viewKey)
+      const subpages = settingsSubpages(view).map(page => page.id)
+      expect(views).toContain(view)
 
-    for (const [key, setting] of Object.entries(APPEARANCE_SETTINGS)) {
-      const id = APPEARANCE_SETTING_IDS[key as keyof typeof APPEARANCE_SETTING_IDS]
-      expect(id).toMatch(/^appearance\.[a-z-]+$/)
-      expect(subpages).toContain(setting.subpage)
-      expect(appearanceSubpageForSetting(id)).toBe(setting.subpage)
-      expect(
-        resolveSettingsSubpage(
-          'config:appearance',
-          new URLSearchParams(settingsSearchTargetQuery({ view: 'config:appearance', setting: id }))
-        )
-      ).toBe(setting.subpage)
-      expect(setting.keywords.length).toBeGreaterThan(0)
+      for (const [key, setting] of Object.entries(SETTINGS_MANIFEST[viewKey])) {
+        const id = SETTING_IDS[viewKey][key as keyof (typeof SETTING_IDS)[typeof viewKey]]
+        expect(id).toBe(`${viewKey}.${key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}`)
+        expect(settingDefinition(view, id)).toBe(setting)
+        expect(setting.keywords.length).toBeGreaterThan(0)
 
-      for (const locale of Object.values(TRANSLATIONS)) {
-        expect(setting.copy(locale).label).toBeTruthy()
+        if (setting.subpage) {
+          expect(subpages).toContain(setting.subpage)
+          expect(
+            resolveSettingsSubpage(view, new URLSearchParams(settingsSearchTargetQuery({ view, setting: id })))
+          ).toBe(setting.subpage)
+        }
+
+        for (const locale of Object.values(TRANSLATIONS)) {
+          expect(setting.copy(locale).label).toBeTruthy()
+        }
       }
     }
 
     // Platform-gated rows aside, the whole manifest reaches the palette.
-    const targets = appearanceSearchTargets(TRANSLATIONS.en)
-    const gated = Object.values(APPEARANCE_SETTINGS).filter(setting => 'available' in setting).length
-    expect(targets.length).toBeGreaterThanOrEqual(Object.keys(APPEARANCE_SETTINGS).length - gated)
-    expect(targets.map(target => target.label)).toEqual(expect.arrayContaining(['In-App Tips', 'Guided Tours']))
+    const definitions = Object.values(SETTINGS_MANIFEST).flatMap(rows => Object.values(rows))
+    const gated = definitions.filter(setting => 'available' in setting).length
+    const targets = settingSearchTargets(TRANSLATIONS.en)
+    expect(targets.length).toBeGreaterThanOrEqual(definitions.length - gated)
+    expect(new Set(targets.map(target => target.id)).size).toBe(targets.length)
+    expect(targets.map(target => target.label)).toEqual(
+      expect.arrayContaining([
+        'In-App Tips',
+        'Guided Tours',
+        'Keep computer awake',
+        'Auto-archive stale chats',
+        'Automatic updates'
+      ])
+    )
   })
 })

@@ -74,7 +74,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 
-import { APPEARANCE_SETTING_IDS, appearanceSubpageForSetting, type AppearanceSubpageId } from './appearance-subpages'
+import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
@@ -82,8 +82,9 @@ import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { TerminalFontSetting } from './terminal-font-setting'
-import { useDeepLinkHighlight } from './use-deep-link-highlight'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 // display.resume_last_session lives in the backend config record (shared with
 // config.yaml and the cold-start restore in use-desktop-integrations), not a
@@ -142,7 +143,7 @@ function ResumeLastSessionSettingInner({ settingsOwner }: { settingsOwner: Retur
       checked={checked}
       description={a.resumeLastSessionDesc}
       disabled={!config}
-      id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.resumeLastSession)}
+      id={settingElementId(ids.resumeLastSession)}
       label={a.resumeLastSessionTitle}
       onChange={update}
     />
@@ -192,8 +193,7 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
 // presets highlights nothing, and the row description keeps showing the
 // exact current percent.
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
-const appearanceSettingElementId = (id: string) => `setting-field-${id}`
-
+const ids = SETTING_IDS.appearance
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
 
 function matchUiScalePreset(percent: number): UiScalePreset | null {
@@ -489,15 +489,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const [query, setQuery] = useState('')
   const show = (id: AppearanceSubpageId) => subpage === undefined || subpage === id
 
-  useDeepLinkHighlight({
-    elementId: appearanceSettingElementId,
-    param: 'setting',
-    ready: id => {
-      const targetSubpage = appearanceSubpageForSetting(id)
-
-      return targetSubpage !== undefined && show(targetSubpage)
-    }
-  })
+  useSettingDeepLink('config:appearance', page => page !== undefined && show(page as AppearanceSubpageId))
 
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
@@ -592,7 +584,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ListRow
               action={<LanguageSwitcher />}
               description={isSavingLocale ? t.language.saving : t.language.description}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.language)}
+              id={settingElementId(ids.language)}
               title={t.language.label}
             />
           )}
@@ -689,7 +681,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 </>
               }
               description={a.themeDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.theme)}
+              id={settingElementId(ids.theme)}
               title={a.themeTitle}
               wide
             />
@@ -709,15 +701,15 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   />
                 }
                 description={a.uiScaleDesc(zoomPercent)}
-                id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.uiScale)}
+                id={settingElementId(ids.uiScale)}
                 title={a.uiScaleTitle}
               />
 
-              <div id={appearanceSettingElementId('desktop.font_family')}>
+              <div id={settingElementId(ids.chatFont)}>
                 <ChatFontSetting />
               </div>
 
-              <div id={appearanceSettingElementId('terminal.font_family')}>
+              <div id={settingElementId(ids.terminalFont)}>
                 <TerminalFontSetting />
               </div>
             </>
@@ -736,7 +728,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 />
               }
               description={t.interfaceMode.hint}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.interfaceMode)}
+              id={settingElementId(ids.interfaceMode)}
               title={t.interfaceMode.title}
             />
           )}
@@ -754,7 +746,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 />
               }
               description={a.sessionDensityDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.sessionDensity)}
+              id={settingElementId(ids.sessionDensity)}
               title={a.sessionDensityTitle}
             />
           )}
@@ -772,7 +764,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 />
               }
               description={a.tabStripDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.tabStrip)}
+              id={settingElementId(ids.tabStrip)}
               title={a.tabStripTitle}
             />
           )}
@@ -790,13 +782,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 />
               }
               description={a.appActionsDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
+              id={settingElementId(ids.appActions)}
               title={a.appActionsTitle}
             />
           )}
 
           {show('window-layout') && (
-            <div id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.minimizeToTray)}>
+            <div id={settingElementId(ids.minimizeToTray)}>
               <MinimizeToTraySetting />
             </div>
           )}
@@ -880,7 +872,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 ) : undefined
               }
               description={glassMode ? a.translucencyGlassDesc : a.translucencyDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.translucency)}
+              id={settingElementId(ids.translucency)}
               title={a.translucencyTitle}
             />
           )}
@@ -900,7 +892,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 </div>
               }
               description={a.userBubbleDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.userBubble)}
+              id={settingElementId(ids.userBubble)}
               title={a.userBubbleTitle}
             />
           )}
@@ -918,7 +910,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 />
               }
               description={a.textDirectionDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.textDirection)}
+              id={settingElementId(ids.textDirection)}
               title={a.textDirectionTitle}
             />
           )}
@@ -927,7 +919,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={backdrop}
               description={a.backdropDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.backdrop)}
+              id={settingElementId(ids.backdrop)}
               label={a.backdropTitle}
               onChange={setBackdrop}
             />
@@ -937,7 +929,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={hideThreadTimeline}
               description={a.hideThreadTimelineDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.hideThreadTimeline)}
+              id={settingElementId(ids.hideThreadTimeline)}
               label={a.hideThreadTimelineTitle}
               onChange={setHideThreadTimeline}
             />
@@ -947,7 +939,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={introSplash}
               description={a.introSplashDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.introSplash)}
+              id={settingElementId(ids.introSplash)}
               label={a.introSplashTitle}
               onChange={setIntroSplash}
             />
@@ -957,7 +949,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={composerPopoutGesturesEnabled}
               description={a.composerPopoutDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.composerPopout)}
+              id={settingElementId(ids.composerPopout)}
               label={a.composerPopoutTitle}
               onChange={setComposerPopoutGesturesEnabled}
             />
@@ -969,7 +961,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={reactionsEnabled}
               description={a.reactionsDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.reactions)}
+              id={settingElementId(ids.reactions)}
               label={a.reactionsTitle}
               onChange={setReactionsEnabled}
             />
@@ -984,7 +976,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               }
               checked={tipsEnabled}
               description={a.tipsDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.tips)}
+              id={settingElementId(ids.tips)}
               label={a.tipsTitle}
               onChange={setTipsEnabled}
             />
@@ -994,7 +986,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={toursEnabled}
               description={a.toursDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.tours)}
+              id={settingElementId(ids.tours)}
               label={a.toursTitle}
               onChange={setToursEnabled}
             />
@@ -1004,7 +996,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={vibeHeartsEnabled}
               description={a.vibeHeartsDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.vibeHearts)}
+              id={settingElementId(ids.vibeHearts)}
               label={a.vibeHeartsTitle}
               onChange={setVibeHeartsEnabled}
             />
@@ -1023,7 +1015,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 />
               }
               description={withModeNote(a.toolViewDesc, toolViewShadowed)}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.toolView)}
+              id={settingElementId(ids.toolView)}
               title={a.toolViewTitle}
             />
           )}
@@ -1032,7 +1024,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={hideCodeDiffs}
               description={withModeNote(a.hideCodeDiffsDesc, hideCodeDiffsShadowed)}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.hideCodeDiffs)}
+              id={settingElementId(ids.hideCodeDiffs)}
               label={a.hideCodeDiffsTitle}
               onChange={setHideCodeDiffs}
             />
@@ -1042,7 +1034,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ToggleRow
               checked={reasoningCollapsedByDefault}
               description={withModeNote(a.reasoningCollapsedDesc, reasoningCollapsedShadowed)}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.reasoningCollapsed)}
+              id={settingElementId(ids.reasoningCollapsed)}
               label={a.reasoningCollapsedTitle}
               onChange={setReasoningCollapsedByDefault}
             />
@@ -1068,7 +1060,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 )
               }
               description={a.embedsDesc}
-              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.embeds)}
+              id={settingElementId(ids.embeds)}
               title={a.embedsTitle}
             />
           )}
@@ -1076,10 +1068,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
       </div>
 
       {show('pet') && (
-        <div
-          className={subpage === undefined ? 'mt-6' : undefined}
-          id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.pet)}
-        >
+        <div className={subpage === undefined ? 'mt-6' : undefined} id={settingElementId(ids.pet)}>
           <PetSettings />
         </div>
       )}

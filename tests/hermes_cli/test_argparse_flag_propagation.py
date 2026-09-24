@@ -119,6 +119,26 @@ def test_memory_provider_opt_out_parses_at_invocation_boundary(argv):
     assert parser.parse_args(argv).no_memory_provider is True
 
 
+@pytest.mark.parametrize("argv", [
+    ["--tui", "--no-memory-provider", "chat"],
+    ["chat", "--tui", "--no-memory-provider"],
+])
+def test_memory_provider_opt_out_rejects_tui_before_launch(argv, monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _, _ = build_top_level_parser()
+    args = parser.parse_args(argv)
+    monkeypatch.setattr(main_mod, "_launch_tui", lambda *a, **kw: pytest.fail("launched TUI"))
+    monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: pytest.fail("ran setup"))
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.cmd_chat(args)
+
+    assert exc.value.code == 2
+    assert "--no-memory-provider requires the classic CLI" in capsys.readouterr().err
+
+
 class TestYoloEnvVar:
     """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.
 

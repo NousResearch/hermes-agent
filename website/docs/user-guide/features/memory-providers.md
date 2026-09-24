@@ -44,7 +44,7 @@ For an eval or other one-off CLI run against a real profile, add `--no-memory-pr
 hermes -p my-profile chat -Q -q "test prompt" --source tool --no-memory-provider
 ```
 
-This skips only the external provider for that invocation (including its context, tools, turn sync, and session-end extraction). Profile config, SOUL, rules, skills, and built-in MEMORY.md / USER.md remain available. The flag also works with `hermes -z "test prompt"`; it does not change the saved `memory.provider` setting. Built-in memory writes are still possible, so use a separate profile if the benchmark must not modify local memory either.
+This skips only the external provider for that invocation (including its context, tools, turn sync, and session-end extraction). Profile config, SOUL, rules, skills, and built-in MEMORY.md / USER.md remain available. The flag also works with `hermes -z "test prompt"`; it does not change the saved `memory.provider` setting. Use the classic CLI (`--cli`), not TUI, for this flag; TUI invocations with it are rejected rather than silently enabling the provider. Built-in memory writes are still possible, so use a separate profile if the benchmark must not modify local memory either.
 
 ## Available Providers
 

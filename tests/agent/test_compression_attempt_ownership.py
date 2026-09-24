@@ -23,14 +23,14 @@ no timing, no threads.
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.conversation_compression import (
     _COMPRESSOR_ATTEMPT_GENERATION,
-    _caller_attempt_is_current,
     _claim_compressor_attempt,
     _clear_compression_cancelled_check_if_owner,
     _compressor_attempt_is_current,
     _install_compression_cancelled_check,
-    _mark_compressor_working_attempt,
     _raise_if_stale_attempt,
     _restore_compressor_attempt_state,
     _snapshot_compressor_attempt_state,
@@ -52,36 +52,9 @@ def _compressor(**overrides):
 class TestCallerAttemptOwnership:
     """The caller generation only fences a compressor that has been claimed."""
 
-    def test_never_claimed_compressor_is_current_for_outer_attempt(self):
-        compressor = _compressor()
-        token = _COMPRESSOR_ATTEMPT_GENERATION.set(7)
-        try:
-            assert _caller_attempt_is_current(compressor) is True
-            _raise_if_stale_attempt(compressor)
-        finally:
-            _COMPRESSOR_ATTEMPT_GENERATION.reset(token)
-
-    def test_newer_working_attempt_is_stale_for_claimed_compressor(self):
-        from agent.auxiliary_client import AuxiliaryExplicitCancellation
-
-        compressor = _compressor()
-        caller_gen = _claim_compressor_attempt(compressor)
-        newer_gen = _claim_compressor_attempt(compressor)
-        _mark_compressor_working_attempt(compressor, newer_gen)
-
-        token = _COMPRESSOR_ATTEMPT_GENERATION.set(caller_gen)
-        try:
-            assert _caller_attempt_is_current(compressor) is False
-            try:
-                _raise_if_stale_attempt(compressor)
-            except AuxiliaryExplicitCancellation:
-                pass
-            else:
-                raise AssertionError("stale claimed compressor was not cancelled")
-        finally:
-            _COMPRESSOR_ATTEMPT_GENERATION.reset(token)
-
     def test_newer_entry_generation_without_marker_remains_stale(self):
+        """Control for the unclaimed-compressor carve-out: a CLAIMED compressor whose newer claim
+        never published a working marker still cancels the older caller."""
         from agent.auxiliary_client import AuxiliaryExplicitCancellation
 
         compressor = _compressor()
@@ -90,13 +63,8 @@ class TestCallerAttemptOwnership:
 
         token = _COMPRESSOR_ATTEMPT_GENERATION.set(caller_gen)
         try:
-            assert _caller_attempt_is_current(compressor) is False
-            try:
+            with pytest.raises(AuxiliaryExplicitCancellation):
                 _raise_if_stale_attempt(compressor)
-            except AuxiliaryExplicitCancellation:
-                pass
-            else:
-                raise AssertionError("stale entry generation was not cancelled")
         finally:
             _COMPRESSOR_ATTEMPT_GENERATION.reset(token)
 

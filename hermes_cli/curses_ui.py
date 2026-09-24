@@ -91,8 +91,14 @@ def _read_numbered_input(prompt_text: str) -> str | _NumberedNavigation:
     from prompt_toolkit.keys import Keys
 
     # Setup may run without the classic CLI, which normally installs CSI-u aliases at startup.
-    from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
+    # The aliases remap the key only; without the data normalization the KeyPress still carries
+    # the raw escape text and self-insert types it into the answer (#88071).
+    from hermes_cli.pt_input_extras import (
+        install_keypress_data_normalization,
+        install_modify_other_keys_aliases,
+    )
     install_modify_other_keys_aliases()
+    install_keypress_data_normalization()
     bindings = KeyBindings()
 
     @bindings.add(Keys.Escape)

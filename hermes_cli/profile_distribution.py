@@ -428,7 +428,7 @@ def _merge_cron_store(src: Path, dest: Path) -> None:
                 for job_id, incoming in shipped.items()
             )
             cron_jobs.save_jobs(merged)
-    except (OSError, RuntimeError, ValueError) as exc:
+    except RuntimeError as exc:  # load_jobs: corrupt/unreadable store; OSError/ValueError propagate as-is
         raise DistributionError(f"Could not merge cron jobs into {dest}: {exc}") from exc
 
 

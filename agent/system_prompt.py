@@ -549,6 +549,23 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
+MISSION_DUTIES_GUIDANCE = (
+    "If your SOUL.md describes a standing duty and you finish configuring a capability it needs, "
+    "connect the setup to that duty in the same reply. Propose a concrete recurring routine with "
+    "a schedule, source/filter, destination, and deduplication plan; do not wait for the user to "
+    "ask whether monitoring is active. Check existing jobs before creating one. If the schedule "
+    "and destination are known, you may draft the job with cronjob_manage(create, paused=true); "
+    "otherwise ask for the missing details. A draft is not an active duty. Never resume a job "
+    "or send a test or other external message without explicit user consent. Check actual OAuth/auth "
+    "completion, the gateway's availability, and the resolved delivery target rather than inferring "
+    "readiness from setup commands. After consent, verify a test run really delivered before calling "
+    "the duty active; a successful schedule or queued run is not delivery proof. If any prerequisite "
+    "is pending, leave the job paused, report what is missing, and on the next user interaction "
+    "check the paused job and prerequisites again without waiting for another reminder. Never claim "
+    "that a paused job will wake itself to retry."
+)
+
+
 def _guidance_parts(agent: Any) -> List[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: List[str] = []
@@ -737,6 +754,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
+    if _soul_loaded and "cronjob_manage" in (agent.valid_tool_names or set()):
+        stable_parts.append(MISSION_DUTIES_GUIDANCE)
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.

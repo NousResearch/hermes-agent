@@ -9,6 +9,7 @@ import {
   $awaitingResponse,
   $busy,
   $selectedStoredSessionId,
+  $turnStartedAt,
   $unreadFinishedSessionIds
 } from './session'
 import {
@@ -66,6 +67,7 @@ describe('reconcileBusyStatesOnReconnect', () => {
     $selectedStoredSessionId.set(null)
     $activeSessionId.set(null)
     $busy.set(false)
+    $turnStartedAt.set(null)
     $awaitingResponse.set(false)
     setSessionTileDelegate(noDelegate)
   })
@@ -78,6 +80,7 @@ describe('reconcileBusyStatesOnReconnect', () => {
     $selectedStoredSessionId.set(null)
     $activeSessionId.set(null)
     $busy.set(false)
+    $turnStartedAt.set(null)
     $awaitingResponse.set(false)
     setSessionTileDelegate(noDelegate)
   })
@@ -89,6 +92,17 @@ describe('reconcileBusyStatesOnReconnect', () => {
     reconcileBusyStatesOnReconnect()
 
     expect($workingSessionIds.get()).not.toContain('s1')
+  })
+
+  it('retires the clock and live claim when the backend cannot finish a pending bubble', () => {
+    $activeSessionId.set('rt1')
+    publishSessionState('rt1', state({ busy: true, turnStartedAt: 1_000, turnLive: true }))
+    $turnStartedAt.set(1_000)
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($sessionStates.get()['rt1']).toMatchObject({ busy: false, turnStartedAt: null, turnLive: false })
+    expect($turnStartedAt.get()).toBeNull()
   })
 
   it('disarms the stall watchdog with the busy claim', () => {
@@ -109,6 +123,31 @@ describe('reconcileBusyStatesOnReconnect', () => {
 
     expect($workingSessionIds.get()).not.toContain('s1')
     expect($attentionSessionIds.get()).toContain('s1')
+  })
+
+  it('primary reconnect leaves a registry-scoped turn clock alone', () => {
+    $activeSessionId.set('rtA')
+    publishSessionState('rtA', state({ busy: true, storedSessionId: 'sA', turnStartedAt: 1_000, turnLive: true }))
+    recordSessionEventScope({ connectionId: 'connA', profile: 'default', session_id: 'rtA' })
+    $turnStartedAt.set(1_000)
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($sessionStates.get()['rtA']).toMatchObject({ busy: true, turnStartedAt: 1_000, turnLive: true })
+    expect($turnStartedAt.get()).toBe(1_000)
+  })
+
+  it('scoped reconnect retires its own focused turn clock', () => {
+    const scope = registryBackendScopeKey('connA', 'default')
+    $activeSessionId.set('rtA')
+    publishSessionState('rtA', state({ busy: true, storedSessionId: 'sA', turnStartedAt: 1_000, turnLive: true }))
+    recordSessionEventScope({ connectionId: 'connA', profile: 'default', session_id: 'rtA' })
+    $turnStartedAt.set(1_000)
+
+    reconcileBusyStatesOnReconnect(scope)
+
+    expect($sessionStates.get()['rtA']).toMatchObject({ busy: false, turnStartedAt: null, turnLive: false })
+    expect($turnStartedAt.get()).toBeNull()
   })
 
   it('primary reconcile leaves registry-scoped sessions alone', () => {

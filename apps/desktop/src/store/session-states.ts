@@ -59,7 +59,8 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
-  setSessions
+  setSessions,
+  setTurnStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedTreePaneId } from './session-focus'
@@ -746,6 +747,8 @@ export function clearAllSessionStates() {
  *  alone — a background socket says nothing about the primary composer. */
 export function reconcileBusyStatesOnReconnect(scope?: string) {
   const states = $sessionStates.get()
+  const focusedRuntimeId = $activeSessionId.get()
+  let retiredFocusedTurn = false
 
   // Only the primary socket has a confirm producer for a parked completion
   // (the active profile's `session.active_list` poll); a scoped reconcile
@@ -764,13 +767,23 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
         continue
       }
 
+      if (runtimeId === focusedRuntimeId) {
+        retiredFocusedTurn = true
+      }
+
       sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
 
       // Re-read — the write path may have republished (and released) this entry.
       const published = $sessionStates.get()[runtimeId]
 
       if (published?.busy || published?.awaitingResponse) {
-        publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
+        publishSessionState(runtimeId, {
+          ...published,
+          awaitingResponse: false,
+          busy: false,
+          turnLive: false,
+          turnStartedAt: null
+        })
       }
     }
   } finally {
@@ -780,6 +793,12 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
   if (scope === undefined) {
     setBusy(false)
     setAwaitingResponse(false)
+  }
+
+  // The global clock mirrors the focused session, whichever socket owns it.
+  // A reconnect for a different backend must not reset that session's timer.
+  if (retiredFocusedTurn) {
+    setTurnStartedAt(null)
   }
 }
 

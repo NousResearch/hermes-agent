@@ -492,7 +492,15 @@ describe('useSessionTileDelegate resumeTile', () => {
 
 describe('useSessionTileDelegate retireBusyClaim', () => {
   it('retires a stale busy claim through the session-state write path (#93059)', () => {
-    const busyState = { awaitingResponse: true, busy: true, messages: [{ id: 'm1' }], storedSessionId: 'stored-d' }
+    const busyState = {
+      awaitingResponse: true,
+      busy: true,
+      messages: [{ id: 'm1', pending: true }],
+      storedSessionId: 'stored-d',
+      turnLive: true,
+      turnStartedAt: 1_000
+    }
+
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', busyState]]) }
     const updateSessionState = vi.fn()
 
@@ -504,10 +512,17 @@ describe('useSessionTileDelegate retireBusyClaim', () => {
     expect(sessionTileDelegate()!.retireBusyClaim!('runtime-dead')).toBe(true)
     expect(updateSessionState).toHaveBeenCalledWith('runtime-dead', expect.any(Function))
 
-    // The updater is the downgrade: busy/awaiting off, everything else intact.
+    // Retire the running claim and its clock; a pending bubble can remain
+    // until the transcript is rehydrated from the recovered backend.
     const updater = updateSessionState.mock.calls[0][1] as (state: typeof busyState) => typeof busyState
 
-    expect(updater(busyState)).toEqual({ ...busyState, awaitingResponse: false, busy: false })
+    expect(updater(busyState)).toEqual({
+      ...busyState,
+      awaitingResponse: false,
+      busy: false,
+      turnLive: false,
+      turnStartedAt: null
+    })
   })
 
   it('reports a miss instead of minting a cache entry for a runtime it never held', () => {

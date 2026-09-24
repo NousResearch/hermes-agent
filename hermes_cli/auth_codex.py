@@ -841,7 +841,8 @@ def _probe_codex_pool_entry_quota_restored(entry: Dict[str, Any]) -> Optional[bo
             logger.debug("Failed to persist refreshed Codex pool tokens", exc_info=True)
     if not token:
         return None
-    return _probe_codex_quota_restored(token, base_url=entry.get("base_url"))
+    # The row keeps the canonical URL; a gateway key belongs to its route host (#121486).
+    return _probe_codex_quota_restored(token, base_url=_codex_pool_route_base_url(entry.get("base_url")))
 
 
 def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:

@@ -311,6 +311,133 @@ def test_image_request_goes_to_the_pool_entry_gateway(monkeypatch, key):
     assert seen[0][1] == f"Bearer {key}"
 
 
+# ── quota-restored probe + /usage (pool rows keep the canonical ChatGPT URL) ──────────────
+
+
+class _UsageRecorder:
+    """``httpx.Client`` stand-in recording every Authorization-bearing GET."""
+
+    def __init__(self, seen):
+        self.seen = seen
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, headers=None, **_kw):
+        self.seen.append((str(url), (headers or {}).get("Authorization", "")))
+        return SimpleNamespace(status_code=200, json=lambda: {
+            "rate_limit": {"primary_window": {"used_percent": 10}}}, headers={})
+
+
+def _exhausted_jwt_pool(home: Path) -> None:
+    """A JWT-shaped gateway key in a rate-limited pool row that still carries the canonical URL."""
+    import time
+    now = time.time()
+    (home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+        "credential_pool": {"openai-codex": [{
+            "id": "gw", "label": "gateway", "auth_type": "oauth", "priority": 0,
+            "source": "device_code", "access_token": JWT, "base_url": CHATGPT,
+            "last_status": "exhausted", "last_status_at": now, "last_error_code": 429,
+            "last_error_reason": "usage_limit_reached", "last_error_message": "The usage limit has been reached",
+            "last_error_reset_at": now + 3 * 24 * 3600,
+        }]},
+    }))
+
+
+@pytest.fixture
+def usage_probe_http(monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import auth_codex
+    seen = []
+    auth_mod._codex_quota_probe_cache.clear()
+    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: _UsageRecorder(seen))
+    yield seen
+    auth_mod._codex_quota_probe_cache.clear()
+
+
+def test_quota_restored_probe_of_a_persisted_entry_asks_the_gateway(monkeypatch, usage_probe_http):
+    home = _home(monkeypatch)
+    _write_config(home, base_url=GW)
+    _exhausted_jwt_pool(home)
+    from hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
+
+    entry = json.loads((home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
+    assert _probe_codex_pool_entry_quota_restored(entry) is True
+
+    assert _authorized_hosts(usage_probe_http) == {"codex-gw.example"}
+
+
+def test_pool_selection_quota_probe_asks_the_gateway(monkeypatch, usage_probe_http):
+    home = _home(monkeypatch)
+    _write_config(home, base_url=GW)
+    _exhausted_jwt_pool(home)
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    (entry,) = pool.entries()
+    assert pool._codex_quota_restored_upstream(entry) is True
+
+    assert _authorized_hosts(usage_probe_http) == {"codex-gw.example"}
+
+
+def test_quota_restored_probe_direct_chatgpt_positive_control(monkeypatch, usage_probe_http):
+    home = _home(monkeypatch)
+    _write_config(home)
+    _exhausted_jwt_pool(home)
+    from hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
+
+    entry = json.loads((home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
+    _probe_codex_pool_entry_quota_restored(entry)
+
+    assert _authorized_hosts(usage_probe_http) == {"chatgpt.com"}
+
+
+def test_usage_pool_fallback_tier_sends_gateway_key_to_the_gateway(monkeypatch):
+    """``/usage`` tier 3 (runtime resolver raised): the pooled key is paired with its route."""
+    from agent import account_usage
+
+    home = _home(monkeypatch)
+    _write_config(home, base_url=GW)
+    _write_pool(home, OPAQUE)
+    seen = []
+
+    def _no_runtime(**_kw):
+        raise account_usage.AuthError("no creds", provider="openai-codex", code="codex_auth_missing")
+
+    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials", _no_runtime)
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda **kw: _UsageRecorder(seen))
+
+    account_usage.fetch_account_usage("openai-codex")
+
+    assert _authorized_hosts(seen) == {"codex-gw.example"}
+    assert seen[0][1] == f"Bearer {OPAQUE}"
+
+
+def test_usage_forced_refresh_keeps_the_refreshed_pool_key_on_the_gateway(monkeypatch):
+    """The 401 retry refreshes the live agent's own pool entry; the row's canonical URL must not
+    pull the refreshed gateway key over to chatgpt.com."""
+    from agent import account_usage
+
+    home = _home(monkeypatch)
+    _write_config(home, base_url=GW)
+    monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {}})
+
+    class Pool:
+        def try_refresh_matching(self, api_key_hint=None, credential_id=None):
+            return SimpleNamespace(runtime_api_key="fresh-gw-key", runtime_base_url=CHATGPT)
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+
+    token, base_url, _acct = account_usage._resolve_codex_usage_credentials(
+        GW, "stale-gw-key", force_refresh=True)
+
+    assert (token, base_url) == ("fresh-gw-key", GW)
+
+
 def test_route_fallback_reads_the_profile_scoped_override_not_a_sibling_process_env(monkeypatch):
     """If route resolution itself fails, the fallback still honours only the routed profile's
     ``HERMES_CODEX_BASE_URL`` — never a multiplexed sibling's process env."""

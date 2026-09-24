@@ -1,9 +1,10 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
 import {
   liveSessionProjectId,
   NO_PROJECT_ID,
+  projectOwnerBySessionId,
   type SidebarProjectTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
@@ -14,6 +15,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
+import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
@@ -25,9 +27,11 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import {
+  $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  setCurrentCwd,
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
@@ -48,6 +52,11 @@ export const $activeProjectId = atom<null | string>(null)
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
+// Backend-resolved session -> project owner, the ONE authority the row
+// classifiers (filter, bucket, color, label) and the lane overlay share, so a
+// sibling worktree the git probe assigned to its repo project never re-files
+// under an umbrella folder by cwd.
+export const $projectOwnerBySessionId = computed($projectTree, projectOwnerBySessionId)
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -168,6 +177,23 @@ export function resolveNewSessionCwd(): string {
   return workspaceCwdForNewSession()
 }
 
+// Entering a project moves the live workspace only when main holds a fresh
+// draft: the draft has no folder of its own yet, and the project root is where
+// its first message should run. A stored conversation keeps its cwd — entering
+// is a scope switch, and moving the workspace under the selected chat re-pointed
+// Files/Review and the composer's Git context at the project while the
+// transcript stayed on the old session (#72772). The next new chat still lands
+// in the project through resolveNewSessionCwd.
+export function followEnteredProjectCwd(cwd: string): void {
+  const target = cwd.trim()
+
+  if (!target || $selectedStoredSessionId.get() || target === $currentCwd.get()) {
+    return
+  }
+
+  setCurrentCwd(target)
+}
+
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh
 // auto-project on the next tree refresh).
@@ -283,6 +309,17 @@ export function projectProfile(): null | string {
   const profile = normalizeProfileKey($activeGatewayProfile.get())
 
   return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
+}
+
+// All profiles filters the sidebar. Writes still belong to the live gateway profile.
+function writableProjectProfile(): string {
+  const profile = normalizeProfileKey($activeGatewayProfile.get())
+
+  if (!profile || profile === ALL_PROFILES) {
+    throw new Error('Projects are unavailable while viewing all profiles')
+  }
+
+  return profile
 }
 
 function projectParams(
@@ -511,8 +548,15 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 // membership match exactly.
 let projectSessionsRefreshGeneration = 0
 
-export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
-  const generation = ++projectSessionsRefreshGeneration
+// A drill-in only wants the LATEST request (an older one resolving late would
+// paint the wrong project), so those are `supersedable` and resolve null when
+// overtaken. A per-row "Show all" expansion is not: two rows expanding at once,
+// or a drill-in elsewhere, must not silently leave the first row collapsed.
+export async function fetchProjectSessions(
+  projectId: string,
+  { supersedable = true }: { supersedable?: boolean } = {}
+): Promise<SidebarProjectTree | null> {
+  const generation = supersedable ? ++projectSessionsRefreshGeneration : null
   const profile = projectProfile()
 
   if (!profile) {
@@ -530,14 +574,14 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
       projectParams({ project_id: projectId }, context.profile)
     )
 
-    if (generation !== projectSessionsRefreshGeneration || !stillOnProjectsContext(context)) {
+    if ((generation !== null && generation !== projectSessionsRefreshGeneration) || !stillOnProjectsContext(context)) {
       return null
     }
 
     return res.project ?? null
   } catch (error) {
     if (
-      generation !== projectSessionsRefreshGeneration ||
+      (generation !== null && generation !== projectSessionsRefreshGeneration) ||
       profile !== projectProfile() ||
       (context && !stillOnProjectsContext(context))
     ) {
@@ -880,7 +924,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   try {
     // All profiles filters the sidebar, not the owner of a new project.
     // Capture the live route so reconnecting cannot retarget the write.
-    const context = await activeProjectsContext(normalizeProfileKey($activeGatewayProfile.get()))
+    const context = await activeProjectsContext(writableProjectProfile())
 
     res = await gatewayRequestOn<{ project: ProjectInfo | null }>(
       context.gateway,
@@ -963,6 +1007,7 @@ export async function updateProject(
   id: string,
   patch: { name?: string; color?: null | string; icon?: null | string }
 ): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
   const snap = snapshotProjects()
 
   $projectTree.set(
@@ -982,14 +1027,18 @@ export async function updateProject(
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
   // Map explicit null → "" so "no color"/"no icon" actually clear.
   await persistOrRollback(snap, () =>
-    gatewayRequest(
+    gatewayRequestOn(
+      context.gateway,
       'projects.update',
-      projectParams({
-        id,
-        ...patch,
-        ...(patch.color === null && { color: '' }),
-        ...(patch.icon === null && { icon: '' })
-      })
+      projectParams(
+        {
+          id,
+          ...patch,
+          ...(patch.color === null && { color: '' }),
+          ...(patch.icon === null && { icon: '' })
+        },
+        context.profile
+      )
     )
   )
 }
@@ -1031,6 +1080,7 @@ export async function addProjectFolder(
   path: string,
   opts: { label?: string; isPrimary?: boolean } = {}
 ): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
   const snap = snapshotProjects()
   const trimmed = path.trim()
 
@@ -1061,9 +1111,10 @@ export async function addProjectFolder(
   }
 
   await persistOrRollback(snap, () =>
-    gatewayRequest(
+    gatewayRequestOn(
+      context.gateway,
       'projects.add_folder',
-      projectParams({ id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
+      projectParams({ id, path, label: opts.label, is_primary: opts.isPrimary ?? false }, context.profile)
     )
   )
   reconcileProjects()
@@ -1081,13 +1132,14 @@ function openSessionBelongsToProject(projectId: string, projects: ProjectInfo[])
 
   const open = $sessions.get().find(s => sessionMatchesStoredId(s, openId))
 
-  return Boolean(open && liveSessionProjectId(open, projects) === projectId)
+  return Boolean(open && liveSessionProjectId(open, projects, $projectOwnerBySessionId.get()) === projectId)
 }
 
 // Optimistic: drop the project from the cached tree + list the instant it's
 // clicked (the entered-scope effect exits if you deleted the project you were
 // inside), reconciling from the server payload. A failed delete restores both.
 export async function deleteProject(id: string): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
   const snap = snapshotProjects()
   // Capture membership BEFORE removal — the project's folders (which determine
   // ownership) are gone once it's dropped from the cache.
@@ -1107,13 +1159,26 @@ export async function deleteProject(id: string): Promise<void> {
   }
 
   await persistOrRollback(snap, async () => {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', projectParams({ id })))
+    applyPayload(
+      await gatewayRequestOn<ProjectsPayload>(
+        context.gateway,
+        'projects.delete',
+        projectParams({ id }, context.profile)
+      )
+    )
   })
   void refreshProjectTree()
 }
 
 export async function setActiveProject(id: null | string): Promise<void> {
-  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', projectParams({ id }))
+  const context = await activeProjectsContext(writableProjectProfile())
+
+  const res = await gatewayRequestOn<{ active_id: null | string }>(
+    context.gateway,
+    'projects.set_active',
+    projectParams({ id }, context.profile)
+  )
+
   $activeProjectId.set(res.active_id ?? null)
 }
 
@@ -1347,9 +1412,11 @@ export async function removeWorktreePath(
 }
 
 // Reveal a project/worktree path in the OS file manager (git-GUI standard).
+// Routes through `revealFile` so a path that is not on this computer toasts
+// instead of silently showing nothing.
 export async function revealPath(path: null | string): Promise<void> {
   if (path) {
-    await window.hermesDesktop?.revealPath?.(path)
+    await revealFile(path)
   }
 }
 

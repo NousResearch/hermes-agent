@@ -30,6 +30,7 @@ from agent.memory_provider import spawn_context_thread as _spawn_context_thread
 from agent.secret_scope import get_secret
 from hermes_cli.profiles import _get_default_hermes_home
 from hermes_constants import get_hermes_home
+from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
 
 from plugins.memory.honcho.client_cache import (
     _DEFAULT_HTTP_TIMEOUT, _client_cache_key, _client_slots, _client_slots_lock,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOST = "hermes"
+_AUTOMATIC_SESSION_TITLE_SOURCES = frozenset({TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM})
 
 
 def _sanitize_url(url: str | None) -> str | None:
@@ -488,13 +490,15 @@ class HonchoClientConfig:
     def resolve_session_name(
         self, cwd: str | None = None, session_title: str | None = None,
         session_id: str | None = None, gateway_session_key: str | None = None,
+        session_title_source: str | None = None,
     ) -> str | None:
         """Resolve the Honcho session name; with ``session_ai_peer_prefix`` the result is prefixed
         ``{ai_peer}-`` on every path, including the AI-peer-agnostic gateway session key."""
         import re
 
         result = self._resolve_session_name_base(cwd=cwd, session_title=session_title,
-                                                 session_id=session_id, gateway_session_key=gateway_session_key)
+                                                 session_id=session_id, gateway_session_key=gateway_session_key,
+                                                 session_title_source=session_title_source)
         if result and self.session_ai_peer_prefix and self.ai_peer:
             ai = re.sub(r'[^a-zA-Z0-9_-]+', '-', self.ai_peer).strip('-')
             if ai:
@@ -505,6 +509,7 @@ class HonchoClientConfig:
     def _resolve_session_name_base(
         self, cwd: str | None = None, session_title: str | None = None,
         session_id: str | None = None, gateway_session_key: str | None = None,
+        session_title_source: str | None = None,
     ) -> str | None:
         """Order: gateway session key (per-chat isolation no cwd/strategy gives) -> per-session
         strategy's session_id (authoritative, so a generated title never remaps a live conversation)
@@ -523,7 +528,9 @@ class HonchoClientConfig:
         manual = self.sessions.get(cwd)
         if manual:
             return manual
-        if session_title and _slug(session_title):
+        # Absent provenance retains the legacy explicit-title override. Generated
+        # display titles must not change a strategy-selected memory identity.
+        if session_title and session_title_source not in _AUTOMATIC_SESSION_TITLE_SOURCES and _slug(session_title):
             return self._with_peer_prefix(_slug(session_title))
         if self.session_strategy == "per-repo":
             return self._with_peer_prefix(self._git_repo_name(cwd) or Path(cwd).name)

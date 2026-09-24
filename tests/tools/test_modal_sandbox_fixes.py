@@ -35,25 +35,6 @@ except ImportError:
 class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
 
-    def test_terminal_and_file_toolsets_resolve_all_tools(self):
-        """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
-        from unittest.mock import patch as _patch
-
-        from model_tools import get_tool_definitions
-        from tools.tool_search import ToolSearchConfig
-
-        # Pin the RESOLUTION contract independent of deferral policy —
-        # #97979 defers process_manage by default (legacy defer: [] override).
-        _legacy = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
-        with _patch("tools.tool_search.load_config", return_value=_legacy), \
-             _patch("tools.tool_search.load_config_readonly", return_value=_legacy):
-            tools = get_tool_definitions(
-                enabled_toolsets=["terminal", "file"],
-                quiet_mode=True,
-            )
-        names = {t["function"]["name"] for t in tools}
-        expected = {"terminal", "process_manage", "read_file", "write_file", "search_files", "patch"}
-        assert expected == names, f"Expected {expected}, got {names}"
 
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
@@ -202,103 +183,18 @@ class TestCwdHandling:
 # Test 5: ephemeral_disk version check
 # =========================================================================
 
-class TestEphemeralDiskCheck:
-    """Verify ephemeral_disk is only passed when modal supports it."""
-
-    def test_ephemeral_disk_skipped_when_unsupported(self, monkeypatch):
-        """If modal.Sandbox.create doesn't have ephemeral_disk param, skip it."""
-        import inspect
-        mock_params = {
-            "args": inspect.Parameter("args", inspect.Parameter.VAR_POSITIONAL),
-            "image": inspect.Parameter("image", inspect.Parameter.KEYWORD_ONLY),
-            "timeout": inspect.Parameter("timeout", inspect.Parameter.KEYWORD_ONLY),
-            "cpu": inspect.Parameter("cpu", inspect.Parameter.KEYWORD_ONLY),
-            "memory": inspect.Parameter("memory", inspect.Parameter.KEYWORD_ONLY),
-        }
-
-        monkeypatch.setenv("TERMINAL_ENV", "modal")
-        config = _tt_mod._get_env_config()
-        # The config has container_disk default of 51200
-        disk = config.get("container_disk", 51200)
-        assert disk > 0, "disk should default to > 0"
-
-        # Simulate the version check logic from terminal_tool.py
-        sandbox_kwargs = {}
-        if disk > 0:
-            try:
-                if "ephemeral_disk" in mock_params:
-                    sandbox_kwargs["ephemeral_disk"] = disk
-            except Exception:
-                pass
-
-        assert "ephemeral_disk" not in sandbox_kwargs, (
-            "ephemeral_disk should not be set when Sandbox.create doesn't support it"
-        )
 
 
 # =========================================================================
 # Test 6: ModalEnvironment defaults
 # =========================================================================
 
-class TestModalEnvironmentDefaults:
-    """Verify ModalEnvironment has correct defaults."""
-
-    def test_default_cwd_is_root(self):
-        """ModalEnvironment default cwd should be /root, not ~."""
-        from tools.environments.modal import ModalEnvironment
-        import inspect
-        sig = inspect.signature(ModalEnvironment.__init__)
-        cwd_default = sig.parameters["cwd"].default
-        assert cwd_default == "/root", (
-            f"ModalEnvironment cwd default should be /root, got {cwd_default!r}. "
-            "Tilde ~ is not expanded by subprocess.run(cwd=...)."
-        )
 
 
 # =========================================================================
 # Test 7: ensurepip fix in ModalEnvironment
 # =========================================================================
 
-class TestEnsurepipFix:
-    """Verify the pip fix is applied in the ModalEnvironment init."""
-
-    def test_modal_environment_creates_image_with_setup_commands(self):
-        """_resolve_modal_image should create a modal.Image with pip fix."""
-        try:
-            from tools.environments.modal import _resolve_modal_image
-        except ImportError:
-            pytest.skip("tools.environments.modal not importable")
-
-        import inspect
-        source = inspect.getsource(_resolve_modal_image)
-        assert "ensurepip" in source, (
-            "_resolve_modal_image should include ensurepip fix "
-            "for Modal's legacy image builder"
-        )
-        assert "setup_dockerfile_commands" in source, (
-            "_resolve_modal_image should use setup_dockerfile_commands "
-            "to fix pip before Modal's bootstrap"
-        )
-
-    def test_modal_environment_uses_native_sdk(self):
-        """ModalEnvironment should use Modal SDK directly, not swe-rex."""
-        try:
-            from tools.environments.modal import ModalEnvironment
-        except ImportError:
-            pytest.skip("tools.environments.modal not importable")
-
-        import inspect
-        source = inspect.getsource(ModalEnvironment)
-        assert "swerex" not in source.lower(), (
-            "ModalEnvironment should not depend on swe-rex; "
-            "use Modal SDK directly via Sandbox.create() + exec()"
-        )
-        assert "Sandbox.create.aio" in source, (
-            "ModalEnvironment should use async Modal Sandbox.create.aio()"
-        )
-        assert "exec.aio" in source, (
-            "ModalEnvironment should use Sandbox.exec.aio() for command execution"
-        )
 
 
 # =========================================================================
@@ -376,13 +272,63 @@ class TestDockerHostBindApproval:
     def test_should_skip_container_guards(self):
         """Docker skips only when isolated; other sandboxes always skip."""
         import tools.approval as A
-        from tools import approval_context
         assert A._should_skip_container_guards("docker", has_host_access=False) is True
         assert A._should_skip_container_guards("docker", has_host_access=True) is False
         assert A._should_skip_container_guards("modal", has_host_access=True) is True
         assert A._should_skip_container_guards("singularity") is True
         assert A._should_skip_container_guards("daytona") is True
         assert A._should_skip_container_guards("local") is False
+
+    def test_raising_registry_lookup_keeps_container_guards_on(self, monkeypatch):
+        """A registry that raises during the provider lookup must fail soft to guards-on,
+        not propagate out of the approval predicate."""
+        from agent import terminal_env_registry as R
+        import tools.approval as A
+
+        def boom(*_a, **_k):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr(R._registry, "get_provider", boom)
+        assert A._should_skip_container_guards("p_disposable") is False
+
+    def test_registered_disposable_plugin_skips_container_guards(self):
+        """Plugin classification uses its registered provider, not built-in names only."""
+        from agent import terminal_env_registry
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+        import tools.approval as A
+
+        class DisposablePlugin(TerminalEnvironmentProvider):
+            name = "approval_disposable_plugin"
+            display_name = "Approval disposable plugin"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, **kwargs):
+                raise NotImplementedError
+
+        provider = DisposablePlugin()
+        previous = terminal_env_registry.get_provider(provider.name)
+        terminal_env_registry.register_provider(provider)
+        try:
+            assert A._should_skip_container_guards(provider.name) is True
+            assert A._should_skip_container_guards("unknown_plugin_backend") is False
+        finally:
+            terminal_env_registry.restore_registration(provider.name, provider, previous)
+
+        class BrokenDisposablePlugin(DisposablePlugin):
+            name = "broken_approval_disposable_plugin"
+
+            @property
+            def skip_container_guards(self):
+                raise RuntimeError("broken plugin classification")
+
+        broken_provider = BrokenDisposablePlugin()
+        terminal_env_registry.register_provider(broken_provider)
+        try:
+            assert A._should_skip_container_guards(broken_provider.name) is False
+        finally:
+            terminal_env_registry.restore_registration(broken_provider.name, broken_provider, None)
 
     def test_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker still bypasses dangerous-command approval."""

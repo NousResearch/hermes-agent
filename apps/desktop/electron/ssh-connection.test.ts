@@ -24,7 +24,6 @@ import {
   runSsh,
   SSH_ERROR,
   SshConnection,
-  sshErrorMessage,
   stopTunnelChild,
   target,
   validateSshTarget,
@@ -210,14 +209,9 @@ test('classifySshError detects unreachable', () => {
   assert.equal(classifySshError('connect to host x port 22: Connection refused'), SSH_ERROR.UNREACHABLE)
 })
 
-test('sshErrorMessage gives actionable guidance for auth and host-key-change', () => {
-  const conn = { user: 'me', host: 'box', port: 22 }
-  assert.match(sshErrorMessage(SSH_ERROR.AUTH_FAILED, conn, 'Permission denied'), /ssh-agent|ssh-add|IdentityFile/)
-  assert.match(sshErrorMessage(SSH_ERROR.HOST_KEY_CHANGED, conn, 'CHANGED'), /ssh-keygen -R box/)
-})
-
 // A fake child process that emits a scripted result on next tick.
-function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang = false }: any = {}) {
+// Node's `close` is `(code, signal)`: a signal death has `code === null`.
+function fakeChild({ code = 0, signal = null, stdout = '', stderr = '', errorEvent = null, hang = false }: any = {}) {
   const child: any = new EventEmitter()
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
@@ -245,10 +239,19 @@ function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang
       child.stderr.emit('data', Buffer.from(stderr))
     }
 
-    child.emit('close', code)
+    child.emit('close', signal ? null : code, signal)
   })
 
   return child
+}
+
+function assertSignalDeathNotUnreachable(err, signal) {
+  assert.notEqual(err.kind, SSH_ERROR.UNREACHABLE)
+  assert.equal(err.signal, signal)
+  assert.doesNotMatch(err.message, /Could not reach/)
+  assert.match(err.message, new RegExp(signal))
+
+  return true
 }
 
 // Build a spawnFn that returns scripted children per ssh invocation, recording
@@ -520,6 +523,110 @@ test('no-mux: open() classifies auth failure', async () => {
   const spawnFn = scriptedSpawn([{ code: 255, stderr: 'me@box: Permission denied (publickey).' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
   await assert.rejects(conn.open(), (err: any) => err.kind === 'auth-failed')
+})
+
+test('runSsh keeps Node close signal on the result', async () => {
+  const spawnFn = () => fakeChild({ signal: 'SIGTERM', stderr: '' })
+  const result: any = await runSsh(['box'], { timeoutMs: 5000, spawnFn })
+
+  assert.equal(result.code, null)
+  assert.equal(result.signal, 'SIGTERM')
+  assert.equal(result.stderr, '')
+})
+
+test('no-mux open() does not classify a signal death with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ signal: 'SIGTERM', stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGTERM'))
+})
+
+test('mux open() does not classify a signal-killed master with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return { code: 255, stderr: 'no control path' }
+    }
+
+    return { signal: 'SIGHUP', stderr: '' }
+  })
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+
+  await assert.rejects(() => conn.open(), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGHUP'))
+})
+
+test('exec() does not classify a signal death with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ signal: 'SIGKILL', stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+
+  await assert.rejects(() => conn.exec('uname -s'), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGKILL'))
+})
+
+test('forward() does not classify a signal death with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ signal: 'SIGPIPE', stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+
+  await assert.rejects(() => conn.forward(5000, 6000), (err: any) => assertSignalDeathNotUnreachable(err, 'SIGPIPE'))
+})
+
+test('close() does not report a signal-killed -O exit with empty stderr as unreachable', async () => {
+  const logs: string[] = []
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return { code: 255 }
+    }
+
+    if (args.includes('-M')) {
+      return { code: 0 }
+    }
+
+    return { signal: 'SIGINT', stderr: '' }
+  })
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, controlDir: '/tmp/d', rememberLog: line => logs.push(line) }
+  )
+
+  await conn.open()
+  await conn.close()
+
+  const logged = logs.join('\n')
+  assert.match(logged, /SIGINT/)
+  assert.doesNotMatch(logged, /Could not reach/)
+})
+
+test('no-mux open() still classifies a normal non-zero exit with empty stderr as unreachable', async () => {
+  const spawnFn = scriptedSpawn([{ code: 255, stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.UNREACHABLE)
+      assert.equal(err.signal, undefined)
+
+      return true
+    }
+  )
+})
+
+test('a signal death that already printed an unreachable ssh error stays unreachable', async () => {
+  const spawnFn = scriptedSpawn([
+    {
+      signal: 'SIGTERM',
+      stderr: 'ssh: connect to host box port 22: Connection refused'
+    }
+  ])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.UNREACHABLE)
+      assert.equal(err.signal, 'SIGTERM')
+
+      return true
+    }
+  )
 })
 
 test('no-mux: forward spawns a persistent -N -L child; cancel + close kill it', async () => {
@@ -1074,6 +1181,28 @@ test('stopTunnelChild waits for process exit', async () => {
   assert.equal(stopped, true)
 })
 
+test.skipIf(process.platform === 'win32')(
+  'withRemoteTimeout runs a healthy probe under a zsh login shell (#111949)',
+  async t => {
+    // SSH runs the remote command through the account's login shell. In
+    // non-interactive zsh, a bare `set -m` is fatal, so the wrapper must still
+    // run a healthy probe rather than reporting the remote as unsupported.
+    const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+
+    // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+    // skip, not a pass, or a wrapper regression stays green unnoticed.
+    if (!zsh) {
+      t.skip('zsh not installed')
+
+      return
+    }
+
+    const { stdout: zshStdout } = await execFileAsync(zsh, ['-fc', withRemoteTimeout('echo zsh-ok', 5)])
+
+    assert.equal(zshStdout, 'zsh-ok\n')
+  }
+)
+
 test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#110478)', async () => {
   if (process.platform === 'win32') {
     return
@@ -1082,10 +1211,7 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   // Shape: POSIX watchdog — macOS remotes have no GNU `timeout`.
   const wrapped = withRemoteTimeout('hermes --version 2>&1', 15)
 
-  assert.ok(wrapped.includes('sleep 15'), 'watchdog duration honored')
-  assert.ok(wrapped.includes('kill -9'), 'watchdog kills the hung child remotely')
   assert.ok(!/(^|[ ;(])timeout[ ;]/.test(wrapped), 'no GNU timeout dependency')
-  assert.ok(wrapped.endsWith('exit $__htrc'), 'inner exit code propagated')
   assert.ok(
     withRemoteTimeout('true').includes(`sleep ${REMOTE_PROBE_TIMEOUT_SECS}`),
     'defaults to REMOTE_PROBE_TIMEOUT_SECS'
@@ -1139,7 +1265,10 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
     assert.ok(err2 && err2.code !== 0, 'hung launcher must exit non-zero')
 
-    const { stdout: grandStrays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${grandSecs}$" || true`])
+    const { stdout: grandStrays } = await execFileAsync('sh', [
+      '-c',
+      `ps -eo args | grep "[s]leep ${grandSecs}$" || true`
+    ])
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
   }

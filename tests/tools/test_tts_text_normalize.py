@@ -69,3 +69,35 @@ def test_prepare_spoken_text_omits_fenced_code_for_supported_markdown_fences(ope
 
 def test_inline_tilde_runs_do_not_hide_spoken_prose():
     assert "keep these words" in prepare_spoken_text("Before ~~~keep these words~~~ After")
+def test_prepare_spoken_text_strips_media_file_links():
+    # "Open inference-server-shopping-list.xlsx" style tokens must never reach
+    # the voice: hyphenated slugs + odd extensions make TTS loop ("eeeeee").
+    raw = "The files are below.\nMEDIA:/Users/ricardo.mendes/Documents/inference-server-shopping-list.xlsx\nBye."
+    spoken = prepare_spoken_text(raw)
+    assert "MEDIA" not in spoken
+    assert "shopping-list" not in spoken
+    assert "xlsx" not in spoken
+    assert "below" in spoken
+    assert "Bye" in spoken
+
+
+def test_prepare_spoken_text_keeps_sentence_break_after_inline_media_link():
+    spoken = prepare_spoken_text("See MEDIA:/tmp/report-2026-q3.xlsx. Then reply.")
+    assert "report" not in spoken
+    assert spoken == "See. Then reply."
+
+
+def test_prepare_spoken_text_closes_trailing_colons():
+    # "the regex list:" + a now-removed raw token would leave the voice hanging
+    # on an open colon-pause (the "aaaa" stutter). Close it with a period.
+    spoken = prepare_spoken_text("Here is the list:\nMEDIA:/tmp/x.py\nMore text")
+    assert "list:" not in spoken
+    assert "list." in spoken
+
+
+def test_prepare_spoken_text_closes_colon_on_single_line():
+    # Multi-line text gets colons closed per line; single-line text reaches the
+    # end-of-text rule instead.
+    assert prepare_spoken_text("Here is the list:") == "Here is the list."
+    # ...but a digit-preceded colon is a ratio and must stay intact.
+    assert prepare_spoken_text("Final score 3:2") == "Final score 3:2"

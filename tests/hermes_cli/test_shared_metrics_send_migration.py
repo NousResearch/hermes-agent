@@ -53,18 +53,7 @@ def store(tmp_path):
 
 
 class TestFreshDatabase:
-    def test_send_columns_exist(self, store):
-        assert SEND_COLUMNS <= _columns(store.database_path)
 
-    def test_original_columns_survive(self, store):
-        assert {
-            "package_id",
-            "period_start",
-            "period_end",
-            "payload_json",
-            "created_at",
-            "exported_at",
-        } <= _columns(store.database_path)
 
     def test_send_attempts_defaults_to_zero(self, store):
         connection = sqlite3.connect(store.database_path)

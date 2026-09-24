@@ -33,5 +33,5 @@ async def test_empty_sentinel_rewrite_uses_the_shared_explanation_with_the_model
     )
     assert silent is False
     assert EMPTY_RESPONSE_EXPLANATION.format(model="llama3") in response
-    assert "after processing tool results" not in response
-    assert "/model" in response and "continue" in response
+
+

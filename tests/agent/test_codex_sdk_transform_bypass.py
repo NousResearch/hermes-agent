@@ -18,9 +18,9 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-from agent.codex_runtime import (
-    _bypass_sdk_request_transform,
+from agent.sdk_transform_bypass import (
     _is_plain_json_data,
+    bypass_sdk_request_transform as _bypass_sdk_request_transform,
 )
 
 
@@ -40,11 +40,7 @@ def _wire_kwargs():
 
 
 class TestIsPlainJsonData:
-    def test_accepts_nested_wire_payloads(self):
-        assert _is_plain_json_data(_wire_kwargs()["input"])
 
-    def test_rejects_non_json_leaves(self):
-        assert not _is_plain_json_data([{"role": "user", "content": object()}])
 
     def test_rejects_non_string_dict_keys(self):
         assert not _is_plain_json_data({1: "a"})

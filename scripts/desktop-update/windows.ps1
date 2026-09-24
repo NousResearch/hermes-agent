@@ -17,7 +17,7 @@
 # OS component -- is "frozen".
 #
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
-#   cmd /d /s /c start "" /min powershell -NoProfile -ExecutionPolicy Bypass
+#   cmd /d /s /c start "" /b powershell -NoProfile -ExecutionPolicy Bypass
 #     -File scripts\desktop-update\windows.ps1
 #     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
 #     -Branch <ref>         branch to update against
@@ -48,6 +48,7 @@ param(
     [string]$RelaunchExe = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
+    [switch]$NoGateway,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
@@ -61,8 +62,9 @@ if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
 }
 
 $ErrorActionPreference = "Continue"
-# Foreground helpers: the script is spawned via `cmd start /min`, so its
-# WinForms window comes up backgrounded unless we explicitly claim focus --
+# Foreground helpers: the script is spawned via `cmd start /b` and inherits
+# the wrapper's hidden console, so its WinForms window comes up backgrounded
+# unless we explicitly claim focus --
 # and after the update we must hand focus TO the relaunched Desktop (a
 # WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
 # pass our foreground right on to the new Hermes.exe pid.
@@ -438,7 +440,7 @@ function Show-ProgressWindow {
         $form.Controls.Add($title)
         $form.Controls.Add($sub)
         $form.Show()
-        # `cmd start /min` spawned us backgrounded, so the card comes up
+        # `cmd start /b` spawned us backgrounded, so the card comes up
         # behind everything without one explicit activation. Claim it ONCE
         # (so the user knows the update started), then never again — the
         # window is decoration and competes with nothing (no TopMost).
@@ -1185,7 +1187,19 @@ function Set-InstallRootCurrentDirectory([string]$Root) {
     return $resolved
 }
 
+function Resolve-HermesVenvDir([string]$Root) {
+    # Match hermes_constants.project_venv_dir(): installer-created venv wins,
+    # while uv-default .venv remains a supported source-install layout.
+    $legacy = Join-Path $Root "venv"
+    if (Test-Path -LiteralPath $legacy -PathType Container) { return $legacy }
+    $uvDefault = Join-Path $Root ".venv"
+    if (Test-Path -LiteralPath $uvDefault -PathType Container) { return $uvDefault }
+    return $legacy
+}
+
 $finalCode = 1
+$manualAction = $false
+$manualMsg = ""
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
 
@@ -1465,6 +1479,8 @@ try {
         exit $finalCode
     }
 
+    $VenvDir = Resolve-HermesVenvDir $InstallRoot
+
     # Exercise the production cwd setup and native launcher without updating.
     if ($SelfTestWorkingDirectory) {
         $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
@@ -1483,7 +1499,7 @@ try {
     }
 
     # Check only the interpreter here: dependency recovery belongs to update.
-    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    $pythonExe = Join-Path $VenvDir "Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
         $finalCode = 3
         $finalMsg = "Update aborted: $pythonExe is missing. Repair the installation and review antivirus quarantine before retrying."
@@ -1514,7 +1530,7 @@ try {
 
     # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
     Publish-UiProgress "Preparing Hermes files"
-    $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
+    $shim = Join-Path $VenvDir "Scripts\hermes.exe"
     if (Test-Path -LiteralPath $shim) {
         $unlocked = $false
         $deadline = (Get-Date).AddSeconds(20)
@@ -1533,7 +1549,7 @@ try {
             # Something still maps the venv. --force-ing past it guarantees a
             # half-updated venv (the exact 2026-08-09 Access-denied brick).
             $finalCode = 5
-            $finalMsg = "Update aborted: another process is still holding the Hermes install open (venv\Scripts\hermes.exe locked after 20s). Nothing was changed. Close other Hermes windows/terminals and try again."
+            $finalMsg = "Update aborted: another process is still holding the Hermes install open ($shim locked after 20s). Nothing was changed. Close other Hermes windows/terminals and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -1577,14 +1593,25 @@ try {
     #
     # posix.sh is deliberately left alone: unlinking a running executable is
     # legal there, so the equivalent call is harmless.
-    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    $pythonExe = Join-Path $VenvDir "Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $pythonExe)) {
         $finalCode = 3
         $finalMsg = "Update aborted: $pythonExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    # --gateway restarts the local messaging gateway after the update. The
+    # Desktop passes -NoGateway when it is served by a remote gateway
+    # (#117529): restarting a local one there is never wanted, and with the
+    # same channel credentials as the remote host it becomes a competing
+    # long-poll consumer (e.g. Telegram rejects one of the two getUpdates
+    # callers).
+    $gatewayArg = @("--gateway")
+    if ($NoGateway) {
+        $gatewayArg = @()
+        Write-HandoffLog "update requested without --gateway (remote-served Desktop)"
+    }
+    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes") + $gatewayArg + @("--force", "--branch", $Branch)
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which
@@ -1654,6 +1681,25 @@ try {
         }
     }
 
+    # Desktop stopped every locally running profile gateway before handing off
+    # so their venv launchers could not hold the update lock. That happens
+    # before `hermes update` captures its Windows pause inventory, leaving the
+    # updater nothing to resume on its normal success path. Restore the same
+    # all-profile fleet only after the updated runtime verifies. A remote-served
+    # Desktop must stay passive: its -NoGateway hand-off owns no local poller.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and -not $NoGateway) {
+        $gatewayRestart = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "gateway", "start", "--all") "gateway restart"
+        if ($gatewayRestart.Code -ne 0) {
+            # The update itself succeeded; a restart miss is a manual follow-up
+            # (Write-Result's manual flag -> Desktop boot dialog), never a failed
+            # update: a non-zero exit here would run the error finale and hide
+            # the fact that the new runtime is installed and verified.
+            $manualAction = $true
+            $manualMsg = "Update complete, but Hermes could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal."
+            Write-HandoffLog $manualMsg
+        }
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."
@@ -1685,7 +1731,8 @@ try {
         Show-ErrorFinale $finalMsg
         Close-ProgressWindow
     } else {
-        Write-Result ($finalCode -eq 0) $finalCode $finalMsg
+        if ($finalCode -eq 0 -and $manualAction) { $finalMsg = $manualMsg }
+        Write-Result ($finalCode -eq 0) $finalCode $finalMsg ($finalCode -eq 0 -and $manualAction)
         Remove-MarkerIfOwned
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg

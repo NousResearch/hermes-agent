@@ -434,6 +434,42 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it.each([
+    [{ registry: true }, 'This Mac'],
+    [{ registry: false }, 'a']
+  ])('names the machine by its registry label (%o -> %s)', async ({ registry }, expected) => {
+    // tools/bot_mode_probe.py injects "@handle on <connection_label or connection_id>" into every
+    // bot's roster, and tools/bot_relay.py names the machine the same way when it refuses a target
+    // as offline. The route carries identity only, so the label has to come from the registry —
+    // without it every peer bot addresses its teammates by raw connection id. A Desktop build with
+    // no registry rejects the call, and the id stays.
+    if (registry) {
+      hostMock.connections = vi.fn(async () => [
+        { id: 'a', label: 'This Mac' },
+        { id: 'b', label: 'Noir (cto)' }
+      ])
+    } else {
+      delete hostMock.connections
+    }
+
+    const calls = respondWith(call =>
+      call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pushedToB = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'b')
+
+    expect(pushedToB?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'a', connection_label: expected, profile: 'a' })
+    ])
+
+    stopBotRelay()
+  })
+
   it('drops the cached rows of a connection that genuinely disconnected', async () => {
     const calls = respondWith(call =>
       call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}
@@ -741,6 +777,52 @@ describe('the roster loop forgets a machine that left', () => {
     stopBotRelay()
   })
 
+  it('retries the clear on the next tick when the push fails, instead of spending it', async () => {
+    // The clear is one-shot per sole connection, so spending it before the push lands means a
+    // failure is never retried: the surviving gateway keeps the departed machine's agents in every
+    // bot's prompt, and as message_agent targets, for the life of the Desktop. requestProfile
+    // throws on a socket that is not up yet, not only on a backend too old to have the RPC.
+    let clearFails = true
+
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return { profiles: [{ name: call.connectionId === 'a' ? 'default' : 'ops' }] }
+      }
+
+      if (call.method === 'bot_relay.roster.sync' && clearFails && !(call.params.agents as unknown[]).length) {
+        throw new Error('Hermes gateway is not connected')
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+
+    // b leaves; the clear is attempted and fails.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toHaveLength(1)
+    calls.length = 0
+
+    // Next tick must try again rather than treat the roster as already forgotten.
+    clearFails = false
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([
+      expect.objectContaining({ connectionId: 'a', params: { agents: [] } })
+    ])
+
+    // And once it lands it is spent, exactly as before.
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([])
+
+    stopBotRelay()
+  })
+
   it('clears the roster of a sole connection that replaced the previous sole one', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {
@@ -763,8 +845,128 @@ describe('the roster loop forgets a machine that left', () => {
     hostMock.profileRoutes = vi.fn(async () => [route('c')])
     await vi.advanceTimersByTimeAsync(60_000)
 
-    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual([
-      'c'
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual(['c'])
+
+    stopBotRelay()
+  })
+})
+
+describe('the drain loop does not let one delivery hold every other gateway’s mail', () => {
+  // A long turn on b (up to RELAY_DELIVER_TIMEOUT_MS) must not stop b's own
+  // outbox from being claimed, nor a's delivery from running: the gateway
+  // checks envelope age against bot_mode.envelope_ttl_seconds at the claim,
+  // and the sender's waiter is finite.
+  type RelayEnvelopeFixture = { id: string; message: string; target_connection: string; target_profile: string }
+  const toB: RelayEnvelopeFixture = { id: 'env-1', message: 'long job', target_connection: 'b', target_profile: 'ops' }
+
+  const toA: RelayEnvelopeFixture = {
+    id: 'env-2',
+    message: 'quick one',
+    target_connection: 'a',
+    target_profile: 'default'
+  }
+
+  it('claims every outbox first and delivers to different targets concurrently', async () => {
+    let releaseB!: (value: { reply: string }) => void
+
+    const pendingB = new Promise<{ reply: string }>(resolve => {
+      releaseB = resolve
+    })
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [toB] : [toA] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return call.connectionId === 'b' ? pendingB : { reply: 'done' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    // b's turn is still running — yet b's outbox was claimed and its envelope delivered on a.
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain').map(call => call.connectionId)).toEqual([
+      'a',
+      'b'
+    ])
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.connectionId)).toEqual(['b', 'a'])
+    expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
+      connectionId: 'b',
+      params: { id: 'env-2', reply: 'done' }
+    })
+
+    releaseB({ reply: 'finally' })
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(calls.filter(call => call.method === 'bot_relay.reply').map(call => call.params.id)).toEqual([
+      'env-2',
+      'env-1'
+    ])
+
+    stopBotRelay()
+  })
+
+  it('claims an envelope that lands DURING a long turn and delivers it now; the same target still queues behind', async () => {
+    // Issue step 3: the push arrives while b's turn is running. The claim
+    // must not wait for that turn (the TTL clock is running on the gateway),
+    // a different target is delivered immediately, and a second envelope for
+    // the SAME target profile waits for the running turn, in order.
+    let releaseB!: (value: { reply: string }) => void
+
+    const pendingB = new Promise<{ reply: string }>(resolve => {
+      releaseB = resolve
+    })
+
+    const outbox: Record<string, RelayEnvelopeFixture[]> = { a: [toB], b: [] }
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: outbox[call.connectionId].splice(0) }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return call.params.message === 'long job' ? pendingB : { reply: `${call.params.message} done` }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
+      'long job'
+    ])
+
+    // b's turn is running; gateway b now queues one envelope for a and one more for b/ops.
+    outbox.b.push(toA, { ...toB, id: 'env-3', message: 'second' })
+    await pushAndSettle()
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain' && call.connectionId === 'b')).toHaveLength(2)
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
+      'long job',
+      'quick one'
+    ])
+
+    releaseB({ reply: 'long job done' })
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
+      'long job',
+      'quick one',
+      'second'
+    ])
+    expect(calls.filter(call => call.method === 'bot_relay.reply').map(call => call.params.id)).toEqual([
+      'env-2',
+      'env-1',
+      'env-3'
     ])
 
     stopBotRelay()

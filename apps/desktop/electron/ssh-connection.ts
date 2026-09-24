@@ -350,10 +350,11 @@ function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SEC
 
   // Job control (`set -m`) puts the probe in its own process group so the
   // watchdog can also reach a grandchild left behind by a launcher that runs
-  // the CLI without exec. Shells that cannot enable it without a tty fall
-  // back to killing the direct child.
+  // the CLI without exec. Non-interactive zsh exits when asked to enable
+  // monitor mode, so skip that setup there and fall back to killing the direct
+  // child. Other shells retain the process-group cleanup where supported.
   return (
-    `set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    `[ -n "\${ZSH_VERSION-}" ] || set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
     `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
     `wait $__htp; __htrc=$?; ` +
     `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +
@@ -442,8 +443,9 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Spawn helper — runs an ssh invocation, races it against a hard timeout
 
-// Resolves { code, stdout, stderr }. On timeout the child is SIGKILLed and the
-// promise rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
+// Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
+// (null on a normal exit). On timeout the child is SIGKILLed and the promise
+// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
 function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -533,7 +535,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       signal?.removeEventListener('abort', onAbort)
       reject(error)
     })
-    child.on('close', code => {
+    child.on('close', (code, closeSignal) => {
       if (settled) {
         return
       }
@@ -541,9 +543,35 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       settled = true
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ code, stdout, stderr })
+      resolve({ code, signal: closeSignal || null, stdout, stderr })
     })
   })
+}
+
+function sshCloseSignal(value) {
+  if (!value || typeof value === 'string') {
+    return null
+  }
+
+  return typeof value.signal === 'string' && value.signal ? value.signal : null
+}
+
+function sshCloseStderr(value) {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value && typeof value.stderr === 'string') {
+    return value.stderr
+  }
+
+  return value?.message || ''
+}
+
+// A normal exit is code 0 and no close signal. A signal death is not success,
+// even when the caller would otherwise treat a null code as a plain failure.
+function sshCloseOk(result) {
+  return Boolean(result) && !sshCloseSignal(result) && result.code === 0
 }
 
 function stopTunnelChild(child, timeoutMs = 5_000) {
@@ -660,10 +688,28 @@ class SshConnection {
       return err
     }
 
-    const stderr = typeof stderrOrErr === 'string' ? stderrOrErr : stderrOrErr?.message || ''
+    const closeSignal = sshCloseSignal(stderrOrErr)
+    const stderr = sshCloseStderr(stderrOrErr)
+
+    // A signal death with empty stderr is a local process death, not proof the
+    // host was unreachable. Callers that pass UNREACHABLE as the empty-stderr
+    // fallback must not win here.
+    if (closeSignal && !String(stderr).trim()) {
+      const detail = `ssh process exited from signal ${closeSignal}`
+      const err: any = new Error(sshErrorMessage(SSH_ERROR.UNKNOWN, this, detail))
+      err.kind = SSH_ERROR.UNKNOWN
+      err.signal = closeSignal
+
+      return err
+    }
+
     const kind = stderr ? classifySshError(stderr) : fallbackKind
     const err: any = new Error(sshErrorMessage(kind, this, stderr))
     err.kind = kind
+
+    if (closeSignal) {
+      err.signal = closeSignal
+    }
 
     return err
   }
@@ -701,8 +747,8 @@ class SshConnection {
         throw this._fail(error, SSH_ERROR.UNREACHABLE)
       }
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+      if (!sshCloseOk(result)) {
+        throw this._fail(result, SSH_ERROR.UNREACHABLE)
       }
 
       this._opened = true
@@ -749,8 +795,8 @@ class SshConnection {
       throw this._fail(error, SSH_ERROR.UNREACHABLE)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result, SSH_ERROR.UNREACHABLE)
     }
 
     this._opened = true
@@ -771,7 +817,7 @@ class SshConnection {
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -791,7 +837,7 @@ class SshConnection {
         signal
       })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -840,8 +886,8 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
 
     return result.stdout
@@ -1034,8 +1080,8 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
   }
 
@@ -1106,8 +1152,8 @@ class SshConnection {
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr)
+      if (!sshCloseOk(result)) {
+        throw this._fail(result)
       }
 
       this._logLine('control master closed')

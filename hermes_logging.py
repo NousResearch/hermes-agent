@@ -165,7 +165,7 @@ COMPONENT_PREFIXES = {
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
     "cron": ("cron",),
-    "gui": ("hermes_cli.web_server", "hermes_cli.pty_bridge", "tui_gateway", "uvicorn"),
+    "gui": ("hermes_cli.web_server", "hermes_cli.pty_bridge", "hermes_cli.desktop", "tui_gateway", "uvicorn"),
 }
 
 
@@ -463,7 +463,19 @@ class _ProfileRoutingFileHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._handler_for_home(self._home_for_record(record)).handle(record)
+            home = self._home_for_record(record)
+            handler = self._handler_for_home(home)
+            if home == self._default_home:
+                handler.handle(record)
+                return
+            # Formatted here, on the listener thread, where the record's profile scope is gone: bind its home so
+            # RedactingFormatter applies THAT profile's redact_secrets policy and vault values, not the launch's.
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            token = set_hermes_home_override(str(home))
+            try:
+                handler.handle(record)
+            finally:
+                reset_hermes_home_override(token)
         except Exception:
             self.handleError(record)
 
@@ -474,6 +486,16 @@ class _ProfileRoutingFileHandler(logging.Handler):
         for handler in handlers:
             _quietly(handler.close)
         super().close()
+
+    def release_profile(self, home: Path) -> bool:
+        """Close and forget the routed files belonging to a deleted profile."""
+        with self._profile_handlers_lock:
+            handler = self._profile_handlers.pop(home, None)
+            self._profile_homes.discard(home)
+        if handler is None:
+            return False
+        _quietly(handler.close)
+        return True
 
 
 # Asynchronous file logging: an ``emit`` can block on the cross-process
@@ -578,6 +600,35 @@ def drain_log_queue(timeout: float = 1.0) -> None:
     t = threading.Thread(target=lambda: _quietly(listener.stop), name="hermes-log-drain", daemon=True)
     t.start()
     t.join(timeout)
+
+
+def release_profile_log_handlers(profile_home: str | Path) -> int:
+    """Release this process's routed log files below a profile before it is removed.
+
+    The Desktop serve process can route records for several profiles through one
+    ``QueueListener``. On Windows, each routed concurrent log handler keeps its
+    lock file open, so closing only external profile resources still leaves
+    ``logs/.__agent.lock`` and ``logs/.__errors.lock`` unavailable to rmtree.
+    """
+    global _queue_listener
+    try:
+        home = Path(profile_home).expanduser().resolve()
+    except (TypeError, ValueError, OSError):
+        return 0
+
+    with _queue_state_lock:
+        listener = _queue_listener
+        if listener is not None:
+            listener.stop()
+            _queue_listener = None
+        released = sum(
+            handler.release_profile(home)
+            for handler in _queued_file_handlers
+            if isinstance(handler, _ProfileRoutingFileHandler)
+        )
+        if listener is not None:
+            _start_queue_listener_locked()
+    return released
 
 
 def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:

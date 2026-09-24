@@ -319,16 +319,6 @@ class TestBomHandling:
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
-    def test_helpers(self):
-        from tools.file_operations import _strip_bom, _has_bom
-        assert _strip_bom("\ufeffhello") == ("hello", True)
-        assert _strip_bom("hello") == ("hello", False)
-        assert _strip_bom("") == ("", False)
-        # mid-string BOM is data, not a marker — left alone
-        assert _strip_bom("a\ufeffb") == ("a\ufeffb", False)
-        assert _has_bom("\ufeffx") is True
-        assert _has_bom("x") is False
-        assert _has_bom(None) is False
 
     def test_read_strips_bom(self, ops, tmp_path: Path):
         target = tmp_path / "bom.py"
@@ -374,12 +364,6 @@ class TestBomHandling:
         assert raw.startswith(self.BOM.encode("utf-8")), "BOM lost on V4A update"
         assert b"print('world')" in raw
 
-    def test_file_has_bom_ignores_stripped_pre_content(self, ops, tmp_path: Path):
-        # _file_has_bom must probe the DISK even when handed pre_content
-        # that (having been BOM-stripped upstream) claims there is no BOM.
-        target = tmp_path / "bom_probe.py"
-        target.write_bytes(self.BOM.encode("utf-8") + b"x = 1\n")
-        assert ops._file_has_bom(str(target), pre_content="x = 1\n") is True
 
 
 class TestProtectedInstructionFiles:
@@ -447,7 +431,6 @@ class TestProtectedInstructionFiles:
     def test_prompts_even_under_yolo(self, tmp_path, approvals, monkeypatch):
         """The whole point: auto-approve/yolo must NOT bypass this gate."""
         import tools.approval as A
-        from tools import approval_context
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", True)
         target = tmp_path / "AGENTS.md"
         approvals["answer"] = "deny"

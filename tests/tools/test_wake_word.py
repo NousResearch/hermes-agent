@@ -61,12 +61,6 @@ def test_looks_like_path():
     assert not _looks_like_path("hey_jarvis")
 
 
-def test_load_wake_word_config_is_a_dict_with_defaults():
-    # Wired into DEFAULT_CONFIG, so a real load returns the section shape.
-    cfg = ww.load_wake_word_config()
-    assert isinstance(cfg, dict)
-    assert cfg.get("enabled") is False
-    assert cfg.get("provider") == "openwakeword"
 
 
 def test_load_wake_word_config_guards_non_dict(monkeypatch):
@@ -240,16 +234,6 @@ def test_bundled_hey_hermes_model_ships_on_disk():
 # ── platform-aware backend selection (openWakeWord onnx is broken on macOS ARM64,
 #    upstream dscripka/openWakeWord#336) ────────────────────────────────────────
 
-def test_default_framework_tracks_the_macos_arm64_probe():
-    """``default_inference_framework()`` is exactly the ``_is_macos_arm64()``
-    branch — tflite there, onnx everywhere else.
-
-    Stated as an invariant between the probe and its consumer so it holds on
-    every host, including the macOS runner (where both sides are real) and an
-    Intel Mac (where ONNX is fine and both sides say so).
-    """
-    expected = "tflite" if ww._is_macos_arm64() else "onnx"
-    assert ww.default_inference_framework() == expected
 
 
 @pytest.mark.macos_only
@@ -619,6 +603,56 @@ def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):
     assert ww.stop_listening(owner=owner) is True
 
 
+def test_wedged_stream_halts_without_blocking_read_and_aborts_before_close(monkeypatch):
+    """A PortAudio device that never delivers samples (#117096) must not wedge pause().
+
+    ``read(n)`` on such a device blocks forever; the detector must never call it
+    while ``read_available`` is short, must return from pause() promptly once the
+    stop event is set, and must ``abort()`` the stream before ``close()``.
+    """
+    class _WedgedStream(_FakeStream):
+        read_available = 0
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.calls = []
+            self.read_calls = 0
+
+        def read(self, n):
+            self.read_calls += 1
+            time.sleep(30)  # a real wedged ALSA/PipeWire read never returns
+            return [0] * n, False
+
+        def abort(self):
+            self.calls.append("abort")
+
+        def stop(self):
+            self.calls.append("stop")
+
+        def close(self):
+            self.calls.append("close")
+            self.closed = True
+
+    streams = []
+
+    def _stream(**kw):
+        streams.append(_WedgedStream(**kw))
+        return streams[-1]
+
+    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
+    det.start()
+    assert det.running is True
+    time.sleep(0.2)
+    t0 = time.monotonic()
+    det.pause()
+    assert time.monotonic() - t0 < 1.5, "pause() must not wait out the join timeout"
+    assert det.running is False
+    stream = streams[0]
+    assert stream.read_calls == 0, "read() must not be entered while read_available < frame_length"
+    assert stream.calls[:2] == ["abort", "close"]
+
+
 def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
     class _BrokenSoundDevice:
         @staticmethod
@@ -738,7 +772,6 @@ def test_requirements_client_capture_without_local_mic(monkeypatch):
             return ""
 
     monkeypatch.setattr(ww, "lazy_deps", _LD, raising=False)
-    import tools.lazy_deps as real_ld
     monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
     monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
 

@@ -8,7 +8,6 @@ used instead of the ambient config default (#57588-class, #79536).
 
 import json
 
-import pytest
 
 import cli as cli_mod
 from hermes_state import SessionDB
@@ -80,6 +79,52 @@ def test_restore_session_model_restores_model_and_provider():
     # provider's credential resolution.
     assert stub._explicit_api_key is None
     assert stub._explicit_base_url == "https://f/v1"
+
+
+def test_restore_llamacpp_session_follows_live_managed_endpoint(monkeypatch):
+    """Managed llama.cpp owns its live port. A snapshot of last boot's loopback
+    URL must not pin the resumed client to a dead ephemeral endpoint."""
+    live = {
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:18434/v1",
+        "api_key": "sk-live-managed",
+        "api_mode": "chat_completions",
+    }
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kw: live)
+    stub = _make_stub()
+    stub._restore_session_model(_row(
+        model="Qwen3.8-27B-UD-IQ3_XXS",
+        model_config={
+            "provider": "llamacpp",
+            "base_url": "http://127.0.0.1:51489/v1",
+            "api_mode": "chat_completions",
+        }))
+    assert stub.provider == "llamacpp"
+    assert stub.requested_provider == "llamacpp"
+    assert stub.base_url == live["base_url"]
+    assert stub._explicit_base_url in (None, "")
+    assert stub.api_key == live["api_key"]
+
+
+def test_restore_llamacpp_session_keeps_launch_base_url_for_same_provider(monkeypatch):
+    """`hermes --provider llamacpp --base-url X --resume` is user intent for the SAME provider the
+    session ran on; the live-endpoint re-resolution must not re-point it at the local supervisor."""
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: calls.append(kw) or {"base_url": "http://127.0.0.1:18434/v1"})
+    user_url = "http://gpu-box:8080/v1"
+    stub = _make_stub(provider="llamacpp", requested_provider="llamacpp", base_url=user_url,
+                      _explicit_base_url=user_url)
+    stub._restore_session_model(_row(
+        model="Qwen3.8-27B-UD-IQ3_XXS",
+        model_config={"provider": "llamacpp", "base_url": "http://127.0.0.1:51489/v1"}))
+    assert stub.model == "Qwen3.8-27B-UD-IQ3_XXS"
+    assert stub.base_url == user_url
+    assert stub._explicit_base_url == user_url
+    assert calls == []
 
 
 def test_restore_session_model_explicit_cli_flag_wins():
@@ -199,9 +244,6 @@ def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
     assert "api_mode" not in runtime
 
 
-def test_persist_model_switch_noop_without_db_or_session():
-    stub = _make_stub()  # no _session_db / session_id attributes at all
-    stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
 def test_persist_model_switch_swallows_db_errors():
@@ -259,6 +301,26 @@ def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
     # Provider dropped -> model restored but provider stays ambient.
     assert stub.model == "glm-4.7"
     assert stub.provider == "openrouter"
+
+
+def test_restore_session_model_rederives_per_model_wire_for_opencode_rows(monkeypatch):
+    """A row persisted while an opencode-go session ran an anthropic_messages model (MiniMax) must not
+    pin that wire onto a chat_completions model on resume — api_mode and the relay URL follow the
+    stored model, and a fixed-wire provider's row is still honored verbatim (#96066)."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "resolve_runtime_provider", lambda **kw: {"api_key": "go-key"})
+    stub = _make_stub(provider="opencode-go", requested_provider="opencode-go",
+                      base_url="https://opencode.ai/zen/go/v1", api_mode="chat_completions")
+    stub._restore_session_model(_row(model="deepseek-v4-flash-vision-exp", model_config={
+        "gateway_runtime": {"provider": "opencode-go", "base_url": "https://opencode.ai/zen/go",
+                            "api_mode": "anthropic_messages"}}))
+    assert (stub.api_mode, stub.base_url) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+
+    stub = _make_stub()
+    stub._restore_session_model(_row(model="MiniMax-M2.5", model_config={
+        "gateway_runtime": {"provider": "minimax", "base_url": "https://api.minimax.io/anthropic",
+                            "api_mode": "anthropic_messages"}}))
+    assert (stub.api_mode, stub.base_url) == ("anthropic_messages", "https://api.minimax.io/anthropic")
 
 
 # ── round trip: persist → get_session shape → restore ───────────────

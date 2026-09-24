@@ -5,6 +5,10 @@ docs of config.yaml.
 """
 
 
+SESSION_LIST_SORT_VALUES = ("started", "last-active")
+SESSION_LIST_SORT_DEFAULT = "last-active"
+
+
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
 
@@ -2237,6 +2241,8 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Default sort: last-active | started. CLI --sort flag overrides.
+        "list_sort": SESSION_LIST_SORT_DEFAULT,
         # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
         # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a

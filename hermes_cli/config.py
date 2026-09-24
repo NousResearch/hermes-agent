@@ -589,7 +589,8 @@ def ensure_hermes_home():
 
 # ---- Config loading/saving ----
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  # noqa: E402,F401
+from hermes_cli.config_defaults import (  # noqa: E402,F401
+    DEFAULT_CONFIG, OPTIONAL_ENV_VARS, SESSION_LIST_SORT_DEFAULT, SESSION_LIST_SORT_VALUES)
 from hermes_cli.config_providers import (  # noqa: E402,F401  (re-exported; callers/tests use hermes_cli.config.<name>)
     _API_MODE_ALIASES, _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
     _canonical_api_mode, _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
@@ -1073,6 +1074,17 @@ def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
+def _validate_sessions(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    sessions = config.get("sessions")
+    if not (isinstance(sessions, dict) and "list_sort" in sessions):
+        return
+    list_sort = sessions.get("list_sort")
+    if list_sort not in SESSION_LIST_SORT_VALUES:
+        choices = " or ".join(repr(value) for value in SESSION_LIST_SORT_VALUES)
+        _issue(issues, "error", f"sessions.list_sort must be {choices}, got {list_sort!r}",
+               f"Set sessions.list_sort to {SESSION_LIST_SORT_DEFAULT} (default) or started")
+
+
 def _validate_timezone(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     """``timezone`` must be an IANA name the runtime can load.
 
@@ -1237,6 +1249,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
+    _validate_sessions(config, issues)
     _validate_timezone(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")

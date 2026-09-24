@@ -36,7 +36,7 @@ _SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_ACCESS_KEY")
 _PASSTHROUGH_ENV = frozenset({"PATH", "LANG", "LANGUAGE", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ"})
 
 __all__ = ["FINAL", "E2EHome", "HttpMcpServer", "build_home", "stdio_server", "http_server_cfg",
-           "script", "run_chat_q", "inbound", "calls_received", "tool_results", "tool_name",
+           "script", "call_tool", "run_chat_q", "inbound", "calls_received", "tool_results", "tool_name",
            "kill_tagged", "tagged_pids", "wait_until"]
 
 
@@ -191,13 +191,16 @@ def script(*calls: tuple[str, dict[str, Any] | str]) -> Callable[[dict[str, Any]
         done = len(_tool_msgs_this_turn(body))
         if done >= len(calls):
             return Text(FINAL)
-        name, args = calls[done]
-        if name in _names(body) or "tool_call" not in _names(body):
-            return ToolCall(name, args)
-        # Tool Search active: MCP tools sit behind the deferred-catalog bridge.
-        return ToolCall("tool_call", {"calls": [{"name": name, "arguments": args}]})
+        return call_tool(body, *calls[done])
 
     return respond
+
+
+def call_tool(body: dict[str, Any], name: str, args: dict[str, Any] | str) -> ToolCall:
+    """Call ``name`` directly when offered, else through the Tool Search ``tool_call`` bridge."""
+    if name in _names(body) or "tool_call" not in _names(body):
+        return ToolCall(name, args)
+    return ToolCall("tool_call", {"calls": [{"name": name, "arguments": args}]})
 
 
 def run_chat_q(eh: E2EHome, prompt: str, *, timeout: float = TURN_TIMEOUT,

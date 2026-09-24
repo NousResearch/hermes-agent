@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AutomationBlueprint } from '@/hermes'
+import { ptBr } from '@/i18n/pt-br'
 
-import { initialBlueprintValues } from './blueprints'
+import { blueprintDisplayCopy, blueprintFieldPresentation, initialBlueprintValues } from './blueprints'
 
 function blueprint(fields: AutomationBlueprint['fields']): AutomationBlueprint {
   return {
@@ -101,5 +102,106 @@ describe('initialBlueprintValues', () => {
     )
 
     expect(values).toEqual({ deliver: 'telegram' })
+  })
+})
+
+describe('blueprintDisplayCopy', () => {
+  it('uses the pt-BR catalog without replacing backend-owned English copy', () => {
+    const item = blueprint([])
+    item.key = 'morning-brief'
+    item.title = 'Morning briefing'
+    item.description = 'Backend description'
+
+    expect(blueprintDisplayCopy(item, ptBr.cron.blueprints.catalog)).toEqual({
+      title: 'Briefing matinal',
+      description: 'Um breve resumo diário: agenda de hoje, clima e itens urgentes aguardando você.'
+    })
+  })
+
+  it('falls back to backend copy for blueprints added after the locale was shipped', () => {
+    const item = blueprint([])
+    item.key = 'new-blueprint'
+    item.title = 'New blueprint'
+    item.description = 'New backend description'
+
+    expect(blueprintDisplayCopy(item, ptBr.cron.blueprints.catalog)).toEqual({
+      title: 'New blueprint',
+      description: 'New backend description'
+    })
+  })
+})
+
+describe('blueprint field localization', () => {
+  it('localizes labels, help, and text defaults while preserving backend identifiers', () => {
+    const field = {
+      name: 'topic',
+      type: 'text' as const,
+      label: 'What topic?',
+      default: 'AI and technology',
+      options: [],
+      optional: false,
+      help: 'a subject, product, person, or search phrase'
+    }
+
+    const result = blueprintFieldPresentation('news-digest', field, ptBr.cron.blueprints.catalog)
+
+    expect(result.field).toMatchObject({
+      name: 'topic',
+      label: 'Qual tópico?',
+      default: 'IA e tecnologia',
+      help: 'Um assunto, produto, pessoa ou expressão de busca'
+    })
+  })
+
+  it('shows localized enum options but preserves raw values and defaults', () => {
+    const field = {
+      name: 'diet',
+      type: 'enum' as const,
+      label: 'Diet?',
+      default: 'no restrictions',
+      options: ['no restrictions', 'vegetarian'],
+      optional: false,
+      help: ''
+    }
+
+    const result = blueprintFieldPresentation('meal-plan', field, ptBr.cron.blueprints.catalog)
+
+    expect(result.field.name).toBe('diet')
+    expect(result.field.default).toBe('no restrictions')
+    expect(result.field.options).toEqual(['no restrictions', 'vegetarian'])
+    expect(result.optionLabels).toEqual({
+      'no restrictions': 'Sem restrições',
+      vegetarian: 'Vegetariana'
+    })
+  })
+
+  it('seeds translated text defaults without changing enum defaults', () => {
+    const item = blueprint([
+      {
+        name: 'topic',
+        type: 'text',
+        label: 'What topic?',
+        default: 'AI and technology',
+        options: [],
+        optional: false,
+        help: ''
+      },
+      {
+        name: 'count',
+        type: 'enum',
+        label: 'How many bullets?',
+        default: '5',
+        options: ['3', '5', '8'],
+        optional: false,
+        help: ''
+      }
+    ])
+
+    item.key = 'news-digest'
+
+    expect(initialBlueprintValues(item, ptBr.cron.blueprints.catalog)).toEqual({
+      topic: 'IA e tecnologia',
+      count: '5'
+    })
   })
 })

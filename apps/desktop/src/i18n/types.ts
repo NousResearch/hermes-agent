@@ -8,7 +8,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'pt-br'
 
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
@@ -2787,6 +2787,26 @@ export interface Translations {
       scheduled: string
       loading: string
       failedLoad: string
+      catalog?: Partial<
+        Record<
+          string,
+          {
+            title?: string
+            description?: string
+            fields?: Partial<
+              Record<
+                string,
+                {
+                  label?: string
+                  help?: string
+                  default?: string
+                  options?: Partial<Record<string, string>>
+                }
+              >
+            >
+          }
+        >
+      >
       emptyTitle: string
       emptyDesc: string
     }

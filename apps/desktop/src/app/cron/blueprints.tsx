@@ -1,6 +1,7 @@
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
+import type { Translations } from '@/i18n'
 
 // The blueprint catalog is shared with the dashboard, so its deliver slot
 // defaults to "origin" (the chat/home-channel a dashboard or gateway job was
@@ -11,6 +12,75 @@ import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
 const DELIVER_FIELD = 'deliver'
 const DESKTOP_DELIVER_DEFAULT = 'local'
 
+export type BlueprintDisplayCopy = Pick<AutomationBlueprint, 'description' | 'title'>
+type BlueprintCatalog = NonNullable<Translations['cron']['blueprints']['catalog']>
+type BlueprintFieldCopy = NonNullable<NonNullable<BlueprintCatalog[string]>['fields']>[string]
+
+export interface BlueprintFieldPresentation {
+  field: AutomationBlueprintField
+  optionLabels: Partial<Record<string, string>>
+}
+
+/**
+ * The backend owns the English blueprint catalog. Locale overlays can replace
+ * only its presentation copy while unknown and newly added blueprints retain
+ * their backend-provided title and description.
+ */
+export function blueprintDisplayCopy(
+  blueprint: Pick<AutomationBlueprint, 'description' | 'key' | 'title'>,
+  catalog: BlueprintCatalog | undefined
+): BlueprintDisplayCopy {
+  const localized = catalog?.[blueprint.key]
+
+  return {
+    title: localized?.title ?? blueprint.title,
+    description: localized?.description ?? blueprint.description
+  }
+}
+
+function mergedFieldCopy(
+  blueprintKey: string,
+  fieldName: string,
+  catalog: BlueprintCatalog | undefined
+): BlueprintFieldCopy | undefined {
+  const common = catalog?.['*']?.fields?.[fieldName]
+  const specific = catalog?.[blueprintKey]?.fields?.[fieldName]
+
+  if (!common && !specific) {
+    return undefined
+  }
+
+  return {
+    ...common,
+    ...specific,
+    options: { ...common?.options, ...specific?.options }
+  }
+}
+
+/** Localize presentation copy while preserving backend field names and enum values. */
+export function blueprintFieldPresentation(
+  blueprintKey: string,
+  field: AutomationBlueprintField,
+  catalog: BlueprintCatalog | undefined
+): BlueprintFieldPresentation {
+  const copy = mergedFieldCopy(blueprintKey, field.name, catalog)
+  const localizedDefault = field.type === 'text' && copy?.default !== undefined ? copy.default : field.default
+
+  const optionLabels = Object.fromEntries(
+    field.options.flatMap(option => (copy?.options?.[option] ? [[option, copy.options[option]]] : []))
+  )
+
+  return {
+    field: {
+      ...field,
+      default: localizedDefault,
+      help: copy?.help ?? field.help,
+      label: copy?.label ?? field.label
+    },
+    optionLabels
+  }
+}
+
 function isDeliverField(field: AutomationBlueprintField): boolean {
   return field.name === DELIVER_FIELD
 }
@@ -19,11 +89,15 @@ function isDeliverField(field: AutomationBlueprintField): boolean {
 // suite can assert the form seeds correctly without mounting React. The deliver
 // slot is special-cased: an "origin" default (or empty) becomes "local" so a
 // desktop-created job delivers to This desktop instead of nowhere.
-export function initialBlueprintValues(blueprint: AutomationBlueprint): Record<string, string> {
+export function initialBlueprintValues(
+  blueprint: AutomationBlueprint,
+  catalog?: BlueprintCatalog
+): Record<string, string> {
   const out: Record<string, string> = {}
 
   for (const field of blueprint.fields) {
-    const seeded = field.default ?? ''
+    const presented = blueprintFieldPresentation(blueprint.key, field, catalog).field
+    const seeded = presented.default ?? ''
     out[field.name] = isDeliverField(field) && (seeded === '' || seeded === 'origin') ? DESKTOP_DELIVER_DEFAULT : seeded
   }
 
@@ -51,11 +125,13 @@ export function BlueprintSlotControl({
   field,
   id,
   onChange,
+  optionLabels = {},
   value
 }: {
   field: AutomationBlueprintField
   id: string
   onChange: (next: string) => void
+  optionLabels?: Partial<Record<string, string>>
   value: string
 }) {
   if (field.type === 'enum' || field.type === 'weekdays') {
@@ -67,7 +143,7 @@ export function BlueprintSlotControl({
         <SelectContent>
           {field.options.map(option => (
             <SelectItem key={option} value={option}>
-              {option}
+              {optionLabels[option] ?? option}
             </SelectItem>
           ))}
         </SelectContent>

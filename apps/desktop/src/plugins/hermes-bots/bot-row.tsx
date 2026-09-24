@@ -443,7 +443,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             a delegated job, a side thread — without moving the row click off
             the canonical Bot Chat. */}
         <ContextMenuItem disabled={!botRecentSession(bot)} onSelect={() => void openBotRecentSession(bot)}>
-          Open recent session
+          {b.bot.openRecentSession}
         </ContextMenuItem>
         <ContextMenuSeparator />
         {/* Filing. Membership is one field on the bot's meta (`sectionId`), so

@@ -76,6 +76,25 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
+  it('loads the shared Portuguese config alias as Brazilian Portuguese', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'pt' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('pt-br')
+    expect(screen.getByTestId('save').textContent).toBe('Salvar')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
   it('keeps English usable when config loading fails', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
@@ -144,6 +163,31 @@ describe('I18nProvider', () => {
       display: { language: 'zh', skin: 'slate' },
       terminal: { cwd: '/new' }
     })
+  })
+
+  it('persists Brazilian Portuguese without dropping sibling settings', async () => {
+    const saveConfig = vi.fn().mockResolvedValue({ ok: true })
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi
+        .fn()
+        .mockResolvedValueOnce({ display: { language: 'en' } })
+        .mockResolvedValueOnce({ display: { language: 'en', skin: 'mono' } }),
+      saveConfig
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="pt-br" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'pt-br', skin: 'mono' } })
+    expect(screen.getByTestId('locale').textContent).toBe('pt-br')
   })
 
   it('applies RTL direction for Arabic and restores LTR on switch back', async () => {

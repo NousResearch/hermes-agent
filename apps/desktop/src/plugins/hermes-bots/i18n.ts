@@ -171,6 +171,7 @@ type BotsMessages = {
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string
+    openRecentSession: string
     /** Row context menu: pin/hide toggles, their toasts, and the groups entry. */
     pinToTop: string
     unpin: string
@@ -610,6 +611,7 @@ const en: BotsMessages = {
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
     openBotChat: 'Open Bot Chat',
+    openRecentSession: 'Open recent session',
     pinToTop: 'Pin to top',
     unpin: 'Unpin',
     pinnedToast: name => `${name} pinned to top`,
@@ -895,6 +897,43 @@ const en: BotsMessages = {
   }
 }
 
+const ptBr = {
+  roster: {
+    search: 'Buscar bots e conversas em grupo',
+    searchPlaceholder: 'Buscar bots e conversas em grupo…'
+  },
+  sections: {
+    moveTo: 'Mover para seção',
+    newSectionEllipsis: 'Nova seção…',
+    removeFromSection: 'Remover da seção'
+  },
+  bot: {
+    editMenu: 'Editar…',
+    newChatWith: 'Nova conversa com este bot',
+    openBotChat: 'Abrir conversa do bot',
+    openRecentSession: 'Abrir sessão recente',
+    pinToTop: 'Fixar no topo',
+    unpin: 'Desafixar',
+    pinnedToast: (name: string) => `${name} foi fixado no topo`,
+    unpinnedToast: (name: string) => `${name} foi desafixado`,
+    hide: 'Ocultar',
+    unhide: 'Exibir novamente',
+    hiddenToast: (name: string) =>
+      `${name} foi ocultado — use o botão de olho no cabeçalho de Bots para ver bots ocultos`,
+    unhiddenToast: (name: string) => `${name} voltou para a lista`,
+    groupsMenu: (groups: string) => `Grupos: ${groups}…`,
+    manageGroups: 'Gerenciar grupos…',
+    duplicate: 'Duplicar',
+    duplicateFailed: 'Falha ao duplicar'
+  },
+  screen: {
+    menu: 'Abrir tela',
+    autoOpenMenu: 'Abrir a tela quando o bot a utilizar',
+    autoOpenOnToast: (name: string) => `A tela de ${name} será aberta quando o bot começar a usá-la`,
+    autoOpenOffToast: (name: string) => `A tela de ${name} permanecerá fechada até você abri-la`
+  }
+} satisfies NonNullable<PluginLocaleBundles['pt-br']>
+
 const ja: BotsMessages = {
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
@@ -1035,6 +1074,7 @@ const ja: BotsMessages = {
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
     openBotChat: 'ボットチャットを開く',
+    openRecentSession: '最近のセッションを開く',
     pinToTop: '先頭にピン留め',
     unpin: 'ピン留めを解除',
     pinnedToast: name => `${name}を先頭にピン留めしました`,
@@ -1454,6 +1494,7 @@ const zh: BotsMessages = {
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
     openBotChat: '打开机器人聊天',
+    openRecentSession: '打开最近会话',
     pinToTop: '置顶',
     unpin: '取消置顶',
     pinnedToast: name => `已将 ${name} 置顶`,
@@ -1867,6 +1908,7 @@ const zhHant: BotsMessages = {
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
     openBotChat: '開啟機器人聊天',
+    openRecentSession: '開啟最近的工作階段',
     pinToTop: '釘選到頂端',
     unpin: '取消釘選',
     pinnedToast: name => `已將 ${name} 釘選到頂端`,
@@ -2150,7 +2192,7 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = { en, 'pt-br': ptBr, ja, zh, 'zh-hant': zhHant }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

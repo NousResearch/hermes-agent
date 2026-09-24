@@ -14,6 +14,7 @@ from gateway import hosted_rooms_legacy_import as legacy_import
 
 from gateway import hosted_room_safety as safety
 from gateway import hosted_rooms as rooms
+from gateway import hosted_room_driver as driver
 
 
 _TABLES = {
@@ -107,6 +108,70 @@ def test_legacy_import_refuses_conflicting_reservation_owner(tmp_path):
                 """INSERT INTO hosted_room_events VALUES
                    ('after-failure', 3, 'new', 'message.user', '{}', 1, '{}', 3)"""
             )
+
+
+def test_legacy_import_copies_only_new_namespace_and_canonical_driver_tasks(tmp_path):
+    target = tmp_path / "shared-state.db"
+    with rooms._transaction(tmp_path / "existing.db", immediate=True) as conn:
+        _seed(conn, "authority", "occupied")
+    (tmp_path / "existing.db").replace(target)
+    source = tmp_path / "state.db"
+    with rooms._transaction(source, immediate=True) as conn:
+        _seed(conn, "replica", "occupied")
+        _seed(conn, "authority", "new")
+        _seed(conn, "replica", "passive")
+        conn.execute("INSERT INTO hosted_room_id_reservations VALUES ('tombstone', 'replica', 1)")
+        driver._create_task_table(conn)
+        conn.execute("""INSERT INTO hosted_room_driver_tasks
+            (room_id, task_id, thread_id, turn_id, source_event_seq, payload_json,
+             payload_digest, status, created_at, updated_at)
+            VALUES ('new', 'task', 'thread', 'turn', 1, '{}', 'digest', 'queued', 1, 1)""")
+        conn.execute("CREATE TABLE hosted_room_unrecognized (room_id TEXT, payload TEXT)")
+        conn.execute("INSERT INTO hosted_room_unrecognized VALUES ('new', 'must-not-copy')")
+    assert {room["room_id"] for room in rooms.list_rooms(target, include_disbanded=True)} == {"occupied", "new"}
+    with closing(rooms._read_connection(target)) as conn:
+        assert {row[0] for row in conn.execute("SELECT room_id FROM hosted_room_replicas")} == {"passive"}
+        assert {row[0]: row[1] for row in conn.execute(
+            "SELECT room_id, owner_kind FROM hosted_room_id_reservations"
+        )} == {"occupied": "authority", "new": "authority", "passive": "replica", "tombstone": "replica"}
+        assert [tuple(row) for row in conn.execute(
+            "SELECT room_id, task_id, status FROM hosted_room_driver_tasks"
+        )] == [("new", "task", "queued")]
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='hosted_room_unrecognized'"
+        ).fetchone() is None
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_replica_events WHERE room_id='occupied'").fetchone()[0] == 0
+        assert conn.execute("SELECT rooms FROM hosted_room_legacy_imports").fetchone()[0] == 1
+    with rooms._transaction(target, immediate=True) as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("""INSERT INTO hosted_room_driver_tasks
+                (room_id, task_id, thread_id, turn_id, source_event_seq, payload_json,
+                 payload_digest, status, created_at, updated_at)
+                VALUES ('new', 'invalid', 'thread', 'other', 1, '{}', 'digest', 'alien', 1, 1)""")
+    with pytest.raises(rooms.RoomConflictError):
+        rooms.create_room(target, room_id="tombstone", name="Reuse", members=[],
+                          authority_gateway_id="imported-owner")
+
+
+def test_legacy_import_failed_task_copy_rolls_back_new_namespace(tmp_path):
+    source = tmp_path / "state.db"
+    with rooms._transaction(source, immediate=True) as conn:
+        _seed(conn, "authority", "new")
+        # A source may carry weaker DDL. It is data, never executable target authority.
+        conn.execute("""CREATE TABLE hosted_room_driver_tasks (
+            room_id TEXT, task_id TEXT, thread_id TEXT, turn_id TEXT,
+            source_event_seq INTEGER, payload_json TEXT, payload_digest TEXT,
+            status TEXT, created_at REAL, updated_at REAL)""")
+        conn.execute("""INSERT INTO hosted_room_driver_tasks VALUES
+            ('new', 'task', 'thread', 'turn', 1, '{}', 'digest', 'alien', 1, 1)""")
+    target = tmp_path / "shared-state.db"
+    assert rooms.list_rooms(target) == []
+    with closing(rooms._read_connection(target)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hosted_rooms").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_id_reservations").fetchone()[0] == 0
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='hosted_room_driver_tasks'").fetchone() is None
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='hosted_room_legacy_imports'").fetchone() is None
+        assert rooms._schema_is_current(conn)
 
 
 @pytest.mark.parametrize("owner", ["authority", "replica"])

@@ -853,10 +853,22 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     for _fb in _fallback_entries(fallback_model):
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
+            from agent.chat_completion_helpers import (
+                _fallback_api_mode_hint,
+                _fallback_api_mode_resolved,
+            )
+            from hermes_cli.providers import is_actual_route
+
+            _fb_provider = str(_fb["provider"]).strip().lower()
+            _fb_base_url_hint = str(_fb.get("base_url") or "").strip() or None
+            _fb_api_mode_explicit, _fb_api_mode = _fallback_api_mode_hint(
+                _fb, _fb_provider, _fb_base_url_hint
+            )
             _fb_explicit_key = resolve_entry_api_key(_fb)
             _fb_client, _fb_model = resolve_provider_client(
                 _fb["provider"], model=_fb["model"], raw_codex=True,
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
+                **({"api_mode": _fb_api_mode} if _fb_api_mode_explicit else {}),
             )
         except Exception as _fb_exc:
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
@@ -872,6 +884,15 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
                 return None
             agent.provider = _fb["provider"]
             agent.model = _fb_model or _fb["model"]
+            _fb_base_url = str(getattr(_fb_client, "base_url", "") or _fb_base_url_hint or "")
+            if is_actual_route(_fb_provider, _fb_base_url):
+                agent.api_mode = "chat_completions"
+            elif not _fb_api_mode_explicit and _fb_api_mode == "chat_completions":
+                agent.api_mode = _fallback_api_mode_resolved(
+                    agent, _fb_provider, agent.model, _fb_base_url
+                )
+            else:
+                agent.api_mode = _fb_api_mode
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.

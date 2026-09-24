@@ -382,6 +382,15 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
             msg.pop(_DB_PERSISTED_MARKER, None)
 
 
+class StaleHeldHistory(RuntimeError):
+    """The history a lease-less rewrite holds is no longer the session's live generation.
+
+    Its newest exact row is inactive: another compaction already committed (a ``/compress`` on this or
+    another surface, or an earlier prune/micro pass). Published anyway, the stale rewrite would archive the
+    winner's rows under the lease-less watermark and clone them back as a "concurrent tail" — two summary
+    generations live. Prune and micro-compaction hold no compression lease, so they abort on this instead.
+    """
+
 
 def _archive_watermark_for(session_db: Any, session_id: str, held: List[Dict[str, Any]],
                            start_watermark: Optional[int] = None) -> Optional[int]:
@@ -395,6 +404,11 @@ def _archive_watermark_for(session_db: Any, session_id: str, held: List[Dict[str
     concurrent-append path instead (cloned after the new set), the same rule the in-place compaction commit
     applies. *start_watermark* is the store's watermark from before any slow step; it defaults to now.
     A store without the watermark API keeps today's archive-everything commit.
+
+    Raises :class:`StaleHeldHistory` when the newest held exact row is no longer active. The in-place commit
+    falls back to the lease watermark there because its lease rules out an overlapping compaction; prune and
+    micro-compaction hold no lease, so for them that fallback would publish a stale generation beside the one
+    that won.
     """
     watermark_of = getattr(session_db, "get_active_message_watermark", None)
     if not callable(watermark_of) or not callable(getattr(session_db, "get_message_role", None)):
@@ -402,7 +416,7 @@ def _archive_watermark_for(session_db: Any, session_id: str, held: List[Dict[str
     if start_watermark is None:
         start_watermark = watermark_of(session_id)
     from agent.conversation_compression import held_archive_watermark
-    return held_archive_watermark(session_db, session_id, start_watermark, held)
+    return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True)
 
 def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
     """Fulfil the post-commit contract of ``SessionDB.archive_and_compact()``.
@@ -3281,10 +3295,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         next_rearm_tokens = after + runway
         if session_db and session_id:
             try:
+                watermark = _archive_watermark_for(session_db, session_id, messages)
+            except StaleHeldHistory:
+                # Another compaction already committed this session's history; a lease-less prune of the
+                # generation this process holds would publish beside the winner. Leave the input alone.
+                logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
+                self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
+                return messages, 0
+            try:
                 session_db.archive_and_compact(
                     session_id, pruned_msgs,
                     model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
-                    watermark=_archive_watermark_for(session_db, session_id, messages),
+                    watermark=watermark,
                 )
             except Exception as exc:
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)

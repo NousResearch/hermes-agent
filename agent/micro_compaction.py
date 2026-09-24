@@ -229,7 +229,7 @@ class MicroCompactionMixin:
         # keeps what another surface or a concurrent write added instead of archiving it unseen. A watermark
         # the store could not answer for leaves the commit unbounded, so the pass does not run at all.
         _held = list(messages)
-        _wm_status, _start_watermark = self._micro_start_watermark()
+        _wm_status, _start_watermark = self._micro_start_watermark(_held)
 
         def _telemetry(outcome: str, result: List[Dict[str, Any]], **extra: Any) -> None:
             self._emit_micro_compaction_telemetry(
@@ -239,6 +239,9 @@ class MicroCompactionMixin:
 
         if _wm_status == "failed":  # an unanswerable watermark would commit an unbounded archive
             _telemetry("watermark_unavailable", messages, tokens_after=_tokens_before)
+            return messages
+        if _wm_status == "stale":  # another compaction already committed; this pass holds no lease
+            _telemetry("stale_generation", messages, tokens_after=_tokens_before)
             return messages
 
         # Defrag rewrites summary text/marker in place (no splice, no cursor move) instead of
@@ -353,23 +356,31 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _micro_start_watermark(self) -> "tuple[str, Optional[int]]":
+    def _micro_start_watermark(self, held: List[Dict[str, Any]]) -> "tuple[str, Optional[int]]":
         """``(status, watermark)`` taken before a pass's slow step.
 
         ``unsupported`` where the store has no watermark API: the commit keeps today's
         archive-everything behaviour, as it always has. ``failed`` when the read itself raised —
         that must NOT collapse into the same None, because None means "archive every active row",
         which is the very loss this watermark exists to prevent. The pass is skipped instead.
+        ``stale`` when *held* is no longer the session's live generation (another compaction already
+        committed): this pass holds no compression lease, so publishing would leave two generations live.
+        The pass is skipped; the commit re-checks, since a compaction can also land during the summary call.
         """
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         watermark_of = getattr(session_db, "get_active_message_watermark", None)
         if not session_id or not callable(watermark_of):
             return "unsupported", None
         try:
-            return "ok", watermark_of(session_id)
+            watermark = watermark_of(session_id)
+            _cc()._archive_watermark_for(session_db, session_id, held, watermark)
+        except _cc().StaleHeldHistory as exc:
+            logger.info("micro-compaction: skipping this pass, %s", exc)
+            return "stale", None
         except Exception as exc:
             logger.info("micro-compaction: watermark read failed, skipping this pass: %s", exc)
             return "failed", None
+        return "ok", watermark
 
     def _sync_micro_compact_to_db(
         self, compacted_messages: List[Dict[str, Any]], *, held: Optional[List[Dict[str, Any]]] = None,
@@ -399,6 +410,10 @@ class MicroCompactionMixin:
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)
+        except _cc().StaleHeldHistory as exc:
+            # Another compaction committed during the summary call. Nothing is written: the store already
+            # holds the winning generation, and this process's spliced copy is superseded on the next load.
+            logger.info("Micro-compaction commit skipped, %s", exc)
         except Exception:
             logger.info(
                 "Micro-compaction DB sync failed — resume will double-load "

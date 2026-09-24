@@ -3614,6 +3614,7 @@ def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbat
 
 def held_archive_watermark(
     session_db: Any, session_id: str, watermark: Optional[int], messages: list, verbatim_tail: Optional[list] = None,
+    *, stale_raises: bool = False,
 ) -> Optional[int]:
     """The in-place archive watermark, capped at the newest durable row the compressor was handed.
 
@@ -3635,10 +3636,15 @@ def held_archive_watermark(
     ``append_message``); capped below it, the clone would land beside its own carried copy. A ``here N`` tail
     is marker-swept copies, so ``compress_now`` keeps a copy's id only when its source still carried the
     marker; their ids are trusted as given.
+
+    *stale_raises*: the newest exact held row being inactive means another compaction already committed.
+    Under the in-place lease that cannot overlap a live compaction, so the lease watermark is returned; a
+    lease-less caller (prune, micro-compaction) passes ``True`` and gets :class:`StaleHeldHistory` instead,
+    because for it the fallback would publish a stale generation beside the winner.
     """
     if watermark is None:
         return None
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.context_compressor import _DB_PERSISTED_MARKER, StaleHeldHistory
 
     def _exact_id(m: dict, copied: bool) -> Optional[int]:
         rid = m.get("_row_id")
@@ -3652,6 +3658,8 @@ def held_archive_watermark(
     if not ids or ids[-1] is None or (newest_held := max(held)) >= watermark:
         return watermark
     if session_db.get_message_role(session_id, newest_held) is None:
+        if stale_raises:
+            raise StaleHeldHistory(f"held row {newest_held} of session {session_id} is no longer active")
         return watermark
     return newest_held
 

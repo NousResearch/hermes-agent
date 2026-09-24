@@ -915,3 +915,31 @@ def test_micro_compaction_keeps_a_turn_another_surface_appended_after_load(tmp_p
     live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
     assert live[-1] == foreign
     assert sum(foreign in content for content in live) == 1
+
+
+def test_micro_compaction_aborts_when_another_compaction_already_committed(tmp_path):
+    """Micro-compaction holds no compression lease. Once another compaction has committed, the history this
+    process holds is a stale generation; committing it would archive the winner's rows and clone them back
+    beside a second summary. The pass must not run and the store must keep exactly the winning generation."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="cli")
+    messages = _conversation(exchanges=8)
+    for msg in messages:
+        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"])
+        msg[_DB_PERSISTED_MARKER] = True
+    winner = [
+        {"role": "assistant", "content": "[winner summary] questions 0-7"},
+        {"role": "user", "content": "[from Telegram] carry on"},
+    ]
+    db.archive_and_compact("s", winner)  # another surface's compaction wins the race
+    cc = _compressor()
+    cc._session_db, cc._session_id = db, "s"
+
+    result = cc._micro_compact(messages)
+
+    assert _summary_markers(result) == []          # the pass did not run
+    live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
+    assert live == [m["content"] for m in winner]  # exactly one live generation

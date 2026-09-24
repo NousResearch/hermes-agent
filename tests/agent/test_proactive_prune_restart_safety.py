@@ -269,3 +269,28 @@ def test_prune_keeps_a_turn_another_surface_appended_after_load(tmp_path: Path) 
     live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
     assert live[-1] == foreign
     assert sum(foreign in content for content in live) == 1
+
+
+def test_prune_aborts_when_another_compaction_already_committed(tmp_path: Path) -> None:
+    """Prune holds no compression lease. When the history it holds is no longer the live generation (a
+    ``/compress`` from another surface already committed), publishing would archive the winner's rows and
+    clone them back beside a second summary generation. It must leave the input and the store alone."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_GENERATION"
+    db.create_session(session_id, source="cli")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id, platform="cli")
+    _configure_pruning(agent)
+    held = db.get_resume_conversations(session_id)[0]  # what a resume restores: row ids included
+    winner = [
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": "[winner summary] the earlier tool loop"},
+        {"role": "user", "content": "[from Telegram] carry on"},
+    ]
+    db.archive_and_compact(session_id, winner)  # another surface's compaction wins the race
+
+    result, count = agent.context_compressor.prune_tool_results_only(held, current_tokens=120_000)
+
+    assert result is held and count == 0
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live == [message["content"] for message in winner]

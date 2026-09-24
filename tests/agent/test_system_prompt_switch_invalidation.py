@@ -7,7 +7,7 @@ Model:/Provider: footers rebuild" —
 
   * ``SessionDB.update_session_model``      (every /model commit)
   * ``SessionDB.update_session_runtime_lock`` (Browser / API-client lock)
-  * ``SessionDB.update_session_billing_route`` (billing route, also on provider fallbacks)
+  * ``SessionDB.update_session_billing_route`` (billing route; ``switch_model`` after the swap)
 
 — so the next turn read a NULL row and took the broken-row branch of
 ``agent.conversation_loop._restore_or_build_system_prompt``: a WARNING blaming the previous
@@ -81,48 +81,38 @@ def _continue_turn(db, *, model: str, provider: str, prebuilt: str, caplog):
     return agent, warnings
 
 
-class TestSwitchCommitsKeepTheStoredPrompt:
+_ROUTE_COMMITS = {
+    "model": lambda db: db.update_session_model(
+        SESSION_ID, "anthropic/claude-opus-4.8", provider="anthropic", base_url="https://a/v1",
+    ),
+    "runtime_lock": lambda db: db.update_session_runtime_lock(
+        SESSION_ID, model="anthropic/claude-opus-4.8", provider="anthropic", confirmed=True,
+    ),
+    "billing_route": lambda db: db.update_session_billing_route(
+        SESSION_ID, provider="openrouter", base_url="https://o/v1",
+    ),
+}
+
+
+@pytest.mark.parametrize("commit", _ROUTE_COMMITS.values(), ids=_ROUTE_COMMITS.keys())
+def test_route_commits_keep_the_stored_prompt(db, commit):
     """Each switch-path writer leaves the prompt snapshot (and its dedup row) in place."""
+    prompt = _stored_prompt("x-ai/grok-4.5", "nous")
+    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
+    db.update_system_prompt(SESSION_ID, prompt)
 
-    def _seed(self, db) -> str:
-        prompt = _stored_prompt("x-ai/grok-4.5", "nous")
-        db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
-        db.update_system_prompt(SESSION_ID, prompt)
-        return prompt
+    commit(db)
 
-    def test_model_commit_keeps_the_snapshot(self, db):
-        prompt = self._seed(db)
-
-        db.update_session_model(
-            SESSION_ID, "anthropic/claude-opus-4.8", provider="anthropic", base_url="https://a/v1",
-        )
-
-        assert db.get_session(SESSION_ID)["system_prompt"] == prompt
-        # Content-addressed storage intact: the row still resolves through its hash.
-        raw = db._conn.execute(
-            "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id = ?", (SESSION_ID,)
-        ).fetchone()
-        assert raw["system_prompt"] is None
-        assert raw["system_prompt_hash"] is not None
-        assert db._conn.execute(
-            "SELECT COUNT(*) FROM system_prompts WHERE hash = ?", (raw["system_prompt_hash"],)
-        ).fetchone()[0] == 1
-
-    def test_runtime_lock_keeps_the_snapshot(self, db):
-        prompt = self._seed(db)
-
-        db.update_session_runtime_lock(
-            SESSION_ID, model="anthropic/claude-opus-4.8", provider="anthropic", confirmed=True,
-        )
-
-        assert db.get_session(SESSION_ID)["system_prompt"] == prompt
-
-    def test_billing_route_keeps_the_snapshot(self, db):
-        prompt = self._seed(db)
-
-        db.update_session_billing_route(SESSION_ID, provider="openrouter", base_url="https://o/v1")
-
-        assert db.get_session(SESSION_ID)["system_prompt"] == prompt
+    assert db.get_session(SESSION_ID)["system_prompt"] == prompt
+    # Content-addressed storage intact: the row still resolves through its hash.
+    raw = db._conn.execute(
+        "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id = ?", (SESSION_ID,)
+    ).fetchone()
+    assert raw["system_prompt"] is None
+    assert raw["system_prompt_hash"] is not None
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM system_prompts WHERE hash = ?", (raw["system_prompt_hash"],)
+    ).fetchone()[0] == 1
 
 
 class TestNextTurnAfterASwitchCommit:
@@ -181,3 +171,36 @@ class TestNextTurnAfterASwitchCommit:
             "is null; rebuilding" in w.getMessage() and "update_system_prompt write path" in w.getMessage()
             for w in warnings
         )
+
+
+def test_compression_tip_adoption_applies_the_identity_check(db):
+    """The other reader that seeds ``_cached_system_prompt`` from a stored row.
+
+    ``_adopt_live_compression_child`` bypasses ``_restore_or_build_system_prompt`` (the turn
+    only restores while the slot is None), so with the NULL gone it must apply the identity
+    check itself: a tip whose route moved since its last persist stays unseeded (the next
+    restore rebuilds), while a matching tip is adopted verbatim.
+    """
+    from agent.conversation_compression import _adopt_live_compression_child
+
+    stale = _stored_prompt("model-a", "prov-a")
+    db.create_session("parent", source="discord", model="model-a")
+    db.end_session("parent", "compression")
+    db.create_session("child", source="discord", model="model-a", parent_session_id="parent")
+    db.update_system_prompt("child", stale)
+    db.append_message("child", "user", "hi")
+    db.update_session_model("child", "model-b", provider="prov-b", base_url="https://b/v1")
+
+    def _adopt(model: str, provider: str) -> MagicMock:
+        agent = MagicMock()
+        agent._cached_system_prompt = None
+        agent.session_id = "parent"
+        agent.model, agent.provider = model, provider
+        agent.pass_session_id = False
+        agent.context_compressor = None
+        agent._memory_manager = None
+        assert _adopt_live_compression_child(agent, db, "parent") is not None
+        return agent
+
+    assert _adopt("model-b", "prov-b")._cached_system_prompt is None
+    assert _adopt("model-a", "prov-a")._cached_system_prompt == stale

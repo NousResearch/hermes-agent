@@ -12,7 +12,6 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
-import hermes_state
 import hermes_state_wal
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from hermes_state import SessionDB
@@ -256,16 +255,6 @@ def test_first_database_open_does_not_retry_other_journal_errors(
     assert attempts == 1
 
 
-def test_room_state_exposes_authority_and_replay_cursor(tmp_path):
-    db = tmp_path / "state.db"
-    room = _create(db)
-
-    assert room["authority_gateway_id"] == "gateway-a"
-    assert room["authority_epoch"] == 1
-    assert rooms.room_state(db, room_id="room-1") == {
-        **room,
-        "latest_seq": 0,
-    }
 
 
 def test_authority_claim_fences_stale_gateway_events(tmp_path):

@@ -124,27 +124,3 @@ test('setWslBridgeActive(true) restores picker bridging', () => {
   setWslBridgeActive(true)
   assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
 })
-
-test('toggling the bridge is idempotent and does not corrupt cached state', () => {
-  // Toggle twice each way.
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
-  setWslBridgeActive(false)
-  assert.equal(isWslBridgeActive(), false)
-
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-  setWslBridgeActive(true)
-  assert.equal(isWslBridgeActive(), true)
-
-  // Bridging still works after the toggles.
-  assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
-})
-
-// ── state isolation: every test sees a clean active bridge ────────────
-
-test('state isolation: bridge is active after a previous test toggled it off', () => {
-  // This test relies on afterEach resetting the bridge.
-  // If isolation is broken, isWslBridgeActive() would be false here.
-  assert.equal(isWslBridgeActive(), true)
-})

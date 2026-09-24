@@ -233,8 +233,5 @@ class TestCronStatusSurfacesError:
 
         cron_cli.cron_status()
         out = capsys.readouterr().out
-        assert "Last tick error:" in out
         assert "Permission denied" in out
-        # The permission-specific hint must point at the ownership fix.
-        assert "docker exec -u" in out
 

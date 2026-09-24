@@ -82,6 +82,36 @@ def test_user_message_is_durable_at_submit_before_any_agent_turn(monkeypatch, tm
         db.close()
 
 
+def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+
+    class InlineThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(server.threading, "Thread", InlineThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+    monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: session.pop("_submit_user_row", None))
+    try:
+        replies = []
+        for _ in range(2):
+            session["running"] = False
+            replies.append(server.handle_request({"id": "p", "method": "prompt.submit", "params": {
+                "session_id": sid, "text": "same prompt"}})["result"])
+        rows = db.get_messages_as_conversation(key, include_row_ids=True)
+        assert [reply.get("user_row_id") for reply in replies] == [row["_row_id"] for row in rows]
+        assert replies[0]["user_row_id"] != replies[1]["user_row_id"]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)
@@ -104,6 +134,57 @@ def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_pat
         agent._flush_messages_to_session_db(messages + [{"role": "assistant", "content": "done"}], [])  # turn end
         rows = db.get_messages_as_conversation(key, include_inactive=True)
         assert [(r["role"], r["content"]) for r in rows] == [("user", expanded), ("assistant", "done")]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_completion_receipt_covers_only_committed_current_turn_rows(monkeypatch, tmp_path):
+    from tui_gateway.prompt_turn import _TurnRun
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    try:
+        server._ensure_session_db_row(session)
+        agent = _flush_agent(db, key)
+        old = [{"role": "user", "content": "again"}, {"role": "assistant", "content": "same"}]
+        agent._flush_messages_to_session_db(old, [])
+        current = [{"role": "user", "content": "again"}, {"role": "assistant", "content": "same"}]
+        messages = old + current
+        agent._persist_user_message_idx = len(old)
+        agent.context_compressor = SimpleNamespace(compression_count=0)
+        st = _TurnRun(agent, None, None, False, history=old, compression_count=0,
+                      result={"messages": messages, "final_response": "same"})
+        agent._flush_messages_to_session_db(messages, old)
+        payload, _, _ = server._complete_turn_payload(session, st, None, 80)
+        rows = db.get_messages_as_conversation(key, include_row_ids=True)
+        assert payload.get("persisted_turn") == {
+            "user_row_id": rows[-2]["_row_id"],
+            "row_ids": [row["_row_id"] for row in rows[-2:]],
+            "final_assistant_row_id": rows[-1]["_row_id"],
+            "complete": True,
+        }
+        # Compression can discard an already-streamed segment even while the old prefix survives.
+        agent.context_compressor = SimpleNamespace(compression_count=1)
+        compressed, _, _ = server._complete_turn_payload(session, st, None, 80)
+        assert compressed["persisted_turn"]["complete"] is False
+        # The row address alone does not assert that a subsequently mutated body was committed.
+        current[-1].pop("_db_persisted")
+        current[-1]["content"] = "not flushed"
+        partial, _, _ = server._complete_turn_payload(session, st, None, 80)
+        assert partial["persisted_turn"] == {
+            "user_row_id": rows[-2]["_row_id"], "row_ids": [rows[-2]["_row_id"]], "complete": False}
+        # No authoritative current-turn anchor: never infer from matching text or positions in old history.
+        agent._persist_user_message_idx = None
+        missing, _, _ = server._complete_turn_payload(session, st, None, 80)
+        assert "persisted_turn" not in missing
+        # A preflight failure may return only old history while the agent still carries its old cursor.
+        agent._persist_user_message_idx = 0
+        st.result["messages"] = old
+        stale, _, _ = server._complete_turn_payload(session, st, None, 80)
+        assert "persisted_turn" not in stale
     finally:
         server._sessions.pop(sid, None)
         db.close()

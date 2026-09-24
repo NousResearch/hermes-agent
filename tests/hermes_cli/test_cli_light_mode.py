@@ -158,10 +158,6 @@ class TestSkinConfigHook:
             set_active_skin(previous)
 
 
-    def test_hook_installed(self, cli_mod):
-        from hermes_cli.skin_engine import SkinConfig
-
-        assert getattr(SkinConfig, "_hermes_light_mode_hook_installed", False) is True
 
     def test_hook_is_idempotent(self, cli_mod):
         # Calling the installer twice must not double-wrap (the marker

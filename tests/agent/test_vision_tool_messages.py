@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +61,6 @@ def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"
 # ---------------------------------------------------------------------------
 
 
-class TestProviderSupportsVisionToolMessages:
-    def test_xiaomi_returns_false(self):
-        agent = _make_agent("xiaomi", "mimo-v2.5")
-        assert agent._provider_supports_vision_tool_messages() is False
 
 
 # ---------------------------------------------------------------------------

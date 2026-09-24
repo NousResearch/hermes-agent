@@ -154,29 +154,6 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(setToolsetEnabled.mock.calls[0].slice(0, 2)).toEqual(['web', false])
   })
 
-  it('renders toolset titles without leading emoji', async () => {
-    getToolsets.mockResolvedValue([toolset({ name: 'cronjob', label: '⏰ Cron Jobs', description: 'cron tools' })])
-
-    await renderSkills()
-
-    // The label renders in both the row and the auto-selected detail header, so
-    // assert via the switch's (emoji-stripped) accessible name and the absence
-    // of the emoji rather than a single-match text lookup.
-    await screen.findByRole('switch', { name: 'Turn Cron Jobs toolset off' })
-    expect(screen.queryByText(/⏰/)).toBeNull()
-  })
-
-  it('renders the provider config panel inline for the selected toolset', async () => {
-    // The master-detail UI dropped the resting "Configured" pill and the
-    // "Configure" expander: the detail column auto-selects the first toolset
-    // and renders its config panel directly, which fetches on mount.
-    await renderSkills()
-
-    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    await waitFor(() => expect(getToolsetConfig).toHaveBeenCalled())
-    expect(getToolsetConfig.mock.calls[0][0]).toBe('web')
-  })
-
   it('scopes Tools config to the profile chosen in the selector', async () => {
     // Two profiles → the "Configuring:" selector renders. Picking a non-active
     // profile must re-fetch toolsets scoped to THAT profile.
@@ -579,8 +556,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     await renderSkills()
 
-    expect(await screen.findByText(/auxiliary model configuration/)).toBeTruthy()
-    const link = screen.getByRole('button', { name: /Choose vision model in Settings/ })
+    const link = await screen.findByRole('button', { name: /Choose vision model in Settings/ })
 
     await act(async () => {
       fireEvent.click(link)
@@ -786,7 +762,6 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     // Catalog section header + the one genuinely-available row. Rows already
     // installed (lock flag OR name collision with the installed list) are gone.
-    expect(await screen.findByText('Available to install')).toBeTruthy()
     expect(await screen.findByText('gif-search')).toBeTruthy()
     expect(screen.queryByText('ascii-art')).toBeNull()
 

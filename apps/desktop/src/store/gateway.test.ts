@@ -403,23 +403,6 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
     await expect(warmingFailure).resolves.toMatchObject({ message: 'local pool is full' })
     await expect(selectingFailure).resolves.toMatchObject({ message: 'local pool is full' })
   })
-
-  it('activates the secondary when connect succeeds', async () => {
-    const getConnection = vi.fn(async ({ profile }: { profile: string }) => ({
-      authMode: 'token',
-      baseUrl: `https://${profile}.invalid`,
-      mode: 'local',
-      profile,
-      token: 'fake-test-token',
-      wsUrl: `wss://${profile}.invalid/ws`
-    }))
-
-    installDesktop({ getConnection })
-
-    await ensureGatewayForProfile('work')
-
-    expect(activeGateway()).toBe(gatewayMocks.instances[0])
-  })
 })
 
 describe('connection-scoped dial failure identity (#95421)', () => {

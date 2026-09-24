@@ -25,7 +25,7 @@ import {
   probeKey,
   resolveMcpOwner
 } from '@/lib/mcp-probe-cache'
-import { getServers } from '@/lib/mcp-servers'
+import { getServers, serverEnabled } from '@/lib/mcp-servers'
 import { persistString, storedString } from '@/lib/storage'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -124,12 +124,8 @@ let sweepQueued = false
 let offGatewayState: (() => void) | null = null
 let offProfile: (() => void) | null = null
 
-// Navigation only — never auto-launch an OAuth flow from the background. The
-// server query param routes through useDeepLinkHighlight on the MCP tab, which
-// scrolls to and focuses the server so its ServerConfig pane (with the
-// Authenticate button) is one click away.
 function openMcpServerPage(name: string): void {
-  window.location.hash = `#/capabilities?tab=mcp&server=${encodeURIComponent(name)}`
+  window.location.hash = `#/capabilities?tab=connectors&server=${encodeURIComponent(name)}`
 }
 
 // "Disable" from the toast: `enabled: false` in config.yaml (the server stays
@@ -195,7 +191,7 @@ function recordResult(owner: McpOwnerScope, name: string, status: McpHealthStatu
 }
 
 const isUrlServer = (server: Record<string, unknown>): boolean =>
-  typeof server.url === 'string' && server.enabled !== false
+  typeof server.url === 'string' && serverEnabled(server)
 
 async function sweep(): Promise<void> {
   const epoch = sweepEpoch

@@ -14,6 +14,7 @@ import json
 import logging
 import time
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -31,6 +32,12 @@ logger = logging.getLogger("gateway.run")
 _UPDATE_FAILED_NOTICE = (
     "❌ Hermes update failed; the previous version is still running. Run `hermes update` on the "
     "host to see the full error, or try /update again later.")
+
+# An update's completion notice waits for its target platform adapter to (re)connect before it
+# can be delivered. Nothing bounds that wait, so a marker naming a platform that is not
+# configured at all — no adapter will ever appear — would keep itself on disk and re-log a
+# deferred line on every poll, in every process, forever. Stop waiting past this age.
+_UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
 
 
 def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
@@ -599,6 +606,24 @@ class GatewayNotificationsMixin:
             return profile_from_session_key_namespace(parts[1])
         return None
 
+    @staticmethod
+    def _marker_age_seconds(data: dict) -> Optional[float]:
+        """Age of a persisted update marker, from the ``timestamp`` stamped by its writer.
+
+        ``None`` when the marker carries no parseable stamp — the field is absent on markers
+        written before it existed, and callers keep the old retry behavior rather than guess.
+        """
+        raw = str(data.get("timestamp") or "").strip()
+        if not raw:
+            return None
+        try:
+            stamped = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        # The writer stamps a naive local ``datetime.now()``; tolerate a tz-aware one too.
+        now = datetime.now(stamped.tzinfo) if stamped.tzinfo else datetime.now()
+        return (now - stamped).total_seconds()
+
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
         for path in (paths.claimed, paths.pending):
@@ -808,6 +833,18 @@ class GatewayNotificationsMixin:
             platform = Platform(platform_str)
             adapter = self._authorization_adapter(platform, self._marker_profile(pending))
             if chat_id and not adapter:
+                age = self._marker_age_seconds(pending)
+                if age is not None and age > _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS:
+                    # The platform never came back. Deferring forever leaks the markers and re-logs
+                    # on every poll for the life of the install: the startup path reschedules this
+                    # watcher whenever the markers are still on disk, so an undeliverable marker
+                    # outlives every restart. Give up loudly, clear the markers, and report a
+                    # definitive decision (True) so the caller stops rescheduling.
+                    logger.warning(
+                        "Post-update notification for %s:%s dropped after %.1fh: %s adapter never "
+                        "connected", platform_str, chat_id, age / 3600.0, platform_str)
+                    self._clear_update_markers(paths, pending.get("session_key"))
+                    return True
                 # Target platform not reconnected yet (common right after the update's restart): keep the
                 # markers for a later retry instead of silently losing the notification.
                 return _defer("Update notification deferred: %s adapter not connected yet", platform_str)
@@ -1878,21 +1915,39 @@ class GatewayNotificationsMixin:
         """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
         registry restores only the launch profile's ``state.db`` at import; a secondary's rows would
         otherwise never be replayed after a restart."""
-        from gateway.run import _profile_runtime_scope
         from tools.async_delegation import restore_undelivered_completions
         from tools.process_registry import process_registry as _pr
+        self._each_secondary_ledger(profile_homes, lambda: restore_undelivered_completions(_pr.completion_queue),
+                                    "Restored")
+
+    def _sweep_orphaned_completion_ledgers(self) -> None:
+        """Offer completions whose owner process died while this gateway runs (#97202): the launch
+        ledger in the launch scope, each served secondary under its own. Startup replay only covers
+        owners that were already gone when the gateway started."""
+        from tools.async_delegation import sweep_orphaned_completions
+        from tools.process_registry import process_registry as _pr
+        sweep = lambda: sweep_orphaned_completions(_pr.completion_queue)  # noqa: E731
+        with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
+            if count := sweep():
+                logger.info("Re-offered %d orphaned async completion(s)", count)
+        self._each_secondary_ledger((getattr(self, "_served_profile_homes", None) or {}).items(), sweep,
+                                    "Re-offered orphaned")
+
+    def _each_secondary_ledger(self, profile_homes, fn, verb: str) -> None:
+        """Run ``fn`` (returns a completion count) once per SECONDARY profile, bound to that profile."""
+        from gateway.run import _profile_runtime_scope
         primary = getattr(self, "_primary_profile_name", None)
         for profile_name, profile_home in profile_homes:
             if profile_name == primary:
                 continue
             try:
                 with _profile_runtime_scope(Path(profile_home), {}):
-                    restored = restore_undelivered_completions(_pr.completion_queue)
+                    count = fn()
             except Exception:
-                logger.warning("Could not restore async completions for profile %r", profile_name, exc_info=True)
+                logger.warning("Could not replay async completions for profile %r", profile_name, exc_info=True)
                 continue
-            if restored:
-                logger.info("Restored %d undelivered async completion(s) for profile %r", restored, profile_name)
+            if count:
+                logger.info("%s %d undelivered async completion(s) for profile %r", verb, count, profile_name)
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.
@@ -1901,9 +1956,15 @@ class GatewayNotificationsMixin:
         consumer; both must progress without a later foreground turn.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
+        from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
         from tools.process_registry import process_registry as _pr
+        last_orphan_sweep = None
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
+                # Completions whose owner process died while this gateway runs (#97202).
+                if last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S:
+                    last_orphan_sweep = time.monotonic()
+                    await asyncio.to_thread(self._sweep_orphaned_completion_ledgers)
                 # Pattern events also need an idle consumer; foreground turns are optional.
                 await self._drain_watch_notifications(_pr.completion_queue)
                 # Process completions remain owned by their per-process watchers.
@@ -1943,10 +2004,14 @@ class GatewayNotificationsMixin:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
         from gateway.run import _redact_gateway_user_facing_secrets
         from tools.ansi_strip import strip_ansi
+        from tools.process_registry import transform_process_output
         new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
         if new_output:
             from agent.redact import redact_terminal_output
-            new_output = redact_terminal_output(new_output, getattr(session, "command", "") or "")
+            _command = getattr(session, "command", "") or ""
+            new_output = transform_process_output(new_output, command=_command, returncode=session.exit_code,
+                                                  task_id=getattr(session, "task_id", "") or "")
+            new_output = redact_terminal_output(new_output, _command)
             # redact_terminal_output() is unforced (raw when security.redact_secrets is off); this goes
             # straight to the adapter, so apply the same unconditional floor as agent-notify.
             new_output = _redact_gateway_user_facing_secrets(new_output)
@@ -1979,8 +2044,11 @@ class GatewayNotificationsMixin:
         from gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
+        from tools.process_registry import transform_process_output
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+        _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
+                                        task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
         # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
         _LIMIT = 2000

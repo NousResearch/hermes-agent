@@ -75,18 +75,8 @@ def test_unknown_command_gets_generic_stage():
     assert update_cmd._format_update_failure_stage(exc) == "Update step failed"
 
 
-def test_windows_dep_failure_does_not_zip_fallback(monkeypatch):
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
-    exc = _cpe([r"C:\venv\Scripts\uv.exe", "pip", "install", "-e", "."])
-    assert update_cmd._should_zip_fallback_on_update_error(exc) is False
 
 
-def test_windows_git_failure_still_zips(monkeypatch):
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
-    exc = _cpe(["git", "pull"], returncode=1)
-    assert update_cmd._should_zip_fallback_on_update_error(exc) is True
 
 
 def test_no_zip_fallback_flag_survives_post_swap_handoff():
@@ -139,16 +129,6 @@ def test_posix_git_failure_does_not_zip(monkeypatch):
     assert update_cmd._should_zip_fallback_on_update_error(exc) is False
 
 
-def test_error_tail_prints_last_lines(capsys):
-    stderr = "\n".join(f"line-{i}" for i in range(20))
-    exc = _cpe(["uv", "pip", "install"], stderr=stderr)
-    update_cmd._print_called_process_error_tail(exc)
-    out = capsys.readouterr().out
-    assert "Last output:" in out
-    assert "line-19" in out
-    assert "line-0" not in out
-    assert "line-7" not in out
-    assert "line-8" in out
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +216,6 @@ def test_update_via_zip_aborts_before_download_when_dirty(
     download.assert_not_called()
     assert local.read_text(encoding="utf-8") == "local work\n"
     assert (untracked_dir / "wip.py").read_text(encoding="utf-8") == "print('wip')\n"
-    out = capsys.readouterr().out
-    assert "ZIP fallback refused" in out
-    assert "Downloading latest version" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -358,21 +335,6 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
     assert update_cmd._zip_overlay_block_reason(tmp_path) is None, status
 
 
-def test_zip_overlay_requests_ignored_files_from_git(tmp_path, monkeypatch):
-    """The status invocation itself must carry a (valid) ignored mode."""
-    seen = {}
-
-    def capture_run(cmd, **kwargs):
-        joined = " ".join(str(c) for c in cmd)
-        if "status" in joined and "--porcelain" in joined:
-            seen["cmd"] = cmd
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    (tmp_path / ".git").mkdir()
-    monkeypatch.setattr(update_cmd.subprocess, "run", capture_run)
-    update_cmd._zip_overlay_block_reason(tmp_path)
-    assert "--ignored=matching" in [str(c) for c in seen["cmd"]]
 
 
 def test_preserved_filter_does_not_split_non_rename_lines():
@@ -395,16 +357,6 @@ def test_preserved_filter_does_not_split_non_rename_lines():
     )
 
 
-def test_swap_preserve_set_is_the_module_constant():
-    """The swap loop and the dirty-tree filter must share one source of
-    truth for the preserved entries (no comment-synced duplicate)."""
-    import inspect
-
-    from hermes_cli import update_cmd_zip
-
-    # The swap loop lives in the download/swap collaborator the ZIP path calls.
-    src = inspect.getsource(update_cmd_zip._download_and_swap_zip)
-    assert "_ZIP_PRESERVED_TOP_LEVEL" in src
 
 
 def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):

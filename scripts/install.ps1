@@ -2378,6 +2378,25 @@ function Install-Repository {
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) {
                         Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
+                        # Park commits the reset drops behind a rescue ref, same namespace
+                        # as ``hermes update`` (which also prunes these refs).
+                        $dropped = 0
+                        $droppedText = ((& git -c windows.appendAtomically=false rev-list --count "origin/$Branch..HEAD" 2>$null) | Out-String).Trim()
+                        [void][int]::TryParse($droppedText, [ref]$dropped)
+                        if ($dropped -gt 0) {
+                            git -c windows.appendAtomically=false merge-base HEAD "origin/$Branch" 2>$null | Out-Null
+                            $rescueKind = if ($LASTEXITCODE -eq 0) { "diverged" } else { "orphan" }
+                            $preResetSha = ((& git -c windows.appendAtomically=false rev-parse HEAD 2>$null) | Out-String).Trim()
+                            $rescueStamp = [DateTime]::UtcNow.ToString("yyyyMMdd-HHmmss")
+                            $rescueRef = "refs/hermes-update-backups/$rescueKind-$Branch-$rescueStamp-$($preResetSha.Substring(0, [Math]::Min(12, $preResetSha.Length)))"
+                            git -c windows.appendAtomically=false update-ref $rescueRef HEAD
+                            if ($LASTEXITCODE -eq 0) {
+                                Write-Warn "$dropped commit(s) not on origin/$Branch backed up to $rescueRef"
+                                Write-Warn "List them with: git -C `"$InstallDir`" log origin/$Branch..$rescueRef"
+                            } else {
+                                Write-Warn "Could not back up local commits (HEAD was $preResetSha)"
+                            }
+                        }
                         git -c windows.appendAtomically=false reset --hard "origin/$Branch"
                         if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/$Branch failed (exit $LASTEXITCODE)" }
                     }

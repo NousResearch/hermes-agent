@@ -683,7 +683,7 @@ def test_three_round_bound(room_db: tuple[Path, dict]):
     room["members"] = MEMBERS[:2]
     _append_user(db, event_id="user-1", text="Discuss.")
 
-    for index in range(6):
+    for index in range(discussion.MAX_DISCUSSION_ROUNDS * 2):
         task = _next_task(room, db)
         peer = "build" if task.member.profile == "research" else "research"
         publication = discussion.plan_publication(
@@ -737,7 +737,7 @@ def test_ten_message_bound(tmp_path: Path):
     assert decision.reason == "max_messages"
 
 
-def test_prompt_delta_is_bounded_to_24_message_lines(
+def test_prompt_delta_is_bounded_to_max_delta_lines(
     room_db: tuple[Path, dict],
 ):
     db, room = room_db
@@ -749,9 +749,10 @@ def test_prompt_delta_is_bounded_to_24_message_lines(
         )
 
     task = _next_task(room, db)
-    assert task.payload["prompt"].count("User (user):") == 24
-    assert "Message 5." not in task.payload["prompt"]
-    assert "Message 6." in task.payload["prompt"]
+    limit = discussion.MAX_DISCUSSION_DELTA_LINES
+    assert task.payload["prompt"].count("User (user):") == limit
+    assert f"Message {29 - limit}." not in task.payload["prompt"]
+    assert f"Message {30 - limit}." in task.payload["prompt"]
     assert "Message 29." in task.payload["prompt"]
 
 

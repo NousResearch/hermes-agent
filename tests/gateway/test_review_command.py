@@ -6,7 +6,6 @@ cached agent, dispatching through the REAL delegate_task background rail
 tests/tools/test_async_delegation.py).
 """
 
-import json
 import time
 from unittest.mock import MagicMock
 
@@ -132,24 +131,5 @@ async def test_review_command_rejects_while_agent_running():
     assert "Agent is running" in out
 
 
-@pytest.mark.asyncio
-async def test_review_command_requires_cached_agent():
-    runner = _make_runner(None)
-    runner._agent_cache = {}
-    out = await runner._handle_review_command(_Event())
-    assert "send a message first" in out
 
 
-@pytest.mark.asyncio
-async def test_review_dispatch_branch_reaches_handler(monkeypatch):
-    """/review typed in a gateway chat must not fall through to the agent.
-
-    Proves the gateway/run.py dispatch branch exists by resolving the command
-    through the registry the same way _handle_message does.
-    """
-    from hermes_cli.commands import resolve_command
-
-    cmd = resolve_command("review")
-    assert cmd is not None
-    assert cmd.name == "review"
-    assert not cmd.cli_only

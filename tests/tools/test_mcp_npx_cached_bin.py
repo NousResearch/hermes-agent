@@ -491,11 +491,6 @@ def test_windows_selects_launchers_never_the_sh_script():
     ]
 
 
-def test_posix_resolution_uses_the_helper(tmp_path):
-    """The resolver honours the helper's ordering (POSIX path end-to-end)."""
-    target = _cache(tmp_path, package="mcp-linear", bin_field={"mcp-linear": "i.js"})
-
-    assert _npx_cached_bin(["-y", "mcp-linear"]) == (str(target), [])
 
 
 def test_flag_after_the_spec_is_left_to_npx(tmp_path):

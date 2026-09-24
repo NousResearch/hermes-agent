@@ -516,13 +516,10 @@ def cron_status():
                   "    sudo hermes --profile default gateway install --system  # Linux servers: boot-time service\n"
                   "    hermes --profile default gateway run       # Or run in foreground")
             if active not in ("default", "custom"):
-                print("\n  Then make sure it serves this profile:\n"
-                      "      hermes --profile default config set gateway.multiplex_profiles true\n"
-                      "      hermes --profile default gateway restart\n"
-                      "    To fold existing per-profile services into it, with preflight checks:\n"
+                print("\n  It serves this profile automatically. If a per-profile service or gateway\n"
+                      "  from an older release is still installed, fold it in (preflight + dry run):\n"
+                      "      hermes --profile default gateway migrate --multiplex --dry-run\n"
                       "      hermes --profile default gateway migrate --multiplex\n"
-                      "  LEGACY (pre-multiplex topology, not recommended): a per-profile service via\n"
-                      "      hermes gateway install   # starts a SECOND gateway process on this host\n"
                       "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()

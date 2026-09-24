@@ -8,6 +8,7 @@ model_tools."""
 import ast
 import functools
 import importlib
+import inspect
 import json
 import logging
 import sys
@@ -499,7 +500,14 @@ class ToolRegistry:
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
         with self._lock:
-            return self._merged_tools(scope).get(name)
+            return self._lookup(name, scope or self.current_scope_key())
+
+    def _lookup(self, name: str, scope_key: Optional[str]) -> Optional[ToolEntry]:
+        """``_merged_tools(scope_key).get(name)`` without building the merged dict."""
+        scoped = self._scoped_tools.get(scope_key)
+        if scoped is not None and name in scoped:
+            return scoped[name]
+        return self._tools.get(name)
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
@@ -680,7 +688,7 @@ class ToolRegistry:
             scope = self._plugin_scope_of(owner)
         with self._lock:
             target = self._slot(scope, create=True)
-            existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
+            existing = self._lookup(name, scope)
             plugin_override_denied = (
                 owner is not None and not self._plugin_override_allowed(scope, owner))
             shadows_global = (
@@ -886,6 +894,10 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
+            # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
+            # plugin handler is not broken by every field the dispatcher injects (#68318).
+            kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
@@ -1012,3 +1024,16 @@ def tool_error(message, **extra) -> str:
 def tool_result(data=None, **kwargs) -> str:
     """JSON-encode a dict positional arg *or* keyword arguments (not both)."""
     return json.dumps(data if data is not None else kwargs, ensure_ascii=False)
+
+
+def _kwargs_accepted_by(handler: Callable, kwargs: dict) -> dict:
+    """*kwargs* narrowed to what *handler*'s signature declares; everything when it takes ``**kwargs`` or
+    cannot be introspected (builtins, some C callables)."""
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return kwargs
+    keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    return {k: v for k, v in kwargs.items() if k in parameters and parameters[k].kind in keyword_kinds}

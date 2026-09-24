@@ -17,6 +17,16 @@ try:
 except ModuleNotFoundError:
     pass
 
+# A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
+# fails at the next import, whichever it is — put the old tree back before importing anything else
+# from the checkout, then rerun the command (this module may itself be one of the new files).
+# ``_early_recovery`` is stdlib-only and imported unguarded on purpose: same package
+# dir, so if IT can't import nothing in hermes_cli can.
+from hermes_cli import _early_recovery as _early_recovery_mod
+
+if _early_recovery_mod.restore_interrupted_pull():
+    _early_recovery_mod.relaunch_after_restore()
+
 # Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
 # imports — it shells out ``cmd /c ver`` and flashes a console when this
 # process is windowless (pythonw gateway, kanban workers). No-op on POSIX.
@@ -44,13 +54,9 @@ _startup_fast.normalize_hermes_home_env()
 # the hermes_cli.config/env_loader imports further down would then crash before
 # main() reaches _recover_from_interrupted_install(). ``_early_recovery`` is
 # stdlib-only (safe on a corrupted venv) and repairs just enough to finish this
-# import; the marker lifecycle stays with the full recovery path. Its own
-# import is unguarded on purpose: same package dir, so if IT can't import
-# nothing in hermes_cli can.
+# import; the marker lifecycle stays with the full recovery path.
 # It is also the canonical home of the probe/repair tables reused by the full recovery path below. See
 # #57828.
-from hermes_cli import _early_recovery as _early_recovery_mod
-
 try:
     _early_recovery_mod.recover_if_needed()
 except Exception:
@@ -567,15 +573,22 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _desktop_ssh_backend(argv: list) -> bool:
-    """A Desktop-owned ``serve --ssh-session-token-file`` child has a fixed identity too.
+def _s6_supervised_gateway_run(argv: list) -> bool:
+    """A bare ``gateway run`` inside the s6 image names the ``gateway-default`` slot too.
 
-    The Desktop client names the remote profile explicitly (``--profile <name>``, or none for
-    the root home). Following the remote host's sticky ``active_profile`` instead silently
-    re-homes the backend into a profile the UI never asked for, so Settings read one
-    ``config.yaml`` and the user edits another (KC's "nothing sticks over SSH").
+    ``_maybe_redirect_run_to_s6_supervision`` turns it into a start of the supervised slot for the
+    current profile, and it is the image's own CMD. Following the sticky ``active_profile`` there
+    started that profile's named slot on every container boot: the one the boot reconciler just
+    registered down, because a started named slot is a second gateway beside the multiplexer.
+    ``--no-supervise`` keeps the foreground run, which follows ``active_profile`` as before (#22502).
     """
-    return "--ssh-session-token-file" in argv
+    words = [a for a in argv if not a.startswith("-")]
+    if words[:2] != ["gateway", "run"] or "--no-supervise" in argv:
+        return False
+    if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
+        return False
+    from hermes_cli.service_manager import _s6_running
+    return _s6_running()
 
 
 def _apply_profile_override() -> None:
@@ -597,7 +610,9 @@ def _apply_profile_override() -> None:
     if profile_name is None and hermes_home_env and os.environ.get("HERMES_UPDATE_POST_SWAP") == "1":
         return
 
-    if profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv):
+    if (profile_name is None and not _under_gateway_supervisor(argv)
+            and not _startup_fast.is_desktop_ssh_backend_argv(argv)
+            and not _s6_supervised_gateway_run(argv)):
         try:
             from hermes_constants import get_default_hermes_root
 
@@ -774,6 +789,7 @@ from hermes_cli.main_platform_setup import (
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
+from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 from hermes_cli.main_dashboard import (
     _attach_to_host_backend,
     _finalize_update_output,
@@ -1916,7 +1932,7 @@ cmd_doctor = _forward_command("cmd_doctor", "hermes_cli.doctor", "run_doctor", f
 cmd_dump = _forward_command("cmd_dump", "hermes_cli.dump", "run_dump", doc='Dump setup summary for support/debugging.')
 cmd_debug = _forward_command("cmd_debug", "hermes_cli.debug", "run_debug", doc='Debug tools (share report, etc.).')
 cmd_skin = _forward_command("cmd_skin", "hermes_cli.skin_cmd", "skin_command", doc='Skin management (list / use / set).')
-cmd_import = _forward_command("cmd_import", "hermes_cli.backup", "run_import", doc='Restore a Hermes backup from a zip file.')
+cmd_import = _forward_command("cmd_import", "hermes_cli.backup", "run_import", forward_return=True, doc='Restore a Hermes backup from a zip file.')
 cmd_dashboard_register = _forward_command("cmd_dashboard_register", "hermes_cli.dashboard_register", "cmd_dashboard_register", doc='Register a self-hosted dashboard OAuth client with Nous Portal.')
 cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_enroll", "cmd_gateway_enroll", doc='Enroll a self-hosted gateway with a relay connector.')
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')
@@ -2590,10 +2606,7 @@ def _dashboard_sanitize_desktop_env(headless_backend) -> None:
     HERMES_DASHBOARD_SESSION_TOKEN, which the terminal pane never receives and
     the terminal tool's env policy strips from agent children.
     """
-    desktop_owned_child = (
-        os.environ.get("HERMES_DESKTOP") == "1"
-        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"))
-    )
+    desktop_owned_child = _is_desktop_owned_backend()
     if (
         not headless_backend
         and not desktop_owned_child
@@ -2672,7 +2685,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # wait_for_mcp_discovery covers a server still connecting at first turn.
     # A standalone (non-Desktop) dashboard may sit idle and unvisited for days
     # (#58733): it arms discovery instead and the first /api/ws client fires it.
-    desktop = os.environ.get("HERMES_DESKTOP") == "1"
+    desktop = _is_desktop_owned_backend()
     if headless_backend and desktop:
         return True
     try:

@@ -170,6 +170,24 @@ describe('connection registry cache', () => {
     expect(list).toHaveBeenCalledTimes(1)
     expect($connectionsRegistry.get()).toEqual(registry)
     expect($activeConnectionId.get()).toBeNull()
+
+    // A stuck IPC read must release the lifecycle's retry loop and preserve
+    // the last good cache, even if the timed-out snapshot eventually arrives.
+    vi.useFakeTimers()
+    const stuck = deferred<DesktopConnectionsRegistry>()
+    list.mockImplementationOnce(() => stuck.promise)
+
+    try {
+      const refresh = refreshConnectionsRegistry()
+      const rejected = expect(refresh).rejects.toThrow('Timed out reading the connection registry')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejected
+      stuck.resolve({ ...registry, connections: [] })
+      await Promise.resolve()
+      expect($connectionsRegistry.get()).toEqual(registry)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('restores the last-used source once when that launch mode is enabled', async () => {

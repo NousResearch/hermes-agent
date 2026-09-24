@@ -75,6 +75,32 @@ def test_reload_without_session_id_still_refreshes_live_agents(reload_env):
     assert sorted(reload_env.refreshed) == ["agent-A", "agent-B"]
 
 
+@pytest.mark.parametrize("running", [False, True])
+def test_gui_toolsets_survive_idle_and_deferred_reload(reload_env, monkeypatch, running):
+    """Both reload paths resolve tools for the owning agent's platform."""
+    session = reload_env.sessions["B"]
+    session["agent"].platform = "gui"
+    session["running"] = running
+    received = []
+
+    def enabled(platform=None):
+        return ["terminal", "desktop_ui", "project"] if platform == "gui" else ["terminal"]
+
+    def refresh(agent, **kwargs):
+        if agent is session["agent"]:
+            received.append(kwargs["enabled_override"])
+        return set()
+
+    monkeypatch.setattr(srv, "_load_enabled_toolsets", enabled)
+    monkeypatch.setattr(_mcp_agent, "refresh_agent_mcp_tools", refresh)
+    srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
+    if running:
+        assert received == []
+        session["running"] = False
+        assert srv._apply_pending_mcp_reload("B", session)
+    assert received == [["terminal", "desktop_ui", "project"]]
+
+
 def test_reload_rediscovers_under_each_live_profile_scope(reload_env):
     """The unscoped shutdown tears down every profile's servers; discovery under the ambient home
     alone would leave a secondary-profile session refreshing against a registry that never

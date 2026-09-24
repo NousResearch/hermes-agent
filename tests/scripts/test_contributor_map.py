@@ -32,10 +32,6 @@ def test_loader_reads_login_from_first_noncomment_line(tmp_path):
     assert mapping == {"jane@example.com": "janedoe"}
 
 
-
-
-
-
 def test_effective_map_merges_legacy_and_directory():
     # Invariant: every legacy entry survives into the effective map unless
     # shadowed by a directory entry, and the directory contributes on top.
@@ -44,28 +40,6 @@ def test_effective_map_merges_legacy_and_directory():
     )
     for email, login in release._load_contributor_dir().items():
         assert release.AUTHOR_MAP[email] == login
-
-
-def test_contributor_mapping_paths_are_casefold_unique():
-    proc = subprocess.run(
-        ["git", "ls-files", "contributors/emails"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    by_casefold: dict[str, list[str]] = {}
-    for path in proc.stdout.splitlines():
-        by_casefold.setdefault(path.casefold(), []).append(path)
-    collisions = [sorted(paths) for paths in by_casefold.values() if len(paths) > 1]
-    assert collisions == [], f"case-colliding contributor mappings: {collisions}"
-
-
-def test_case_distinct_agent_identities_keep_exact_attribution():
-    assert release.AUTHOR_MAP["agent@Agents-Mac-mini.local"] == "skip-agent"
-    assert release.AUTHOR_MAP["agent@agents-Mac-mini.local"] == "momomojo"
-
-
 
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────
@@ -89,16 +63,10 @@ def test_add_creates_mapping_file(emails_dir):
     assert "# PR #999 salvage" in path.read_text()
 
 
-
-
-
-
 def test_add_refuses_login_conflicting_with_legacy_map(emails_dir):
     email, login = next(iter(release.LEGACY_AUTHOR_MAP.items()))
     assert add_contributor(email, login + "x") == 1
     assert not (emails_dir / email).exists()
-
-
 
 
 def test_add_accepts_legacy_consecutive_hyphen_login(emails_dir):

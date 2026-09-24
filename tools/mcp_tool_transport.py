@@ -86,6 +86,31 @@ def _pgroup_alive(pgid: Optional[int]) -> bool:
         return False
 
 
+class LiveEndpointUnavailable(ConnectionError):
+    """A declared runtime file did not provide a usable live endpoint."""
+
+
+def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
+    from agent.redact import register_vault_redaction_value
+    from hermes_platform import declaration
+    from hermes_platform.host import facts
+    from hermes_platform.resolver.app import AppResolver
+    from tools.mcp_liveness import liveness_for
+
+    live = liveness_for(server_name)
+    if live.kind != "server_json":
+        return None
+    decl = declaration.lookup(server_name)
+    definition = decl.app_for(facts.os_family()) if decl is not None else None
+    endpoint = AppResolver(live.app_definition(definition)).endpoint() if definition is not None else None
+    if endpoint is None:
+        raise LiveEndpointUnavailable(f"MCP server '{server_name}' has no usable live endpoint")
+    if endpoint.token:
+        register_vault_redaction_value(endpoint.token)
+    headers = {"Authorization": f"Bearer {endpoint.token}"} if endpoint.token else {}
+    return endpoint.url, headers
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -505,9 +530,13 @@ class MCPServerTransportMixin:
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")
         url = config["url"]
+        headers = dict(config.get("headers") or {})
+        live = _live_endpoint(self.name)
+        if live is not None:
+            url, live_headers = live
+            headers.update(live_headers)
         logger.debug("MCP server '%s': connecting to %s", self.name, url)
         self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
-        headers = dict(config.get("headers") or {})
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — capture their names BEFORE client-generated headers are merged in.
         configured_header_names = {key.lower() for key in headers}

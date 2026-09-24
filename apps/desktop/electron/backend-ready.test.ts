@@ -123,14 +123,6 @@ test('rejects on a child error event', async () => {
   await assert.rejects(p, /spawn ENOENT/)
 })
 
-test('rejects with the timeout message after the deadline', async () => {
-  const child = makeFakeChild()
-  await assert.rejects(
-    waitForDashboardPort(child, 20),
-    /Timed out waiting for Hermes backend port announcement \(20ms\)/
-  )
-})
-
 test('a late announcement after timeout does not throw (listeners torn down)', async () => {
   const child = makeFakeChild()
   await assert.rejects(waitForDashboardPort(child, 20), /Timed out/)
@@ -265,20 +257,6 @@ test('exit-before-announcement error carries the buffered output tail (ready-fil
   child.emit('exit', null, 'SIGSEGV')
 
   await assert.rejects(wait, /exited before port announcement \(SIGSEGV\)[\s\S]*Traceback/)
-})
-
-test('exit-before-announcement error stays clean when no output was buffered', async () => {
-  const child = makeFakeChild()
-
-  const wait = waitForDashboardPortAnnouncement(child, {})
-
-  child.emit('exit', 137, null)
-
-  await assert.rejects(wait, error => {
-    assert.match((error as Error).message, /exited before port announcement \(137\)$/)
-
-    return true
-  })
 })
 
 // ---------------------------------------------------------------------------

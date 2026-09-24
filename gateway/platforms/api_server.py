@@ -2862,7 +2862,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
             "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
-            "display_kind")
+            "display_kind", "display_commentary", "display_reasoning", "display_content", "display_reasoning_items")
         return {key: message.get(key) for key in safe_keys if key in message}
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
@@ -3108,9 +3108,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         limit = 500 if default_page else min(requested_limit, 500)
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page)
+        # This API server is a separate history surface from the dashboard REST
+        # router. Reuse its display contract, under the actual session DB owner.
+        # Projection may load config/redaction state, so keep it off the loop.
+        from agent.history_commentary import project_history_commentary
+        projected = await asyncio.to_thread(
+            project_history_commentary, [_project_client_message(m) for m in messages],
+            home=Path(db.db_path).parent,
+        )
         return web.json_response({
             "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m) for m in projected],
             "pagination": {
                 "limit": limit, "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),

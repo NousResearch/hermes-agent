@@ -30,8 +30,8 @@ function setup(kind: CatalogKind) {
       installIdentifier: `official/${name}`,
       source: 'official',
       tier: 'official',
-      category: 'research',
-      description: `${name} research workflow`,
+      category: name === 'alpha' ? 'memory' : 'voice',
+      description: `${name} workflow`,
       repo: `https://github.com/example/${name}`,
       sourceUrl: `https://github.com/example/${name}`,
       docsUrl: `https://example.com/${name}`
@@ -62,27 +62,25 @@ function setup(kind: CatalogKind) {
   return { entries, onInstall, ...render(<Harness />) }
 }
 
-describe.each(['skills', 'plugins'] as const)('%s catalog layouts', kind => {
-  it('defaults to cards with icon-only layout controls and whole-card hover', () => {
-    const { container } = setup(kind)
-    const cards = screen.getAllByRole('article')
-    const cardView = screen.getByRole('button', { name: 'Card view', pressed: true })
+const card = (name: string) =>
+  screen.getAllByRole('article').find(article => within(article).queryByRole('button', { name }))!
 
-    expect(cards).toHaveLength(2)
-    expect(cardView.textContent).toBe('')
-    expect(cardView.querySelector('.codicon-extensions')).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'List view' }).querySelector('.codicon-list-unordered')).not.toBeNull()
-    expect(cards[0].classList.contains('row-hover')).toBe(true)
-    expect(within(cards[0]).getByRole('button', { name: 'alpha' }).classList.contains('row-hover')).toBe(false)
+describe.each(['skills', 'plugins'] as const)('%s catalog layouts', kind => {
+  it('defaults to cards, with installed entries already switched on', () => {
+    const { container } = setup(kind)
+
+    expect(screen.getAllByRole('article')).toHaveLength(2)
     expect(container.querySelector('[data-catalog-list]')).toBeNull()
-    expect(within(cards[1]).getByRole<HTMLButtonElement>('button', { name: 'Installed' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'List view' })).toBeTruthy()
+    expect(
+      within(card('beta')).getByRole<HTMLButtonElement>('switch', { name: 'Added beta' }).getAttribute('aria-checked')
+    ).toBe('true')
   })
 
-  it('offers installation directly on a card without opening its details', () => {
+  it('installs from the card switch without opening its details', () => {
     const { entries, onInstall } = setup(kind)
-    const card = screen.getAllByRole('article')[0]
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Install' }))
+    fireEvent.click(within(card('alpha')).getByRole('switch', { name: 'Add alpha' }))
 
     expect(onInstall).toHaveBeenCalledExactlyOnceWith(entries[0])
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -93,10 +91,9 @@ describe.each(['skills', 'plugins'] as const)('%s catalog layouts', kind => {
     fireEvent.click(screen.getByRole('button', { name: 'alpha' }))
     const dialog = screen.getByRole('dialog', { name: 'alpha' })
 
-    expect(within(dialog).getByRole('heading', { name: 'alpha' })).toBeTruthy()
     expect(within(dialog).getByRole('link', { name: 'Repository' }).getAttribute('href')).toBe(entries[0].sourceUrl)
     expect(within(dialog).getByRole('link', { name: 'Documentation' }).getAttribute('href')).toBe(entries[0].docsUrl)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Install' }))
+    fireEvent.click(within(dialog).getByRole('switch', { name: 'Add alpha' }))
     expect(onInstall).toHaveBeenCalledExactlyOnceWith(entries[0])
 
     if (kind === 'plugins') {
@@ -111,24 +108,23 @@ describe.each(['skills', 'plugins'] as const)('%s catalog layouts', kind => {
   it('preserves the parent search and filter when switching to list and back', async () => {
     const { container } = setup(kind)
     const search = screen.getByRole<HTMLInputElement>('textbox', { name: 'Search catalog' })
-    fireEvent.change(search, { target: { value: 'alpha' } })
+    fireEvent.change(search, { target: { value: 'workflow' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Memory/, pressed: false }))
     await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1))
-    fireEvent.click(screen.getByRole('combobox', { name: 'Category' }))
-    fireEvent.click(screen.getByRole('option', { name: 'Research' }))
+
     fireEvent.click(screen.getByRole('button', { name: 'List view' }))
 
     expect(container.querySelector(`[data-catalog-list="${kind}"]`)).not.toBeNull()
     expect(screen.queryByRole('article')).toBeNull()
     expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy()
-    expect(screen.getByRole('combobox', { name: 'Category' }).textContent).toContain('Research')
+    expect(screen.queryByRole('heading', { name: 'beta' })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Memory/, pressed: true })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Search catalog' })).toBe(search)
-    expect(search.value).toBe('alpha')
-    expect(screen.getByRole('status').textContent).toBe('1 result')
+    expect(search.value).toBe('workflow')
 
     fireEvent.click(screen.getByRole('button', { name: 'Card view' }))
     expect(screen.getAllByRole('article')).toHaveLength(1)
-    expect(screen.getByRole('textbox', { name: 'Search catalog' })).toBe(search)
-    expect(screen.getByRole('combobox', { name: 'Category' }).textContent).toContain('Research')
+    expect(screen.getByRole('button', { name: /^Memory/, pressed: true })).toBeTruthy()
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
@@ -140,7 +136,6 @@ it('shares the saved layout choice when moving between Skills and Plugins', () =
   cleanup()
 
   const { container } = setup('plugins')
-  expect(screen.getByRole('button', { name: 'List view', pressed: true })).toBeTruthy()
   expect(container.querySelector('[data-catalog-list="plugins"]')).not.toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Card view' }))
   expect($catalogCardView.get()).toBe(true)

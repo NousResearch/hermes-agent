@@ -3,6 +3,7 @@
 // shape, the tier/category taxonomy and the link builders keeps the three surfaces from drifting.
 
 import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
+import { PLUGIN_CATEGORIES } from "../../../../apps/shared/src/catalog-browse";
 
 export interface PluginCapabilities {
   providesTools?: string[];
@@ -105,20 +106,8 @@ export const TIER_CONFIG: Record<
   },
 };
 
-// Browse taxonomy. Order here is the order of the filter pills and of the
-// grouped sections; keep it in sync with CATALOG_CATEGORIES in
-// hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
-export const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
-  desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
-  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
-  platform: { label: "Platforms", icon: "\u{1F4AC}", blurb: "Messaging and channel adapters" },
-  web: { label: "Web & Browser", icon: "\u{1F310}", blurb: "Search backends, extraction and browser control" },
-  tools: { label: "Tools", icon: "\u{1F6E0}\u{FE0F}", blurb: "New tools the agent can call" },
-  voice: { label: "Voice", icon: "\u{1F399}\u{FE0F}", blurb: "Speech, TTS and realtime audio" },
-  automation: { label: "Automation", icon: "\u{23F1}\u{FE0F}", blurb: "Hooks, wake triggers and session automation" },
-  models: { label: "Models", icon: "\u{2728}", blurb: "Model and inference providers" },
-  general: { label: "General", icon: "\u{1F4E6}", blurb: "Plugins that span several areas" },
-};
+// Browse taxonomy, shared with Desktop. Its order is the order of the filter pills and grouped sections.
+export const CATEGORY_CONFIG = PLUGIN_CATEGORIES;
 export const CATEGORY_ORDER = Object.keys(CATEGORY_CONFIG);
 
 export function categoryOf(plugin: Pick<CatalogPlugin, "category">) {

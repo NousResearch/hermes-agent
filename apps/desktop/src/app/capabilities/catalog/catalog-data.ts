@@ -1,5 +1,7 @@
 import { skillCatalogInstallIdentifier } from '@hermes/shared'
-import { useQuery } from '@tanstack/react-query'
+import { queryOptions, useQuery } from '@tanstack/react-query'
+
+import { queryClient } from '@/lib/query-client'
 
 export type CatalogKind = 'skills' | 'plugins'
 
@@ -24,10 +26,16 @@ export interface CatalogEntry {
   requirements: string[]
   tools: string[]
   hooks: string[]
+  middleware?: string[]
+  commands?: string[]
+  license?: string
   sourceUrl: string | null
   docsUrl: string | null
-  /** GitHub-hosted banner for plugin entries; the only third-party fetch the browser makes. */
+  /** Catalog-provided media, restricted to the same GitHub hosts as the website. */
   imageUrl: string | null
+  screenshots?: string[]
+  addedAt?: string
+  updatedAt?: string
   stars: number | null
   search: string
 }
@@ -41,29 +49,30 @@ const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filt
 
 const IMAGE_HOSTS = new Set(['raw.githubusercontent.com', 'github.com'])
 
+// URL.parse, not `new URL` in try/catch: most skill rows carry no repo or docs
+// URL, and 200k thrown TypeErrors cost ~0.7s of main thread per catalog load.
+const parseUrl = (value: unknown) => URL.parse(text(value))
+
 /** Mirrors scripts/validate_plugin_catalog.py: https on a GitHub host, else no image. */
 export function catalogImageUrl(value: unknown): string | null {
-  try {
-    const url = new URL(text(value))
-    const host = url.hostname.toLowerCase()
+  const url = parseUrl(value)
+  const host = url?.hostname.toLowerCase() ?? ''
 
-    return url.protocol === 'https:' && (IMAGE_HOSTS.has(host) || host.endsWith('.githubusercontent.com'))
-      ? url.href
-      : null
-  } catch {
-    return null
-  }
+  return url?.protocol === 'https:' && (IMAGE_HOSTS.has(host) || host.endsWith('.githubusercontent.com'))
+    ? url.href
+    : null
 }
 
 function webUrl(value: unknown): string | null {
-  try {
-    const url = new URL(text(value))
+  const url = parseUrl(value)
 
-    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null
-  } catch {
-    return null
-  }
+  return url?.protocol === 'https:' || url?.protocol === 'http:' ? url.href : null
 }
+
+/** Display form of a source or category id: domains stay verbatim (`browse.sh`),
+ *  slugs read as words (`software-development` → `Software Development`). */
+export const catalogLabel = (value: string) =>
+  value.includes('.') ? value : value.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
 export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
   if (!Array.isArray(data)) {
@@ -83,9 +92,14 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
     const id = `${source}:${identifier}`
     const caps = row.capabilities ?? {}
     const category = text(row.category) || 'uncategorized'
+    const categoryLabel = text(row.categoryLabel) || category
     const tags = strings(row.tags)
     const tools = strings(caps.providesTools)
     const hooks = strings(caps.providesHooks)
+    const middleware = strings(caps.providesMiddleware)
+    const commands = strings(row.commands)
+    const platforms = strings(row.platforms)
+    const requirements = strings(kind === 'plugins' ? caps.requiresEnv : row.envVars)
     const author = text(row.maintainer ?? row.author)
     const description = text(row.description)
 
@@ -95,7 +109,7 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       description,
       overview: text(row.overview),
       category,
-      categoryLabel: text(row.categoryLabel) || category,
+      categoryLabel,
       source,
       author,
       identifier,
@@ -116,15 +130,41 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       tags,
       tools,
       hooks,
-      platforms: strings(row.platforms),
-      requirements: strings(kind === 'plugins' ? caps.requiresEnv : row.envVars),
+      middleware,
+      commands,
+      license: text(row.license) || undefined,
+      platforms,
+      requirements,
       sourceUrl: webUrl(row.repo || row.sourceUrl),
       docsUrl:
         webUrl(row.docsUrl) ||
         (text(row.docsPath) ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
       imageUrl: kind === 'plugins' ? catalogImageUrl(row.image) : null,
+      screenshots:
+        kind === 'plugins'
+          ? strings(row.screenshots)
+              .map(catalogImageUrl)
+              .filter((url): url is string => url !== null)
+          : [],
+      addedAt: Number.isFinite(Date.parse(text(row.addedAt))) ? text(row.addedAt) : undefined,
+      updatedAt: Number.isFinite(Date.parse(text(row.updatedAt))) ? text(row.updatedAt) : undefined,
       stars: typeof row.stars === 'number' && Number.isFinite(row.stars) ? row.stars : null,
-      search: [name, description, author, category, row.categoryLabel, source, ...tags, ...tools, ...hooks]
+      search: [
+        name,
+        description,
+        text(row.overview),
+        author,
+        category,
+        categoryLabel,
+        source,
+        ...tags,
+        ...tools,
+        ...hooks,
+        ...platforms,
+        ...requirements,
+        ...commands,
+        ...middleware
+      ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -149,19 +189,33 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
   return parseCatalog(kind, await response.json())
 }
 
-export function useCatalog(kind: CatalogKind, enabled = true) {
-  return useQuery({
+const catalogQuery = (kind: CatalogKind) =>
+  queryOptions({
     queryKey: ['public-catalog', kind],
-    // Re-enabling a mounted query retries errors even with retryOnMount off.
-    // Keep failures parked until the user explicitly chooses Try again.
-    enabled: query => enabled && query.state.status !== 'error',
     queryFn: () => fetchCatalog(kind),
     staleTime: 30 * 60_000,
-    gcTime: Infinity,
+    // The skills snapshot parses to ~100k rows; release it once the page has
+    // been left long enough that a revisit is a fresh browse anyway.
+    gcTime: 30 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     refetchOnMount: false,
     retryOnMount: false,
     retry: false
   })
+
+export function useCatalog(kind: CatalogKind) {
+  return useQuery({
+    ...catalogQuery(kind),
+    // A failed catalog stays parked across remounts (tab switches) until the
+    // user explicitly chooses Try again.
+    enabled: query => query.state.status !== 'error'
+  })
+}
+
+/** Warm a catalog while the browser is idle so switching tabs doesn't pay the fetch + parse. */
+export function prefetchCatalogWhenIdle(kind: CatalogKind) {
+  const id = requestIdleCallback(() => void queryClient.prefetchQuery(catalogQuery(kind)), { timeout: 5_000 })
+
+  return () => cancelIdleCallback(id)
 }

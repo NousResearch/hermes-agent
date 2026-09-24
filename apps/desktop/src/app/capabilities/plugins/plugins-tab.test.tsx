@@ -12,29 +12,22 @@ import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin
 import { $connection } from '@/store/session'
 
 import { PageSearchShell } from '../../page-search-shell'
-import { CapabilityTabs } from '../catalog/capability-tabs'
 import { parseCatalog } from '../catalog/catalog-data'
 import { $catalogCardView } from '../catalog/store'
 
-import { PluginActions, PluginsTab } from './plugins-tab'
+import { PluginsTab } from './plugins-tab'
 
 const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>): Promise<unknown> => ({
   plugins: $agentPlugins.get()
 }))
 
-// The shell owns search and navigation; exercise the same controlled composition.
-function PluginsHarness({
-  view: initialView = 'installed',
-  query: initialQuery = '',
-  ...props
-}: ComponentProps<typeof PluginsTab>) {
-  const [view, setView] = useState(initialView)
-  const [query, setQuery] = useState(initialQuery)
+// The shell owns search; exercise the same controlled composition as CapabilitiesView.
+function PluginsHarness({ query: initialQuery, ...props }: ComponentProps<typeof PluginsTab>) {
+  const [query, setQuery] = useState(initialQuery ?? '')
 
   return (
-    <PageSearchShell onSearchChange={setQuery} searchPlaceholder="Search plugins" searchValue={query}>
-      <CapabilityTabs actions={<PluginActions profile={props.profile} />} onChange={setView} value={view} />
-      <PluginsTab {...props} onQueryChange={setQuery} onViewChange={setView} query={query} view={view} />
+    <PageSearchShell onSearchChange={setQuery} searchHidden searchPlaceholder="Search plugins" searchValue={query}>
+      <PluginsTab {...props} onQueryChange={setQuery} query={query} />
     </PageSearchShell>
   )
 }
@@ -62,9 +55,8 @@ function seedCatalog(entries = [weatherEntry]) {
 }
 
 async function selectCatalogEntry(name: string) {
-  fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-  fireEvent.click(await screen.findByRole('button', { name: text => text.startsWith(name) }))
-  expect(screen.getByRole('heading', { name })).toBeTruthy()
+  fireEvent.click((await screen.findAllByRole('button', { name }))[0])
+  expect(screen.getAllByRole('heading', { name }).length).toBeGreaterThan(0)
 }
 
 const connectionFixture = {
@@ -96,6 +88,7 @@ beforeEach(() => {
   $agentPlugins.set([])
   $agentPluginsStatus.set('ready')
   $catalogCardView.set(false)
+  seedCatalog([])
   closePluginInstallRequest()
   requestGateway.mockReset()
   requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
@@ -133,16 +126,15 @@ describe('PluginsTab', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/capabilities?tab=plugins&plugin=omega']}>
           <Location />
-          <PluginsHarness profile="workbot" query="nothing-matches" view="browse" />
+          <PluginsHarness profile="workbot" query="nothing-matches" />
         </MemoryRouter>
       </QueryClientProvider>
     )
     await screen.findByRole('switch', { name: 'Agent: omega' })
     await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('?tab=plugins'))
-    expect(screen.getByRole('button', { name: 'Installed', pressed: true })).toBeTruthy()
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search plugins' }).value).toBe('')
     expect(screen.getByRole('switch', { name: 'Agent: omega' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /alpha/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'alpha', pressed: false }))
     expect(screen.getByRole('switch', { name: 'Agent: alpha' })).toBeTruthy()
   })
 
@@ -317,7 +309,7 @@ describe('PluginsTab', () => {
 
     await selectCatalogEntry(weatherEntry.name)
     expect($pluginInstallRequest.get()).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    fireEvent.click(screen.getByRole('switch', { name: `Add ${weatherEntry.name}` }))
 
     expect($pluginInstallRequest.get()).toMatchObject({
       catalogName: weatherEntry.name,
@@ -327,22 +319,21 @@ describe('PluginsTab', () => {
     })
   })
 
-  it('keeps Installed in list/detail mode and filters it through the parent search', () => {
-    $catalogCardView.set(true)
+  it('shows installed plugins in list/detail mode and filters them through the parent search', () => {
     $pluginRecords.set({
       clock: { id: 'clock', name: 'Clock', kind: 'disk', status: 'loaded' },
       weather: { id: 'weather', name: 'Weather', kind: 'disk', status: 'loaded' }
     })
     renderPlugins({ profile: null })
 
-    expect(screen.getByRole('button', { name: /^Clock/, pressed: true })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Clock', pressed: true })).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Desktop: Clock' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^Weather/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Weather', pressed: false }))
     expect(screen.getByRole('switch', { name: 'Desktop: Weather' })).toBeTruthy()
     expect(screen.queryByRole('dialog')).toBeNull()
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Search plugins' }), { target: { value: 'Clock' } })
-    expect(screen.queryByRole('button', { name: /^Weather/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Weather', pressed: false })).toBeNull()
     expect(screen.getByRole('switch', { name: 'Desktop: Clock' })).toBeTruthy()
   })
 
@@ -411,7 +402,7 @@ describe('PluginsTab', () => {
     renderPlugins({ profile: null })
 
     await selectCatalogEntry(entry.name)
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    fireEvent.click(screen.getByRole('switch', { name: `Add ${entry.name}` }))
 
     expect($pluginInstallRequest.get()).toMatchObject({
       catalogName: entry.name,
@@ -526,7 +517,9 @@ describe('PluginsTab catalog UX', () => {
     })
   })
 
-  it('fetches only on Browse, retaining parent search across selection and tab bounce', async () => {
+  it('fetches the catalog once, retaining parent search across selection and filters', async () => {
+    queryClient.clear()
+
     const fetchCatalog = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => [
@@ -540,19 +533,17 @@ describe('PluginsTab catalog UX', () => {
       renderPlugins({ profile: null })
     })
 
-    expect(fetchCatalog).not.toHaveBeenCalled()
-    expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
     await selectCatalogEntry('garden-plugin')
 
     const search = screen.getByRole<HTMLInputElement>('textbox', { name: 'Search plugins' })
 
     fireEvent.change(search, { target: { value: 'weather' } })
     expect(await screen.findByRole('heading', { name: weatherEntry.name })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^garden-plugin/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'garden-plugin' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Installed', pressed: false }))
     expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
     expect(search.value).toBe('weather')
-    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Clear filters' })[0])
     expect(search.value).toBe('')
     await selectCatalogEntry('garden-plugin')
 
@@ -563,24 +554,21 @@ describe('PluginsTab catalog UX', () => {
   })
 
   it('retries a failed catalog only when asked, not on tab bounce', async () => {
+    queryClient.clear()
+
     const fetchCatalog = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
 
     vi.stubGlobal('fetch', fetchCatalog)
-    await act(async () => {
-      renderPlugins({ profile: null })
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    const view = renderPlugins({ profile: null })
 
     expect(await screen.findByText('Catalog HTTP 503')).toBeTruthy()
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    view.unmount()
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /^Installed/ }))
-    })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+      renderPlugins({ profile: null })
     })
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
     expect(screen.getByText('Catalog HTTP 503')).toBeTruthy()
@@ -722,7 +710,8 @@ describe('PluginsTab catalog UX', () => {
     expect(screen.queryByRole('button', { name: 'Uninstall: demo-tool' })).toBeNull()
   })
 
-  it('disables native installation of a catalog entry that is already installed and current', async () => {
+  it('toggles an installed catalog card on and off in place instead of reinstalling or uninstalling it', async () => {
+    $catalogCardView.set(true)
     $agentPlugins.set([
       {
         catalog_name: 'demo-weather',
@@ -732,52 +721,34 @@ describe('PluginsTab catalog UX', () => {
         name: 'demo-weather',
         source: 'git',
         status: 'enabled',
-        update_available: false,
         version: '1.0.0'
       }
     ])
-
+    requestGateway.mockImplementation(async (_method, params) =>
+      params?.action === 'toggle'
+        ? { ok: true, plugin: { key: 'demo-weather', name: 'demo-weather', status: 'disabled' } }
+        : { plugins: $agentPlugins.get() }
+    )
     seedCatalog([{ ...weatherEntry, name: 'demo-weather' }])
     await act(async () => {
-      renderPlugins({ profile: null })
+      renderPlugins({ profile: 'workbot' })
     })
-    await selectCatalogEntry('demo-weather')
 
-    const installed = within(screen.getByRole('main')).getByRole<HTMLButtonElement>('button', { name: 'Installed' })
-    expect(installed.disabled).toBe(true)
-    fireEvent.click(installed)
+    const card = screen
+      .getAllByRole('article')
+      .find(article => within(article).queryByRole('button', { name: 'demo-weather' }))!
+    const toggle = within(card).getByRole('switch', { name: 'demo-weather' })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(toggle)
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'toggle', key: 'demo-weather', enable: false, profile: 'workbot' })
+      )
+    )
+    expect($confirmRequest.get()).toBeNull()
     expect($pluginInstallRequest.get()).toBeNull()
-  })
-
-  it('offers native catalog installation when an update is available', async () => {
-    $agentPlugins.set([
-      {
-        catalog_name: 'demo-weather',
-        description: '',
-        installed_sha: 'a'.repeat(40),
-        key: 'demo-weather',
-        name: 'demo-weather',
-        source: 'git',
-        status: 'enabled',
-        update_available: true,
-        version: '1.0.0'
-      }
-    ])
-
-    const entry = { ...weatherEntry, name: 'demo-weather', sha: 'b'.repeat(40) }
-
-    seedCatalog([entry])
-    await act(async () => {
-      renderPlugins({ profile: null })
-    })
-    await selectCatalogEntry(entry.name)
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
-
-    expect($pluginInstallRequest.get()).toMatchObject({
-      catalogName: entry.name,
-      repo: entry.repo,
-      profile: null,
-      sha: entry.sha
-    })
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
   })
 })

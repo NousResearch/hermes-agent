@@ -3,7 +3,6 @@ import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 
 
 import { setEnvVar } from '@/api/config'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
@@ -37,10 +36,9 @@ import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
-import { PanelEmpty } from '../../overlays/panel'
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
-import type { CapabilityView } from '../catalog/capability-tabs'
+import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
 import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
 
@@ -496,16 +494,12 @@ export const PluginsTab = memo(function PluginsTab({
   profile,
   scopeSelector,
   scopeLabel,
-  view = 'installed',
-  query = '',
-  onQueryChange,
-  onViewChange
+  query,
+  onQueryChange
 }: {
   profile: ProfileScope
   query?: string
   onQueryChange?: (value: string) => void
-  view?: CapabilityView
-  onViewChange?: (view: CapabilityView) => void
   /** The profile selector governs only the Agent half, not the app-level Desktop half. */
   scopeSelector?: ReactNode
   /** Display name of the selected profile for the Agent half label. */
@@ -554,12 +548,11 @@ export const PluginsTab = memo(function PluginsTab({
         const pkg = packageForTarget(target)
 
         if (pkg) {
-          onViewChange?.('installed')
           onQueryChange?.('')
           setSelectedEntryId(`installed:${pkg.key}`)
         }
       },
-      [onQueryChange, onViewChange, packageForTarget]
+      [onQueryChange, packageForTarget]
     )
   })
 
@@ -585,133 +578,185 @@ export const PluginsTab = memo(function PluginsTab({
 
   const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
 
-  const isInstalled = (entry: CatalogEntry) =>
-    packageById.has(entry.id) ||
-    agentRows.some(row => (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available)
+  const installedByCatalogName = useMemo(() => {
+    const byName = new Map<string, CatalogEntry>()
+
+    for (const entry of installedEntries) {
+      const pkg = packageById.get(entry.id)
+      const name = pkg?.agent?.catalog_name ?? pkg?.desktop?.packageOrigin?.catalogName
+
+      if (name) {
+        byName.set(name, entry)
+      }
+    }
+
+    return byName
+  }, [installedEntries, packageById])
+
+  const matchInstalled = useCallback(
+    (entry: CatalogEntry) => installedByCatalogName.get(entry.name),
+    [installedByCatalogName]
+  )
+  const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id)
+
+  const handleAgentRemove = useCallback(
+    (row: AgentPluginRow) => {
+      void confirm({
+        confirmLabel: p.uninstall,
+        description: p.uninstallConfirmBody(row.name, label),
+        destructive: true,
+        title: p.uninstallConfirmTitle(row.name)
+      }).then(async ok => {
+        if (!ok) {
+          return
+        }
+
+        if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
+          notify({ kind: 'success', message: p.uninstalled(row.name) })
+          // Prunes the app-level desktop half whose source package just went away.
+          void rescanAll(requestGateway, scope)
+        }
+      })
+    },
+    [label, p, requestGateway, scope]
+  )
+
+  const handleDesktopRemove = useCallback(
+    (record: PluginRecord) => {
+      void confirm({
+        confirmLabel: p.uninstall,
+        description: p.uninstallDesktopConfirmBody(record.name),
+        destructive: true,
+        title: p.uninstallConfirmTitle(record.name)
+      }).then(async ok => {
+        if (!ok) {
+          return
+        }
+
+        const result = await uninstallDiskPlugin(record.id)
+
+        if (result.ok) {
+          notify({ kind: 'success', message: p.uninstalledDesktop(record.name) })
+        } else {
+          notifyError(result.error, p.uninstallFailed(record.name))
+        }
+      })
+    },
+    [p]
+  )
+
+  // The card switch turns the whole package on or off, like a skill's; per-half
+  // switches and uninstall (trash + confirm) live in the detail's PackageRow.
+  const packageSwitch = (pkg: PluginPackage) => {
+    const { agent, desktop } = pkg
+
+    const setEnabled = (enable: boolean) => {
+      if (agent?.key) {
+        void toggleAgentPlugin(requestGateway, agent.key, enable, p.toggleFailed(agent.name), scope)
+      }
+
+      if (desktop) {
+        void setPluginEnabled(desktop.id, enable)
+      }
+    }
+
+    return (
+      <Switch
+        aria-label={pkg.name}
+        checked={agent ? agent.status === 'enabled' : desktop?.status !== 'disabled'}
+        disabled={agent ? !agent.key || agentBusy(agent) : false}
+        onCheckedChange={setEnabled}
+        size="xs"
+      />
+    )
+  }
+
+  const notice =
+    status === 'error' ? (
+      <CatalogAlert
+        onRetry={() => void loadAgentPlugins(requestGateway, scope)}
+        retryLabel={t.skills.refresh}
+        title={p.loadFailed}
+      >
+        {error}
+      </CatalogAlert>
+    ) : null
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {view === 'installed' && status === 'error' ? (
-        <PanelEmpty
-          action={
-            <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
-              {t.skills.refresh}
-            </Button>
-          }
-          description={error ?? undefined}
-          icon="error"
-          title={p.loadFailed}
-        />
-      ) : view === 'installed' && status === 'loading' && packages.length === 0 ? (
-        <PageLoader label={t.skills.loading} />
-      ) : (
-        <CatalogBrowser
-          installedEntries={installedEntries}
-          isInstalled={isInstalled}
-          kind="plugins"
-          onInstall={entry => openCatalogPluginInstall(entry, scope)}
-          onQueryChange={onQueryChange}
-          onSelectEntry={view === 'installed' ? setSelectedEntryId : undefined}
-          query={query}
-          renderInstalledDetail={entry => {
-            const pkg = packageById.get(entry.id)
+    <CatalogBrowser
+      headerActions={<PluginActions profile={profile} />}
+      installedEntries={installedEntries}
+      installedPending={status !== 'ready'}
+      isInstalled={isInstalled}
+      kind="plugins"
+      matchInstalled={matchInstalled}
+      notice={notice}
+      onInstall={entry => openCatalogPluginInstall(entry, scope)}
+      onQueryChange={onQueryChange}
+      query={query}
+      renderInstalledAction={entry => {
+        const pkg = packageById.get(entry.id)
 
-            if (!pkg) {
-              return null
-            }
+        return pkg ? packageSwitch(pkg) : null
+      }}
+      renderInstalledDetail={entry => {
+        const pkg = packageById.get(entry.id)
 
-            return (
-              <PackageRow
-                busy={pkg.agent ? agentBusy(pkg.agent) : false}
-                key={pkg.key}
-                onAgentRemove={row => {
-                  void confirm({
-                    confirmLabel: p.uninstall,
-                    description: p.uninstallConfirmBody(row.name, label),
-                    destructive: true,
-                    title: p.uninstallConfirmTitle(row.name)
-                  }).then(async ok => {
-                    if (!ok) {
-                      return
-                    }
+        if (!pkg) {
+          return null
+        }
 
-                    if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
-                      notify({ kind: 'success', message: p.uninstalled(row.name) })
-                      // Prunes the app-level desktop half whose source package just went away.
-                      void rescanAll(requestGateway, scope)
-                    }
-                  })
-                }}
-                onAgentToggle={(row, enable) => {
-                  if (!row.key) {
-                    return
-                  }
+        return (
+          <PackageRow
+            busy={pkg.agent ? agentBusy(pkg.agent) : false}
+            key={pkg.key}
+            onAgentRemove={handleAgentRemove}
+            onAgentToggle={(row, enable) => {
+              if (!row.key) {
+                return
+              }
 
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-                }}
-                onAgentUpdate={row => {
-                  const finish = (outcome: AgentPluginUpdateOutcome) => {
-                    if (outcome.kind === 'applied') {
-                      notify({ kind: 'success', message: p.updated(row.name) })
-                      void rescanAll(requestGateway, scope)
-                    }
-                  }
+              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+            }}
+            onAgentUpdate={row => {
+              const finish = (outcome: AgentPluginUpdateOutcome) => {
+                if (outcome.kind === 'applied') {
+                  notify({ kind: 'success', message: p.updated(row.name) })
+                  void rescanAll(requestGateway, scope)
+                }
+              }
 
-                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
-                    async outcome => {
-                      if (outcome.kind !== 'consent') {
-                        finish(outcome)
+              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
+                if (outcome.kind !== 'consent') {
+                  finish(outcome)
 
-                        return
-                      }
+                  return
+                }
 
-                      // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                      // half); the backend changed nothing until the user confirms the delta.
-                      const ok = await confirm({
-                        confirmLabel: p.updateConsentConfirm,
-                        description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                        title: p.updateConsentTitle(row.name)
-                      })
+                // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                // half); the backend changed nothing until the user confirms the delta.
+                const ok = await confirm({
+                  confirmLabel: p.updateConsentConfirm,
+                  description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                  title: p.updateConsentTitle(row.name)
+                })
 
-                      if (ok) {
-                        finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
-                      }
-                    }
-                  )
-                }}
-                onDesktopRemove={record => {
-                  void confirm({
-                    confirmLabel: p.uninstall,
-                    description: p.uninstallDesktopConfirmBody(record.name),
-                    destructive: true,
-                    title: p.uninstallConfirmTitle(record.name)
-                  }).then(async ok => {
-                    if (!ok) {
-                      return
-                    }
-
-                    const result = await uninstallDiskPlugin(record.id)
-
-                    if (result.ok) {
-                      notify({ kind: 'success', message: p.uninstalledDesktop(record.name) })
-                    } else {
-                      notifyError(result.error, p.uninstallFailed(record.name))
-                    }
-                  })
-                }}
-                pkg={pkg}
-                profile={profile}
-                request={requestGateway}
-                scope={scope}
-                scopeLabel={label}
-                scopeSelector={scopeSelector}
-              />
-            )
-          }}
-          selectedEntryId={view === 'installed' ? selectedEntryId : undefined}
-          view={view}
-        />
-      )}
-    </div>
+                if (ok) {
+                  finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                }
+              })
+            }}
+            onDesktopRemove={handleDesktopRemove}
+            pkg={pkg}
+            profile={profile}
+            request={requestGateway}
+            scope={scope}
+            scopeLabel={label}
+            scopeSelector={scopeSelector}
+          />
+        )
+      }}
+      selectedEntryId={selectedEntryId}
+    />
   )
 })

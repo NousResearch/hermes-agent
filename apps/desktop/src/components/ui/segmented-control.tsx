@@ -1,4 +1,3 @@
-import { Tip } from '@/components/ui/tooltip'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -13,8 +12,6 @@ interface SegmentedControlProps<T extends string> {
   value: T
   onChange: (id: T) => void
   className?: string
-  /** Icon buttons retain localized labels for tooltips and screen readers. */
-  iconOnly?: boolean
   /** Dims the whole track and blocks selection (e.g. gated behind a prerequisite). */
   disabled?: boolean
 }
@@ -27,7 +24,6 @@ interface SegmentedControlProps<T extends string> {
 export function SegmentedControl<T extends string>({
   className,
   disabled = false,
-  iconOnly = false,
   onChange,
   options,
   value
@@ -43,14 +39,12 @@ export function SegmentedControl<T extends string>({
       {options.map(({ id, label, icon: Icon }) => {
         const active = value === id
 
-        const button = (
+        return (
           <button
-            aria-label={iconOnly ? label : undefined}
             aria-pressed={active}
             className={cn(
               'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors disabled:cursor-default',
-              active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-              iconOnly && Icon && 'size-6 p-0 text-sm'
+              active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
             )}
             disabled={disabled}
             key={id}
@@ -58,16 +52,8 @@ export function SegmentedControl<T extends string>({
             type="button"
           >
             {Icon && <Icon className="size-3" />}
-            {(!iconOnly || !Icon) && label}
+            {label}
           </button>
-        )
-
-        return iconOnly && Icon ? (
-          <Tip key={id} label={label}>
-            {button}
-          </Tip>
-        ) : (
-          button
         )
       })}
     </div>

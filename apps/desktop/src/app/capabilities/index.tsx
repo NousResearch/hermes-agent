@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -16,11 +16,9 @@ import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { CapabilityTabs, type CapabilityView } from './catalog/capability-tabs'
-import { SkillCatalog } from './catalog/skill-catalog'
-import { UpdateSkillsButton } from './catalog/update-skills-button'
+import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { ConnectorsTab } from './connectors/connectors-tab'
-import { PluginActions, PluginsTab } from './plugins/plugins-tab'
+import { PluginsTab } from './plugins/plugins-tab'
 import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
 import { SKILLS_QUERY_KEY, skillSearchTerms, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
@@ -73,8 +71,6 @@ export function CapabilitiesView({
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
 
   const [query, setQuery] = useState('')
-  const [skillsView, setSkillsView] = useState<CapabilityView>('installed')
-  const [pluginsView, setPluginsView] = useState<CapabilityView>('installed')
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
 
@@ -82,7 +78,6 @@ export function CapabilitiesView({
   // pair, because the counts stay live for the tab the user is NOT on.
   const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile)
   const { data: toolsets, isError: toolsetsFailed } = useToolsetsQuery(scope.profile)
-  const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
@@ -97,6 +92,10 @@ export function CapabilitiesView({
   }, [scope.profile])
 
   useRefreshHotkey(refreshCapabilities)
+
+  // Plugins is small enough to warm from any tab. Skills (~100k rows) only
+  // loads when asked for: an idle parse of it would still block the page.
+  useEffect(() => (mode === 'plugins' ? undefined : prefetchCatalogWhenIdle('plugins')), [mode])
 
   // Rotating placeholder nudges from the user's own data — teach that search
   // understands categories and tool names, not just titles.
@@ -113,7 +112,7 @@ export function CapabilitiesView({
   }, [mode, skills, t, toolsets])
 
   // MCP and Plugins load independently of the installed Skills/Tools lists.
-  const gated = mode === 'toolsets' || (mode === 'skills' && skillsView === 'installed')
+  const gated = mode === 'toolsets'
   const pending = gated && !(skills && toolsets)
 
   const loadGate = !pending ? null : skillsFailed || toolsetsFailed ? (
@@ -147,32 +146,24 @@ export function CapabilitiesView({
       <PluginsTab
         key={`plugins-${scope.key}`}
         onQueryChange={setQuery}
-        onViewChange={setPluginsView}
         profile={scope.profile}
         query={query}
         scopeLabel={scope.label}
         scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
-        view={pluginsView}
       />
     ),
-    skills: () =>
-      skillsView === 'browse' ? (
-        <SkillCatalog
-          installedNames={installedSkillNames}
-          key={`catalog-${scope.key}`}
-          onQueryChange={setQuery}
-          profile={scope.profile}
-          query={query}
-        />
-      ) : (
-        <SkillsTab
-          key={`skills-${scope.key}`}
-          onRefresh={() => void refreshCapabilities()}
-          profile={scope.profile}
-          query={query}
-          skills={skills ?? []}
-        />
-      ),
+    skills: () => (
+      <SkillsTab
+        installedError={skillsError}
+        installedPending={!skills || skillsFailed}
+        key={`skills-${scope.key}`}
+        onQueryChange={setQuery}
+        onRefresh={() => void refreshCapabilities()}
+        profile={scope.profile}
+        query={query}
+        skills={skills ?? []}
+      />
+    ),
     toolsets: () => (
       <ToolsetsTab key={`toolsets-${scope.key}`} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
     )
@@ -184,8 +175,8 @@ export function CapabilitiesView({
       activeTab={mode}
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
-      // The Connectors directory owns its search field.
-      searchHidden={mode === 'connectors'}
+      // Catalogs keep search beside their results; Connectors owns its field too.
+      searchHidden={mode !== 'toolsets'}
       searchHints={searchHints}
       searchPlaceholder={
         mode === 'plugins'
@@ -204,19 +195,6 @@ export function CapabilitiesView({
     >
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
-        {(mode === 'skills' || mode === 'plugins') && (
-          <CapabilityTabs
-            actions={
-              mode === 'skills' ? (
-                <UpdateSkillsButton profile={scope.profile} />
-              ) : (
-                <PluginActions profile={scope.profile} />
-              )
-            }
-            onChange={mode === 'skills' ? setSkillsView : setPluginsView}
-            value={mode === 'skills' ? skillsView : pluginsView}
-          />
-        )}
         <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>
     </PageSearchShell>

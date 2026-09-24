@@ -522,6 +522,7 @@ class SessionMessagesMixin:
             msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
+                msg.pop("_source_row_ids", None)
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
@@ -613,6 +614,7 @@ class SessionMessagesMixin:
             if identity != self._row_identity(row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4])):
                 break
             msg["_row_id"] = row[0]
+            msg.pop("_source_row_ids", None)
             kept += 1
         return kept
 
@@ -664,7 +666,9 @@ class SessionMessagesMixin:
 
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
-        lock_holder: Optional[str] = None, tail_count: int = 0) -> int:
+        lock_holder: Optional[str] = None, tail_count: int = 0,
+        held_row_ids: Optional[Tuple[int, ...]] = None,
+        tail_row_ids: Tuple[int, ...] = ()) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -694,6 +698,34 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            if held_row_ids is not None:
+                held = tuple(dict.fromkeys(held_row_ids))
+                held_json = json.dumps(held)
+                active_held = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1 "
+                    "AND id IN (SELECT value FROM json_each(?))", (session_id, held_json)).fetchone()[0]
+                if active_held != len(held):
+                    raise RuntimeError("Held compression rows are no longer active in this session")
+                foreign_ids, foreign_tool_calls = self._tail_rows_after_watermark(
+                    conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 "
+                    "AND id NOT IN (SELECT value FROM json_each(?)) ORDER BY id", (session_id, held_json))
+                rewind_held = tuple(i for i in tail_row_ids if i in held)
+                if rewind_held:
+                    conn.execute("UPDATE messages SET active = 0, compacted = 0 WHERE session_id = ? "
+                        "AND id IN (SELECT value FROM json_each(?))", (session_id, json.dumps(rewind_held)))
+                conn.execute("UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1 "
+                    "AND id IN (SELECT value FROM json_each(?))", (session_id, held_json))
+                if foreign_ids:
+                    conn.execute("UPDATE messages SET active = 0, compacted = 0 WHERE session_id = ? "
+                        "AND id NOT IN (SELECT value FROM json_each(?)) AND active = 1", (session_id, held_json))
+                inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+                if foreign_ids:
+                    self._clone_message_rows(conn, foreign_ids)
+                    inserted += len(foreign_ids)
+                    tool_calls_total += foreign_tool_calls
+                conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
+                    (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+                return inserted
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))

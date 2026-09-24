@@ -381,6 +381,10 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
+    sources = (*prev.get("_source_row_ids", ()), prev.get("_row_id"),
+               *msg.get("_source_row_ids", ()), msg.get("_row_id"))
+    prev["_source_row_ids"] = tuple(i for i in sources if isinstance(i, int) and not isinstance(i, bool))
+
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
     calls_changed = False
@@ -570,6 +574,9 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
+            sources = (*prev.get("_source_row_ids", ()), prev.get("_row_id"),
+                       *msg.get("_source_row_ids", ()), msg.get("_row_id"))
+            prev["_source_row_ids"] = tuple(i for i in sources if isinstance(i, int) and not isinstance(i, bool))
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )

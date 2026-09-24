@@ -3603,12 +3603,22 @@ def _commit_compaction(
                 # In-place compaction: same session_id; soft-archive old turns (active=0, still
                 # searchable) + insert `compressed` atomically; no pre-flush (tail already in).
                 from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
+                def row_ids(rows):
+                    return tuple(dict.fromkeys(
+                        row_id for msg in rows if isinstance(msg, dict)
+                        for row_id in (*msg.get("_source_row_ids", ()), msg.get("_row_id"))
+                        if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0
+                    ))
+
+                held_row_ids = row_ids(messages_before_compression or [])
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
                 agent._session_db.archive_and_compact(
                     agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=lease.watermark, lock_holder=lease.holder,
                     tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
+                    held_row_ids=held_row_ids or None,
+                    tail_row_ids=row_ids(m for m in compressed if id(m) in _tail_tagged_ids),
                 )
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next

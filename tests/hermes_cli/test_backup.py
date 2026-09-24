@@ -265,6 +265,34 @@ class TestIterBackupFiles:
         selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
         assert {rel for rel in files if str(Path(rel)) in selected} == {rel for rel, keep in files.items() if keep}
 
+    def test_prunes_browser_use_backend_chrome_profile_dir(self, tmp_path):
+        """The ``browser-use`` backend writes ``HERMES_HOME/browser-use/chrome-profile`` (hyphen),
+        which no entry above matches — the underscore spelling is a different directory. Nothing was
+        excluded, so a live Chromium's exclusively-locked SQLite DB made ``_safe_copy_db`` hit its 10s
+        SQLITE_BUSY deadline, ``on_db_failure`` raised, and the WHOLE zip aborted as "Backup skipped
+        (no files found or write failed)" after minutes of work. Its ``Default/Cookies`` and
+        ``Default/Login Data`` are a credential store that must never be archived either.
+        Root-scoped like ``browser_profiles/``: a skill's same-named dir is user data (#117346)."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        files = {
+            "browser-use/chrome-profile/first_party_sets.db": False,
+            "browser-use/chrome-profile/Default/Login Data": False,
+            "browser-use/chrome-profile/Default/Cookies": False,
+            "browser-use/chrome-profile/Default/Web Data": False,
+            "profiles/coder/browser-use/chrome-profile/Default/Cookies": False,
+            "skills/example/browser-use/notes.md": True,
+            "state.db": True,
+        }
+        for rel in files:
+            f = root / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert {rel for rel in files if str(Path(rel)) in selected} == {rel for rel, keep in files.items() if keep}
+
     def test_prunes_regenerable_caches_but_keeps_durable_and_nested(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files
 

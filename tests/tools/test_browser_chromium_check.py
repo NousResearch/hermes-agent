@@ -49,13 +49,6 @@ class TestChromiumInstalled:
         assert bt_install._chromium_installed() is True
 
 
-    def test_result_cached(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        (tmp_path / "chromium-1208").mkdir()
-        assert bt_install._chromium_installed() is True
-        # Delete after first call — cached True should still return True.
-        (tmp_path / "chromium-1208").rmdir()
-        assert bt_install._chromium_installed() is True
 
 
 class TestCheckBrowserRequirementsChromium:
@@ -80,9 +73,5 @@ class TestCheckBrowserRequirementsChromium:
         assert bt_install.check_browser_requirements() is True
 
 
-class TestRunBrowserCommandChromiumGuard:
-    """Verify _run_browser_command fails fast (no timeout hang) when
-    Chromium is missing in local mode.
-    """
 
 

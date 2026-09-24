@@ -394,6 +394,91 @@ ${payload}
       path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2F.hermes%2Fskills%2Fwork-esab%2Freferences%2Fimages%2Fmanual-step03.jpeg'
     })
   })
+
+  it('collects images referenced with a #media: markdown href and decodes the path', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: '[Image: report](#media:C%3A%5CUsers%5CMorten%5CMy%20Report.png)',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      kind: 'image',
+      value: 'C:\\Users\\Morten\\My Report.png'
+    })
+  })
+
+  it('collects #media: hrefs with percent-encoded POSIX paths', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: '[Audio: clip](#media:%2Ftmp%2Fgenerated%2Fmy%20clip.mp3)',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      kind: 'file',
+      value: '/tmp/generated/my clip.mp3'
+    })
+  })
+
+  it('collects image markdown whose href is a #media: link', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: '![cat](#media:%2Ftmp%2Fgenerated%2Fcat.png)',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      kind: 'image',
+      value: '/tmp/generated/cat.png'
+    })
+  })
+
+  it('still collects legacy MEDIA paths and plain URLs beside #media: hrefs', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: [
+          '[Image: report](#media:C%3A%5CUsers%5CMorten%5CMy%20Report.png)',
+          'Old: **MEDIA: /tmp/generated/demo.png**',
+          'Link: [docs](https://example.com/docs)'
+        ].join('\n\n'),
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([
+      '/tmp/generated/demo.png',
+      'C:\\Users\\Morten\\My Report.png',
+      'https://example.com/docs'
+    ])
+  })
+
+  it('collects #media: hrefs stored on explicit tool artifact keys', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: JSON.stringify({ output_file: '#media:%2Ftmp%2Fgenerated%2Ftool.png' }),
+        role: 'tool',
+        timestamp: 2000,
+        tool_name: 'image_generate'
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      kind: 'image',
+      value: '/tmp/generated/tool.png'
+    })
+  })
 })
 
 describe('loadArtifactsForSessions', () => {

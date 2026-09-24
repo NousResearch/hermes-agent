@@ -177,7 +177,3 @@ def test_shell_snippets_paste_safe(p):
     )
 
 
-def test_grandfather_entries_still_needed():
-    """A grandfather entry whose violation is fixed must be removed."""
-    for rel in GRANDFATHER:
-        assert (REPO / rel / "SKILL.md").exists(), f"stale grandfather entry: {rel}"

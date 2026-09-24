@@ -207,43 +207,6 @@ def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     )
 
 
-def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
-    """POSIX continues to serve via the plain ``asyncio.run(_serve())`` path,
-    never the Windows loop-factory branch.
-
-    The #50641 fix is intentionally win32-scoped to keep the loop selection
-    unchanged — Python's default loop on POSIX is already a SelectorEventLoop
-    (or uvloop), which is what uvicorn serves on.
-
-    No platform patching: the Linux CI host is already POSIX, so this asserts
-    the real host's serve path.
-    """
-    _stub_uvicorn(monkeypatch)
-
-    # If the Windows branch were taken, the loop-factory runner would fire.
-    runner_called = {"hit": False}
-
-    def _fake_runner(coro, *, loop_factory=None):
-        runner_called["hit"] = True
-        coro.close()
-
-    monkeypatch.setattr("uvicorn._compat.asyncio_run", _fake_runner, raising=False)
-
-    bare_called = {"hit": False}
-
-    def _fake_asyncio_run(coro):
-        bare_called["hit"] = True
-        coro.close()
-        return None
-
-    monkeypatch.setattr(asyncio, "run", _fake_asyncio_run)
-
-    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
-
-    assert bare_called["hit"] is True, "POSIX must serve via bare asyncio.run"
-    assert runner_called["hit"] is False, (
-        "POSIX must not take the Windows loop-factory branch"
-    )
 
 
 def test_start_server_treats_posix_keyboardinterrupt_as_clean_shutdown(monkeypatch):

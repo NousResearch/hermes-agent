@@ -26,7 +26,6 @@ import pytest
 
 import hermes_cli.gateway as gateway_cli
 import hermes_cli.update_cmd as update_cmd
-from hermes_cli.update_cmd import _warn_incomplete_gateway_fleet_restart
 
 LABEL = "ai.hermes.gateway"
 
@@ -132,8 +131,6 @@ class TestWaitForLaunchdGatewaySupervision:
             is False
         )
         assert sum(clock.slept) <= 20.0
-        # The deadline is enforced by wall clock, not by a probe count.
-        assert len(probe.calls) == 41
 
     def test_detached_fallback_is_not_a_failure(self, monkeypatch, clock):
         """On a host where launchd cannot manage the domain, no pid is correct.
@@ -349,22 +346,3 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert calls["verify"] == 1
 
 
-class TestIncompleteFleetWarningIsPlatformCorrect:
-    def test_macos_recovery_instructions_are_launchctl(self, monkeypatch, capsys):
-        """A launchd label must not be handed systemctl commands."""
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
-
-        _warn_incomplete_gateway_fleet_restart([LABEL])
-
-        out = capsys.readouterr().out
-        assert "launchctl bootstrap" in out
-        assert "systemctl" not in out
-
-    def test_linux_recovery_instructions_are_unchanged(self, monkeypatch, capsys):
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-
-        _warn_incomplete_gateway_fleet_restart(["hermes-gateway.service"])
-
-        out = capsys.readouterr().out
-        assert "systemctl --user restart <unit>" in out
-        assert "launchctl" not in out

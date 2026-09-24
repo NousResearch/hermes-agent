@@ -457,6 +457,15 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     return None
 
 
+def _profile_endpoint_overridden(req: _Request) -> bool:
+    """A profile's catalog belongs to its declared endpoint, not a configured relay."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(req.normalized)
+    return bool(profile and profile.base_url and req.base_url
+                and req.base_url.rstrip("/") != profile.base_url.rstrip("/"))
+
+
 def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
     """``(catalog, authoritative)`` for a profile whose catalog is not the generic
     ``{base_url}/models`` listing — it overrides ``fetch_models`` or points ``models_url``
@@ -486,7 +495,7 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
-    catalog, authoritative = _profile_catalog(req.normalized)
+    catalog, authoritative = ([], False) if _profile_endpoint_overridden(req) else _profile_catalog(req.normalized)
     if catalog:
         match = _match_in_catalog(req.lookup, catalog, suggest_query=req.requested)
         if match.exact:
@@ -587,7 +596,7 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     from hermes_cli import models as _m
 
     label = _m._PROVIDER_LABELS.get(req.normalized, req.normalized)
-    catalog = _static_catalog(req.normalized)
+    catalog = [] if _profile_endpoint_overridden(req) else _static_catalog(req.normalized)
     if not catalog:
         return _soft_accept(f"Note: could not reach the {label} API to validate `{req.requested}`. "
                             "If the service isn't down, this model may not be valid.")

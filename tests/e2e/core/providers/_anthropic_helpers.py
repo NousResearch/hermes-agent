@@ -12,6 +12,7 @@ under ``tmp_path`` and a unique tag so cleanup signals only its own tree.
 from __future__ import annotations
 
 import copy
+import ctypes
 import json
 import os
 import signal
@@ -115,8 +116,24 @@ def hermes_argv(*args: str) -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main", *args]
 
 
+_PR_SET_CHILD_SUBREAPER = 36
+
+
+def become_subreaper() -> None:
+    """Adopt this test process's orphaned descendants (Linux ``PR_SET_CHILD_SUBREAPER``).
+
+    A Hermes child that daemonises a helper leaves it reparented to init, outside the test's
+    process tree, so teardown could neither reap it nor (under the local live-system guard)
+    signal it. As subreaper the orphans stay our children and ``kill_tagged`` stays in-tree."""
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
+
+
 def start_rig(root: Path, script: list[Response] | Responder, *, config: dict[str, Any] | None = None,
               aux: Responder | None = None) -> Rig:
+    become_subreaper()
     srv = AnthropicMessagesServer(script, aux=aux).start()
     ca = make_test_ca(root / "ca", [VENDOR_HOST])
     proxy = TLSInterceptProxy(srv, ca, [VENDOR_HOST]).start()  # type: ignore[arg-type]

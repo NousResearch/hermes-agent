@@ -65,6 +65,26 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('stops a URL capture at a closing backtick even when punctuation follows it', () => {
+    // The closing delimiter can carry trailing punctuation (`…`,) — the
+    // trailing-punctuation trim alone would leave the backtick behind, so the
+    // capture itself must refuse it.
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Deployed at `https://voice.qwickapps.com`, take a look.',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'https://voice.qwickapps.com',
+      kind: 'link',
+      value: 'https://voice.qwickapps.com'
+    })
+  })
+
   it('does not index passive links and paths observed in tool output', () => {
     const messages: SessionMessage[] = [
       {

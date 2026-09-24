@@ -185,7 +185,9 @@ describe('Unified package desktop half on a local backend', () => {
     $connection.set({ mode } as NonNullable<ReturnType<typeof $connection.get>>)
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
     requestGateway.mockImplementation(async (method, params) =>
-      method === 'plugins.manage' && params?.action === 'install' ? { ok: false, error: alreadyExists } : { plugins: [] }
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: false, error: alreadyExists }
+        : { plugins: [] }
     )
     installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
     vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })

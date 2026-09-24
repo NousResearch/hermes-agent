@@ -282,12 +282,12 @@ def _launch_elevated_install(force: bool = False, *, start_now: bool | None = No
 
 # ── Paths: where we stash our task script and where Startup lives
 
-def get_task_name() -> str:
-    """Scheduled Task name, scoped per profile."""
+def get_task_name(home: str | Path | None = None) -> str:
+    """Scheduled Task name for *home* (or the active profile when omitted)."""
     _assert_windows()
     from hermes_cli.gateway import _profile_suffix  # local: avoids circular init during boot
 
-    suffix = _profile_suffix()
+    suffix = _profile_suffix(home)
     return f"{_TASK_NAME_DEFAULT}_{suffix}" if suffix else _TASK_NAME_DEFAULT
 
 
@@ -1284,12 +1284,13 @@ def uninstall() -> None:
 
 # ── Status / start / stop / restart
 
-def is_task_registered() -> bool:
-    code, _out, _err = _exec_schtasks(["/Query", "/TN", get_task_name()])
+def is_task_registered(*, home: Path | None = None) -> bool:
+    task_name = get_task_name(home) if home is not None else get_task_name()
+    code, _out, _err = _exec_schtasks(["/Query", "/TN", task_name])
     return code == 0
 
 
-def _run_scheduled_task_once() -> tuple[int, str, str]:
+def _run_scheduled_task_once(*, home: Path | None = None) -> tuple[int, str, str]:
     """One-shot ``schtasks /Run`` for post-update Job Object recovery only.
 
     The Scheduled Task is login persistence; ordinary ``start()`` / ``restart()``
@@ -1297,7 +1298,8 @@ def _run_scheduled_task_once() -> tuple[int, str, str]:
     recovery may use this to start the gateway outside the parent Job Object
     (#107002 / #48820).
     """
-    return _exec_schtasks(["/Run", "/TN", get_task_name()])
+    task_name = get_task_name(home) if home is not None else get_task_name()
+    return _exec_schtasks(["/Run", "/TN", task_name])
 
 
 def is_startup_entry_installed() -> bool:

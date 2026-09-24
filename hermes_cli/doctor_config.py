@@ -422,6 +422,138 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
         f.issues.append(ci.message)
 
 
+# Kanban settings the runtime reads forgivingly: int() on a mapping or a non-numeric string raises and
+# the consumers (kanban_db_dispatch.configured_max_in_progress / _positive_int, wired up by
+# kanban_ops._cmd_dispatch) fall back to the default with no log, while bool() (kanban_diagnostics
+# auto_decompose, tools/kanban_tools auto_subscribe_on_create) takes every non-empty string as true —
+# bool("false") is True flips a user's "off" to "on". Doctor flags these raw-file forms warn-only; keys
+# outside these closed sets are never examined. The int floor follows each consumer's _positive_int
+# minimum: 1 everywhere except worker_log_backup_count, where 0 is legal (rotate but keep no backups).
+_KANBAN_INT_SETTINGS = (
+    "max_in_progress",
+    "max_in_progress_per_profile",
+    "max_spawn",
+    "worker_log_rotate_bytes",
+    "worker_log_backup_count",
+)
+_KANBAN_BOOL_SETTINGS = ("auto_decompose", "auto_subscribe_on_create", "review_dispatch")
+
+# max_spawn is the one int key the gateway dispatcher reads raw: gateway/kanban_watchers_dispatcher
+# passes kanban_cfg.get("max_spawn") straight into the tick's running-count comparison
+# (kanban_db_dispatch: ``running_count >= max_spawn``), with no _positive_int parse — so the CLI
+# story ("raises → falls back to the default") does not hold there. ``0``/``False`` makes the
+# comparison always true and no worker ever spawns; ``"3"``/mapping/list raises TypeError inside
+# the tick. Findings for these keys carry the gateway-path consequence instead of the CLI fallback.
+_KANBAN_GATEWAY_RAW_INT_SETTINGS = frozenset({"max_spawn"})
+
+
+def collect_kanban_config_findings(raw_config: dict | None) -> list[tuple[str, str, str]]:
+    """``(key_path, warn_text, detail)`` for kanban settings whose raw YAML form the runtime will misread.
+
+    Pure and warn-only: no I/O, no mutation, and the findings never become blocking issues. ``detail``
+    is a bare sentence — callers add their own presentation (the drift step wraps it in parentheses).
+    A null or missing ``kanban:`` section is unset by design (zero findings); a non-mapping section
+    yields exactly one section-level finding and the per-key checks are skipped.
+    """
+    if not isinstance(raw_config, dict):
+        return []
+    kanban = raw_config.get("kanban")
+    if kanban is None:  # key absent or explicit null — the runtime treats both as unset, not an error
+        return []
+    if not isinstance(kanban, dict):
+        return [("kanban", "kanban section is not a mapping",
+                 "the runtime guards a non-mapping section to {}, so every setting falls back to its "
+                 "default and the per-setting form checks are skipped")]
+    findings: list[tuple[str, str, str]] = []
+    for key in _KANBAN_INT_SETTINGS:
+        if key not in kanban or kanban[key] is None:  # explicit null counts as unset by design too
+            continue
+        min_floor = 0 if key == "worker_log_backup_count" else 1  # backup_count 0 = rotate, keep none
+        key_path = f"kanban.{key}"
+        value = kanban[key]
+        if isinstance(value, bool):  # BEFORE the int logic — isinstance(True, int) is True
+            if value:
+                findings.append((key_path, f"{key_path} is not a plain integer",
+                                 "int(True) == 1 coerces today, but a boolean in a number slot reads as a "
+                                 "slip — write the integer you mean"))
+            elif min_floor == 0:
+                continue  # a 0 floor accepts int(False) == 0: legal "rotate but keep no backups" form
+            else:
+                detail = ("int(False) == 0 is below the >= 1 floor — the runtime falls back to the "
+                          "default")
+                if key in _KANBAN_GATEWAY_RAW_INT_SETTINGS:
+                    detail = ("the gateway dispatcher reads this key raw, and False == 0 makes the "
+                              "running-count comparison always true — no worker ever spawns")
+                findings.append((key_path, f"{key_path} must be a positive integer", detail))
+            continue
+        try:
+            coerced = int(value)
+        except OverflowError:  # YAML .inf parses to float('inf'): int() overflows
+            detail = (f"int({value!r}) raises OverflowError — neither consumer's int-parse catches "
+                      "it, so the error propagates instead of falling back to the default; write the "
+                      "plain integer you mean")
+            if key in _KANBAN_GATEWAY_RAW_INT_SETTINGS:
+                detail = (f"int({value!r}) raises OverflowError on the CLI path — and the gateway "
+                          "dispatcher reads this key raw without an int() parse, where the .inf form "
+                          "disables the spawn cap; write the plain integer you mean")
+            findings.append((key_path, f"{key_path} is not a plain integer", detail))
+            continue
+        except (TypeError, ValueError):
+            detail = (f"int({value!r}) raises — the value is silently ignored and the runtime "
+                      "falls back to the default")
+            if key in _KANBAN_GATEWAY_RAW_INT_SETTINGS:
+                detail = (f"int({value!r}) raises on the CLI path, but the gateway dispatcher reads "
+                          f"this key raw — {value!r} reaches the tick unparsed and raises TypeError in "
+                          "the running-count comparison")
+            findings.append((key_path, f"{key_path} is not a plain integer", detail))
+            continue
+        if coerced < min_floor:
+            floor_word = "non-negative" if min_floor == 0 else "positive"
+            detail = (f"int({value!r}) == {coerced} is below the >= {min_floor} floor — the runtime "
+                      "falls back to the default")
+            if key in _KANBAN_GATEWAY_RAW_INT_SETTINGS:
+                detail = (f"int({value!r}) == {coerced} is below the >= {min_floor} floor on the CLI "
+                          f"path, but the gateway dispatcher reads it raw — {coerced} makes the "
+                          "running-count comparison always true and no worker ever spawns")
+            findings.append((key_path, f"{key_path} must be a {floor_word} integer", detail))
+        elif not isinstance(value, int):
+            detail = (f"int({value!r}) == {coerced} coerces today, but quoted numbers and floats are "
+                      "easy to misread — write the plain integer you mean")
+            if key in _KANBAN_GATEWAY_RAW_INT_SETTINGS:
+                detail = (f"int({value!r}) == {coerced} coerces on the CLI path, but the gateway "
+                          f"dispatcher reads this key raw — {value!r} never goes through int() there; "
+                          "only a plain integer is a safe form")
+            findings.append((key_path, f"{key_path} is not a plain integer", detail))
+    for key in _KANBAN_BOOL_SETTINGS:
+        if key not in kanban or isinstance(kanban[key], bool):
+            continue  # a real bool is the supported form; an absent key keeps the runtime default
+        key_path = f"kanban.{key}"
+        value = kanban[key]
+        if value is None:
+            detail = (f"explicit null reads as falsy = off, while a missing {key_path} defaults to on — "
+                      "the two unset forms disagree; write an unquoted true/false")
+        elif isinstance(value, str):
+            detail = ('bool("false") is True — bool() takes every non-empty string as true and swallows '
+                      f"the rest, so the quoted value {value!r} inverts the author's intent; write an "
+                      "unquoted true/false")
+        else:
+            detail = ("bool() swallows numbers wholesale — bool(0) is False and any non-zero number is "
+                      f"true, so {value!r} is read by luck rather than intent; write an unquoted true/false")
+        findings.append((key_path, f"{key_path} is not a true/false boolean", detail))
+    return findings
+
+
+def _drift_kanban_settings(f: Finding, should_fix: bool, config_path) -> None:
+    """Kanban settings whose raw YAML form the runtime will misread (warn-only; never mutates *f*)."""
+    from hermes_cli.config import read_user_config_raw
+    findings = collect_kanban_config_findings(read_user_config_raw(config_path))
+    if not findings:
+        return
+    _section("Kanban Settings")
+    for _key_path, warn_text, detail in findings:
+        check_warn(warn_text, f"({detail})")  # collector returns bare sentences; parens are presentation
+
+
 def _endpoint_url(entry: dict) -> str:
     """Comparable endpoint URL of a legacy list entry (``base_url``/``url``) or a ``providers:`` entry (``api``)."""
     url = entry.get("api") or entry.get("base_url") or entry.get("url") or ""
@@ -455,13 +587,13 @@ def _drift_legacy_custom_providers(f: Finding, should_fix: bool, config_path) ->
 
 _CONFIG_DRIFT_STEPS = (
     _drift_config_version, _drift_stale_root_keys, _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
-    _drift_legacy_custom_providers,
+    _drift_kanban_settings, _drift_legacy_custom_providers,
 )
 
 
 @doctor_check()
 def _check_config_drift(should_fix: bool, f: Finding) -> None:
-    """Config version, stale root keys, HERMES_MAX_ITERATIONS ghost, deprecations, structure.
+    """Config version, stale root keys, HERMES_MAX_ITERATIONS ghost, deprecations, structure, kanban setting forms.
 
     Each step is independent and best-effort: a failure in one never hides the next.
     """

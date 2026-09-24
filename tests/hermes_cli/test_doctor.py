@@ -1,5 +1,6 @@
 """Tests for hermes_cli.doctor."""
 
+import copy
 import importlib.util
 import subprocess
 import sys
@@ -1507,3 +1508,199 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     issues = []
     doctor_config._validate_auxiliary_config(cfg_file, issues)
     assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]
+
+
+class TestDoctorKanbanSettingForms:
+    """Kanban runtime reads are forgiving to a fault: a mapping handed to ``int()`` raises and falls back
+    to the default with no log, and ``bool("false") is True`` turns a user's "off" into "on". Doctor must
+    flag these raw-file forms (warn-only — never mutate the Finding) without touching keys outside the
+    closed setting enums. Nine behaviour invariants; no source-shape assertions, no wording pinning
+    beyond the three behaviour-marking phrases ("silently ignored", "falls back to the default",
+    ``bool("false") is True``) plus the gateway-raw max_spawn consequences (tick TypeError / no
+    worker ever spawns). Mirrors TestDoctorLegacyCustomProvidersResidue's direct drift-step +
+    redirect_stdout."""
+
+    INT_KEYS = ("max_in_progress", "max_in_progress_per_profile", "max_spawn",
+                "worker_log_rotate_bytes", "worker_log_backup_count")
+    BOOL_KEYS = ("auto_decompose", "auto_subscribe_on_create", "review_dispatch")
+
+    def test_non_dict_config_null_section_and_non_mapping_section_are_classified(self):
+        # No config at all: zero findings, whatever the junk shape.
+        for raw in (None, [], "kanban", 42, 3.5, True, {}):
+            assert doctor_config.collect_kanban_config_findings(raw) == []
+        # Missing or explicit-null kanban section = unset by design: zero findings.
+        assert doctor_config.collect_kanban_config_findings({"model": {"name": "m"}}) == []
+        assert doctor_config.collect_kanban_config_findings({"kanban": None}) == []
+        # A non-mapping kanban section yields exactly ONE section-level finding; per-key checks skipped.
+        for section in ("oops", 42, 1.5, True, [1, 2]):
+            findings = doctor_config.collect_kanban_config_findings({"kanban": section})
+            assert len(findings) == 1
+            key_path, warn_text, _detail = findings[0]
+            assert key_path == "kanban" and "mapping" in warn_text and "kanban" in warn_text
+
+    def test_collector_is_pure_finding_shape_is_stable(self):
+        # Findings are (key_path, warn_text, detail) string triples; collection never mutates the input
+        # and is deterministic across repeated calls.
+        raw = {"kanban": {"max_in_progress": {"coder": 1}, "auto_decompose": "false", "max_spawn": 2}}
+        snapshot = copy.deepcopy(raw)
+        findings = doctor_config.collect_kanban_config_findings(raw)
+        assert findings
+        for finding in findings:
+            assert isinstance(finding, tuple) and len(finding) == 3
+            assert all(isinstance(part, str) for part in finding)
+            key_path, warn_text, _detail = finding
+            assert key_path in warn_text  # every warn names its key
+        again = doctor_config.collect_kanban_config_findings(raw)
+        assert raw == snapshot and findings == again
+
+    def test_uncoercible_int_forms_say_silently_ignored(self):
+        # int(mapping/list/non-numeric-string) raises and the parsed int consumers swallow it into
+        # the default. max_spawn is the exception: the gateway dispatcher reads it raw, so the
+        # finding names the tick TypeError instead of a silent fallback.
+        for key in self.INT_KEYS:
+            if key == "max_spawn":
+                continue
+            for value in ({"coder": 1}, [1, 2], "", "soon"):
+                findings = doctor_config.collect_kanban_config_findings({"kanban": {key: value}})
+                assert len(findings) == 1, f"kanban.{key} = {value!r} must produce exactly 1 finding"
+                key_path, warn_text, detail = findings[0]
+                assert key_path == f"kanban.{key}" and key_path in warn_text
+                assert "silently ignored" in detail, f"kanban.{key} = {value!r}: {detail!r}"
+        for value in ({"coder": 1}, [1, 2], "", "soon"):
+            findings = doctor_config.collect_kanban_config_findings({"kanban": {"max_spawn": value}})
+            assert len(findings) == 1, f"max_spawn = {value!r} must produce exactly 1 finding"
+            _key_path, _warn_text, detail = findings[0]
+            assert "TypeError in the running-count comparison" in detail, f"{value!r}: {detail!r}"
+            assert "silently ignored" not in detail
+
+    def test_infinite_float_says_overflow_not_silent_fallback(self):
+        # YAML `.inf` parses to float('inf') and int() raises OverflowError — which the gateway consumer
+        # (kanban_db_dispatch.configured_max_in_progress) does NOT catch (only TypeError/ValueError), so
+        # the wording must name the propagation instead of claiming a silent fallback.
+        for key in self.INT_KEYS:
+            findings = doctor_config.collect_kanban_config_findings({"kanban": {key: float("inf")}})
+            assert len(findings) == 1
+            key_path, _warn_text, detail = findings[0]
+            assert key_path == f"kanban.{key}"
+            assert "int(" in detail and "OverflowError" in detail
+            assert "silently ignored" not in detail, f"kanban.{key}: {detail!r}"
+
+    def test_coercible_int_forms_name_the_coercion_never_ignored(self):
+        # ``true``/``"3"``/``1.5`` coerce via int() today (nothing is ignored) — the finding explains the
+        # coercion instead. ``true`` still earns a finding even though isinstance(True, int) is True: the
+        # bool classification must run before the int one.
+        for key in self.INT_KEYS:
+            for value in ("3", 1.5, True):
+                findings = doctor_config.collect_kanban_config_findings({"kanban": {key: value}})
+                assert len(findings) == 1, f"kanban.{key} = {value!r} must produce exactly 1 finding"
+                _key_path, _warn_text, detail = findings[0]
+                assert "int(" in detail, f"kanban.{key} = {value!r}: {detail!r}"
+                assert "ignored" not in detail, f"kanban.{key} = {value!r}: {detail!r}"
+
+    def test_below_floor_int_forms_fall_back_to_the_default(self):
+        # _positive_int(minimum=1) consumers: 0/negative/int(False) parse but violate the >= 1 floor —
+        # a fallback to the default, not a silent ignore. max_spawn is gateway-raw: the below-floor
+        # value is not fallen back — it makes the running-count comparison always true and stalls
+        # every spawn.
+        for key in self.INT_KEYS[:-1]:
+            if key == "max_spawn":
+                continue
+            for value in (0, -2, False):
+                findings = doctor_config.collect_kanban_config_findings({"kanban": {key: value}})
+                assert len(findings) == 1, f"kanban.{key} = {value!r} must produce exactly 1 finding"
+                _key_path, _warn_text, detail = findings[0]
+                assert "falls back to the default" in detail, f"kanban.{key} = {value!r}: {detail!r}"
+                assert "silently ignored" not in detail
+        for value in (0, -2, False):
+            findings = doctor_config.collect_kanban_config_findings({"kanban": {"max_spawn": value}})
+            assert len(findings) == 1, f"max_spawn = {value!r} must produce exactly 1 finding"
+            _key_path, _warn_text, detail = findings[0]
+            assert "no worker ever spawns" in detail, f"{value!r}: {detail!r}"
+            assert "falls back to the default" not in detail
+        # worker_log_backup_count is read with minimum=0: 0 is a legal "rotate but keep no backups"
+        # form (int(False) == 0 too), so only a negative count violates its floor.
+        backup = "worker_log_backup_count"
+        assert doctor_config.collect_kanban_config_findings({"kanban": {backup: 0}}) == []
+        assert doctor_config.collect_kanban_config_findings({"kanban": {backup: False}}) == []
+        findings = doctor_config.collect_kanban_config_findings({"kanban": {backup: -1}})
+        assert len(findings) == 1
+        assert findings[0][0] == f"kanban.{backup}"
+        assert "falls back to the default" in findings[0][2]
+
+    def test_valid_or_unset_int_values_are_silent(self):
+        # A plain positive int is the supported form; explicit null / absent key count as unset by design.
+        for key in self.INT_KEYS:
+            for value in (1, 3):
+                assert doctor_config.collect_kanban_config_findings({"kanban": {key: value}}) == []
+            assert doctor_config.collect_kanban_config_findings({"kanban": {key: None}}) == []
+        # Only existing keys are examined — absent closed-set keys never fire.
+        assert doctor_config.collect_kanban_config_findings({"kanban": {"auto_decompose": True}}) == []
+
+    def test_bool_slot_forms_flag_inversion_null_and_numbers_real_bools_silent(self):
+        # Any string: bool() takes every non-empty string as true, so a quoted "false" inverts the
+        # author's intent — the detail must carry the literal bool("false") is True.
+        for key in self.BOOL_KEYS:
+            for value in ("false", "true", ""):
+                findings = doctor_config.collect_kanban_config_findings({"kanban": {key: value}})
+                assert len(findings) == 1, f"kanban.{key} = {value!r} must produce exactly 1 finding"
+                key_path, warn_text, detail = findings[0]
+                assert key_path == f"kanban.{key}" and key_path in warn_text
+                assert 'bool("false") is True' in detail, f"kanban.{key} = {value!r}: {detail!r}"
+            # Explicit null reads falsy=off while a missing key defaults to on — the two unset forms
+            # disagree (unlike int slots, where null is unset by design). Numbers are read by luck.
+            for value in (None, 0, 2):
+                findings = doctor_config.collect_kanban_config_findings({"kanban": {key: value}})
+                assert len(findings) == 1, f"kanban.{key} = {value!r} must produce exactly 1 finding"
+                assert findings[0][0] == f"kanban.{key}" and findings[0][2]
+            # A real bool is the supported form.
+            for value in (True, False):
+                assert doctor_config.collect_kanban_config_findings({"kanban": {key: value}}) == []
+
+    def test_out_of_set_keys_incident_shape_and_warn_only_drift_chain(self, tmp_path):
+        # Keys outside the closed sets are never examined, whatever their shape.
+        assert doctor_config.collect_kanban_config_findings(
+            {"kanban": {"default_assignee": {"coder": 1}, "unknown_setting": "false", "auto_retry": 0}}) == []
+        assert doctor_config.collect_kanban_config_findings({"kanban": {}}) == []
+        # The real incident shape: a mapping in an int slot next to a string bool → exactly 2 findings
+        # with the two canonical wording markers.
+        incident_yaml = 'kanban:\n  max_in_progress_per_profile:\n    coder: 1\n  auto_decompose: "false"\n'
+        collected = doctor_config.collect_kanban_config_findings(
+            config_mod.read_user_config_raw(self._write(tmp_path, incident_yaml)))
+        assert len(collected) == 2
+        by_key = {key_path: detail for key_path, _warn_text, detail in collected}
+        assert set(by_key) == {"kanban.max_in_progress_per_profile", "kanban.auto_decompose"}
+        assert "silently ignored" in by_key["kanban.max_in_progress_per_profile"]
+        assert 'bool("false") is True' in by_key["kanban.auto_decompose"]
+        # Drift-step chain: every collected finding is rendered warn-only — Finding stays untouched,
+        # --fix does not silence anything, clean/missing configs stay fully silent.
+        clean_yaml = ("kanban:\n  default_assignee: ralph\n  max_in_progress: 2\n  auto_decompose: true\n"
+                      "  max_spawn: 3\n  worker_log_rotate_bytes: 2097152\n  worker_log_backup_count: 1\n"
+                      "  review_dispatch: true\n")
+        cfg = self._write(tmp_path, incident_yaml)
+        for should_fix in (False, True):
+            finding = doctor_config.Finding()
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                doctor_config._drift_kanban_settings(finding, should_fix, cfg)
+            out = buf.getvalue()
+            assert "Kanban Settings" in out and out.count("⚠") == 2
+            for key_path, warn_text, detail in collected:
+                assert key_path in out and warn_text in out and detail in out
+            assert finding.fixed == 0 and finding.issues == [] and finding.manual_issues == []
+        finding = doctor_config.Finding()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_config._drift_kanban_settings(finding, False, self._write(tmp_path, clean_yaml))
+        assert buf.getvalue() == ""
+        finding = doctor_config.Finding()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_config._drift_kanban_settings(finding, False, tmp_path / "absent.yaml")
+        assert buf.getvalue() == ""
+        assert finding.fixed == 0 and finding.issues == [] and finding.manual_issues == []
+
+    @staticmethod
+    def _write(tmp_path, yaml_text):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml_text, encoding="utf-8")
+        return cfg

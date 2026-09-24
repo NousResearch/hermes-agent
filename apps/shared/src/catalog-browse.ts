@@ -18,7 +18,7 @@ export type PluginCatalogSort = 'stars' | 'newest' | 'updated'
 export function sortCatalogPlugins<T extends { name: string; addedAt?: string | null; updatedAt?: string | null }>(entries: T[], sort: PluginCatalogSort): T[] {
   // The published snapshot already sorts stars descending, then name. Preserve
   // its order, including ties, rather than reinterpreting missing star counts.
-  if (sort === 'stars') return entries
+  if (sort === 'stars') { return entries }
   const field = sort === 'newest' ? 'addedAt' : 'updatedAt'
   const date = (value?: string | null) => {
     const ms = value ? Date.parse(value) : NaN

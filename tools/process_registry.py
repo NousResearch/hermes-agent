@@ -558,6 +558,12 @@ class ProcessSession:
     _watch_consecutive_strikes: int = field(default=0, repr=False)
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self):
+        # A session built without an explicit owner is owned by its own task, so ownership checks compare
+        # ``owner_task_id`` alone instead of repeating an ``or task_id`` fallback at every call site.
+        if not self.owner_task_id:
+            self.owner_task_id = self.task_id
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
 
@@ -1703,7 +1709,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             pending = [
                 s for store in (self._running, self._finished) for s in store.values()
                 if s.notify_on_complete and not s._completion_event.is_set()
-                and (task_id is None or (s.owner_task_id or s.task_id) == task_id)
+                and (task_id is None or s.owner_task_id == task_id)
             ]
         if not pending or timeout <= 0:
             return result
@@ -2291,7 +2297,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
-                if (task_id and (s.owner_task_id or s.task_id) == task_id)
+                if (task_id and s.owner_task_id == task_id)
                 or (session_key and s.session_key == session_key)
             ]
         result = []
@@ -2312,7 +2318,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             }
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).
-            if task_id and session_key and (s.owner_task_id or s.task_id) != task_id and s.session_key == session_key:
+            if task_id and session_key and s.owner_task_id != task_id and s.session_key == session_key:
                 entry["session_scoped"] = True
             # Trigger metadata for goal-loop judges (a watcher may never exit).
             if s.watch_patterns and not s._watch_disabled:
@@ -2394,9 +2400,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         turn; older ones intentionally span turns and must survive. Ownership is
         ``owner_task_id``: ``task_id`` is the container key (``session:<key>``,
         ``default``), shared across turns and sessions, not the turn's id."""
-        with self._lock:
-            return frozenset(
-                s.id for s in self._running.values() if (s.owner_task_id or s.task_id) == task_id and not s.exited)
+        return frozenset(s.id for s in self.running_owned_by(task_id))
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is
@@ -2412,7 +2416,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or (s.owner_task_id or s.task_id) == task_id)
+                if (task_id is None or s.owner_task_id == task_id)
                 and s.id not in exclude_ids and not s.exited
             ]
         return sum(

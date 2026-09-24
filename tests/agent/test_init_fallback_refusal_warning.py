@@ -43,7 +43,7 @@ class _Pool:
     def has_credentials(self):
         return True
 
-    def has_available(self, model=None):
+    def has_available(self, *, model=None):
         return self._available
 
 

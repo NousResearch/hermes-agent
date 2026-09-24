@@ -128,6 +128,17 @@ _EXCLUDED_PREFIXES = (
 # backup-side exclusions.
 _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
 
+try:  # zipfile already imports lzma (free); it is absent only from Pythons built without liblzma
+    import lzma
+    _LZMA_ERRORS: tuple[type[BaseException], ...] = (lzma.LZMAError,)
+except ImportError:  # pragma: no cover
+    _LZMA_ERRORS = ()
+
+# What reading a member's data raises when the archive itself is bad (a bzip2 bad stream and a
+# media read error are OSError, caught alongside): bad deflate stream, bad CRC, truncated stream.
+_ZIP_MEMBER_READ_ERRORS: tuple[type[BaseException], ...] = (
+    zipfile.BadZipFile, zlib.error, EOFError, *_LZMA_ERRORS)
+
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 # vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
 # IS included in backups (user-entered secrets, not regenerable — unlike the
@@ -791,9 +802,18 @@ def _find_corrupt_members(zf: zipfile.ZipFile, members: List[str]) -> List[str]:
             with zf.open(member) as src:
                 while src.read(1 << 20):  # CRC is checked when the stream hits EOF
                     pass
-        except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+        except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
             bad.append(f"{member}: {exc}")
     return bad
+
+
+def _import_skipped(rel: str) -> bool:
+    """True for a HERMES_HOME-relative member the import deliberately does not restore: runtime
+    state (``_IMPORT_SKIP_NAMES``), an archived SQLite WAL/SHM/journal -- a ``.db`` member is
+    page-restored into the live file, and a sidecar from a different database image installed
+    beside it would replay a foreign WAL on next open (current backups never ship these, older or
+    hand-built archives might) -- and the empty archive-prefix entry."""
+    return not rel or Path(rel).name in _IMPORT_SKIP_NAMES or rel.endswith(_SQLITE_SIDECAR_SUFFIXES)
 
 
 def _detect_prefix(zf: zipfile.ZipFile) -> str:
@@ -965,15 +985,9 @@ def _import_members(
             tighten = target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES
         else:
             rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
-            if rel and Path(rel).name in _IMPORT_SKIP_NAMES:  # see ``_IMPORT_SKIP_NAMES``
-                skipped_runtime.append(rel)
-                continue
-            # A ``.db`` member is page-restored into the live file; an archived WAL/SHM/journal
-            # describes a different database image and installed beside it (over a live sidecar)
-            # would replay a foreign WAL on next open. Current backups never ship these
-            # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
-            if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
-                skipped_runtime.append(rel)
+            if _import_skipped(rel):
+                if rel:
+                    skipped_runtime.append(rel)
                 continue
             target = hermes_root / rel
             root = hermes_root.resolve()
@@ -1004,8 +1018,8 @@ def _import_members(
                             raise
                 restored += 1
                 restored_external += external
-            except (PermissionError, OSError, zipfile.BadZipFile, zlib.error, EOFError) as exc:
-                # BadZipFile/zlib.error/EOFError: the pre-flight in run_import already refused
+            except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+                # _ZIP_MEMBER_READ_ERRORS: the pre-flight in run_import already refused
                 # archives that fail to decompress; this keeps a member that rots between the two
                 # passes (archive on failing media) from aborting the rest of the restore.
                 errors.append(f"{label}: {exc}")
@@ -1017,7 +1031,12 @@ def _import_members(
 
 
 def run_import(args) -> Optional[int]:
-    """Restore a Hermes backup from a zip file; return 1 when some members were not restored."""
+    """Restore a Hermes backup from a zip file.
+
+    Return 1 when the archive is damaged (refused before anything is written) or the restore is
+    incomplete (some members were not written); None on success or when the overwrite prompt is
+    declined. A missing, non-zip or invalid archive exits 1 via ``sys.exit``.
+    """
     zip_path = Path(args.zipfile).expanduser().resolve()
     if not zip_path.is_file():
         print(f"Error: File not found: {zip_path}")
@@ -1044,7 +1063,10 @@ def run_import(args) -> Optional[int]:
         # Every member is decompressed once here and once again below: a damaged archive
         # must be refused while the home is still untouched, not half-way through the restore.
         print("\nChecking archive integrity ...")
-        corrupt = _find_corrupt_members(zf, members)
+        # Members the restore skips anyway (gateway.pid, WAL sidecars) cannot block it.
+        corrupt = _find_corrupt_members(zf, [
+            m for m in members if m.startswith(_EXTERNAL_PREFIX)
+            or not _import_skipped(m[len(prefix):] if prefix and m.startswith(prefix) else m)])
         if corrupt:
             _print_capped(f"Error: backup archive is damaged ({len(corrupt)} member(s) fail to "
                           f"decompress or fail their CRC); nothing was restored:", corrupt, "  ")

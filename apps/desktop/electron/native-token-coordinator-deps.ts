@@ -17,10 +17,18 @@
  *     (audience from the registry), including a lazy first exchange when a
  *     saved cloud connection has no stored bearer (after sign-out + sign-in);
  *   - anything else      → the gateway's own `/auth/native/refresh`.
+ *
+ * A saved cloud-mode connection with NOTHING stored and no registry entry
+ * (e.g. after an org A→B→A round trip cleared the registry) earns one
+ * throttled portal discovery; the portal's answer — never the saved
+ * connection — decides whether and for which agent to exchange.
+ *
+ * A rate-limited exchange (429) is transient: a still-valid bearer keeps
+ * being served until it actually expires, and nothing is cleared.
  */
 
 import { readStatusCode } from './api-transport'
-import { isCloudAgentAccessLost, isCloudLoginRequired } from './cloud-auth-errors'
+import { isCloudAgentAccessLost, isCloudLoginRequired, isCloudRateLimited } from './cloud-auth-errors'
 import type { NativeAccessTokenCoordinatorDeps } from './native-access-token'
 import type { NativeTokenSet } from './native-oauth'
 
@@ -38,6 +46,13 @@ export interface DesktopNativeTokenDeps {
   /** Portal §5 exchange for one agent. */
   exchangeForAgent: (agentId: string) => Promise<NativeTokenSet>
   hasLivePortalSession: () => boolean
+  /** Whether a SAVED connection (config or registry) names this URL with mode 'cloud'. */
+  isSavedCloudConnection?: (baseUrl: string) => boolean
+  /**
+   * One throttled live portal discovery; resolves the agent id portal
+   * discovery now returns for this URL (recording it in the registry), or null.
+   */
+  rediscoverCloudAgentId?: (baseUrl: string) => Promise<null | string>
 }
 
 /**
@@ -51,6 +66,22 @@ export function isNativeRefreshAuthRejection(error: unknown): boolean {
 
 export function createNativeTokenCoordinatorDeps(deps: DesktopNativeTokenDeps): NativeAccessTokenCoordinatorDeps {
   const cloudAgentId = (baseUrl: string) => deps.cloudAgentIdFor(baseUrl)
+  const nowSeconds = () => deps.nowSeconds?.() ?? Math.floor(Date.now() / 1_000)
+
+  async function reExchange(agentId: string, tokens: NativeTokenSet, forced: boolean): Promise<NativeTokenSet> {
+    try {
+      return await deps.exchangeForAgent(agentId)
+    } catch (error) {
+      // Rate limited: keep serving the current bearer while it is still
+      // valid (unless it was just rejected). Otherwise the 429 propagates as
+      // a transient failure and the stored set is kept.
+      if (isCloudRateLimited(error) && !forced && tokens.expiresAt > nowSeconds()) {
+        return tokens
+      }
+
+      throw error
+    }
+  }
 
   return {
     loadTokens: deps.loadTokens,
@@ -62,15 +93,25 @@ export function createNativeTokenCoordinatorDeps(deps: DesktopNativeTokenDeps): 
     isRefreshAuthRejection: isNativeRefreshAuthRejection,
     // A cloud agent bearer has no refresh token but renews by re-exchange.
     canRefresh: (tokens, baseUrl) => Boolean(cloudAgentId(baseUrl)) || Boolean(tokens.refreshToken),
-    refreshTokens: (baseUrl, tokens) => {
+    refreshTokens: (baseUrl, tokens, context) => {
       const agentId = cloudAgentId(baseUrl)
 
-      return agentId ? deps.exchangeForAgent(agentId) : deps.refreshGatewayTokens(baseUrl, tokens)
+      return agentId
+        ? reExchange(agentId, tokens, Boolean(context?.forced))
+        : deps.refreshGatewayTokens(baseUrl, tokens)
     },
     bootstrapTokens: async baseUrl => {
-      const agentId = cloudAgentId(baseUrl)
+      if (!deps.hasLivePortalSession()) {
+        return null
+      }
 
-      return agentId && deps.hasLivePortalSession() ? deps.exchangeForAgent(agentId) : null
+      let agentId = cloudAgentId(baseUrl)
+
+      if (!agentId && deps.rediscoverCloudAgentId && deps.isSavedCloudConnection?.(baseUrl)) {
+        agentId = await deps.rediscoverCloudAgentId(baseUrl)
+      }
+
+      return agentId ? deps.exchangeForAgent(agentId) : null
     }
   }
 }

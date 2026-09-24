@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 
+import { cancelCloudSignIn, copyCloudSignInLink, useCloudSignInLink } from '@/app/settings/cloud-sign-in-link'
 import { Button } from '@/components/ui/button'
 import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
@@ -86,6 +87,9 @@ export function BootFailureOverlay() {
   // to the full Settings page (keeps the user on the recovery surface, no z-index
   // juggling, no second connection form to maintain).
   const [view, setView] = useState<RecoveryView>('recovery')
+  // A Hermes Cloud browser sign-in started from this card is pending.
+  const [cloudBrowserPending, setCloudBrowserPending] = useState(false)
+  const cloudSignInUrl = useCloudSignInLink(cloudBrowserPending)
 
   const visible = Boolean(boot.error) && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
@@ -213,7 +217,14 @@ export function BootFailureOverlay() {
         const status = await desktop.cloud.status()
 
         if (!status.signedIn) {
-          const login = await desktop.cloud.login()
+          setCloudBrowserPending(true)
+
+          const login = await desktop.cloud.login().finally(() => setCloudBrowserPending(false))
+
+          // A Deny in the browser or Cancel sign-in is the user's choice: quiet.
+          if (login.cancelled) {
+            return
+          }
 
           if (!login.signedIn) {
             // The Cloud sign-in happens in the default browser, not a window.
@@ -448,6 +459,27 @@ export function BootFailureOverlay() {
             </div>
             <p className="text-xs text-muted-foreground">{hint}</p>
           </div>
+
+          {cloudBrowserPending ? (
+            <div
+              aria-live="polite"
+              className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
+              role="status"
+            >
+              <span className="mr-auto">{t.settings.gateway.cloudBrowserPendingTitle}</span>
+              <Button
+                disabled={!cloudSignInUrl}
+                onClick={() => cloudSignInUrl && void copyCloudSignInLink(cloudSignInUrl, t.settings.gateway)}
+                size="sm"
+                variant="text"
+              >
+                {t.settings.gateway.cloudCopySignInLink}
+              </Button>
+              <Button onClick={cancelCloudSignIn} size="sm" variant="outline">
+                {t.settings.gateway.cloudCancelSignIn}
+              </Button>
+            </div>
+          ) : null}
 
           {logs.length > 0 ? (
             <div className="grid gap-2">

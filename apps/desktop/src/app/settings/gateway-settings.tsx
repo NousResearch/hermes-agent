@@ -39,6 +39,9 @@ import {
 import { managedUpdatesSupported } from '@/store/managed-updates'
 import { notify, notifyError, readableError } from '@/store/notifications'
 
+import { isCloudLoginRequiredErrorLike } from '../../../electron/cloud-auth-errors'
+
+import { cancelCloudSignIn, copyCloudSignInLink, useCloudSignInLink } from './cloud-sign-in-link'
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
@@ -330,8 +333,11 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   // exchange. These track the cloud panel: whether we're signed in, a pending
   // browser sign-in, the discovered agent list, and which agent is mid-connect.
   const [cloudSignedIn, setCloudSignedIn] = useState(false)
-  const [cloudSigningIn, setCloudSigningIn] = useState(false)
+  // A browser sign-in (first sign-in or "Change org") is pending.
   const [cloudBrowserPending, setCloudBrowserPending] = useState(false)
+  const [cloudSigningOut, setCloudSigningOut] = useState(false)
+  const cloudSignInUrl = useCloudSignInLink(cloudBrowserPending)
+  const cancelSignInRef = useRef<HTMLButtonElement>(null)
   const [cloudAgents, setCloudAgents] = useState<DesktopCloudAgent[]>([])
   const [cloudDiscover, setCloudDiscover] = useState<CloudDiscoverStatus>('idle')
   const [cloudConnectingId, setCloudConnectingId] = useState<null | string>(null)
@@ -828,7 +834,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       setCloudDiscover('error')
 
       // A lapsed/absent portal session means we're effectively signed out.
-      if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
+      if (isCloudLoginRequiredErrorLike(err)) {
         setCloudSignedIn(false)
       }
 
@@ -900,7 +906,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       return
     }
 
-    setCloudSigningIn(true)
     setCloudBrowserPending(true)
 
     try {
@@ -912,7 +917,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     } finally {
       if (seq === signingSeq.current) {
         setCloudBrowserPending(false)
-        setCloudSigningIn(false)
       }
     }
 
@@ -933,23 +937,12 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     }
   }
 
-  // Abort a pending browser sign-in (closing the tab alone leaves it waiting).
-  const cancelCloudSignIn = () => void window.hermesDesktop?.cloud?.cancelLogin?.().catch(() => undefined)
-
-  // "Browser didn't open?" — xdg-open and friends can report success without
-  // a browser actually appearing; hand the user the link instead.
-  const copyCloudSignInLink = async () => {
-    try {
-      const { url } = (await window.hermesDesktop?.cloud?.loginUrl?.()) ?? { url: null }
-
-      if (url) {
-        await navigator.clipboard.writeText(url)
-        notify({ kind: 'success', title: g.cloudSignInLinkCopied, message: g.cloudSignInLinkCopiedMessage })
-      }
-    } catch (err) {
-      notifyError(err, g.cloudSignInFailed)
+  // Keyboard users land on the way out of the pending browser flow.
+  useEffect(() => {
+    if (cloudBrowserPending) {
+      cancelSignInRef.current?.focus()
     }
-  }
+  }, [cloudBrowserPending])
 
   const cloudSignOut = async () => {
     const desktop = window.hermesDesktop
@@ -959,7 +952,14 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       return
     }
 
-    setCloudSigningIn(true)
+    // Signing out supersedes a pending "Change org" browser flow (whose
+    // result the bumped sequence would ignore anyway): close it too.
+    if (cloudBrowserPending) {
+      cancelCloudSignIn()
+      setCloudBrowserPending(false)
+    }
+
+    setCloudSigningOut(true)
 
     try {
       await desktop.cloud.logout()
@@ -979,13 +979,13 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       }
     } finally {
       if (seq === signingSeq.current) {
-        setCloudSigningIn(false)
+        setCloudSigningOut(false)
       }
     }
   }
 
-  // Select a discovered agent: drive the silent per-agent cascade (no second
-  // prompt — the shared portal session auto-approves), then persist a cloud-mode
+  // Select a discovered agent: main exchanges the desktop portal session for
+  // that agent's bearer (no browser prompt), then persist a cloud-mode
   // connection pointed at its dashboardUrl and apply it (soft-reconnects in place).
   const connectCloudAgent = async (agent: DesktopCloudAgent) => {
     const seq = contextSeq.current
@@ -1074,7 +1074,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         return
       }
 
-      if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
+      if (isCloudLoginRequiredErrorLike(err)) {
         setCloudSignedIn(false)
       }
 
@@ -1291,9 +1291,10 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         </div>
       </div>
 
-      {/* Hermes Cloud panel: one portal sign-in, then a discovered-agent picker
-          whose selection drives the silent per-agent cascade + a cloud
-          connection. Replaces the URL/token form while in cloud mode. */}
+      {/* Hermes Cloud panel: one browser sign-in, then a discovered-agent
+          picker whose selection exchanges the portal session for that agent's
+          bearer + saves a cloud connection. Replaces the URL/token form while
+          in cloud mode. */}
       {state.mode === 'cloud' && !state.envOverride ? (
         <div className="mt-5 grid gap-1">
           {savedCloudConnections.length > 0 ? (
@@ -1337,14 +1338,14 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                   <Pill tone="primary">
                     <Check className="size-3" /> {g.cloudSignedIn}
                   </Pill>
-                  <Button disabled={cloudSigningIn} onClick={() => void cloudSignOut()} variant="outline">
-                    {cloudSigningIn ? <Loader2 className="animate-spin" /> : null}
+                  <Button disabled={cloudSigningOut} onClick={() => void cloudSignOut()} variant="outline">
+                    {cloudSigningOut ? <Loader2 className="animate-spin" /> : null}
                     {g.signOut}
                   </Button>
                 </div>
               ) : (
-                <Button disabled={cloudSigningIn} onClick={() => void cloudSignIn()}>
-                  {cloudSigningIn ? <Loader2 className="animate-spin" /> : <LogIn />}
+                <Button disabled={cloudBrowserPending} onClick={() => void cloudSignIn()}>
+                  {cloudBrowserPending ? <Loader2 className="animate-spin" /> : <LogIn />}
                   {g.cloudSignIn}
                 </Button>
               )
@@ -1354,20 +1355,29 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           />
 
           {cloudBrowserPending ? (
-            <ListRow
-              action={
-                <div className="flex items-center gap-2">
-                  <Button onClick={() => void copyCloudSignInLink()} size="sm" variant="text">
-                    {g.cloudCopySignInLink}
-                  </Button>
-                  <Button onClick={cancelCloudSignIn} size="sm" variant="outline">
-                    {g.cloudCancelSignIn}
-                  </Button>
-                </div>
-              }
-              description={g.cloudBrowserPendingDesc}
-              title={g.cloudBrowserPendingTitle}
-            />
+            <div aria-live="polite" role="status">
+              <ListRow
+                action={
+                  <div className="flex items-center gap-2">
+                    {/* "Browser didn't open?" — xdg-open and friends can report
+                        success without a browser appearing; hand over the link. */}
+                    <Button
+                      disabled={!cloudSignInUrl}
+                      onClick={() => cloudSignInUrl && void copyCloudSignInLink(cloudSignInUrl, g)}
+                      size="sm"
+                      variant="text"
+                    >
+                      {g.cloudCopySignInLink}
+                    </Button>
+                    <Button onClick={cancelCloudSignIn} ref={cancelSignInRef} size="sm" variant="outline">
+                      {g.cloudCancelSignIn}
+                    </Button>
+                  </div>
+                }
+                description={g.cloudBrowserPendingDesc}
+                title={g.cloudBrowserPendingTitle}
+              />
+            </div>
           ) : null}
 
           {cloudSignedIn ? (

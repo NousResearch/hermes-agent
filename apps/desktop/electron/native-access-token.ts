@@ -24,7 +24,11 @@ export interface NativeAccessTokenCoordinatorDeps {
   loadTokens: (baseUrl: string) => NativeTokenSet | null
   normalizeBaseUrl: (baseUrl: string) => string
   nowSeconds?: () => number
-  refreshTokens: (baseUrl: string, tokens: NativeTokenSet) => Promise<NativeTokenSet>
+  /**
+   * `forced` is true when the caller reported the stored access token as
+   * rejected (a 401), so handing the same token back cannot help.
+   */
+  refreshTokens: (baseUrl: string, tokens: NativeTokenSet, context: { forced: boolean }) => Promise<NativeTokenSet>
   storeTokens: (baseUrl: string, tokens: NativeTokenSet) => void
   tokenNeedsRefresh: (tokens: NativeTokenSet, nowSeconds: number) => boolean
 }
@@ -76,8 +80,9 @@ export function createNativeAccessTokenCoordinator(deps: NativeAccessTokenCoordi
 
     const nowSeconds = deps.nowSeconds?.() ?? Math.floor(Date.now() / 1_000)
     const rejectedCurrentToken = !options.rejectedAccessToken || options.rejectedAccessToken === tokens.accessToken
+    const forced = Boolean(options.forceRefresh && rejectedCurrentToken)
 
-    if (!(options.forceRefresh && rejectedCurrentToken) && !deps.tokenNeedsRefresh(tokens, nowSeconds)) {
+    if (!forced && !deps.tokenNeedsRefresh(tokens, nowSeconds)) {
       return tokens.accessToken
     }
 
@@ -87,7 +92,7 @@ export function createNativeAccessTokenCoordinator(deps: NativeAccessTokenCoordi
       return null
     }
 
-    return runFlight(baseUrl, () => deps.refreshTokens(baseUrl, tokens), true)
+    return runFlight(baseUrl, () => deps.refreshTokens(baseUrl, tokens, { forced }), true)
   }
 
   // One flight per host: a refresh of the stored set, or a bootstrap when

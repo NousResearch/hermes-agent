@@ -328,9 +328,11 @@ function makeAuth(
     discover?: () => Promise<any[]>
     exchange?: (agentId: string) => Promise<NativeTokenSet>
     stored?: Record<string, NativeTokenSet>
+    disk?: ReturnType<typeof memoryIo>
+    nowMs?: () => number
   } = {}
 ) {
-  const disk = memoryIo()
+  const disk = opts.disk ?? memoryIo()
   const registry = createCloudAgentRegistry(disk.io, normalizeRemoteBaseUrl)
   const stored = new Map<string, NativeTokenSet>(Object.entries(opts.stored ?? {}))
   const cleared: string[] = []
@@ -359,7 +361,8 @@ function makeAuth(
       portalCleared = true
     },
     discoverAgents: opts.discover,
-    log: line => logs.push(line)
+    log: line => logs.push(line),
+    nowMs: opts.nowMs
   })
 
   return { auth, registry, stored, cleared, exchanged, logs, portalCleared: () => portalCleared, disk }
@@ -496,4 +499,141 @@ test('m1: forgetting the old org drops every cloud agent bearer and the registry
   expect(registry.urls()).toEqual([])
   expect([...stored.keys()]).toEqual(['https://gw.example.test'])
   expect(portalCleared()).toBe(false)
+})
+
+// --- T2: stale registry vs. a mismatched hint ---
+
+test("T2: a hint that disagrees with a STALE registry entry re-discovers; the portal's new id is exchanged", async () => {
+  let discoveries = 0
+
+  const { auth, exchanged, registry } = makeAuth({
+    discover: async () => {
+      discoveries++
+
+      return [{ id: 'agt_new', dashboardUrl: AGENT_URL }]
+    }
+  })
+
+  auth.rememberDiscovered([{ id: 'agt_old', dashboardUrl: AGENT_URL }])
+  await auth.signIn(AGENT_URL, 'agt_new')
+  expect(discoveries).toBe(1)
+  expect(exchanged).toEqual(['agt_new'])
+  expect(registry.agentIdFor(AGENT_URL)).toBe('agt_new')
+})
+
+// --- N2: org change detected across a sign-out ---
+
+test("N2: sign out of org A, sign in to org B → A's registry entries are dropped and never exchanged", async () => {
+  const disk = memoryIo()
+  const first = makeAuth({ disk })
+
+  first.auth.adoptSessionOrg('org_a')
+  first.auth.rememberDiscovered([{ id: 'agt_a', dashboardUrl: AGENT_URL }])
+  await first.auth.signIn(AGENT_URL, 'agt_a')
+  first.auth.logout()
+  expect(first.registry.agentIdFor(AGENT_URL)).toBe('agt_a')
+
+  // Restart: the org is persisted with the registry (non-secret).
+  const exchanged: string[] = []
+  const registry = createCloudAgentRegistry(disk.io, normalizeRemoteBaseUrl)
+  expect(registry.orgId()).toBe('org_a')
+
+  const second = createCloudAgentAuth({
+    normalizeBaseUrl: normalizeRemoteBaseUrl,
+    registry,
+    exchangeForAgent: async agentId => {
+      exchanged.push(agentId)
+
+      return agentTokens({ userId: agentId })
+    },
+    storeAgentTokens: () => undefined,
+    clearAgentTokens: () => undefined,
+    listStoredTokenUrls: () => [],
+    loadStoredTokens: () => null,
+    clearPortalSession: () => undefined
+  })
+
+  second.adoptSessionOrg('org_b')
+  expect(registry.urls()).toEqual([])
+  expect(registry.orgId()).toBe('org_b')
+  await expect(second.signIn(AGENT_URL)).rejects.toThrow(/could not find this agent/i)
+  expect(exchanged).toEqual([])
+})
+
+test('N2: signing in again to the SAME org keeps the registry; unknown-org entries are dropped for a known org', () => {
+  const same = makeAuth()
+  same.auth.adoptSessionOrg('org_a')
+  same.auth.rememberDiscovered([{ id: 'agt_a', dashboardUrl: AGENT_URL }])
+  same.auth.adoptSessionOrg('org_a')
+  expect(same.registry.agentIdFor(AGENT_URL)).toBe('agt_a')
+
+  // A bare map written by an earlier build has no org: not trusted for org_b.
+  const legacy = makeAuth({ disk: memoryIo(JSON.stringify({ [AGENT_URL]: 'agt_legacy' })) })
+  expect(legacy.registry.agentIdFor(AGENT_URL)).toBe('agt_legacy')
+  legacy.auth.adoptSessionOrg('org_b')
+  expect(legacy.registry.urls()).toEqual([])
+})
+
+test("N2: an org change also clears the old org's stored agent bearers", async () => {
+  const { auth, stored } = makeAuth({ stored: { 'https://gw.example.test': gatewayTokens() } })
+
+  auth.adoptSessionOrg('org_a')
+  auth.rememberDiscovered([{ id: 'agt_a', dashboardUrl: AGENT_URL }])
+  await auth.signIn(AGENT_URL, 'agt_a')
+  auth.adoptSessionOrg('org_b')
+  expect([...stored.keys()]).toEqual(['https://gw.example.test'])
+})
+
+// --- N3: throttled background rediscovery ---
+
+test('N3: rediscoverAgentId shares one discovery between concurrent callers and throttles repeats', async () => {
+  let now = 0
+  let discoveries = 0
+  let listed: Array<{ id: string; dashboardUrl: string }> = []
+
+  const { auth } = makeAuth({
+    nowMs: () => now,
+    discover: async () => {
+      discoveries++
+
+      return listed
+    }
+  })
+
+  await expect(Promise.all([auth.rediscoverAgentId(AGENT_URL), auth.rediscoverAgentId(AGENT_URL)])).resolves.toEqual([
+    null,
+    null
+  ])
+  expect(discoveries).toBe(1)
+
+  // Within the throttle window: no second portal round trip.
+  listed = [{ id: 'agt_1', dashboardUrl: AGENT_URL }]
+  now = 30_000
+  await expect(auth.rediscoverAgentId(AGENT_URL)).resolves.toBeNull()
+  expect(discoveries).toBe(1)
+
+  now = 61_000
+  await expect(auth.rediscoverAgentId(AGENT_URL)).resolves.toBe('agt_1')
+  expect(discoveries).toBe(2)
+  // Now known: served from the registry.
+  await expect(auth.rediscoverAgentId(AGENT_URL)).resolves.toBe('agt_1')
+  expect(discoveries).toBe(2)
+})
+
+test('N3: a failed background discovery is logged and reads as unknown; non-https URLs never trigger one', async () => {
+  let discoveries = 0
+
+  const { auth, logs } = makeAuth({
+    discover: async () => {
+      discoveries++
+
+      throw Object.assign(new Error('signed out'), { needsCloudLogin: true })
+    }
+  })
+
+  await expect(auth.rediscoverAgentId('http://plain.example.test')).resolves.toBeNull()
+  expect(discoveries).toBe(0)
+  await expect(auth.rediscoverAgentId(AGENT_URL)).resolves.toBeNull()
+  expect(discoveries).toBe(1)
+  expect(logs.join('\n')).toMatch(/background agent discovery failed/)
 })

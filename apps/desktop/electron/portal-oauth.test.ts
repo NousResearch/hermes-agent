@@ -13,13 +13,15 @@ import {
   authorizationCodeGrant,
   buildPortalAuthorizeUrl,
   CLOUD_AGENT_TOKEN_PROVIDER,
+  isPortalRateLimited,
   oauthErrorCode,
   parseAgentTokenResponse,
   parsePortalTokenResponse,
   PORTAL_TOKEN_PROVIDER,
   portalTokenOrgId,
   portalTokenUrl,
-  refreshTokenGrant
+  refreshTokenGrant,
+  retryAfterSeconds
 } from './portal-oauth'
 
 const PORTAL = 'https://portal.example.test'
@@ -170,4 +172,21 @@ test('portalTokenOrgId reads org_id from the access token for display only', () 
   expect(portalTokenOrgId(jwt({ org_id: 'org_9', client_id: 'hermes-desktop' }))).toBe('org_9')
   expect(portalTokenOrgId('not-a-jwt')).toBeNull()
   expect(portalTokenOrgId(jwt({ sub: 'u' }))).toBeNull()
+})
+
+test('§5 rate limit: 429 or slow_down is rate limited; Retry-After reads delta-seconds or an HTTP date, clamped', () => {
+  const limited = (retryAfter?: string) =>
+    Object.assign(httpStatusError(429, JSON.stringify({ error: 'slow_down' })), retryAfter ? { retryAfter } : {})
+
+  expect(isPortalRateLimited(limited())).toBe(true)
+  expect(isPortalRateLimited(httpStatusError(400, JSON.stringify({ error: 'slow_down' })))).toBe(true)
+  expect(isPortalRateLimited(httpStatusError(400, JSON.stringify({ error: 'invalid_grant' })))).toBe(false)
+
+  const now = Date.parse('2026-09-24T00:00:00Z')
+  expect(retryAfterSeconds(limited('17'), now)).toBe(17)
+  expect(retryAfterSeconds(limited('Thu, 24 Sep 2026 00:00:45 GMT'), now)).toBe(45)
+  expect(retryAfterSeconds(limited(), now)).toBe(60)
+  expect(retryAfterSeconds(limited('soon'), now)).toBe(60)
+  expect(retryAfterSeconds(limited('0'), now)).toBe(1)
+  expect(retryAfterSeconds(limited('999999'), now)).toBe(900)
 })

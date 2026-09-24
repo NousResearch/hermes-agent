@@ -46,34 +46,50 @@ export interface CloudAgentRegistryIo {
  * dashboardUrl → AgentInstance id, persisted. Not a secret (the id is the
  * public audience). Written only from portal discovery; it lets reconnect
  * after a restart (or a sign-out/sign-in) re-exchange without a round trip.
+ *
+ * The file also records the org (`org_id` of the desktop token, non-secret)
+ * the entries were discovered under, so a sign-in to another org — even
+ * after a sign-out left no previous token to compare — drops them. On disk:
+ * `{ "orgId": string | null, "agents": { url: id } }`; a bare `{ url: id }`
+ * map (earlier builds) reads as org unknown.
  */
 export function createCloudAgentRegistry(io: CloudAgentRegistryIo, normalizeBaseUrl: (url: string) => string) {
-  let cache: null | Record<string, string> = null
+  let cache: null | { orgId: null | string; agents: Record<string, string> } = null
 
-  const read = (): Record<string, string> => {
+  const onlyStringEntries = (value: unknown): Record<string, string> =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0
+          )
+        )
+      : {}
+
+  const read = () => {
     if (cache) {
       return cache
     }
 
     try {
       const parsed: unknown = JSON.parse(io.readText())
+      const shaped = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as any) : null
 
-      cache =
-        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? Object.fromEntries(
-              Object.entries(parsed as Record<string, unknown>).filter(
-                (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0
-              )
-            )
-          : {}
+      if (shaped && 'agents' in shaped) {
+        cache = {
+          orgId: typeof shaped.orgId === 'string' && shaped.orgId ? shaped.orgId : null,
+          agents: onlyStringEntries(shaped.agents)
+        }
+      } else {
+        cache = { orgId: null, agents: onlyStringEntries(shaped) }
+      }
     } catch {
-      cache = {}
+      cache = { orgId: null, agents: {} }
     }
 
     return cache
   }
 
-  const write = (next: Record<string, string>) => {
+  const write = (next: { orgId: null | string; agents: Record<string, string> }) => {
     cache = next
 
     try {
@@ -95,33 +111,45 @@ export function createCloudAgentRegistry(io: CloudAgentRegistryIo, normalizeBase
     agentIdFor(url: string): null | string {
       const key = keyFor(url)
 
-      return key ? (read()[key] ?? null) : null
+      return key ? (read().agents[key] ?? null) : null
     },
     /** Throws on a URL normalizeBaseUrl rejects; callers skip such rows. */
     remember(url: string, agentId: string): void {
       const key = normalizeBaseUrl(url)
       const current = read()
 
-      if (!key || !agentId || current[key] === agentId) {
+      if (!key || !agentId || current.agents[key] === agentId) {
         return
       }
 
-      write({ ...current, [key]: agentId })
+      write({ ...current, agents: { ...current.agents, [key]: agentId } })
     },
     forget(url: string): void {
       const key = keyFor(url)
       const current = read()
 
-      if (key && key in current) {
-        const { [key]: _dropped, ...rest } = current
-        write(rest)
+      if (key && key in current.agents) {
+        const { [key]: _dropped, ...rest } = current.agents
+        write({ ...current, agents: rest })
       }
     },
     clear(): void {
-      write({})
+      write({ ...read(), agents: {} })
     },
     urls(): string[] {
-      return Object.keys(read())
+      return Object.keys(read().agents)
+    },
+    /** The org the entries were discovered under; null = unknown. */
+    orgId(): null | string {
+      return read().orgId
+    },
+    /** Record the org; the entries are the caller's to clear first. */
+    setOrgId(orgId: null | string): void {
+      const current = read()
+
+      if (current.orgId !== orgId) {
+        write({ ...current, orgId })
+      }
     }
   }
 }
@@ -144,13 +172,21 @@ export interface CloudAgentAuthDeps {
   discoverAgents?: () => Promise<Array<{ id: string; dashboardUrl: null | string }>>
   /** Diagnostics; never passed a token. */
   log?: (line: string) => void
+  /** Clock for the rediscovery throttle (ms). */
+  nowMs?: () => number
 }
+
+/** Background rediscovery (bootstrap of a saved connection) runs at most this often. */
+export const CLOUD_REDISCOVERY_MIN_INTERVAL_MS = 60_000
 
 export const CLOUD_AGENT_NOT_FOUND_MESSAGE =
   'Could not find this agent in your Hermes Cloud account. Refresh the agent list in Settings → Gateway and pick it again.'
 
 export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
   const log = deps.log ?? (() => undefined)
+  const nowMs = deps.nowMs ?? (() => Date.now())
+  let rediscovery: null | Promise<void> = null
+  let lastRediscoveryAt = Number.NEGATIVE_INFINITY
 
   /** Record portal discovery rows; a malformed row is skipped on its own. */
   function rememberDiscovered(agents: Array<{ id: string; dashboardUrl: null | string }>): void {
@@ -195,6 +231,61 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     }
 
     throw new Error(CLOUD_AGENT_NOT_FOUND_MESSAGE)
+  }
+
+  /**
+   * Background fallback for a saved cloud connection the registry does not
+   * know (e.g. after org A→B→A cleared it): ONE live portal discovery,
+   * shared by concurrent callers and throttled across calls, then the
+   * registry — i.e. the portal's answer — decides. A discovery failure is
+   * logged and reads as "unknown" (null), never thrown.
+   */
+  async function rediscoverAgentId(dashboardUrl: string): Promise<null | string> {
+    const known = deps.registry.agentIdFor(dashboardUrl)
+
+    if (known || !deps.discoverAgents || !cloudDashboardUrlAllowed(dashboardUrl)) {
+      return known
+    }
+
+    if (!rediscovery) {
+      if (nowMs() - lastRediscoveryAt < CLOUD_REDISCOVERY_MIN_INTERVAL_MS) {
+        return null
+      }
+
+      lastRediscoveryAt = nowMs()
+      const discoverAgents = deps.discoverAgents
+
+      rediscovery = (async () => {
+        try {
+          rememberDiscovered(await discoverAgents())
+        } catch (error) {
+          log(`[cloud] background agent discovery failed: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+          rediscovery = null
+        }
+      })()
+    }
+
+    await rediscovery
+
+    return deps.registry.agentIdFor(dashboardUrl)
+  }
+
+  /**
+   * A sign-in succeeded with a desktop token pinned to `orgId`. When the
+   * registry was populated under another org (or an unknown one), every
+   * agent bearer and registry entry belongs to that org: drop them, so none
+   * of them is ever exchanged with the new session.
+   */
+  function adoptSessionOrg(orgId: null | string): void {
+    const previous = deps.registry.orgId()
+
+    if (previous !== orgId && (previous !== null || deps.registry.urls().length > 0 || agentTokenUrls().length > 0)) {
+      log("[cloud] Hermes Cloud session is pinned to a different org; dropping the previous org's agents")
+      forgetAgents()
+    }
+
+    deps.registry.setOrgId(orgId)
   }
 
   /**
@@ -263,5 +354,5 @@ export function createCloudAgentAuth(deps: CloudAgentAuthDeps) {
     deps.registry.clear()
   }
 
-  return { rememberDiscovered, signIn, logout, forgetAgents }
+  return { rememberDiscovered, rediscoverAgentId, adoptSessionOrg, signIn, logout, forgetAgents }
 }

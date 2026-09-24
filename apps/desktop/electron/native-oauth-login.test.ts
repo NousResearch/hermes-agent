@@ -229,6 +229,20 @@ test('any other error with our state is a failure with a neutral "did not comple
   assert.doesNotMatch(reply.body, /cancelled/i)
 })
 
+test('a callback with our state but neither code nor error gets the "did not complete" page, not success', async () => {
+  const login = startGatewayLogin()
+  await tick()
+
+  const reply = login.state.hitCallback(`state=${login.realState()}`)
+
+  const error = await login.promise.catch(e => e)
+  assert.match(error.message, /missing authorization code/i)
+  assert.equal(reply.status, 200)
+  assert.match(reply.body, /did not complete/i)
+  assert.doesNotMatch(reply.body, /signed in/i)
+  assert.equal(login.redeemed(), 0)
+})
+
 test('aborting the signal cancels a pending login and tears the listener down', async () => {
   const controller = new AbortController()
   const login = startGatewayLogin({ signal: controller.signal })

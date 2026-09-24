@@ -15,7 +15,7 @@
  * JSON through the same cookieless transport the gateway native flow uses.
  */
 
-import { readJsonErrorBody } from './api-transport'
+import { readJsonErrorBody, readStatusCode } from './api-transport'
 import type { NativeTokenSet } from './native-oauth'
 
 export const PORTAL_CLIENT_ID = 'hermes-desktop'
@@ -175,6 +175,39 @@ export function oauthErrorCode(error: unknown): null | string {
   const code = readJsonErrorBody(error)?.error
 
   return typeof code === 'string' && code ? code : null
+}
+
+// §5 429 without a usable Retry-After: back off a minute (the limit is 60/min).
+const DEFAULT_RETRY_AFTER_SECONDS = 60
+const MAX_RETRY_AFTER_SECONDS = 15 * 60
+
+/** A §5 rate-limit answer: 429, or the RFC 8628-style `slow_down` code. */
+export function isPortalRateLimited(error: unknown): boolean {
+  return readStatusCode(error) === 429 || oauthErrorCode(error) === 'slow_down'
+}
+
+/**
+ * Seconds to wait from the `Retry-After` header an HTTP error carries (the
+ * transport copies it onto `error.retryAfter`): delta-seconds or an HTTP
+ * date. Missing/unparseable → a conservative default; clamped to [1, 15 min].
+ */
+export function retryAfterSeconds(error: unknown, nowMs: number): number {
+  const raw =
+    error && typeof error === 'object' ? String((error as { retryAfter?: unknown }).retryAfter ?? '').trim() : ''
+
+  let seconds = DEFAULT_RETRY_AFTER_SECONDS
+
+  if (/^\d+$/.test(raw)) {
+    seconds = Number(raw)
+  } else if (raw) {
+    const at = Date.parse(raw)
+
+    if (Number.isFinite(at)) {
+      seconds = Math.ceil((at - nowMs) / 1_000)
+    }
+  }
+
+  return Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(1, seconds))
 }
 
 /** The org the desktop token is pinned to (`org_id` claim), for display only. */

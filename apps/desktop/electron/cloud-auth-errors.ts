@@ -20,6 +20,14 @@ export const CLOUD_SESSION_EXPIRED_MESSAGE =
 export const CLOUD_AGENT_ACCESS_LOST_MESSAGE =
   'You no longer have access to this Hermes Cloud agent. Ask an organization admin for access, or sign in to Hermes Cloud again and choose another agent.'
 
+/**
+ * §5 is rate limited per desktop session (429 `slow_down` + Retry-After).
+ * A rate-limited exchange is transient: never an auth verdict, never retried
+ * in a tight loop.
+ */
+export const CLOUD_EXCHANGE_RATE_LIMITED_MESSAGE = (retryAfterSeconds: number) =>
+  `Hermes Cloud is rate-limiting agent sign-ins. Try again in ${Math.max(1, Math.ceil(retryAfterSeconds))} seconds.`
+
 export type CloudLoginRequiredError = Error & { needsCloudLogin: true; cause?: unknown }
 export type CloudAgentAccessLostError = Error & { cloudAgentAccessLost: true; cause?: unknown }
 
@@ -45,10 +53,61 @@ export function cloudAgentAccessLostError(cause?: unknown): CloudAgentAccessLost
   return error
 }
 
+export type CloudExchangeRateLimitedError = Error & {
+  cloudRateLimited: true
+  statusCode: 429
+  retryAfterSeconds: number
+  cause?: unknown
+}
+
+export function cloudExchangeRateLimitedError(
+  retryAfterSeconds: number,
+  cause?: unknown
+): CloudExchangeRateLimitedError {
+  const error = new Error(CLOUD_EXCHANGE_RATE_LIMITED_MESSAGE(retryAfterSeconds)) as CloudExchangeRateLimitedError
+  error.cloudRateLimited = true
+  // Same shape as an HTTP 429 so status-based classifiers agree.
+  error.statusCode = 429
+  error.retryAfterSeconds = retryAfterSeconds
+
+  if (cause !== undefined) {
+    error.cause = cause
+  }
+
+  return error
+}
+
+/** A 429 (portal §5 rate limit, or our own backoff gate). Transient, never auth loss. */
+export function isCloudRateLimited(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const tagged = error as { cloudRateLimited?: unknown; statusCode?: unknown }
+
+  return tagged.cloudRateLimited === true || Number(tagged.statusCode) === 429
+}
+
 export function isCloudLoginRequired(error: unknown): boolean {
   return Boolean(
     error && typeof error === 'object' && (error as { needsCloudLogin?: unknown }).needsCloudLogin === true
   )
+}
+
+/**
+ * Renderer-side check. Electron's ipcRenderer.invoke rejects with a plain
+ * Error whose message wraps the main-process message and drops custom
+ * properties, so the stable needsCloudLogin messages are the cross-process
+ * discriminator (same approach as the pool slot-timeout phrase).
+ */
+export function isCloudLoginRequiredErrorLike(error: unknown): boolean {
+  if (isCloudLoginRequired(error)) {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+
+  return message.includes(CLOUD_NOT_SIGNED_IN_MESSAGE) || message.includes(CLOUD_SESSION_EXPIRED_MESSAGE)
 }
 
 export function isCloudAgentAccessLost(error: unknown): boolean {

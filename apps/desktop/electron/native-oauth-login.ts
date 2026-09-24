@@ -163,18 +163,22 @@ export async function runLoopbackAuthorization<T>(
         return
       }
 
-      const error = parsed.searchParams.get('error')
-
-      // The outcome page is chosen only after the state check. We never
-      // surface tokens to the browser, only to the app.
-      reply(res, 200, error ? (error === 'access_denied' ? CANCELLED_HTML : INCOMPLETE_HTML) : DONE_HTML)
+      // The outcome page is chosen only after the callback parses: a
+      // redirect carrying our state but neither a code nor an error is not a
+      // success. We never surface tokens to the browser, only to the app.
+      let code: string
 
       try {
-        const { code } = parseLoopbackCallback(url, state)
-        finishWith(() => flow.redeem({ code, verifier, redirectUri }))
+        ;({ code } = parseLoopbackCallback(url, state))
       } catch (err) {
+        reply(res, 200, parsed.searchParams.get('error') === 'access_denied' ? CANCELLED_HTML : INCOMPLETE_HTML)
         fail(err instanceof Error ? err : new Error(String(err)))
+
+        return
       }
+
+      reply(res, 200, DONE_HTML)
+      finishWith(() => flow.redeem({ code, verifier, redirectUri }))
     })
 
     const onAbort = () => fail(new NativeLoginCancelledError('cancelled'))

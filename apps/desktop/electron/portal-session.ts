@@ -28,6 +28,7 @@ import {
   CLOUD_NOT_SIGNED_IN_MESSAGE,
   CLOUD_SESSION_EXPIRED_MESSAGE,
   cloudAgentAccessLostError,
+  cloudExchangeRateLimitedError,
   cloudLoginRequiredError
 } from './cloud-auth-errors'
 import {
@@ -41,12 +42,14 @@ import {
   agentTokenExchangeGrant,
   authorizationCodeGrant,
   buildPortalAuthorizeUrl,
+  isPortalRateLimited,
   oauthErrorCode,
   parseAgentTokenResponse,
   parsePortalTokenResponse,
   portalTokenOrgId,
   portalTokenUrl,
-  refreshTokenGrant
+  refreshTokenGrant,
+  retryAfterSeconds
 } from './portal-oauth'
 
 const TOKEN_REQUEST_TIMEOUT_MS = 15_000
@@ -66,11 +69,13 @@ export interface PortalSessionDependencies {
   nowSeconds?: () => number
   rememberLog?: (message: string) => void
   /**
-   * A sign-in landed on a different org than the session it replaces (the
-   * token's `org_id`, read for this comparison only). Every agent bearer and
-   * registry entry belongs to the old org.
+   * Every successful sign-in reports the org the new desktop token is pinned
+   * to (its `org_id` claim, read for this comparison only; null when absent).
+   * The agent registry compares it with the org it was populated under — so
+   * an org switch is detected even across a sign-out, when no previous token
+   * is left to compare against.
    */
-  onSessionOrgChanged?: () => void
+  onSignedIn?: (orgId: null | string) => void
 }
 
 export interface PortalLoginResult {
@@ -146,6 +151,10 @@ export function createPortalSession(deps: PortalSessionDependencies) {
     const isCurrent = coordinator.beginLogin(portalBaseUrl)
     const flow = { controller: new AbortController(), authorizeUrl: null as null | string }
 
+    // A newer sign-in supersedes the pending one: close its loopback listener
+    // now (it resolves as a clean cancel) instead of leaving it open until
+    // its timeout with no way left to cancel it.
+    pending?.controller.abort()
     pending = flow
 
     let tokens: NativeTokenSet
@@ -196,15 +205,9 @@ export function createPortalSession(deps: PortalSessionDependencies) {
       throw new NativeAuthChangedError()
     }
 
-    const previous = deps.loadTokens(portalBaseUrl)
-
     coordinator.storeTokens(portalBaseUrl, tokens)
     log('[cloud] signed in to Hermes Cloud')
-
-    if (previous && portalTokenOrgId(previous.accessToken) !== portalTokenOrgId(tokens.accessToken)) {
-      log("[cloud] Hermes Cloud sign-in switched org; dropping the previous org's agent bearers")
-      deps.onSessionOrgChanged?.()
-    }
+    deps.onSignedIn?.(portalTokenOrgId(tokens.accessToken))
 
     return { signedIn: true }
   }
@@ -223,13 +226,25 @@ export function createPortalSession(deps: PortalSessionDependencies) {
     )
   }
 
+  // §5 is rate limited per desktop session: after a 429 no exchange (for any
+  // agent) is sent before this time (epoch seconds).
+  let exchangeNotBefore = 0
+
   /**
    * §5: mint a bearer for one agent. `invalid_grant` is ambiguous (a stale
    * subject token OR a failed access gate), so it earns exactly ONE forced
    * portal refresh + retry; if it survives a fresh subject token the user
-   * lost access. `invalid_target` is access lost outright. Never loops.
+   * lost access. `invalid_target` is access lost outright. A 429 honours
+   * Retry-After session-wide and is transient — never an auth verdict.
+   * Never loops.
    */
   async function exchangeForAgent(agentId: string): Promise<NativeTokenSet> {
+    const backoff = exchangeNotBefore - nowSeconds()
+
+    if (backoff > 0) {
+      throw cloudExchangeRateLimitedError(backoff)
+    }
+
     let subject = await getPortalAccessToken()
 
     if (!subject) {
@@ -242,6 +257,15 @@ export function createPortalSession(deps: PortalSessionDependencies) {
       } catch (error) {
         const code = oauthErrorCode(error)
         const status = readStatusCode(error)
+
+        if (isPortalRateLimited(error)) {
+          const wait = retryAfterSeconds(error, nowSeconds() * 1_000)
+
+          exchangeNotBefore = nowSeconds() + wait
+          log(`[cloud] Hermes Cloud token exchange rate limited; backing off ${wait}s`)
+
+          throw cloudExchangeRateLimitedError(wait, error)
+        }
 
         if (code === 'invalid_target') {
           throw cloudAgentAccessLostError(error)

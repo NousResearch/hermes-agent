@@ -100,6 +100,7 @@ import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { createCloudAgentAuth, createCloudAgentRegistry } from './cloud-agent-auth'
+import { isCloudRateLimited } from './cloud-auth-errors'
 import { discoverCloudAgentsWithBearer } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
@@ -276,6 +277,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import { purgeLegacyPortalCookiesOnce } from './legacy-portal-cookie-purge'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -5700,7 +5702,14 @@ function fetchJson(url, token, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(httpStatusError(res.statusCode, text, res.statusMessage))
+                const error = httpStatusError(res.statusCode, text, res.statusMessage)
+
+                // Rate-limit answers (portal §5 429) say when to come back.
+                if (res.headers['retry-after']) {
+                  error.retryAfter = String(res.headers['retry-after'])
+                }
+
+                reject(error)
 
                 return
               }
@@ -7982,25 +7991,39 @@ async function hasLiveOauthSession(baseUrl) {
   return readLive()
 }
 
-async function clearOauthSession(baseUrl) {
+// Resolves true when every matching cookie was removed (or there were none),
+// false when the jar was unavailable or any read/removal failed. Most callers
+// treat this as best effort; the one-shot legacy purge only records itself
+// done on true.
+async function clearOauthSession(baseUrl): Promise<boolean> {
   const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
-    return
+    return false
   }
 
   try {
+    // cookies.get({ url }) also returns cookies set on PARENT domains of the
+    // URL's host (e.g. `.example.com` for `portal.example.com`). Intended: in
+    // the legacy portal partition those are portal-session cookies too.
     const cookies = await sess.cookies.get(baseUrl ? { url: baseUrl } : {})
-    await Promise.all(
+
+    const removed = await Promise.all(
       cookies.map(c => {
         const scheme = c.secure ? 'https' : 'http'
         const cookieUrl = `${scheme}://${c.domain.replace(/^\./, '')}${c.path || '/'}`
 
-        return sess.cookies.remove(cookieUrl, c.name).catch(() => undefined)
+        return sess.cookies.remove(cookieUrl, c.name).then(
+          () => true,
+          () => false
+        )
       })
     )
+
+    return removed.every(Boolean)
   } catch {
     // Best effort — a stale cookie self-expires anyway.
+    return false
   }
 }
 
@@ -8303,9 +8326,46 @@ const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator(
       ),
     cloudAgentIdFor: baseUrl => cloudAgentRegistry.agentIdFor(baseUrl),
     exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
-    hasLivePortalSession: () => portalSession.hasLivePortalSession()
+    hasLivePortalSession: () => portalSession.hasLivePortalSession(),
+    isSavedCloudConnection: baseUrl => isSavedCloudConnectionUrl(baseUrl),
+    rediscoverCloudAgentId: baseUrl => cloudAgentAuth.rediscoverAgentId(baseUrl)
   })
 )
+
+// Whether a saved connection (legacy connection.json — global or per-profile —
+// or the v2 registry) points at this URL in Hermes Cloud mode. Only gates the
+// bootstrap's one throttled portal discovery; the portal's answer decides.
+function isSavedCloudConnectionUrl(baseUrl) {
+  const key = normalizeRemoteBaseUrl(baseUrl)
+
+  const sameUrl = url => {
+    try {
+      return Boolean(url) && normalizeRemoteBaseUrl(url) === key
+    } catch {
+      return false
+    }
+  }
+
+  try {
+    const config: any = readDesktopConnectionConfig()
+
+    if (config.mode === 'cloud' && sameUrl(config.remote?.url)) {
+      return true
+    }
+
+    if (Object.values(config.profiles || {}).some((p: any) => p?.mode === 'cloud' && sameUrl(p.url))) {
+      return true
+    }
+  } catch {
+    // Fall through to the registry.
+  }
+
+  try {
+    return readDesktopConnectionsRegistry().connections.some(c => c.kind === 'cloud' && sameUrl(c.url))
+  } catch {
+    return false
+  }
+}
 
 const ensureNativeAccessToken = nativeAccessTokenCoordinator.ensure
 
@@ -8583,7 +8643,11 @@ async function mintGatewayWsTicket(baseUrl, headers = {}) {
         headers
       ),
     {
-      isRetryable: (error: unknown) => !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error)
+      // A 429 (Hermes Cloud exchange rate limit / its Retry-After backoff) is
+      // transient but must not be hammered: fail this mint and let the next
+      // connect try again once the backoff has passed.
+      isRetryable: (error: unknown) =>
+        !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error) && !isCloudRateLimited(error)
     }
   )
 }
@@ -8651,9 +8715,11 @@ const portalSession = createPortalSession({
   postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
   openExternal: url => shell.openExternal(url),
   rememberLog,
-  // A sign-in that lands on another org invalidates every agent bearer and
-  // registry entry of the old one (resolved at call time, defined below).
-  onSessionOrgChanged: () => cloudAgentAuth.forgetAgents()
+  // A sign-in pinned to another org than the one the agent registry was
+  // populated under (persisted, so this also holds across a sign-out)
+  // invalidates every agent bearer and registry entry of the old org
+  // (resolved at call time, defined below).
+  onSignedIn: orgId => cloudAgentAuth.adoptSessionOrg(orgId)
 })
 
 function _cloudAgentRegistryPath() {
@@ -8715,29 +8781,37 @@ function _legacyPortalCookiesPurgedMarkerPath() {
   return path.join(app.getPath('userData'), 'hermes-cloud-legacy-portal-cookies-purged')
 }
 
-async function clearLegacyPortalCookies() {
+async function clearLegacyPortalCookies(): Promise<boolean> {
   try {
-    await clearOauthSession(resolvePortalBaseUrl())
+    const cleared = await clearOauthSession(resolvePortalBaseUrl())
+
+    if (!cleared) {
+      rememberLog('[cloud] could not clear every legacy portal cookie')
+    }
+
+    return cleared
   } catch (error) {
     rememberLog(
       `[cloud] could not clear legacy portal cookies: ${error instanceof Error ? error.message : String(error)}`
     )
+
+    return false
   }
 }
 
-async function purgeLegacyPortalCookiesOnce() {
-  if (fs.existsSync(_legacyPortalCookiesPurgedMarkerPath())) {
-    return
-  }
-
-  await clearLegacyPortalCookies()
-
-  try {
-    fs.mkdirSync(path.dirname(_legacyPortalCookiesPurgedMarkerPath()), { recursive: true })
-    fs.writeFileSync(_legacyPortalCookiesPurgedMarkerPath(), `${new Date().toISOString()}\n`, { mode: 0o600 })
-  } catch {
-    // Best effort: a repeat purge next launch is harmless.
-  }
+// Only a complete purge writes the marker; otherwise the next launch retries.
+// The jar is hydrated first: a cold cookies.get() can resolve empty before
+// the on-disk store loads, which would read as "nothing to purge".
+function purgeLegacyPortalCookiesAtStartup() {
+  return purgeLegacyPortalCookiesOnce({
+    markerExists: () => fs.existsSync(_legacyPortalCookiesPurgedMarkerPath()),
+    warm: () => warmOauthCookieStore(resolvePortalBaseUrl()),
+    clearCookies: clearLegacyPortalCookies,
+    writeMarker: () => {
+      fs.mkdirSync(path.dirname(_legacyPortalCookiesPurgedMarkerPath()), { recursive: true })
+      fs.writeFileSync(_legacyPortalCookiesPurgedMarkerPath(), `${new Date().toISOString()}\n`, { mode: 0o600 })
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -18695,7 +18769,7 @@ app.whenReady().then(() => {
   migrateLegacyEncryptedSecretsOnce()
   // Hermes Cloud no longer signs in inside the OAuth cookie partition; drop
   // any portal cookies an earlier build left there (one-shot, best-effort).
-  void purgeLegacyPortalCookiesOnce()
+  void purgeLegacyPortalCookiesAtStartup()
 
   installMediaPermissions()
   installDownloadHandling()

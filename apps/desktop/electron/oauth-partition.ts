@@ -25,8 +25,9 @@
  *   - The registry PRIMARY and the v1 single-connection remote stay on the
  *     LEGACY shared partition, so existing signed-in users are not signed out
  *     by the upgrade.
- *   - `cloud` entries stay on the legacy partition: the silent per-agent
- *     cascade deliberately shares one jar with the Nous Portal session.
+ *   - `cloud` entries stay on the legacy partition. Hermes Cloud agents
+ *     authenticate with exchanged bearer tokens (no portal cookies); the
+ *     legacy jar only matters for cookies an older build left behind.
  *   - Token-auth remotes, portal URLs, and anything unmatched or malformed
  *     fall back to the legacy partition (cookie-free flows are unaffected).
  *

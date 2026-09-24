@@ -73,9 +73,9 @@ const fresh = (overrides: Partial<NativeTokenSet> = {}): NativeTokenSet => ({
 function makeSession(opts: {
   store?: ReturnType<typeof makeStore>
   postJson?: any
-  now?: number
+  now?: number | (() => number)
   createServer?: any
-  onSessionOrgChanged?: () => void
+  onSignedIn?: (orgId: null | string) => void
 }) {
   const store = opts.store ?? makeStore()
   const opened: string[] = []
@@ -91,8 +91,8 @@ function makeSession(opts: {
     },
     createServer: opts.createServer,
     loginTimeoutMs: 5_000,
-    nowSeconds: () => opts.now ?? 1_000,
-    onSessionOrgChanged: opts.onSessionOrgChanged
+    nowSeconds: () => (typeof opts.now === 'function' ? opts.now() : (opts.now ?? 1_000)),
+    onSignedIn: opts.onSignedIn
   })
 
   return { session, store, opened }
@@ -413,7 +413,7 @@ test('logout while the browser flow is pending: the stale redirect rejects and s
   expect(store.events).toEqual(['clear'])
 })
 
-test('a second login while the first is pending: the first redirect rejects; only the newer one stores', async () => {
+test('N4: a second login aborts the pending one (clean cancel, listener closed); only the newer one stores', async () => {
   const { createServer, state } = makeFakeServerFactory()
   let posts = 0
 
@@ -425,15 +425,22 @@ test('a second login while the first is pending: the first redirect rejects; onl
   const first = session.login()
   await tick()
   const second = session.login()
+
+  // The superseded flow is cancelled right away, not left open until timeout.
+  await expect(first).resolves.toEqual({ signedIn: false, cancelled: true })
   await tick()
 
+  // Its late redirect is refused and redeems nothing.
   state.hit(`code=C1&state=${authorizeState(opened[0])}`, state.handlers[0])
-  await expect(first).rejects.toBeInstanceOf(NativeAuthChangedError)
+  await tick()
+  expect(posts).toBe(0)
   expect(store.map.size).toBe(0)
 
   state.hit(`code=C2&state=${authorizeState(opened[1])}`, state.handlers[1])
   await expect(second).resolves.toEqual({ signedIn: true })
-  expect(store.map.get(PORTAL)?.accessToken).toBe('AT-L2')
+  // The only redeem is the newer flow's.
+  expect(posts).toBe(1)
+  expect(store.map.get(PORTAL)?.accessToken).toBe('AT-L1')
 })
 
 test('cancelLogin aborts the pending browser flow as a clean cancel and exposes no stale authorize URL', async () => {
@@ -454,19 +461,19 @@ test('cancelLogin aborts the pending browser flow as a clean cancel and exposes 
   expect(session.cancelLogin()).toBe(false)
 })
 
-test('m1: signing in to a DIFFERENT org reports the org change; the same org (or a first sign-in) does not', async () => {
+test("N2: every sign-in reports the new token's org — even with no previous token (after a sign-out)", async () => {
   const jwt = (org: string) =>
     `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({ org_id: org })).toString('base64url')}.s`
 
-  const run = async (previous: NativeTokenSet | null, nextOrg: string) => {
+  const run = async (previous: NativeTokenSet | null, accessToken: string) => {
     const { createServer, state } = makeFakeServerFactory()
-    let changes = 0
+    const orgs: Array<null | string> = []
 
     const { session, opened } = makeSession({
       createServer,
       store: makeStore(previous ? { [PORTAL]: previous } : {}),
-      postJson: async () => ({ access_token: jwt(nextOrg), expires_in: 900, refresh_token: 'RT-x' }),
-      onSessionOrgChanged: () => changes++
+      postJson: async () => ({ access_token: accessToken, expires_in: 900, refresh_token: 'RT-x' }),
+      onSignedIn: orgId => orgs.push(orgId)
     })
 
     const pending = session.login()
@@ -474,10 +481,80 @@ test('m1: signing in to a DIFFERENT org reports the org change; the same org (or
     state.hit(`code=C&state=${authorizeState(opened[0])}`)
     await pending
 
-    return changes
+    return orgs
   }
 
-  expect(await run(fresh({ accessToken: jwt('org_a') }), 'org_b')).toBe(1)
-  expect(await run(fresh({ accessToken: jwt('org_a') }), 'org_a')).toBe(0)
-  expect(await run(null, 'org_b')).toBe(0)
+  expect(await run(fresh({ accessToken: jwt('org_a') }), jwt('org_b'))).toEqual(['org_b'])
+  expect(await run(null, jwt('org_b'))).toEqual(['org_b'])
+  expect(await run(null, 'opaque-token')).toEqual([null])
+})
+
+test('N2: a cancelled sign-in reports no org', async () => {
+  const { createServer } = makeFakeServerFactory()
+  const orgs: Array<null | string> = []
+  const { session } = makeSession({ createServer, onSignedIn: orgId => orgs.push(orgId) })
+
+  const pending = session.login()
+  await tick()
+  session.cancelLogin()
+  await pending
+  expect(orgs).toEqual([])
+})
+
+// --- N1: §5 rate limit (429 slow_down + Retry-After) ---
+
+const rateLimited = (retryAfter?: string) =>
+  Object.assign(httpStatusError(429, JSON.stringify({ error: 'slow_down' })), retryAfter ? { retryAfter } : {})
+
+test('N1: a 429 honours Retry-After session-wide: no exchange (for any agent) reaches the portal before it passes', async () => {
+  let now = 1_000
+  const exchanges: string[] = []
+
+  const { session } = makeSession({
+    store: makeStore({ [PORTAL]: fresh() }),
+    now: () => now,
+    postJson: async (_url: string, body: any) => {
+      exchanges.push(body.audience)
+
+      if (exchanges.length === 1) {
+        throw rateLimited('30')
+      }
+
+      return { access_token: 'AGENT-AT', expires_in: 900 }
+    }
+  })
+
+  const first = await session.exchangeForAgent('agt_1').catch(e => e)
+  // Transient: tagged 429, never an auth verdict.
+  expect(first).toMatchObject({ statusCode: 429, cloudRateLimited: true, retryAfterSeconds: 30 })
+  expect(first.needsCloudLogin).toBeUndefined()
+  expect(first.cloudAgentAccessLost).toBeUndefined()
+
+  now = 1_020
+  await expect(session.exchangeForAgent('agt_2')).rejects.toMatchObject({ statusCode: 429, retryAfterSeconds: 10 })
+  expect(exchanges).toEqual(['agent:agt_1'])
+
+  now = 1_030
+  await expect(session.exchangeForAgent('agt_2')).resolves.toMatchObject({ accessToken: 'AGENT-AT' })
+  expect(exchanges).toEqual(['agent:agt_1', 'agent:agt_2'])
+})
+
+test('N1: a 429 never triggers the forced portal refresh, and a missing Retry-After backs off a default minute', async () => {
+  let now = 1_000
+  const grants: string[] = []
+
+  const { session } = makeSession({
+    store: makeStore({ [PORTAL]: fresh() }),
+    now: () => now,
+    postJson: async (_url: string, body: any) => {
+      grants.push(body.grant_type)
+      throw rateLimited()
+    }
+  })
+
+  await expect(session.exchangeForAgent('agt_1')).rejects.toMatchObject({ statusCode: 429, retryAfterSeconds: 60 })
+  expect(grants).toEqual(['urn:ietf:params:oauth:grant-type:token-exchange'])
+  now = 1_059
+  await expect(session.exchangeForAgent('agt_1')).rejects.toMatchObject({ statusCode: 429 })
+  expect(grants).toHaveLength(1)
 })

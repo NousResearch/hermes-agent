@@ -684,17 +684,34 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     assert exc_info.value.relogin_required is True
 
 
-@pytest.mark.parametrize("status_code", [500, 503, 599])
-def test_refresh_token_exchange_5xx_is_retryable_without_parsing_error_body(status_code):
-    """A Portal 5xx is transient even when its body is not OAuth JSON (#120976)."""
-    from hermes_cli.auth import _refresh_access_token
+@pytest.mark.parametrize(
+    "status_code, body, expected_code, expected_retryable",
+    [
+        (500, None, "temporarily_unavailable", True),
+        (503, None, "temporarily_unavailable", True),
+        (599, None, "temporarily_unavailable", True),
+        (429, {"code": "429", "message": "rate limited"}, None, None),
+        (404, {"message": "not found"}, None, None),
+        (400, ValueError("not json"), None, None),
+    ],
+)
+def test_refresh_token_exchange_without_grant_error_code_is_not_terminal(
+    status_code, body, expected_code, expected_retryable
+):
+    """A Portal 5xx is transient even when its body is not OAuth JSON (#120976), and a
+    non-5xx body that carries no OAuth ``error`` code must not be treated as a dead grant."""
+    from hermes_cli.auth import _is_terminal_nous_refresh_error, _refresh_access_token
 
     class _FakeResponse:
         def __init__(self):
             self.status_code = status_code
 
         def json(self):
-            raise AssertionError("5xx refresh handling must not parse response.json()")
+            if body is None:
+                raise AssertionError("5xx refresh handling must not parse response.json()")
+            if isinstance(body, Exception):
+                raise body
+            return body
 
     class _FakeClient:
         def post(self, *args, **kwargs):
@@ -708,9 +725,10 @@ def test_refresh_token_exchange_5xx_is_retryable_without_parsing_error_body(stat
             refresh_token="refresh-still-valid",
         )
 
-    assert exc_info.value.code == "temporarily_unavailable"
+    assert exc_info.value.code == expected_code
     assert exc_info.value.relogin_required is False
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is expected_retryable
+    assert _is_terminal_nous_refresh_error(exc_info.value) is False
 
 
 def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):

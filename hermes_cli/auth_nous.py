@@ -613,13 +613,17 @@ def _refresh_access_token(
         raise AuthError(
             f"Nous Portal is temporarily unavailable (HTTP {response.status_code}); retry shortly.",
             provider="nous", code="temporarily_unavailable", retryable=True)
+    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     try:
         error_payload = response.json()
     except Exception as exc:
-        raise _nous_err("Refresh token exchange failed", relogin=True) from exc
-    code = str(error_payload.get("error", "invalid_grant"))
+        raise _nous_err("Refresh token exchange failed") from exc
+    # Only an explicit OAuth grant-dead code is terminal: a 429/404 gateway body without an
+    # ``error`` key says nothing about the refresh token, so it must not wipe credentials.
+    code = error_payload.get("error")
+    code = str(code) if code is not None else None
     description = str(error_payload.get("error_description") or "Refresh token exchange failed")
-    relogin = code in {"invalid_grant", "invalid_token", "refresh_token_reused"}
+    relogin = code in _OAUTH_GRANT_DEAD_CODES
     # OAuth 2.1 "refresh token reuse": an external process (health check, monitoring tool, custom
     # self-heal hook) redeemed Hermes's refresh_token without persisting the rotated token, so the
     # server retired the original and revoked the whole session chain as a token-theft signal.

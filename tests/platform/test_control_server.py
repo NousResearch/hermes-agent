@@ -319,3 +319,42 @@ def test_shutdown_handlers_are_not_installed_off_the_main_thread(api):
     # Still returns a callable, so a caller's `finally: restore()` needs no special case.
     assert callable(result["restore"])
     result["restore"]()
+
+
+# -- an unexpected failure is answered, not dropped ------------------------------
+
+
+def _post(url: str, body: dict) -> tuple[int, dict]:
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def test_a_write_that_fails_unexpectedly_gets_a_sentence_not_a_dropped_connection(live, api, monkeypatch):
+    """Found in the Control Centre: toggling a plugin against a read-only bundle raised an
+    OSError, the handler unwound, the socket closed with no response, and the browser said
+    only "Failed to fetch" — indistinguishable from the server being down."""
+    def refuse(*_args, **_kwargs):
+        raise OSError(30, "Read-only file system", "/bundle/agents/.nova-x")
+
+    monkeypatch.setattr(api, "write", refuse)
+    status, body = _post(f"{live}/platform/v1/agents/operations/plugins", {"plugin": "x", "state": "enable"})
+    assert status == 500
+    assert "Read-only file system" in body["error"]["message"]
+    assert "writable" in body["error"]["message"]
+
+
+def test_a_read_that_fails_unexpectedly_is_answered_too(live, api, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("something internal")
+
+    monkeypatch.setattr(api, "handle", boom)
+    status, body, _ = request(f"{live}/platform/v1/health")
+    message = json.loads(body)["error"]["message"]
+    assert status == 500 and "RuntimeError" in message and "something internal" not in message

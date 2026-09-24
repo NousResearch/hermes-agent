@@ -400,3 +400,34 @@ def test_an_agent_with_no_extensions_compiles_exactly_as_before():
     config = build_config(spec, policy=True, knowledge=False)
     assert "mcp_servers" not in config
     assert config["plugins"]["enabled"] == ["nova-policy", "nova-outcome"]
+
+
+# -- a grant the policy would refuse is said out loud ----------------------------
+
+
+def test_a_granted_server_no_permission_covers_is_warned_about():
+    """Found in the Control Centre: granting Notion showed a tick over a server whose every
+    tool the policy refuses, because no permission lists them."""
+    from nova.runtime.hermes.materialize import uncovered_mcp_warnings
+
+    spec = AgentSpec.parse({"id": "ops", "extensions": {"mcp": ["notion", "hubspot"]}})
+    document = {"allow": ["web_search", "mcp__hubspot__hubspot_search_objects"], "unlisted_tool": "deny",
+                "approval_actions": {}}
+    notes = uncovered_mcp_warnings(spec, document)
+    assert len(notes) == 1 and "notion" in notes[0] and "mcp__notion__" in notes[0]
+
+
+def test_an_open_policy_needs_no_such_warning():
+    from nova.runtime.hermes.materialize import uncovered_mcp_warnings
+
+    spec = AgentSpec.parse({"id": "ops", "extensions": {"mcp": ["notion"]}})
+    assert uncovered_mcp_warnings(spec, {"allow": [], "unlisted_tool": "allow"}) == []
+
+
+def test_a_server_covered_only_through_approval_is_not_warned_about():
+    from nova.runtime.hermes.materialize import uncovered_mcp_warnings
+
+    spec = AgentSpec.parse({"id": "ops", "extensions": {"mcp": ["stripe"]}})
+    document = {"allow": ["web_search"], "unlisted_tool": "deny",
+                "approval_actions": {"refund": ["mcp__stripe__create_refund"]}}
+    assert uncovered_mcp_warnings(spec, document) == []

@@ -269,7 +269,35 @@ class _Handler(BaseHTTPRequestHandler):
         except NovaError as exc:
             self._send_json(500, {"error": {"status": 500, "message": str(exc)}})
             return
+        except Exception as exc:  # noqa: BLE001 — see _unexpected
+            self._unexpected(exc, "POST", path)
+            return
         self._send_json(response.status, response.body)
+
+    def _unexpected(self, exc: BaseException, method: str, path: str) -> None:
+        """Answer an unexpected failure with a sentence instead of a dropped connection.
+
+        Without this an exception unwound the handler, the socket closed with no response,
+        and the browser reported "Failed to fetch" — to the operator indistinguishable from
+        the server being down. Found enabling a plugin against a read-only bundle directory.
+        The traceback goes to the log; the caller gets what happened and where to look.
+        """
+        logger.exception("unhandled error on %s %s", method, path)
+        if isinstance(exc, OSError):
+            where = f" ({exc.filename})" if getattr(exc, "filename", None) else ""
+            message = (
+                f"The server could not save the change: {exc.strerror or exc}{where}. "
+                "Check that the bundle directory is writable by the NOVA service user."
+            )
+        else:
+            message = (
+                f"The server hit an unexpected error ({type(exc).__name__}). Nothing was "
+                "changed; the details are in the control plane's log."
+            )
+        try:
+            self._send_json(500, {"error": {"status": 500, "message": message}})
+        except OSError:  # the client went away; nothing left to tell
+            pass
 
     def _handle(self) -> None:
         parsed = urlparse(self.path)
@@ -308,6 +336,9 @@ class _Handler(BaseHTTPRequestHandler):
                 response = self.api.handle(path, query)
             except NovaError as exc:
                 self._send_json(500, {"error": {"status": 500, "message": str(exc)}})
+                return
+            except Exception as exc:  # noqa: BLE001 — see _unexpected
+                self._unexpected(exc, self.command, path)
                 return
             if response.raw is not None:
                 self._send(

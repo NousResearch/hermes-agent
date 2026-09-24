@@ -508,6 +508,32 @@ def warnings_for(spec: AgentSpec) -> list[str]:
     return notes
 
 
+def uncovered_mcp_warnings(spec: AgentSpec, document: Mapping[str, Any]) -> list[str]:
+    """Granted MCP servers whose every tool the agent's policy would refuse.
+
+    Granting a server installs it; it does not grant its tools. Under an allow-list (or
+    ``unlisted_tool: deny``) a server no permission covers is connected and useless — every
+    call refused — and the grant toggle showed a green tick over exactly that. Named here
+    so the operator is told at the moment they grant it, with the fix.
+    """
+    restrictive = bool(document.get("allow")) or document.get("unlisted_tool") == "deny"
+    if not restrictive or not spec.extensions.mcp:
+        return []
+    covered = set(document.get("allow") or ())
+    for tools in (document.get("approval_actions") or {}).values():
+        covered.update(tools or ())
+    notes = []
+    for server in sorted(spec.extensions.mcp):
+        prefix = f"mcp__{server.replace('-', '_')}__"
+        if not any(tool.startswith(prefix) for tool in covered):
+            notes.append(
+                f"MCP server {server} is granted, but no permission this agent holds covers "
+                f"any of its tools, so the policy refuses every call to it. Add its tools "
+                f"({prefix}<tool>) to a permission in policy.yaml and grant that permission"
+            )
+    return notes
+
+
 def _oauth_server(server_id: str) -> bool:
     """Whether a catalogue entry needs an interactive consent. False when unknown."""
     from nova.extensions import catalogue
@@ -792,6 +818,7 @@ def materialize(
     warnings.extend(warnings_for(spec))
     if policy is not None:
         warnings.extend(policy.warnings)
+        warnings.extend(uncovered_mcp_warnings(spec, policy.document))
     elif spec.tools.allow:
         warnings.append(
             "tools.allow is enforced by the tenant policy hook, and this tenant declares no "

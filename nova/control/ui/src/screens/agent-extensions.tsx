@@ -84,7 +84,9 @@ export function AgentExtensions({ agentId }: { agentId: string }) {
       setResult({
         kind: "done",
         message: runtime?.applied ? "Saved and applied" : "Saved",
-        warning: mine.length ? mine[0].replace(`${agentId}: `, "") : "",
+        // Every one, not the first: a grant can be both "needs a login" and "every call
+        // refused by policy", and showing only the first hid the one that matters more.
+        warning: mine.map((w) => w.replace(`${agentId}: `, "")).join(" · "),
       });
       setNonce((n) => n + 1);
     } catch (cause) {

@@ -58,8 +58,14 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
         tmux("resize-window", "-t", "p", "-x", str(cols), "-y", "24")
 
     def ask(turn: int) -> None:
-        tmux("send-keys", "-t", "p", "-l", f"question zq{turn}q please")
-        time.sleep(0.5)  # typed text + Enter in one write is a paste, not a submit
+        question = f"question zq{turn}q please"
+        tmux("send-keys", "-t", "p", "-l", question)
+        # The CLI reads an Enter processed within 50 ms of the last buffer change as a pasted
+        # newline. A fixed sleep after send-keys is not enough on a starved runner: a CLI still
+        # busy with the typed batch reads the Enter right after it. The echo proves every typed
+        # key was processed; the gap after it is then real time the Enter cannot fall inside.
+        wait_for(question)
+        time.sleep(0.5)
         tmux("send-keys", "-t", "p", "Enter")
 
     def reply_done(turn: int) -> None:

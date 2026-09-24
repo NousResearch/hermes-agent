@@ -50,6 +50,26 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 class TestPerPlatformDisplayRedirect:
+    @pytest.mark.parametrize("platform, mode", [
+        ("telegram", "off"),
+        ("discord", "first"),
+        ("matrix", "all"),
+    ])
+    def test_reply_to_mode_is_saved_as_a_string_and_reaches_gateway(
+        self, hermes_home, monkeypatch, platform, mode
+    ):
+        """A dynamic platform field still needs the PlatformConfig string contract."""
+        _set(monkeypatch, hermes_home, f"platforms.{platform}.reply_to_mode", mode)
+
+        result = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        saved = result["platforms"][platform]["reply_to_mode"]
+        assert saved == mode
+        assert isinstance(saved, str)
+
+        from gateway.config import Platform, load_gateway_config
+
+        assert load_gateway_config().platforms[Platform(platform)].reply_to_mode == mode
+
     def test_streaming_redirects_to_display_platforms(self, hermes_home, monkeypatch):
         """platforms.telegram.streaming must land under display.platforms."""
         _set(monkeypatch, hermes_home, "platforms.telegram.streaming", "false")

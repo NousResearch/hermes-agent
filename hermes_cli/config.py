@@ -3245,12 +3245,18 @@ _SCALAR_WORDS = {
     'null': None, 'none': None, '~': None}
 
 
+def _is_platform_reply_to_mode_key(key: str) -> bool:
+    """Whether *key* names the string enum on a dynamically named platform."""
+    parts = _split_key_path(key)
+    return len(parts) == 3 and parts[0] == "platforms" and parts[2] == "reply_to_mode"
+
+
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
     ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
     isinstance-gated readers see real structures; the trigger is conservative."""
-    if isinstance(_default_value_for_key(key), str):
+    if isinstance(_default_value_for_key(key), str) or _is_platform_reply_to_mode_key(key):
         return value
     stripped = value.strip()
     lower = stripped.lower()

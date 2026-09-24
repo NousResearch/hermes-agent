@@ -32,6 +32,7 @@ def test_every_dropped_shape_warns_without_logging_values(caplog):
         "FAKE_STRING_SECRET_SENTINEL_e0d4",
         "FAKE_API_KEY_SENTINEL_5d19",
         "FAKE_HEADER_SECRET_SENTINEL_74bc",
+        "FAKE_URL_SECRET_SENTINEL_9f31",
     )
     raw = [
         f"malformed-{secrets[0]}",
@@ -41,6 +42,7 @@ def test_every_dropped_shape_warns_without_logging_values(caplog):
             "extra_headers": {"Authorization": secrets[2]},
         },
         42,
+        f"https://user:{secrets[3]}@host/v1",
     ]
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
@@ -52,7 +54,8 @@ def test_every_dropped_shape_warns_without_logging_values(caplog):
     assert "entry[0] is a malformed string" in caplog.text
     assert "entry[1] (dict) missing 'model'" in caplog.text
     assert "entry[2] (int) is malformed" in caplog.text
-    assert "Malformed fallback root (str)" in caplog.text
+    assert "entry[3] is a malformed string" in caplog.text
+    assert "fallback configuration has a malformed root (str)" in caplog.text
     assert "effective fallback chain is EMPTY" in caplog.text
     assert not any(secret in caplog.text for secret in secrets)
 
@@ -62,7 +65,7 @@ def test_malformed_scalar_root_warns_that_effective_chain_is_empty(raw, caplog):
     with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
         assert _iter_fallback_entries(raw) == []
 
-    assert f"Malformed fallback root ({type(raw).__name__})" in caplog.text
+    assert f"fallback configuration has a malformed root ({type(raw).__name__})" in caplog.text
     assert "effective fallback chain is EMPTY" in caplog.text
 
 
@@ -119,3 +122,14 @@ def test_malformed_entry_warnings_name_their_config_source(caplog):
 
     assert "fallback_providers entry[0] is a malformed string" in caplog.text
     assert "fallback_model entry[0] (dict) missing 'model'" in caplog.text
+
+
+def test_malformed_root_warnings_name_their_config_source(caplog):
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+        assert get_fallback_chain({
+            "fallback_providers": 42,
+            "fallback_model": True,
+        }) == []
+
+    assert "fallback_providers has a malformed root (int)" in caplog.text
+    assert "fallback_model has a malformed root (bool)" in caplog.text

@@ -171,3 +171,11 @@ def test_pending_fallback_guard_emits_halt_refusal_once(monkeypatch):
     assert AIAgent._has_pending_fallback(agent) is False
     assert AIAgent._has_pending_fallback(agent) is False
     assert emitted == ["fallback halt refusal"]
+
+    setattr(agent, "_fallback_activated", False)
+    from agent.agent_runtime_helpers import restore_primary_runtime
+    with patch("agent.agent_runtime_helpers._revert_credential_rotation"):
+        assert restore_primary_runtime(agent) is False
+    assert agent._fallback_halt_notified is False
+    assert AIAgent._has_pending_fallback(agent) is False
+    assert emitted == ["fallback halt refusal", "fallback halt refusal"]

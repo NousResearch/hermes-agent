@@ -71,7 +71,10 @@ class TestResolveRuntimeWithFallback:
 
     def test_misconfigured_shorthand_never_leaks_route_or_exception_text(self, monkeypatch, caplog):
         secret = "FAKE_URL_SECRET_9f31"
-        config = {"fallback_providers": [f"https://user:{secret}@host/v1"]}
+        config = {"fallback_providers": [{
+            "provider": "anthropic",
+            "model": f"model-{secret}",
+        }]}
 
         def fail(**kwargs):
             if kwargs.get("requested") == "openai-codex":
@@ -85,7 +88,7 @@ class TestResolveRuntimeWithFallback:
 
         assert "misconfigured and was skipped" in caplog.text
         assert secret not in caplog.text
-        assert "https" not in caplog.text
+        assert "anthropic" not in caplog.text
 
     def test_halt_without_usable_chain_preserves_primary_error(self, monkeypatch, caplog):
         primary = AuthError("primary unavailable")

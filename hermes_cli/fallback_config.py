@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_PROVIDER_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_MODEL_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+:~-]*$")
 
 _FALLBACK_HALT_MESSAGE = (
     "🛑 Provider fallback is disabled by fallback_policy.halt; "
@@ -28,7 +32,12 @@ def _parse_string_entry(entry: str) -> dict[str, str] | None:
     if not sep:
         return None
     provider, model = provider.strip(), model.strip()
-    if not provider or not model:
+    if (
+        not provider
+        or not model
+        or not _PROVIDER_SHORTHAND_RE.fullmatch(provider)
+        or not _MODEL_SHORTHAND_RE.fullmatch(model)
+    ):
         return None
     return {"provider": provider, "model": model}
 
@@ -131,8 +140,8 @@ def _parse_fallback_entries(
         candidates = raw
     else:
         logger.warning(
-            "Malformed fallback root (%s) — expected a list of entries or a single dict.",
-            type(raw).__name__,
+            "%s has a malformed root (%s) — expected a list of entries or a single dict.",
+            source, type(raw).__name__,
         )
         if not isinstance(raw, str):
             if warn_empty:

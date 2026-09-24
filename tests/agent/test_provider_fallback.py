@@ -7,6 +7,8 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import logging
+
 
 from agent.error_classifier import FailoverReason
 from run_agent import AIAgent
@@ -147,6 +149,29 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+
+    def test_failed_entry_logs_no_route_or_exception_values(self, caplog):
+        secret = "CANARY_SECRET_117816"
+        agent = _make_agent(fallback_model=[{
+            "provider": "custom",
+            "model": f"model-{secret}",
+            "base_url": "https://fallback.invalid/v1",
+        }])
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                side_effect=RuntimeError(f"bad model {secret}"),
+            ),
+            caplog.at_level(logging.DEBUG, logger="run_agent"),
+        ):
+            assert AIAgent._try_activate_fallback(agent) is False
+
+        assert "Failed to activate a fallback entry" in caplog.text
+        assert secret not in caplog.text
 
     def test_resolves_key_env_for_fallback_provider(self):
         fbs = [

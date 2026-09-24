@@ -192,15 +192,16 @@ function ScopedSkillCatalog({
     // membership here is NOT installation — isInstalled owns that decision.
     const entries = [
       ...localEntries,
-      ...officialEntries.filter(entry => !installedByIdentifier.has(entry.identifier))
+      ...officialEntries.filter(entry => !installedByIdentifier.has(entry.identifier) && !skillsByName.has(entry.name))
     ]
 
-    return { entries, skillsById, installedIdentifiers, matchInstalled, officialFor }
+    return { entries, skillsById, skillsByName, installedIdentifiers, matchInstalled, officialFor }
   }, [skills, hubData, officialData])
 
+  // Skills install by name, so a same-named entry can never be added beside the installed one.
   const isInstalled = useCallback(
     (entry: CatalogEntry) => {
-      if (catalog.skillsById.has(entry.id)) {
+      if (catalog.skillsById.has(entry.id) || catalog.skillsByName.has(entry.name)) {
         return true
       }
       const matched = catalog.matchInstalled(entry)

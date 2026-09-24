@@ -28,9 +28,7 @@ pytestmark = [
     pytest.mark.live_system_guard_bypass,
 ]
 
-KNOWN = {
-    "compaction_row": "#121301 native contextCompaction item persisted as a raw-JSON assistant message",
-}
+KNOWN = {}
 
 YOLO = ["--yolo"]
 SEED_MARKER = "Prior conversation from this Hermes session"

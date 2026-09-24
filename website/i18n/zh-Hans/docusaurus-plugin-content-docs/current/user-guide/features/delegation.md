@@ -27,7 +27,7 @@ delegate_task(
 
 ## 并行批处理
 
-默认最多 3 个并发子智能体（可配置，无硬性上限）：
+默认最多 10 个并发子智能体（可配置，无硬性上限）：
 
 ```python
 delegate_task(tasks=[
@@ -125,7 +125,7 @@ delegate_task(
 
 当顶层智能体提供 `tasks` 数组时，Hermes 会返回一个后台句柄，并行运行所有子智能体，并在每个子智能体完成后发送一条汇总结果。编排者子智能体则会在当前轮次中等待批处理完成，以便综合结果。
 
-- **最大并发数：** 默认 3 个任务（可通过 `delegation.max_concurrent_children` 或环境变量 `DELEGATION_MAX_CONCURRENT_CHILDREN` 配置；最低为 1，无硬性上限）。超出限制的批次会返回工具错误，而不是被静默截断。
+- **最大并发数：** 默认 10 个任务（可通过 `delegation.max_concurrent_children` 或环境变量 `DELEGATION_MAX_CONCURRENT_CHILDREN` 配置；最低为 1，无硬性上限）。超出限制的批次会返回工具错误，而不是被静默截断。
 - **线程池：** 使用 `ThreadPoolExecutor`，以配置的并发限制作为最大工作线程数
 - **进度显示：** 在 CLI 模式下，树形视图会实时显示每个子智能体的工具调用，并附带每个任务的完成行。在 gateway 模式下，进度会被批量汇总并转发给父智能体的进度回调
 - **结果排序：** 结果按任务索引排序，与输入顺序一致，不受完成顺序影响
@@ -281,7 +281,7 @@ delegate_task(
 ```
 
 - `role="leaf"`（默认）：子智能体无法进一步委派——与扁平委派行为相同。
-- `role="orchestrator"`：子智能体保留 `delegation` 工具集。受 `delegation.max_spawn_depth` 约束（默认 **1** = 扁平，因此在默认设置下 `role="orchestrator"` 无效）。将 `max_spawn_depth` 提高到 2 可允许编排者子智能体生成叶子孙智能体；设为 3 则允许三层（上限）。
+- `role="orchestrator"`：子智能体保留 `delegation` 工具集。受 `delegation.max_spawn_depth` 约束（默认 **1** = 扁平，因此在默认设置下 `role="orchestrator"` 无效）。将 `max_spawn_depth` 提高到 2 可允许编排者子智能体生成叶子孙智能体；3+ 可支持更深的树。没有硬性上限——成本才是实际约束。
 - `delegation.orchestrator_enabled: false`：全局开关，无论 `role` 参数如何，强制所有子智能体为 `leaf`。
 
 **费用警告：** 在 `max_spawn_depth: 3` 和 `max_concurrent_children: 3` 的情况下，树可达到 3×3×3 = 27 个并发叶子智能体。每增加一层都会成倍增加开销——请谨慎提高 `max_spawn_depth`。
@@ -320,7 +320,7 @@ delegate_task(
 | **推理** | 完整 LLM 推理循环 | 仅 Python 代码执行 |
 | **上下文** | 全新隔离对话 | 无对话，仅脚本 |
 | **工具访问** | 所有非屏蔽工具，具备推理能力 | 通过 RPC 访问 7 个工具，无推理 |
-| **并行性** | 默认 3 个并发子智能体（可配置） | 单脚本 |
+| **并行性** | 默认 10 个并发子智能体（可配置） | 单脚本 |
 | **最适合** | 需要判断力的复杂任务 | 机械式多步骤流水线 |
 | **Token 费用** | 较高（完整 LLM 循环） | 较低（仅返回 stdout） |
 | **用户交互** | 无（子智能体无法澄清） | 无 |
@@ -332,9 +332,9 @@ delegate_task(
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
-  max_iterations: 50                        # Max turns per child (default: 50)
-  # max_concurrent_children: 3              # Parallel children per batch (default: 3)
-  # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3 for three levels.
+  max_iterations: 250                       # Max turns per child (default: 250)
+  # max_concurrent_children: 10             # Parallel children per batch (default: 10)
+  # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider

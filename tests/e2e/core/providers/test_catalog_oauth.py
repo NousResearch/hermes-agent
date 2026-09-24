@@ -7,8 +7,8 @@ egress goes through the ``CatalogFake`` sentinel proxy, which refuses and record
 host. Cells assert user-visible outcomes: the device-code polling cadence the vendor sees, the
 reply on stdout, the bearer on the next wire request, and the tokens persisted to auth.json.
 
-Open bugs are message-gated run-time xfails (``KNOWN`` + ``known_failure``): a cell XFAILs only
-while it fails with that bug's signature and simply passes once the fix lands, in any merge order.
+Open bugs are strict, message-gated run-time xfails (``KNOWN`` + ``strict_known``): a cell XFAILs
+only while it fails with that bug's signature, and FAILS once the fix lands so the entry is dropped.
 
 Not redirectable to a loopback fake, so not covered here (explicit skips below): openai-codex and
 qwen-oauth refresh (token URLs are module constants, no env/config override) and the Copilot token
@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
+from tests.e2e.core.providers._catalog_helpers import strict_known
 from tests.fakes.providers.catalog_fake import CatalogFake
 from tests.fakes.providers.catalog_oauth import NOUS_INVOKE_SCOPE, OAuthFake, make_jwt
 
@@ -218,7 +218,7 @@ def test_nous_device_login_slow_down_grows_interval(device_login) -> None:
 def test_nous_device_login_honors_server_interval(device_login) -> None:
     gaps = device_login["gaps"]
     assert len(gaps) == len(DEVICE_SCRIPT), f"unexpected poll count, gaps={gaps}"
-    with known_failure(*KNOWN["device_interval"]):
+    with strict_known(*KNOWN["device_interval"]):
         assert gaps[0] >= DEVICE_INTERVAL - 0.1, (
             f"device poll gap {gaps[0]:.2f}s < server interval {DEVICE_INTERVAL}s (gaps={[round(g, 2) for g in gaps]})")
 
@@ -272,7 +272,7 @@ def test_nous_inference_401_refreshes_rotates_and_retries(tmp_path, sentinel) ->
         info = _describe(proc, fake, sentinel)
         assert any(r.bearer == revoked for r in fake.inference()), f"the stale bearer was never tried\n{info}"
         fresh = _assert_rotation_persisted(home, seed, fake, info)
-        with known_failure(*KNOWN["nous_401_retry_route"]):
+        with strict_known(*KNOWN["nous_401_retry_route"]):
             assert not _vendor_egress(sentinel), (
                 f"401 recovery retry left NOUS_INFERENCE_BASE_URL: egress to {_vendor_egress(sentinel)}\n{info}")
             assert any(r.bearer == fresh for r in fake.inference()), f"no retry with the refreshed token\n{info}"

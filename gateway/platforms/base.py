@@ -2916,12 +2916,17 @@ class BasePlatformAdapter(ABC):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+        reply_to: Optional[str] = None) -> SendResult:
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
-        (Signal). Returns success when at least one image was delivered — the outcome
-        the turn-level delivery tracker records; every override must return the same
-        aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
+        (Signal). ``reply_to`` is the turn's reply anchor and must reach the per-image senders:
+        where a reply-less send is a DIFFERENT message type, dropping it loses the delivery
+        (QQ groups reject a topic-less send as a proactive message, 40034105) while the text
+        path — which carries the anchor — succeeds. Returns success when at least one image
+        was delivered — the outcome the turn-level delivery tracker records; every override
+        must return the same aggregate, or a media-only turn on that platform reports
+        FAILURE (#106153)."""
         from urllib.parse import unquote as _unquote
         delivered = False
         for image_url, alt_text in images:
@@ -2937,7 +2942,8 @@ class BasePlatformAdapter(ABC):
                 else:
                     sender, url_kw = self.send_image, {"image_url": image_url}
                 img_result = await sender(
-                    chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
+                    chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata,
+                    reply_to=reply_to)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                 else:
@@ -4208,6 +4214,7 @@ class BasePlatformAdapter(ABC):
         tags only, never bare local files), video → send_video, else send_document. Every failure is
         reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
         from urllib.parse import quote as _quote
+        reply_to = _reply_anchor_for_event(event)
 
         def _as_image(path: str) -> bool:
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
@@ -4224,13 +4231,16 @@ class BasePlatformAdapter(ABC):
             do."""
             ext = Path(path).suffix.lower()
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
+                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata,
+                                               is_voice=is_voice, reply_to=reply_to)
             elif ext in _VIDEO_EXTS:
                 if media_tag:
                     logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
-                result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
+                result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata,
+                                               reply_to=reply_to)
             else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata,
+                                                  reply_to=reply_to)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
@@ -4260,7 +4270,8 @@ class BasePlatformAdapter(ABC):
         outcome instead of FAILURE."""
         try:
             result = await self.send_multiple_images(
-                chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
+                chat_id=event.source.chat_id, images=images, metadata=metadata,
+                human_delay=human_delay, reply_to=_reply_anchor_for_event(event))
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             record_delivery(SendResult(success=False, error=str(batch_err)))

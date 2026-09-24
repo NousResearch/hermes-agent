@@ -396,7 +396,8 @@ class MattermostAdapter(BasePlatformAdapter):
         return file_data, _url_filename(image_url, f"image_{index}.png"), ct
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: _Metadata = None, human_delay: float = 0.0) -> SendResult:
+                                   metadata: _Metadata = None, human_delay: float = 0.0,
+                                   reply_to: Optional[str] = None) -> SendResult:
         """Send a batch of images as one post; chunked at Mattermost's 5-``file_ids`` cap, each chunk
         falling back to the base per-image loop on failure."""
         if not images:
@@ -423,12 +424,14 @@ class MattermostAdapter(BasePlatformAdapter):
                     delivered = True
                 else:
                     logger.warning("Mattermost: multi-image post failed, falling back")
-                    fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    fallback = await super().send_multiple_images(
+                        chat_id, chunk, metadata, human_delay=human_delay, reply_to=reply_to)
                     delivered = delivered or fallback.success
             except Exception as e:
                 logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
                                chunk_idx + 1, len(chunks), e, exc_info=True)
-                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(
+                    chat_id, chunk, metadata, human_delay=human_delay, reply_to=reply_to)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 

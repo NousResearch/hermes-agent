@@ -1344,6 +1344,14 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
             parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))
     _add(getattr(assistant_message, "reasoning_content", None))
+    # thinking_content / thinking: Baidu Qianfan and a few CN providers stream
+    # the chain-of-thought under these top-level fields instead of
+    # reasoning_content (original #7148 scope; reworked onto current main).
+    _add(getattr(assistant_message, "thinking_content", None))
+    _add(getattr(assistant_message, "thinking", None))
+    if not parts and isinstance(getattr(assistant_message, "model_extra", None), dict):
+        _meta = assistant_message.model_extra
+        _add(_meta.get("thinking_content") or _meta.get("thinking"))
     # reasoning_details: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
     for detail in getattr(assistant_message, "reasoning_details", None) or []:
         if isinstance(detail, dict):

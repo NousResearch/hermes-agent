@@ -177,18 +177,30 @@ def _ensure_telegram_mock() -> None:
 def _ensure_discord_mock() -> None:
     """Install a comprehensive discord mock in sys.modules.
 
-    Idempotent — skips when the real library is already imported.
-    Uses ``sys.modules[name] = mod`` (overwrite) instead of
-    ``setdefault`` so it wins even if a partial/broken import already
-    cached the module.
+    Idempotent — skips when the real library is already imported and reuses
+    a test double already registered by another test directory.
 
     This mock is comprehensive — it includes **all** attributes needed by
     every gateway discord test file.  Individual test files should call
     this function (it short-circuits when already present) rather than
     maintaining their own mock setup.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing_discord = sys.modules.get("discord")
+    if existing_discord is not None and "__file__" in vars(existing_discord):
         return  # Real library is installed — nothing to mock
+
+    # A conftest from another test directory may already have installed a
+    # lightweight Discord double before this one is imported.  Replacing it
+    # would leave adapter modules holding the old object while later tests
+    # import the replacement from sys.modules.  Keep that module identity and
+    # add the one enum used by message admission when the earlier double did
+    # not provide it.
+    if existing_discord is not None:
+        if "MessageType" not in vars(existing_discord):
+            from types import SimpleNamespace
+
+            existing_discord.MessageType = SimpleNamespace(default=0, reply=19)
+        return
 
     from types import SimpleNamespace
 
@@ -610,4 +622,3 @@ def _write_guard_cache_atomic(cache_file: Path, content: str) -> None:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-

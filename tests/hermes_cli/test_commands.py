@@ -281,6 +281,18 @@ class TestSlashCommandCompleter:
         texts = {item.text for item in completions}
         assert "help" in texts
 
+    def test_reasoning_completes_scope_and_follow_up_arguments(self):
+        """`/reasoning` exposes persistence and composable display choices."""
+        completer = SlashCommandCompleter()
+
+        initial = {item.text for item in _completions(completer, "/reasoning ")}
+        assert {"none", "show", "hide", "full", "clamp", "on", "off", "--global"} <= initial
+
+        follow_up = {
+            item.text for item in _completions(completer, "/reasoning hide ")
+        }
+        assert {"full", "--global"} <= follow_up
+
 
 # ── Stacked slash-skill completion ──────────────────────────────────────
 

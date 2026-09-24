@@ -1,19 +1,16 @@
 /**
- * Session lineage and sidebar integrity after compaction and branching.
- * One real Electron app + one real `hermes serve`; only the LLM is faked.
+ * Session lineage and sidebar integrity for branches. One real Electron app +
+ * one real `hermes serve`; only the LLM is faked.
  *
- *  - compaction that rotates the session (compression.in_place: false) is a
- *    CONTINUATION: the sidebar keeps one row for the conversation, never a
- *    parent + child branch pair (#121148);
- *  - the prompt acknowledged right after compaction renders exactly once,
- *    live and after a reload (#121088);
  *  - a branch child is born with a title (#121062) and is a sidebar row of
  *    its own;
- *  - switching between the branch and its parent never renders the other
- *    session's (stale) turns or duplicates a part (#121096).
+ *  - switching between the branch and its parent (3 round trips, then a
+ *    reload) never renders the other session's turns or duplicates a part.
  *
- * No KNOWN entries: every scenario is green on main. A bug found later is
- * marked with test.fail() + the issue ref (strict: red once fixed).
+ * Compaction lineages live in lineage-rotation.spec.ts (#121148) and
+ * lineage-compaction-prompt.spec.ts (#121088). The #121096 mechanism
+ * (index-keyed response-group children) is NOT reached by this switching
+ * scenario — see the PR's NOT COVERED list.
  */
 
 import { expect, type Page, test } from '@playwright/test'
@@ -54,10 +51,6 @@ function sidebarRows(page: Page) {
   return page.locator(`${row}:not(${row} *)`).filter({ visible: true })
 }
 
-async function sidebarRowTexts(page: Page): Promise<string[]> {
-  return (await sidebarRows(page).allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim())
-}
-
 /** Markers of every user bubble, in order, and how often each assistant marker renders. */
 async function renderedMarkers(page: Page): Promise<{ users: string[]; assistants: string[] }> {
   const { bubbles } = await renderedTranscript(page)
@@ -68,16 +61,6 @@ async function renderedMarkers(page: Page): Promise<{ users: string[]; assistant
     users: pick('user', new RegExp(`\\bU\\d+-${nonce}\\b`, 'g')),
     assistants: pick('assistant', new RegExp(`\\bA\\d+-${nonce}\\b`, 'g'))
   }
-}
-
-const isSummary = (c: { body: any }) => JSON.stringify(c.body?.messages ?? '').includes('context checkpoint')
-
-async function composeSlash(page: Page, command: string) {
-  const box = page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()
-  await box.click()
-  await page.keyboard.insertText(command)
-  await expect.poll(() => box.textContent()).toContain(command.slice(1))
-  await page.getByRole('button', { name: 'Send', exact: true }).click()
 }
 
 async function settled(page: Page) {
@@ -97,14 +80,10 @@ async function openSession(page: Page, sessionId: string, mustShow: string) {
   await expect(viewport(page)).toContainText(mustShow, { timeout: 60_000 })
 }
 
-test('lineage: compaction continuation and branch children keep one coherent sidebar', async () => {
+test('lineage: a branch child is its own titled row and switching never leaks turns', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('lineage')
-  writeProviderHome(
-    sandbox.hermesHome,
-    provider.url,
-    'compression:\n  in_place: false\n  protect_first_n: 1\n  protect_last_n: 1\n'
-  )
+  writeProviderHome(sandbox.hermesHome, provider.url)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
 
@@ -128,68 +107,10 @@ test('lineage: compaction continuation and branch children keep one coherent sid
     await waitForInteractive(app, page)
     await installDuplicateSampler(page)
 
-    let rootId = ''
-
-    await test.step('compaction continuation stays one sidebar row (#121148)', async () => {
+    await test.step('a parent conversation with two turns', async () => {
       await turn(1, 'first question here')
-      rootId = storedSessionForMarker(sandbox, 'default', U(1)) ?? ''
-      expect(rootId).not.toBe('')
       await turn(2, 'second question here')
-      await turn(3, 'third question here')
       await expect.poll(() => sidebarRows(page).count()).toBe(1)
-
-      const summariesBefore = provider.completions.filter(isSummary).length
-      await composeSlash(page, '/compress keep the question markers')
-      await expect
-        .poll(() => provider.completions.filter(c => isSummary(c) && c.finished).length, {
-          timeout: 90_000,
-          message: 'the compaction summary was generated'
-        })
-        .toBeGreaterThan(summariesBefore)
-      await settled(page)
-      await turn(4, 'after the compaction')
-      const continuation = storedSessionForMarker(sandbox, 'default', U(4))
-      expect(continuation, 'follow-up persisted').not.toBeNull()
-      const rotated = continuation !== rootId
-      test.info().annotations.push({ type: 'compaction', description: rotated ? 'rotated' : 'in place' })
-
-      if (rotated) {
-        expect(sessionRows(sandbox).find(r => r.id === continuation)?.parent_session_id).toBe(rootId)
-      }
-
-      await expect
-        .poll(() => sidebarRowTexts(page), {
-          timeout: 30_000,
-          message: 'one conversation → one sidebar row after compaction'
-        })
-        .toHaveLength(1)
-    })
-
-    await test.step('the prompt acknowledged after compaction renders once (#121088)', async () => {
-      const live = await renderedMarkers(page)
-      expect(
-        live.users.filter(m => m === U(4)),
-        'live: U4 rendered once'
-      ).toHaveLength(1)
-      expect(
-        live.assistants.filter(m => m === A(4)),
-        'live: A4 rendered once'
-      ).toHaveLength(1)
-      expect(live.users.indexOf(U(4)), 'U4 is the last user bubble').toBe(live.users.length - 1)
-
-      await page.reload()
-      await waitForInteractive(app, page)
-      await installDuplicateSampler(page)
-      await expect(viewport(page)).toContainText(A(4), { timeout: 60_000 })
-      const cold = await renderedMarkers(page)
-      expect(
-        cold.users.filter(m => m === U(4)),
-        'reload: U4 rendered once'
-      ).toHaveLength(1)
-      expect(
-        cold.assistants.filter(m => m === A(4)),
-        'reload: A4 rendered once'
-      ).toHaveLength(1)
     })
 
     let branchId = ''
@@ -225,9 +146,9 @@ test('lineage: compaction continuation and branch children keep one coherent sid
       await expect.poll(() => sidebarRows(page).count(), { timeout: 30_000 }).toBe(2)
     })
 
-    await test.step('switching branch ↔ parent never renders stale or duplicated parts (#121096)', async () => {
+    await test.step("switching branch ↔ parent never renders the other session's turn or a duplicate part", async () => {
       for (let round = 0; round < 3; round++) {
-        await openSession(page, parentId, A(4))
+        await openSession(page, parentId, A(2))
         const parent = await renderedMarkers(page)
         expect(parent.users, `round ${round}: parent never shows the branch turn`).not.toContain(U(5))
         expect(new Set(parent.assistants).size, `round ${round}: parent assistant parts unique`).toBe(
@@ -244,6 +165,10 @@ test('lineage: compaction continuation and branch children keep one coherent sid
           branch.assistants.length
         )
       }
+
+      // Every frame sampled across the switches (transient duplicates included).
+      const violations = await page.evaluate(() => (window as any).__coreSampler?.violations ?? [])
+      expect(violations, 'no marker rendered twice in any sampled frame').toEqual([])
 
       await page.reload()
       await waitForInteractive(app, page)

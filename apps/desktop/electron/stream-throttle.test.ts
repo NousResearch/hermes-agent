@@ -44,6 +44,7 @@ function makeWindow() {
       listeners.get('closed')?.()
     },
     isDestroyed: () => destroyed,
+    listeners,
     on(event: string, fn: () => void) {
       listeners.set(event, fn)
     },
@@ -149,4 +150,109 @@ test('closed and destroyed windows drop out without throwing', () => {
   throttle.update(true)
   // Only the registration-time call landed; nothing after close.
   assert.deepEqual(closedWin.calls, [true])
+})
+
+
+function makeFullscreenableWindow() {
+  const win = makeWindow()
+  let fullscreen = false
+  const ext = win as ReturnType<typeof makeWindow> & {
+    isFullScreen: () => boolean
+    goFullscreen(on: boolean): void
+  }
+  ext.isFullScreen = () => fullscreen
+  ext.goFullscreen = (on: boolean) => {
+    fullscreen = on
+    win.listeners.get(on ? 'enter-full-screen' : 'leave-full-screen')?.()
+  }
+
+  return ext
+}
+
+test('fullscreen events are inert when the Wayland workaround is disabled', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const win = makeFullscreenableWindow()
+  throttle.register(win)
+
+  win.goFullscreen(true)
+  assert.deepEqual(win.calls, [true])
+  assert.equal(throttle.isUnthrottled(), false)
+  assert.equal(timers.pendingCount, 0)
+})
+
+test('Wayland fullscreen unthrottles while idle and leaving re-arms the trailing throttle', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers, 5_000, { keepFullscreenPainting: true })
+  const win = makeFullscreenableWindow()
+  throttle.register(win)
+
+  win.goFullscreen(true)
+  assert.deepEqual(win.calls, [true, false])
+  assert.equal(throttle.isUnthrottled(), true)
+
+  // A settle report during fullscreen must not re-throttle the visible surface.
+  throttle.update(false)
+  assert.equal(timers.pendingCount, 0)
+
+  win.goFullscreen(false)
+  assert.equal(timers.pendingCount, 1)
+  timers.fire()
+  assert.deepEqual(win.calls, [true, false, true])
+  assert.equal(throttle.isUnthrottled(), false)
+})
+
+test('closing the only fullscreen Wayland window re-arms throttling for the remaining fleet', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers, 5_000, { keepFullscreenPainting: true })
+  const fullscreen = makeFullscreenableWindow()
+  const normal = makeWindow()
+  throttle.register(fullscreen)
+  throttle.register(normal)
+
+  fullscreen.goFullscreen(true)
+  fullscreen.close()
+
+  assert.equal(timers.pendingCount, 1)
+  assert.equal(throttle.isUnthrottled(), true)
+
+  timers.fire()
+  assert.equal(throttle.isUnthrottled(), false)
+  assert.deepEqual(normal.calls, [true, false, true])
+})
+
+test('one of two fullscreen Wayland windows leaving does not re-arm throttling', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers, 5_000, { keepFullscreenPainting: true })
+  const first = makeFullscreenableWindow()
+  const second = makeFullscreenableWindow()
+  throttle.register(first)
+  throttle.register(second)
+
+  first.goFullscreen(true)
+  second.goFullscreen(true)
+  first.goFullscreen(false)
+
+  assert.equal(timers.pendingCount, 0)
+  assert.equal(throttle.isUnthrottled(), true)
+
+  second.goFullscreen(false)
+  assert.equal(timers.pendingCount, 1)
+})
+
+test('leaving Wayland fullscreen during active work keeps the fleet unthrottled', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers, 5_000, { keepFullscreenPainting: true })
+  const win = makeFullscreenableWindow()
+  throttle.register(win)
+
+  throttle.update(true)
+  win.goFullscreen(true)
+  win.goFullscreen(false)
+
+  assert.equal(timers.pendingCount, 0)
+  assert.equal(throttle.isUnthrottled(), true)
+
+  throttle.update(false)
+  assert.equal(timers.pendingCount, 1)
 })

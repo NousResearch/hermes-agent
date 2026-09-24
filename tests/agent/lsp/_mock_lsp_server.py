@@ -116,10 +116,10 @@ def main():
         script = "clean"
 
     if script == "oversized_stderr":
-        # Exceed the client's 16 MiB StreamReader limit. readline() converts
+        # Exceed the client's StreamReader limit (size passed from _STREAM_LIMIT). readline() converts
         # this into ValueError after discarding the buffered line; the client
         # must keep draining stderr and serve requests normally.
-        sys.stderr.write("X" * (16 * 1024 * 1024 + 1) + "\n")
+        sys.stderr.write("X" * int(os.environ["MOCK_LSP_STDERR_BYTES"]) + "\n")
         sys.stderr.flush()
         script = "clean"
 

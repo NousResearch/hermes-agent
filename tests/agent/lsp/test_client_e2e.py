@@ -14,18 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.client import LSPClient
+from agent.lsp.client import _STREAM_LIMIT, LSPClient
 from agent.lsp.protocol import LSPProtocolError, LSPRequestError
-
-
-pytestmark = pytest.mark.live_system_guard_bypass
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
-def _client(workspace: Path, script: str = "clean") -> LSPClient:
-    env = {"MOCK_LSP_SCRIPT": script, "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+def _client(workspace: Path, script: str = "clean", **extra_env: str) -> LSPClient:
+    env = {"MOCK_LSP_SCRIPT": script, "PYTHONPATH": os.environ.get("PYTHONPATH", ""), **extra_env}
     return LSPClient(
         server_id=f"mock-{script}",
         workspace_root=str(workspace),
@@ -224,6 +221,8 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
             )
     finally:
         await client.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_shutdown_never_signals_a_server_that_honours_exit(tmp_path: Path):
     """A server that exits on the protocol ``exit`` must not be SIGTERMed on top of it (#72944:
@@ -307,7 +306,7 @@ async def test_client_handles_stderr_line_over_stream_limit(tmp_path: Path):
     f = tmp_path / "x.py"
     f.write_text("print('hi')\n", encoding="utf-8")
 
-    client = _client(tmp_path, "oversized_stderr")
+    client = _client(tmp_path, "oversized_stderr", MOCK_LSP_STDERR_BYTES=str(_STREAM_LIMIT + 1))
     await client.start()
     try:
         assert client.is_running

@@ -83,6 +83,39 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_all_boards_aggregates_cards_and_diagnostics_without_archived_sources(client):
+    """Fleet reads keep source identity and board-local diagnostics without exposing archives."""
+    kb.create_board("project-a")
+    kb.create_board("project-b")
+    a = client.post("/api/plugins/kanban/tasks?board=project-a",
+                    json={"title": "Needs attention", "assignee": "alice", "tenant": "team"}).json()["task"]
+    b = client.post("/api/plugins/kanban/tasks?board=project-b",
+                    json={"title": "In progress", "assignee": "bob", "tenant": "team"}).json()["task"]
+    excluded = client.post("/api/plugins/kanban/tasks?board=project-b",
+                           json={"title": "Archived task"}).json()["task"]
+    client.patch(f"/api/plugins/kanban/tasks/{excluded['id']}?board=project-b", json={"status": "archived"})
+    with kbc.connect(board="project-a") as conn:
+        real = kb.create_task(conn, title="real", assignee="alice", created_by="alice")
+        with pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(conn, a["id"], summary="phantom", created_cards=[real, "t_ffff00001234"])
+
+    data = client.get("/api/plugins/kanban/board/all").json()
+    cards = [task for column in data["columns"] for task in column["tasks"]]
+    by_id = {task["id"]: task for task in cards}
+    assert by_id[a["id"]]["board_slug"] == "project-a"
+    assert by_id[a["id"]]["warnings"]["count"] > 0
+    assert by_id[b["id"]]["board_slug"] == "project-b"
+    assert excluded["id"] not in by_id
+    assert {"project-a", "project-b"}.issubset({board["slug"] for board in data["boards"]})
+
+    filtered = client.get("/api/plugins/kanban/board/all?tenant=missing").json()
+    assert not any(column["tasks"] for column in filtered["columns"])
+    kb.remove_board("project-b", archive=True)
+    remaining = client.get("/api/plugins/kanban/board/all").json()
+    assert all(task["board_slug"] != "project-b"
+               for column in remaining["columns"] for task in column["tasks"])
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

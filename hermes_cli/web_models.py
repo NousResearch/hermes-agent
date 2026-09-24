@@ -467,6 +467,11 @@ class SkillToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None
 
+class SkillCategoryToggle(BaseModel):
+    category: Optional[str] = None  # None = uncategorized skills
+    enabled: bool
+    profile: Optional[str] = None
+
 class SkillCreate(BaseModel):
     name: str
     content: str
@@ -479,6 +484,11 @@ class SkillContentUpdate(BaseModel):
     profile: Optional[str] = None
 
 class ToolsetToggle(BaseModel):
+    enabled: bool
+    profile: Optional[str] = None
+
+class ToolsetGroupToggle(BaseModel):
+    group: str
     enabled: bool
     profile: Optional[str] = None
 

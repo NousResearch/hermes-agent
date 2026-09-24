@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
 from hermes_cli.web_models import (
-    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
+    SkillCategoryToggle, SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
     SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
@@ -385,6 +385,38 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
                 disabled.add(body.name)
             save_disabled_skills(config, disabled)
         return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.put("/api/skills/toggle-category")
+async def toggle_skill_category(body: SkillCategoryToggle, profile: Optional[str] = None):
+    """Enable/disable every skill in a category (``None`` = uncategorized).
+
+    One read-modify-write of ``skills.disabled`` per call, mirroring
+    ``PUT /api/skills/toggle``. Returns 400 if the category has no skills.
+    """
+    from tools.skills_tool import _find_all_skills
+    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+
+    scope_profile = body.profile or profile
+
+    def _run():
+        with _profile_scope(scope_profile):
+            names = sorted(
+                s["name"] for s in _find_all_skills(skip_disabled=True)
+                if s.get("category") == body.category)
+        if not names:
+            raise HTTPException(status_code=400, detail=f"Unknown skill category: {body.category}")
+        with config_write_scope(scope_profile):
+            config = load_config()
+            disabled = get_disabled_skills(config)
+            if body.enabled:
+                disabled -= set(names)
+            else:
+                disabled |= set(names)
+            save_disabled_skills(config, disabled)
+        return {"ok": True, "category": body.category, "enabled": body.enabled, "names": names}
 
     return await asyncio.to_thread(_run)
 

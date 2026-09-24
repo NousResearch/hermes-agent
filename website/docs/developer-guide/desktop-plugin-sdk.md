@@ -1385,21 +1385,36 @@ own desktop half over the app's global event stream — the same stream
 ```python
 from hermes_cli.plugin_events import broadcast_plugin_event
 
-broadcast_plugin_event("rss-reader", "items", {"count": 3})
-# → event "plugin.rss-reader.items" reaches every connected desktop client
+broadcast_plugin_event("rss-reader", "feed.updated", {"count": 3})
+# → event "plugin.rss-reader.feed.updated" reaches every connected desktop client
 ```
 
 ```javascript
-host.onEvent('plugin.rss-reader.items', payload => queryClient.invalidateQueries({ queryKey: ['items'] }))
+// register(ctx): the subscription is retired with the plugin
+host.onEvent('plugin.rss-reader.feed.updated', ({ payload }) => refreshFeeds(payload))
 ```
 
-The name is always `plugin.<your plugin id>.<event>` — the plugin id namespaces
-it, so `broadcast_plugin_event` takes the BARE event name (`"items"`, not
-`"plugin.rss-reader.items"`) and raises on anything else. Delivery is
-fire-and-forget (a wedged client is skipped, never stalling your handler). Use
-this instead of importing `tui_gateway.server` internals; for plugin-scoped
-frames with a payload tailored per connection, `ctx.socket('/events')` remains
-the richer door.
+`broadcast_plugin_event(plugin_id, event, payload=None)`: the wire name is
+always `plugin.<plugin_id>.<event>`. `plugin_id` is your catalog name
+(`[a-z0-9_-]{1,64}`, no dots — it is the namespace and can't spell another
+plugin's); `event` is the BARE dotted name (`"feed.updated"`, not
+`"plugin.rss-reader.feed.updated"`), segments of `[A-Za-z0-9_-]`, so `""`,
+`"../x"` or `"a..b"` raise `ValueError` instead of stranding the desktop half
+on a name nobody emits. `payload` is a JSON dict (or omitted → `{}`), delivered
+as the event's `payload`; the frame carries `session_id: ""` like every global
+event. Delivery is fire-and-forget (a wedged client is skipped, never stalling
+your handler) and per process: under `hermes serve` (the Desktop backend, where
+both `plugin_api.py` routers and slash commands run) it reaches every connected
+window; in a process with no connected client it is a logged no-op. Use this
+instead of importing `tui_gateway.server` internals; for plugin-scoped frames
+with a payload tailored per connection, `ctx.socket('/events')` remains the
+richer door.
+
+Migration (rss-reader): drop the `~/.hermes/rss-reader/commands.jsonl` queue,
+`GET /commands` and the 3 s `ctx.rest('/commands')` poll — the Python side
+calls `broadcast_plugin_event('rss-reader', 'feed.updated', payload)` where it
+used to enqueue, and the desktop side replaces the timer with
+`host.onEvent('plugin.rss-reader.feed.updated', fn)` inside `register(ctx)`.
 
 ### Calling it from the plugin
 

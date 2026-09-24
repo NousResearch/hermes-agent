@@ -88,7 +88,10 @@ The catalog is designed so you know exactly what you're installing:
   the obvious moves outside the plugin SDK (patching built-in prototypes,
   `eval`, importing anything other than `@hermes/plugin-sdk`/`react`,
   including remote scripts), and the app's loader refuses every non-SDK
-  import again at load time. Treat the lint as a review aid, not a
+  import again at load time. The lint reads a `<script` regex — a literal or
+  the pattern string of `new RegExp(...)` — as the sanitiser it is, not as
+  injection; a `<script` string written into the DOM still fails. Treat the
+  lint as a review aid, not a
   guarantee; give Desktop halves the same scrutiny you'd give a Python half.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys

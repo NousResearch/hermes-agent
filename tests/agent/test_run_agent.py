@@ -4084,7 +4084,8 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
 
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
-        """Continuation retries must not shrink a higher provider default cap."""
+        """Continuation retries must not shrink a higher provider default cap — and must
+        raise it, since re-sending the same cap just truncates again (#72770)."""
         self._setup_agent(agent)
         agent.max_tokens = None
         requested_caps = []
@@ -4111,7 +4112,7 @@ class TestRunConversation:
 
         assert result["completed"] is True
         assert result["final_response"] == "Part 1 Part 2"
-        assert requested_caps == [65536, 65536]
+        assert requested_caps == [65536, 131072]
 
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Local Ollama-hosted GLM (no :cloud suffix) misreports truncated output as stop."""

@@ -19,6 +19,7 @@ Coverage targets:
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,6 +28,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session_identity import RoutingIdentity
 
 
 def _make_source(
@@ -35,6 +37,7 @@ def _make_source(
     user_id: str = "user1",
     chat_type: str = "dm",
     chat_id: str = "c1",
+    profile: str | None = None,
 ) -> SessionSource:
     return SessionSource(
         platform=platform,
@@ -42,6 +45,7 @@ def _make_source(
         chat_id=chat_id,
         user_name=f"name-{user_id}",
         chat_type=chat_type,
+        profile=profile,
     )
 
 
@@ -50,11 +54,13 @@ def _make_event(text: str, source: SessionSource) -> MessageEvent:
 
 
 def _make_runner(*, platform_extra: dict | None = None,
-                 platform: Platform = Platform.DISCORD):
+                 platform: Platform = Platform.DISCORD,
+                 multiplex_profiles: bool = False):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
+        multiplex_profiles=multiplex_profiles,
         platforms={
             platform: PlatformConfig(
                 enabled=True,
@@ -89,6 +95,8 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
+    runner._primary_profile_name = "primary"
+    runner._profile_configs = {}
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
@@ -131,6 +139,57 @@ async def test_whoami_non_admin_lists_runnable_commands():
     assert "/whoami" in result    # always-allowed floor
     assert "/status" in result
     assert "/model" in result
+
+
+@pytest.mark.asyncio
+async def test_secondary_profile_slash_policy_uses_its_own_config():
+    """the launch profile's empty policy must not bypass a routed profile's gate."""
+    runner = _make_runner(multiplex_profiles=True)
+    runner._profile_configs["beta"] = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                extra={"allow_admin_from": ["admin"], "user_allowed_commands": ["status"]},
+            )
+        }
+    )
+    user = _make_source(user_id="user", profile="beta")
+    denied = runner._check_slash_access(user, "restart")
+    assert denied is not None and "⛔" in denied
+    assert "Tier: user" in await runner._handle_whoami_command(_make_event("/whoami", user))
+    assert runner._resume_caller_is_admin(user) is False
+
+    admin = _make_source(user_id="admin", profile="beta")
+    assert runner._check_slash_access(admin, "restart") is None
+    assert runner._resume_caller_is_admin(admin) is True
+
+    primary = _make_source(user_id="user")
+    assert runner._check_slash_access(primary, "restart") is None
+
+    pinned = _make_source(user_id="user", profile="primary")
+    pinned._identity = RoutingIdentity(
+        transport_profile="primary",
+        runtime_profile="beta",
+        authorization_home=Path("/profiles/primary"),
+        runtime_home=Path("/profiles/beta"),
+    )
+    assert runner._check_slash_access(pinned, "restart") is not None
+
+
+@pytest.mark.asyncio
+async def test_missing_secondary_profile_config_fails_closed():
+    """a missing routed-profile config must not inherit the launch profile's open policy."""
+    runner = _make_runner(multiplex_profiles=True)
+    denied = runner._check_slash_access(_make_source(user_id="user", profile="beta"), "restart")
+    assert denied is not None and "⛔" in denied
+
+
+def test_missing_source_fails_closed_for_multiplexed_policy():
+    runner = _make_runner(multiplex_profiles=True)
+    policy = runner._slash_access_policy_for_source(None)
+    assert policy.enabled
+    assert not policy.can_run(None, "restart")
+    assert policy.can_run(None, "help")
 
 
 @pytest.mark.asyncio

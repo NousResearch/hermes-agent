@@ -182,6 +182,48 @@ class GatewaySlashCommandsMixin(
     async_session_store: AsyncSessionStore
 
     # ------------------------------------------------------------------ shared helpers
+    def _slash_access_policy_for_source(self, source):
+        """resolve slash permissions from the profile that serves ``source``.
+
+        a multiplexed runner's ``self.config`` belongs only to its launch profile. routed
+        profiles have their own cached gateway config; if that config is missing, fail closed
+        instead of treating the source as unrestricted.
+        """
+        from gateway.slash_access import SlashAccessPolicy, policy_for_source
+
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return policy_for_source(config, source)
+        fail_closed = SlashAccessPolicy(
+            enabled=True,
+            admin_user_ids=frozenset(),
+            user_allowed_commands=frozenset(),
+        )
+        if source is None:
+            return fail_closed
+
+        try:
+            from gateway.session_identity import identity_of
+            identity = identity_of(source)
+            profile_name = getattr(identity, "runtime_profile", None)
+        except Exception:
+            return fail_closed
+        profile_name = (profile_name or getattr(source, "profile", None) or "").strip()
+        if not profile_name:
+            profile_name = (getattr(self, "_primary_profile_name", None) or "").strip()
+
+        primary_profile = (getattr(self, "_primary_profile_name", None) or "").strip()
+        if profile_name and profile_name == primary_profile:
+            profile_config = config
+        elif profile_name:
+            profile_config = (getattr(self, "_profile_configs", None) or {}).get(profile_name)
+        else:
+            profile_config = None
+
+        if profile_config is None:
+            return fail_closed
+        return policy_for_source(profile_config, source)
+
     def _cached_agent_for(self, session_key: str, *, lockless_fallback: bool = False):
         """Peek the cached AIAgent for *session_key* without evicting it, or None. Entries are
         ``(agent, signature, ...)`` tuples (bare agents from test doubles accepted). Historical callers
@@ -326,9 +368,8 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
-        from gateway.slash_access import policy_for_source
         source = event.source
-        policy = policy_for_source(self.config, source)
+        policy = self._slash_access_policy_for_source(source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = ((source.chat_type if source else "") or "dm").lower()
         scope = "DM" if chat_type in {"dm", "direct", "private", ""} else "group/channel"
@@ -599,11 +640,10 @@ class GatewaySlashCommandsMixin(
         """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
         the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
         never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
-        from gateway.slash_access import policy_for_source
         source = event.source
         # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
-        # no ``config``; policy_for_source treats None as ungated.
-        policy = policy_for_source(getattr(self, "config", None), source)
+        # no ``config``; the resolver preserves the legacy ungated behavior outside multiplexing.
+        policy = self._slash_access_policy_for_source(source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
         return {}
@@ -935,13 +975,12 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
-        from gateway.slash_access import policy_for_source
         from hermes_cli.approval_mode import run_approval_mode_command
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
         # Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
+        policy = self._slash_access_policy_for_source(event.source)
         if requested and not policy.is_admin(event.source.user_id):
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its

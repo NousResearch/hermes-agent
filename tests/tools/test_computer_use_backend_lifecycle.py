@@ -77,7 +77,7 @@ def runtime(tmp_path, monkeypatch):
             return [{"name": str(created.index(self))}]
 
     cu.reset_backend_for_tests()
-    monkeypatch.setattr(cu, "_new_backend", Backend)
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: Backend(mode))
     yield homes, created
     cu.reset_backend_for_tests()
     lease._reset_for_tests()
@@ -90,7 +90,8 @@ def test_dispatch_rechecks_admission(runtime, monkeypatch, pause_at, change):
     paused, resume = threading.Event(), threading.Event()
     real_get = cu._get_backend
     old = real_get("shared")
-    old_lock = cu._backend_call_locks["shared"]
+    owner = cu._backend_owner_key("shared")
+    old_lock = cu._backend_call_locks[owner]
 
     def pause():
         if threading.current_thread().name == "waiting-call" and not paused.is_set():
@@ -114,7 +115,7 @@ def test_dispatch_rechecks_admission(runtime, monkeypatch, pause_at, change):
 
     monkeypatch.setattr(cu, "_get_backend", get)
     if pause_at == "before_acquire":
-        cu._backend_call_locks["shared"] = PausingLock()
+        cu._backend_call_locks[owner] = PausingLock()
     worker, result = _spawn(_call, "waiting-call")
     try:
         assert paused.wait(10)
@@ -131,8 +132,15 @@ def test_dispatch_rechecks_admission(runtime, monkeypatch, pause_at, change):
             assert old.stopped
         resume.set()
         value = result.result(timeout=10)
-        assert "error" not in value, value
         assert old.count == 0
+        if change == "release":
+            # Explicit release revokes this acquisition generation. A new call,
+            # not the queued one, may acquire authority again.
+            assert "released" in value.get("error", ""), value
+            assert sum(backend.count for backend in created) == 0
+            assert "error" not in _call()
+            return
+        assert "error" not in value, value
         assert sum(backend.count for backend in created) == 1
         assert value["apps"] == [{"name": str(created.index(real_get("shared")))}]
     finally:
@@ -196,7 +204,7 @@ def test_release_waits_without_blocking_another_profile_or_replaying(runtime, mo
 
 @pytest.mark.parametrize("hand_back", [False, True])
 def test_backend_retry_preserves_the_original_human_lease_epoch(runtime, monkeypatch, hand_back):
-    _, created = runtime
+    homes, created = runtime
     paused, resume = threading.Event(), threading.Event()
     real_get = cu._get_backend
     old = real_get("shared")
@@ -212,7 +220,10 @@ def test_backend_retry_preserves_the_original_human_lease_epoch(runtime, monkeyp
     worker, result = _spawn(_call, "waiting-call")
     try:
         assert paused.wait(10)
-        assert cu.release_computer_use_session("shared")
+        # Rebind retries admission within the same generation; explicit release
+        # is instead covered by the revocation cases above.
+        (homes[0] / "bot-desktop" / "env").write_text("DISPLAY=:39\n", encoding="utf-8")
+        assert real_get("shared") is not old
         assert old.stopped
         lease.acquire("human")
         if hand_back:

@@ -88,7 +88,7 @@ def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
     their keystrokes captured by an action admitted before they did."""
     from tools.computer_use import tool
 
-    monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
+    monkeypatch.setattr(tool, "_new_backend", lambda sid, mode, provider: tool._NoopBackend())
 
     def _dispatch_then_takeover(backend, action, args, **_):
         lease.acquire("human")  # a whole take-over / hand-back cycle inside the driver call:
@@ -115,7 +115,7 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
             return json.dumps({"ok": True, "action": "click"})
 
     rec = Rec()
-    monkeypatch.setattr(tool, "_new_backend", lambda mode: rec)
+    monkeypatch.setattr(tool, "_new_backend", lambda sid, mode, provider: rec)
 
     def _approval_cycles_the_lease(scope, args, session_id=""):
         lease.acquire("human")

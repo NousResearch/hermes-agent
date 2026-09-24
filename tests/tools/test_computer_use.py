@@ -1052,7 +1052,7 @@ class TestCaptureAfterAppContext:
 
         backend = TrackingBackend()
         cu_tool.reset_backend_for_tests()
-        cu_tool._backend = backend
+        cu_tool._backend[cu_tool.hermes_home_key()] = backend
 
         cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
 
@@ -2348,6 +2348,7 @@ class TestStartupTimeoutPhaseDetail:
         from tools.computer_use import cua_backend_session as cbs
 
         phase_reached = threading.Event()
+        lifecycle_exited = threading.Event()
 
         async def _wedged_lifecycle(self):
             # Real lifecycle shape: shutdown event on the loop, phase marker,
@@ -2355,7 +2356,10 @@ class TestStartupTimeoutPhaseDetail:
             self._shutdown_event = asyncio.Event()
             self._startup_phase = "mcp-initialize"
             phase_reached.set()
-            await self._shutdown_event.wait()
+            try:
+                await self._shutdown_event.wait()
+            finally:
+                lifecycle_exited.set()
 
         class _FastReadyEvent(threading.Event):
             """Shrinks only the 30s ready wait, and only once the lifecycle
@@ -2378,10 +2382,13 @@ class TestStartupTimeoutPhaseDetail:
             msg = str(excinfo.value)
             assert "stuck in phase: mcp-initialize" in msg
             assert "computer-use doctor" in msg
-            # The timeout path signals the wedged lifecycle to shut down, and
-            # the session stays un-started so the next call rebuilds it.
-            session._lifecycle_future.result(timeout=5)
+            # Failed startup now drains the lifecycle and clears its future.
+            # Observe cleanup rather than dereferencing that retired handle.
+            assert lifecycle_exited.is_set()
+            assert session._lifecycle_future is None
             assert session._started is False
+            assert bridge._thread is None
+            assert bridge._loop is None
         finally:
             bridge.stop()
 

@@ -16,6 +16,36 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+# Session-terminate marker for long-running sessions (#99869).
+def _record_session_interruption(agent, reason: str, last_action: str = "") -> None:
+    """Best-effort: write <hermes-home>/sessions/<id>.interrupted marker.
+
+    Called when a turn ends via kill/timeout/auth-error/context-exhaustion
+    so the next session can triage instead of trusting stale state.
+    Overwrites the "in_flight" marker written at turn start (see the
+    session-start block below) with the specific failure reason.
+    """
+    try:
+        sid = getattr(agent, "session_id", "") or ""
+        if not sid:
+            return
+        last_action = (last_action or "")[:2000]
+        reason = (reason or "interrupted")[:500]
+        if not last_action:
+            try:
+                # Assigned on every tool dispatch in _begin_tool_execution;
+                # _current_tool is the live fallback while a tool runs.
+                acted = getattr(agent, "_last_tool_action", "") or getattr(
+                    agent, "_current_tool", ""
+                ) or ""
+                if acted:
+                    last_action = str(acted)[:2000]
+            except Exception as exc:
+                logger.debug("interruption last-action probe failed: %s", exc)
+        from tools.checkpoint_manager import write_interrupted_marker
+        write_interrupted_marker(sid, last_action=last_action, reason=reason)
+    except Exception as exc:
+        logger.debug("session interruption record failed: %s", exc)
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
@@ -1576,6 +1606,74 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    # Session-terminate markers for long-running sessions (#99869):
+    # write this session's in-flight marker FIRST, so a SIGKILL / process
+    # crash / watchdog exit-124 still leaves a record — no in-process
+    # handler can run on those paths, but an up-front marker needs none.
+    # Failure sites below overwrite the reason; clean completion clears it.
+    # The model-facing half of the signal is injected into the continuation
+    # prompt in build_turn_context (user-message channel), not here.
+    try:
+        from tools.checkpoint_manager import (
+            install_termination_handlers,
+            list_interrupted_markers,
+            write_interrupted_marker,
+        )
+        _own_sid = getattr(agent, "session_id", "") or ""
+        if _own_sid:
+            try:
+                install_termination_handlers(
+                    _own_sid,
+                    last_action_fn=lambda: (
+                        getattr(agent, "_last_tool_action", "")
+                        or getattr(agent, "_current_tool", "")
+                    ),
+                )
+            except Exception as exc:
+                logger.debug("termination handler install failed: %s", exc)
+            try:
+                _inflight_action = (
+                    getattr(agent, "_last_tool_action", "")
+                    or getattr(agent, "_current_tool", "")
+                    or (str(user_message)[:160] if isinstance(user_message, str) else "")
+                )
+                write_interrupted_marker(
+                    _own_sid, last_action=str(_inflight_action)[:500], reason="in_flight"
+                )
+            except Exception as exc:
+                logger.debug("in-flight marker write failed: %s", exc)
+        _recent_markers = list_interrupted_markers()
+        if _recent_markers:
+            _now = __import__("time").time()
+            # Only surface markers from the last 24h to avoid stale noise,
+            # and never our own in-flight marker — it just says we're running.
+            _recent = [
+                m for m in _recent_markers
+                if _now - m.get("timestamp", 0) < 86400
+                and m.get("session_id", "") != _own_sid
+            ]
+            if _recent:
+                agent._vprint(
+                    "⚠️  Previous long-running session was interrupted before completing its task.",
+                    force=True,
+                )
+                for _m in _recent[:3]:
+                    _sid = _m.get("session_id", "?")[:12]
+                    _when = _m.get("iso_time", "")
+                    _reason = _m.get("reason", "")
+                    _act = (_m.get("last_action", "") or "")[:80]
+                    agent._vprint(
+                        f"   • session {_sid} at {_when} — {_reason} last_action={_act}",
+                        force=True,
+                    )
+                agent._vprint(
+                    "   Partial file mutations may have been left on disk. "
+                    "Check `hermes checkpoints` / `/rollback` before trusting state.",
+                    force=True,
+                )
+    except Exception as exc:
+        logger.debug("interrupted-marker session-start handling failed: %s", exc)
+
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":

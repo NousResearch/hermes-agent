@@ -111,8 +111,10 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
         # Same containment + interpreter rules as the existing `script` field.
         from cron.scheduler_script import _run_job_script
 
-        return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None)
-    monitor_url = _field(job, "monitor_url")
+        workdir = (job.get("workdir") or "").strip() or None
+        return _run_job_script(monitor_script, workdir=workdir,
+                               job_id=str(job.get("id") or ""))
+    monitor_url = (job.get("monitor_url") or "").strip()
     if monitor_url:
         return _fetch_monitor_url(monitor_url)
     return False, "monitor job has neither monitor_script nor monitor_url"

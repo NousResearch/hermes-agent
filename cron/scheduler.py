@@ -1358,6 +1358,1536 @@ _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 _FIRE_CLAIM_MISS_CONFIRM_SECONDS = 1.0
 
 
+def _get_script_timeout() -> int:
+    """Resolve cron pre-run script timeout from module/env/config with a safe default."""
+    if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
+        try:
+            timeout = int(float(_SCRIPT_TIMEOUT))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning("Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default", _SCRIPT_TIMEOUT)
+
+    env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            timeout = int(float(env_value))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("script_timeout_seconds")
+        if configured is not None:
+            timeout = int(float(configured))
+            if timeout > 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron script timeout from config: %s", exc)
+
+    return _DEFAULT_SCRIPT_TIMEOUT
+
+
+_DEFAULT_MEDIA_SEND_TIMEOUT = 300
+
+
+def _get_media_send_timeout() -> int:
+    """Resolve the per-attachment media-send timeout from env/config.
+
+    Mirrors the ``script_timeout_seconds`` resolution pattern: the
+    HERMES_CRON_MEDIA_SEND_TIMEOUT env var wins, then
+    ``cron.media_send_timeout_seconds`` in config.yaml, then the default
+    (300s — large attachments like long TTS audio can legitimately exceed
+    the old fixed 30s upload window).
+    """
+    env_value = os.getenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            timeout = int(float(env_value))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning(
+                "Invalid HERMES_CRON_MEDIA_SEND_TIMEOUT=%r; using config/default",
+                env_value,
+            )
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("media_send_timeout_seconds")
+        if configured is not None:
+            timeout = int(float(configured))
+            if timeout > 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron media-send timeout from config: %s", exc)
+
+    return _DEFAULT_MEDIA_SEND_TIMEOUT
+
+
+def _get_session_db_timeout() -> float:
+    """Resolve the bound on run_job's SessionDB init from env/config.
+
+    Mirrors the ``script_timeout_seconds`` resolution pattern: the
+    HERMES_CRON_SESSION_DB_TIMEOUT env var wins, then
+    ``cron.session_db_timeout_seconds`` in config.yaml (present in
+    DEFAULT_CONFIG, so ``load_config()``'s deep-merge supplies it), then
+    10s. Unlike the sibling timeouts, 0 is meaningful (unlimited — legacy
+    behavior, opt-in for debugging), so values are passed through untouched.
+    """
+    env_value = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            return float(env_value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                env_value,
+            )
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("session_db_timeout_seconds")
+        if configured is not None:
+            return float(configured)
+    except Exception as exc:
+        logger.debug(
+            "Failed to load cron.session_db_timeout_seconds from config: %s", exc
+        )
+
+    return 10.0
+
+
+def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
+    cfg_path = venv_dir / "pyvenv.cfg"
+    try:
+        lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    parsed: dict[str, str] = {}
+    for raw in lines:
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        parsed[key.strip().lower()] = value.strip()
+    return parsed
+
+
+def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+    """Return an output-capable hidden Python invocation for Windows scripts.
+
+    Cron scripts capture stdout/stderr, so using ``pythonw.exe`` directly can
+    lose script output.  uv-created venv ``python.exe`` launchers are also a
+    problem: even with CREATE_NO_WINDOW, the launcher can re-exec the base
+    console interpreter and flash a visible window.  For uv venvs, bypass the
+    launcher and run the base ``python.exe`` directly with the venv paths
+    overlaid in the environment.
+    """
+    if sys.platform != "win32":
+        return python_exe, {}
+
+    interpreter = Path(python_exe)
+    venv_dir = interpreter.parent.parent
+    env_overlay: dict[str, str] = {}
+
+    if interpreter.name.lower() == "pythonw.exe":
+        sibling = interpreter.with_name("python.exe")
+        if sibling.exists():
+            interpreter = sibling
+
+    cfg = _read_windows_pyvenv_cfg(venv_dir)
+    home = cfg.get("home", "")
+    site_packages = venv_dir / "Lib" / "site-packages"
+    if "uv" in cfg and home:
+        base_python = Path(home) / "python.exe"
+        if base_python.exists() and site_packages.exists():
+            interpreter = base_python
+            env_overlay["VIRTUAL_ENV"] = str(venv_dir)
+            pythonpath_entries = [
+                str(Path(__file__).resolve().parents[1]),
+                str(site_packages),
+            ]
+            existing_pythonpath = os.environ.get("PYTHONPATH", "")
+            if existing_pythonpath:
+                pythonpath_entries.append(existing_pythonpath)
+            env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
+    return str(interpreter), env_overlay
+
+
+def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
+    """Best-effort hard stop of a cron script and every child it spawned."""
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                creationflags=windows_hide_flags(),
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+    else:
+        try:
+            process_group: Optional[int] = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            process_group = None
+        if process_group is not None:
+            try:
+                os.killpg(process_group, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch (win32 handled above)
+            except (ProcessLookupError, PermissionError, OSError):
+                process_group = None
+            if process_group is not None:
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+                # Escalate whenever ANY group member survived the TERM: a
+                # TERM-ignoring descendant keeps the stdio pipe write ends
+                # open, and the caller's communicate() would then block on
+                # EOF forever.  killpg(pgid, 0) probes group liveness.
+                try:
+                    os.killpg(process_group, 0)  # windows-footgun: ok — POSIX-only branch
+                except (ProcessLookupError, OSError):
+                    process_group = None
+                if process_group is not None:
+                    try:
+                        os.killpg(process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=1.0)
+
+
+def _terminate_cron_script_tree(proc: subprocess.Popen) -> None:
+    """Terminate a script tree, then fall back to the local process-group path."""
+    if proc.poll() is not None:
+        # Already exited (e.g. finished right at the deadline): nothing to
+        # signal, and calling kill_process_tree on a reaped pid would log a
+        # spurious "no signal" warning. Mirrors _terminate_cron_script_process.
+        return
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        logger.warning(
+            "Cron script tree-kill received invalid pid %r; "
+            "falling back to process-group termination",
+            pid,
+        )
+        _terminate_cron_script_process(proc)
+        return
+    try:
+        # Function-local so tests can monkeypatch agent.deadline.kill_process_tree;
+        # separate from the kill try below so a packaging/import problem
+        # surfaces as what it is instead of masquerading as a kill failure.
+        from agent.deadline import kill_process_tree
+    except Exception:
+        logger.warning(
+            "agent.deadline.kill_process_tree unavailable; "
+            "falling back to process-group termination",
+            exc_info=True,
+        )
+        _terminate_cron_script_process(proc)
+        return
+    try:
+        if kill_process_tree(pid):
+            return
+        logger.warning(
+            "Cron script tree-kill reported no signal for pid %s; "
+            "falling back to process-group termination",
+            pid,
+        )
+    except Exception:
+        logger.warning(
+            "Cron script tree-kill failed for pid %s; "
+            "falling back to process-group termination",
+            pid,
+            exc_info=True,
+        )
+    _terminate_cron_script_process(proc)
+
+
+def _drain_script_pipes(proc: subprocess.Popen) -> None:
+    """Reap a terminated script process without ever blocking indefinitely.
+
+    A descendant that survived the tree kill can hold the pipe write ends
+    open, so a bare ``communicate()`` would wait for EOF forever.  Bound the
+    drain, then abandon the pipes — the caller only needs the process reaped
+    and the worker thread unblocked, not the output.
+    """
+    try:
+        proc.communicate(timeout=5.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        # Truly wedged — leave the zombie to the OS reaper rather than
+        # blocking the cron worker thread forever.
+        pass
+
+
+def _windows_cron_bootstrap_argv(
+    python_exe: str,
+    env_overlay: dict[str, str],
+    script_path: str,
+) -> list[str]:
+    """Bootstrap a cron script under the base interpreter with ``.pth`` support.
+
+    The uv-venv overlay mode runs the base ``python.exe`` (to avoid the
+    launcher re-execing a console interpreter and flashing a window) and
+    re-attaches the venv via ``PYTHONPATH``.  But ``PYTHONPATH`` entries are
+    plain ``sys.path`` additions — Python's site initialization never
+    processes ``.pth`` files for them (only ``site.addsitedir()`` does) — so
+    editable installs (``pip install -e``, ``__editable__*.pth`` links) are
+    invisible to cron script jobs.
+
+    Bootstrap with ``site.addsitedir()`` on the venv ``site-packages``, then
+    exec the script as ``__main__``.  ``runpy.run_path`` keeps ``__file__``
+    correct; ``sys.path[0]`` is set to the script's directory to preserve the
+    ``python script.py`` import semantics.  Note: ``runpy`` does not set
+    ``__package__``/``__spec__`` the way a direct invocation does, so
+    package-relative imports (``from . import x``) may behave differently.
+    Falls back to a plain invocation if the venv layout is unresolvable —
+    the pre-existing PYTHONPATH behaviour is strictly better than failing
+    to run at all.
+    """
+    site_packages = Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
+    if not site_packages.is_dir():
+        # Silent here would make the "editable installs invisible" failure
+        # undiagnosable; the pre-existing PYTHONPATH-only behaviour applies.
+        logger.warning(
+            "Windows cron script: venv site-packages %s not found; running "
+            "without .pth processing (editable installs may be unimportable)",
+            site_packages,
+        )
+        return [python_exe, script_path]
+    bootstrap = (
+        "import os, runpy, site, sys;"
+        f"site.addsitedir({str(site_packages)!r});"
+        "script = sys.argv[1];"
+        "sys.argv = [script] + sys.argv[2:];"
+        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
+        "runpy.run_path(script, run_name='__main__')"
+    )
+    return [python_exe, "-c", bootstrap, script_path]
+
+
+def _note_cron_script_interruption(
+    job_id: str, script_path: str, reason: str, detail: str = ""
+) -> None:
+    """Leave an interrupted-session marker when a cron script dies abnormally.
+
+    This is the parent-side half of #99869: the scheduler survives the
+    timeout/cancel kill (or a plain crash) and records it, so the next
+    session — agent or human — can triage instead of trusting whatever the
+    script half-wrote. Best-effort; never raises.
+    """
+    try:
+        from tools.checkpoint_manager import write_interrupted_marker
+
+        sid = f"cron-script:{job_id}" if job_id else f"cron-script:{Path(script_path).name}"
+        write_interrupted_marker(
+            sid,
+            last_action=f"{script_path} {detail}"[:2000],
+            reason=reason,
+            base=_get_hermes_home(),
+        )
+    except Exception as exc:
+        logger.debug("cron script interruption marker failed: %s", exc)
+
+
+def _run_job_script(
+    script_path: str,
+    workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+    job_id: str = "",
+) -> tuple[bool, str]:
+    """Execute a cron job's data-collection script and capture its output.
+
+    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
+    absolute paths are resolved and validated against this directory to
+    prevent arbitrary script execution via path traversal or absolute
+    path injection.
+
+    Supported interpreters (chosen by file extension):
+
+    * ``.sh`` / ``.bash`` — run with ``/bin/bash``
+    * anything else — run with the current Python interpreter
+      (``sys.executable``), preserving the original behaviour for
+      Python-based pre-check and data-collection scripts.
+
+    Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
+    (the `memory-watchdog.sh` pattern) without wrapping them in Python.
+
+    Subprocess environment is passed through ``_sanitize_subprocess_env`` so
+    provider credentials and other Hermes-managed secrets are not inherited
+    (SECURITY.md §2.3), matching terminal and MCP child processes.
+
+    Args:
+        script_path: Path to the script.  Relative paths are resolved
+            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
+            are also validated to ensure they stay within the scripts dir.
+        workdir: Optional absolute path to use as the script's cwd.
+            When set, the subprocess runs in this directory instead of
+            the scripts-dir parent.  The Python process cwd is NEVER
+            mutated, avoiding the global-side-effect bug where a cron
+            job's ``os.chdir()`` leaks into concurrent gateway sessions
+            (#69396).
+
+    Returns:
+        (success, output) — on failure *output* contains the error message so the
+        LLM can report the problem to the user.
+    """
+    scripts_dir = _get_hermes_home() / "scripts"
+    _ensure_cron_dir(scripts_dir)
+    scripts_dir_resolved = scripts_dir.resolve()
+
+    # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
+    # a NUL-bearing value can never name a real script, and on Windows the
+    # Path operations raise ValueError *after* expanduser (expanduser never
+    # expands "~user" there, so the try below never fires) — reject eagerly
+    # so both platforms fail cleanly instead of crashing the scheduler.
+    # str() first so the guard itself can never raise TypeError on a
+    # non-str script_path (e.g. a Path passed by a future caller) — the
+    # guard must be crash-proof even though every current call site
+    # passes a plain str (#86832 review).
+    if "\x00" in str(script_path):
+        return False, f"Blocked: script path contains a NUL byte: {script_path!r}"
+
+    try:
+        raw = Path(script_path).expanduser()
+    except (ValueError, RuntimeError, OSError):
+        # Same ingestion contract as cron.lifecycle_guard: a NUL-bearing
+        # value (ValueError) or an unexpandable ``~`` (RuntimeError with no
+        # resolvable HOME) can never name a real script. The creation-time
+        # guard tolerates such values as "nothing to scan", so they can
+        # reach fire time — fail the run with a report instead of crashing
+        # the scheduler with an unhandled exception.
+        return False, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
+
+    # Guard against path traversal, absolute path injection, and symlink
+    # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    try:
+        path.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return False, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({scripts_dir_resolved}): {script_path!r}"
+        )
+
+    if not path.exists():
+        return False, f"Script not found: {path}"
+    if not path.is_file():
+        return False, f"Script path is not a file: {path}"
+
+    script_timeout = _get_script_timeout()
+
+    # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
+    # everything else.  We deliberately do NOT honour the file's own
+    # shebang: the scripts dir is trusted, but keeping the interpreter
+    # choice explicit here keeps the allowed surface small and auditable.
+    suffix = path.suffix.lower()
+    if suffix in {".sh", ".bash"}:
+        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
+        # all work.  On native Windows without Git for Windows installed
+        # shutil.which returns None — fall back to a clear error rather
+        # than a FileNotFoundError with a confusing "[WinError 2]"
+        # traceback.
+        _bash = shutil.which("bash") or (
+            "/bin/bash" if os.path.isfile("/bin/bash") else None
+        )
+        if _bash is None:
+            return False, (
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                "On Windows, install Git for Windows (which ships Git Bash) "
+                "or rewrite the script as Python (.py)."
+        )
+        argv = [_bash, str(path)]
+        env_overlay: dict[str, str] = {}
+    else:
+        python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
+        if env_overlay:
+            # Overlay mode (Windows uv venv): PYTHONPATH alone cannot make
+            # editable installs importable — .pth processing needs
+            # site.addsitedir() (see _windows_cron_bootstrap_argv).
+            argv = _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path))
+        else:
+            argv = [python_exe, str(path)]
+
+    try:
+        from tools.environments.local import build_subprocess_env
+
+        popen_kwargs: dict[str, Any] = {"start_new_session": True}
+        if sys.platform == "win32":
+            popen_kwargs = {
+                "creationflags": windows_hide_flags()
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+        env = build_subprocess_env()
+        env.update(env_overlay)
+        # Use the job's workdir as the subprocess cwd when configured,
+        # otherwise default to the scripts-dir parent (back-compat).
+        # NEVER mutate the Python process cwd — that would leak into
+        # concurrent gateway sessions (#69396).
+        _script_cwd = workdir or str(path.parent)
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=_script_cwd,
+            env=env,
+            **popen_kwargs,
+        )
+        deadline = time.monotonic() + script_timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                # Same bug class as the timeout site below: a cancelled fire
+                # must not orphan own-session grandchildren either.
+                _terminate_cron_script_tree(proc)
+                _drain_script_pipes(proc)
+                _note_cron_script_interruption(
+                    job_id, str(path), "cron_script_cancelled"
+                )
+                return False, "Script cancelled because cron fire ownership was lost"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                # Phase 4a (#85125): a script timeout must leave ZERO living
+                # descendants. killpg only reaches the script's own process
+                # group — a grandchild that called setsid (backgrounded
+                # shell jobs, watchdogs) escapes it and keeps running after
+                # the job reports failure (#71148 / #59549).
+                # agent.deadline.kill_process_tree snapshots the descendant
+                # set via psutil BEFORE signalling, so own-session
+                # grandchildren are reached too — the unified deadline
+                # layer's tree-kill (#85147, d6a5cb9725).
+                _terminate_cron_script_tree(proc)
+                _drain_script_pipes(proc)
+                _note_cron_script_interruption(
+                    job_id, str(path), "cron_script_timeout_killed"
+                )
+                return False, f"Script timed out after {script_timeout}s: {path}"
+            try:
+                stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        stdout = (stdout_raw or "").strip()
+        stderr = (stderr_raw or "").strip()
+
+        # Redact secrets from both stdout and stderr before any return path.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception as e:
+            logger.warning("Failed to redact sensitive text from output: %s", e)
+            stdout = "[REDACTED - redaction failed]"
+            stderr = "[REDACTED - redaction failed]"
+
+        if proc.returncode != 0:
+            parts = [f"Script exited with code {proc.returncode}"]
+            if stderr:
+                parts.append(f"stderr:\n{stderr}")
+            if stdout:
+                parts.append(f"stdout:\n{stdout}")
+            _note_cron_script_interruption(
+                job_id, str(path),
+                f"cron_script_exit_{proc.returncode}",
+                detail=(stderr or stdout)[-300:],
+            )
+            return False, "\n".join(parts)
+
+        return True, stdout
+
+    except Exception as exc:
+        _note_cron_script_interruption(job_id, str(script_path), "cron_script_error")
+        return False, f"Script execution failed: {exc}"
+
+
+def _run_job_script_with_claim_heartbeat(
+    job: dict,
+    script_path: str,
+    workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str]:
+    """Run a cron script while keeping its owned one-shot claim fresh.
+
+    Script execution is synchronous and may legitimately outlive the stale
+    claim TTL.  Without a concurrent heartbeat, another scheduler process can
+    mistake the live run for a dead owner and dispatch the same one-shot again.
+    Recurring jobs and unclaimed/manual runs have no durable one-shot claim and
+    therefore use the ordinary script path without starting a thread.
+
+    The claim owner is captured from the dispatched job and never re-read from
+    storage.  ``heartbeat_run_claim`` compares that stable owner before every
+    refresh, so a stale runner cannot extend a replacement owner's claim.
+    """
+    schedule = job.get("schedule")
+    claim = job.get("run_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    job_id = str(job.get("id") or "")
+    if not (
+        isinstance(schedule, dict)
+        and schedule.get("kind") == "once"
+        and owner
+    ):
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               job_id=job_id)
+
+    stop = threading.Event()
+    heartbeat_context = contextvars.copy_context()
+
+    def _heartbeat_loop() -> None:
+        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            try:
+                heartbeat_run_claim(job_id, expected_owner=owner)
+            except Exception:
+                logger.debug(
+                    "Job '%s': script run_claim heartbeat failed",
+                    job_id,
+                    exc_info=True,
+                )
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_context.run,
+        args=(_heartbeat_loop,),
+        name="cron-script-claim-heartbeat",
+        daemon=True,
+    )
+    try:
+        heartbeat_thread.start()
+    except Exception:
+        logger.debug(
+            "Job '%s': could not start script run_claim heartbeat",
+            job_id,
+            exc_info=True,
+        )
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               job_id=job_id)
+
+    try:
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               job_id=job_id)
+    finally:
+        stop.set()
+        # Event.wait() wakes immediately.  Keep completion bounded if the
+        # heartbeat is already waiting on another process's jobs-file lock.
+        heartbeat_thread.join(timeout=1.0)
+
+
+def _parse_wake_gate(script_output: str) -> bool:
+    """Parse the last non-empty stdout line of a cron job's pre-check script
+    as a wake gate.
+
+    The convention (ported from nanoclaw #1232): if the last stdout line is
+    JSON like ``{"wakeAgent": false}``, the agent is skipped entirely — no
+    LLM run, no delivery. Any other output (non-JSON, missing flag, gate
+    absent, or ``wakeAgent: true``) means wake the agent normally.
+
+    Returns True if the agent should wake, False to skip.
+    """
+    if not script_output:
+        return True
+    stripped_lines = [line for line in script_output.splitlines() if line.strip()]
+    if not stripped_lines:
+        return True
+    last_line = stripped_lines[-1].strip()
+    try:
+        gate = json.loads(last_line)
+    except (json.JSONDecodeError, ValueError):
+        return True
+    if not isinstance(gate, dict):
+        return True
+    return gate.get("wakeAgent", True) is not False
+
+
+def _build_job_prompt(
+    job: dict,
+    prerun_script: Optional[tuple] = None,
+    extra_prompt: Optional[str] = None,
+) -> str:
+    """Build the effective prompt for a cron job, optionally loading one or more skills first.
+
+    Args:
+        job: The cron job dict.
+        prerun_script: Optional ``(success, stdout)`` from a script that has
+            already been executed by the caller (e.g. for a wake-gate check).
+            When provided, the script is not re-executed and the cached
+            result is used for prompt injection. When omitted, the script
+            (if any) runs inline as before.
+        extra_prompt: Optional per-run context (from ``cronjob(action='run')``,
+            #57331 — salvaged from #57342 by @liuhao1024). Appended to the
+            stored prompt under a ``## Run Context`` header for this single
+            fire only — never persisted to the job definition.
+    """
+    user_prompt = str(job.get("prompt") or "")
+    if extra_prompt:
+        user_prompt = f"{user_prompt}\n\n## Run Context\n{extra_prompt}"
+    prompt = user_prompt
+    skills = job.get("skills")
+    # True when runtime-collected DATA (script stdout, upstream-job output)
+    # has been injected into the prompt. Data content legitimately quotes
+    # command-shape strings (a triage feed ingesting a bug report that
+    # pastes `rm -rf /`), so it must not be scanned with the strict
+    # user-prompt pattern set — see _scan_assembled_cron_prompt.
+    has_injected_data = False
+
+    # Run data-collection script if configured, inject output as context.
+    script_path = job.get("script")
+    if script_path:
+        if prerun_script is not None:
+            success, script_output = prerun_script
+        else:
+            success, script_output = _run_job_script(
+                script_path, job_id=str(job.get("id") or "")
+            )
+        if success:
+            if script_output:
+                prompt = (
+                    "## Script Output\n"
+                    "The following data was collected by a pre-run script. "
+                    "Use it as context for your analysis.\n\n"
+                    f"```\n{script_output}\n```\n\n"
+                    f"{prompt}"
+                )
+                has_injected_data = True
+            else:
+                # Script produced no output — nothing to report, skip AI call.
+                return None
+        else:
+            prompt = (
+                "## Script Error\n"
+                "The data-collection script failed. Report this to the user.\n\n"
+                f"```\n{script_output}\n```\n\n"
+                f"{prompt}"
+            )
+            has_injected_data = True
+
+    # Inject output from referenced cron jobs as context.
+    context_from = job.get("context_from")
+    if context_from:
+        from cron.jobs import get_cron_output_dir
+        output_dir = get_cron_output_dir()
+        if isinstance(context_from, str):
+            context_from = [context_from]
+        for source_job_id in context_from:
+            # "self" resolves to the job's own id: the job wakes up with its
+            # most recent output injected, giving recurring jobs continuity
+            # across runs (dedupe against what was already reported, continue
+            # where the last run left off) without touching session history.
+            is_self = False
+            if isinstance(source_job_id, str) and source_job_id.strip().lower() == "self":
+                source_job_id = str(job.get("id") or "")
+                is_self = True
+            elif source_job_id == job.get("id"):
+                is_self = True
+            # Guard against path traversal — valid job IDs are 12-char hex strings
+            if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
+                logger.warning(
+                    "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
+                    source_job_id,
+                    job.get("id"),
+                    job.get("name"),
+                    _cron_job_origin_log_suffix(job),
+                )
+                continue
+            try:
+                job_output_dir = output_dir / source_job_id
+                if not job_output_dir.exists():
+                    continue  # silent skip — no output yet
+                output_files = sorted(
+                    job_output_dir.glob("*.md"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
+                if not output_files:
+                    continue  # silent skip — no output yet
+                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                # Truncate to 8K characters to avoid prompt bloat
+                _MAX_CONTEXT_CHARS = 8000
+                if len(latest_output) > _MAX_CONTEXT_CHARS:
+                    latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
+                if latest_output:
+                    if is_self:
+                        prompt = (
+                            "## Your previous run's output\n"
+                            "The following is this job's most recent output from its "
+                            "previous run. Use it for continuity: avoid repeating what "
+                            "was already reported, and continue where the last run "
+                            "left off.\n\n"
+                            f"```\n{latest_output}\n```\n\n"
+                            f"{prompt}"
+                        )
+                    else:
+                        prompt = (
+                            f"## Output from job '{source_job_id}'\n"
+                            "The following is the most recent output from a preceding "
+                            "cron job. Use it as context for your analysis.\n\n"
+                            f"```\n{latest_output}\n```\n\n"
+                            f"{prompt}"
+                        )
+                    has_injected_data = True
+                else:
+                    continue  # silent skip — empty output
+            except (OSError, PermissionError) as e:
+                logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
+                # silent skip — do not pollute the prompt with error messages
+
+    # Inject the job's durable notepad (per-job KV scratchpad surviving
+    # scheduled wake-ups). Empty notepad renders as "" so jobs that never
+    # use the feature get a byte-identical prompt.
+    from cron import notepad as cron_notepad
+
+    notepad_section = cron_notepad.render_notepad_section(str(job.get("id") or ""))
+    if notepad_section:
+        prompt = f"{notepad_section}{prompt}"
+        has_injected_data = True
+
+    # Always prepend cron execution guidance so the agent knows how
+    # delivery works and can suppress delivery when appropriate.
+    cron_hint = (
+        "[IMPORTANT: You are running as a scheduled cron job. "
+        "DELIVERY: Your final response will be automatically delivered "
+        "to the user — do NOT use send_message or try to deliver "
+        "the output yourself. Just produce your report/output as your "
+        "final response and the system handles the rest. "
+        "SILENT: If there is genuinely nothing new to report, respond "
+        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+        "Never combine [SILENT] with content — either report your "
+        "findings normally, or say [SILENT] and nothing more.]\n\n"
+    )
+    prompt = cron_hint + prompt
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
+
+    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    if not skill_names:
+        return _scan_assembled_cron_prompt(
+            prompt,
+            job,
+            has_skills=False,
+            has_injected_data=has_injected_data,
+            user_prompt=user_prompt,
+        )
+
+    from tools.skills_tool import skill_view
+    from tools.skill_usage import bump_use
+    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+    from agent.skill_utils import normalize_skill_lookup_name
+
+    parts = []
+    skipped: list[str] = []
+    for skill_name in skill_names:
+        # Cron jobs historically accepted only skill names here, but the CLI/gateway
+        # slash-command path lets bundles shadow skills with the same slug. Mirror
+        # that behavior so `skills: ["my-bundle"]` expands bundle members instead
+        # of being treated as a missing skill.
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            bundle_payload = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction="",
+                task_id=str(job.get("id") or "") or None,
+            )
+            if bundle_payload:
+                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
+                if parts:
+                    parts.append("")
+                parts.append(bundle_message)
+                continue
+            logger.warning(
+                "Cron job '%s': bundle '%s' could not load any skills, skipping",
+                job.get("name", job.get("id")),
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
+        try:
+            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Cron job '%s': skill '%s' returned invalid JSON, skipping", job.get("name", job.get("id")), skill_name)
+            skipped.append(skill_name)
+            continue
+        if not loaded.get("success"):
+            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
+            skipped.append(skill_name)
+            continue
+
+        # Bump usage so the curator sees this skill as actively used.
+        try:
+            bump_use(skill_name, task_id=str(job.get("id") or "") or None)
+        except Exception:
+            logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
+
+        content = str(loaded.get("content") or "").strip()
+        if parts:
+            parts.append("")
+        parts.extend(
+            [
+                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                "",
+                content,
+            ]
+        )
+
+    if skipped:
+        notice = (
+            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
+            f"and were skipped: {', '.join(skipped)}. "
+            f"Start your response with a brief notice so the user is aware, e.g.: "
+            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+        )
+        parts.insert(0, notice)
+
+    stable_prefix = None
+    if prompt:
+        from agent.skill_commands import append_user_instruction
+
+        parts.append("")
+        # The skill blocks (and any skipped-skill notice) above are stable per
+        # job config; the appended instruction carries the volatile per-run
+        # data (cron hint + prompt + script output + run context). Declare
+        # that boundary for the Anthropic cache planner (#81867).
+        stable_prefix = append_user_instruction(parts, prompt)
+    assembled = _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
+    if stable_prefix and len(assembled) > len(stable_prefix) and assembled.startswith(stable_prefix):
+        # Guarded because the injection scanner may sanitize (mutate) the
+        # assembled bytes; a mismatch simply falls back to whole-message
+        # caching.
+        from agent.prompt_cache_boundary import register_stable_prefix
+
+        register_stable_prefix(stable_prefix)
+    return assembled
+
+
+def _scan_assembled_cron_prompt(
+    assembled: str,
+    job: dict,
+    *,
+    has_skills: bool = False,
+    has_injected_data: bool = False,
+    user_prompt: Optional[str] = None,
+) -> str:
+    """Scan the fully-assembled cron prompt for injection patterns. Raises
+    ``CronPromptInjectionBlocked`` when a match fires so ``run_job`` can
+    surface a clear refusal to the operator.
+
+    Plugs the #3968 gap: ``_scan_cron_prompt`` runs on the user-supplied
+    prompt at create/update, but skill content is loaded from disk at
+    runtime and was never scanned. Since cron runs non-interactively
+    (auto-approves tool calls), a malicious skill carrying an injection
+    payload bypassed every gate.
+
+    Two pattern tiers, selected by what the assembled prompt CONTAINS,
+    not just whether skills are attached:
+
+    - When the assembled prompt is essentially the user prompt + the cron
+      hint (no skills, no injected data), the STRICT ``_scan_cron_prompt``
+      patterns apply: a bare ``rm -rf /`` in a small directive prompt is a
+      smoking gun, not prose.
+    - When the assembled prompt includes runtime-loaded content — skill
+      markdown (``has_skills=True``) or DATA injected from a job script's
+      stdout / an upstream job's output (``has_injected_data=True``) — the
+      LOOSER ``_scan_cron_skill_assembled`` pattern set is used: only
+      unambiguous prompt-injection directives block; command-shape
+      patterns are dropped and invisible unicode is sanitized (stripped +
+      logged) rather than blocked, to avoid false-positives that
+      permanently kill a job. Skill bodies are vetted at install time by
+      ``skills_guard.py``; script output is produced by operator-authored
+      code, the same trust class — and data feeds (e.g. a triage bot
+      ingesting bug reports) legitimately quote dangerous commands.
+
+    When the looser tier is selected because of injected data only,
+    ``user_prompt`` (the raw, pre-assembly prompt) is additionally scanned
+    with the STRICT set so the user-authored surface keeps the full
+    create/update-time guarantee at runtime (defense-in-depth for legacy
+    jobs that predate the create-time scanner).
+    """
+    from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
+
+    if has_skills or has_injected_data:
+        # Runtime-loaded content (vetted skill markdown and/or data from
+        # operator-authored scripts) legitimately contains command-shape
+        # strings. Invisible unicode is sanitized (not blocked) so a stray
+        # zero-width space can't permanently kill the job; the cleaned
+        # prompt is what actually runs.
+        cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+        assembled = cleaned
+        if not scan_error and not has_skills and user_prompt:
+            # Data-injection path: keep the strict guarantee on the
+            # user-authored prompt itself.
+            scan_error = _scan_cron_prompt(user_prompt)
+    else:
+        scan_error = _scan_cron_prompt(assembled)
+    if scan_error:
+        job_label = job.get("name") or job.get("id") or "<unknown>"
+        logger.warning(
+            "Cron job '%s': assembled prompt blocked by injection scanner — %s",
+            job_label,
+            scan_error,
+        )
+        raise CronPromptInjectionBlocked(scan_error)
+    return assembled
+
+
+def _guard_job_credential_exfil(job: dict) -> None:
+    """Fail closed if a job's stored provider/base_url pair would exfiltrate a
+    credential (F8 runtime backstop; CWE-200/CWE-522).
+
+    The model-callable cron tool validates this on create/update, but a job
+    persisted before that guard — or written directly to the jobs store —
+    reaches the scheduler's provider-resolution sink unchecked. Re-validate the
+    EFFECTIVE stored pair with the same guard the tool uses, so a named
+    provider's stored key is never paired with an off-host base_url at fire
+    time. Raises ``RuntimeError`` (caught by the run_job failure path → the run
+    is aborted and reported) when the pair is unsafe; returns ``None`` otherwise.
+
+    Fallback providers come from operator config, not the model-callable job, so
+    they are trusted and validated by the caller, not here.
+    """
+    try:
+        from tools.cronjob_tools import _validate_cron_base_url
+        err = _validate_cron_base_url(job.get("provider"), job.get("base_url"))
+    except Exception as exc:
+        # Fail CLOSED: this is the last guard before provider resolution, so an
+        # unexpected validator/import error must not silently allow an unvetted
+        # pair through. A job that carries no base_url override cannot exfiltrate
+        # a stored credential via this path (there is nothing to validate, and
+        # the validator would return None), so it still runs — that keeps the
+        # overwhelmingly-common no-override jobs from wedging on an unrelated
+        # error. But any job that DID set a base_url is refused until the
+        # validator can actually vet the pair. Operator fallback providers come
+        # from config, not the job, so they are unaffected.
+        if job.get("base_url"):
+            err = (
+                f"could not validate provider/base_url pair "
+                f"({exc.__class__.__name__}: {exc}); refusing to run a job with "
+                "an unverified base_url override"
+            )
+        else:
+            err = None
+    if err:
+        job_id = job.get("id")
+        logger.error(
+            "Job '%s': refusing to run — unsafe provider/base_url pair could "
+            "exfiltrate a stored credential: %s",
+            job_id, err,
+        )
+        raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
+
+
+def _block_and_pause_job(
+    job_id: str, job_name: str, reason: str
+) -> tuple[bool, str, str, Optional[str]]:
+    """Fail a run closed and pause the job so it stops being scheduled.
+
+    Used for job shapes that can never run (a5e29e688dc0). Returning an error
+    alone is not enough — an unrunnable job that stays enabled re-fires on
+    every tick forever. Pausing writes ``paused_at``/``paused_reason``, giving
+    an auditable record of why the scheduler stopped it.
+    """
+    from cron.jobs import pause_job
+
+    logger.error("Job '%s': %s", job_id, reason)
+    try:
+        pause_job(job_id, f"Auto-paused by scheduler: {reason}")
+    except Exception:
+        logger.exception("Job '%s': failed to auto-pause unrunnable job", job_id)
+
+    now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+    doc = (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {now_iso}\n"
+        f"**Status:** blocked (unrunnable job) — auto-paused\n\n"
+        f"{reason}\n"
+    )
+    alert = f"⚠ Cron job '{job_name}' was auto-paused\n\n{reason}"
+    return False, doc, alert, reason
+
+
+# Marker prefix stamped into the error string returned by ``run_job`` when the
+# pre-dispatch configuration validation (T1-26) refuses to run the agent.
+# ``run_one_job`` keys off it to record ``last_status='blocked_config'`` and to
+# apply the alert-once dedup. The ``:silent`` variant means "already alerted on
+# a previous tick — do not deliver again".
+BLOCKED_CONFIG_MARKER = "[blocked_config]"
+BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
+
+# Marker prefix for a #44585 drift-guard skip. Same alert-once contract as
+# blocked_config: run_one_job keys off it to record last_status and the
+# ``:silent`` variant means "already alerted on a previous tick — do not
+# deliver again" (the drift_alerted bit on the job record, #73506 shape).
+DRIFT_SKIP_MARKER = "[drift_skip]"
+DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
+
+
+
+def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
+    """True when primary provider resolution failed for a transient network reason.
+
+    Agent crons resolve OAuth credentials (token refresh / discovery) before the
+    agent loop starts. A short DNS outage (Cloudflare WARP / macOS resolver blip)
+    surfaces as httpx/httpcore ConnectError or raw OSError errno 8 ("nodename nor
+    servname provided") and must be eligible for ``fallback_providers`` the same
+    way AuthError already is — otherwise a healthy XAI_API_KEY / Anthropic rung
+    never gets tried and the whole job dies before the first model call.
+    """
+    # Walk the cause chain; scheduler wraps raw transport errors.
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        name = type(cur).__name__
+        module = type(cur).__module__ or ""
+        msg = str(cur).lower()
+        # Explicit transport classes from httpx/httpcore/aiohttp.
+        if name in {
+            "ConnectError",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "NetworkError",
+            "TimeoutException",
+            "ClientConnectorError",
+            "ClientConnectorDNSError",
+            "ServerTimeoutError",
+            "ClientOSError",
+        }:
+            return True
+        if "httpx" in module or "httpcore" in module or "aiohttp" in module:
+            if any(
+                needle in msg
+                for needle in (
+                    "nodename nor servname",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "failed to resolve",
+                    "connection refused",
+                    "network is unreachable",
+                    "timed out",
+                    "timeout",
+                )
+            ):
+                return True
+        if isinstance(cur, OSError):
+            # Platform-safe classification (the raw-literal set {8, 7, 11, ...}
+            # from the first revision mixed macOS getaddrinfo constants with
+            # errno values and does not hold on Linux — see PR review).
+            # socket.gaierror carries getaddrinfo codes (EAI_*), plain OSError
+            # carries errno; compare each against its own constant namespace.
+            import errno as _errno
+            import socket as _socket
+
+            if isinstance(cur, _socket.gaierror):
+                _eai_transient = {
+                    getattr(_socket, _n)
+                    for _n in ("EAI_NONAME", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA")
+                    if hasattr(_socket, _n)
+                }
+                if cur.errno in _eai_transient:
+                    return True
+            else:
+                err_no = getattr(cur, "errno", None)
+                if err_no in {
+                    _errno.ECONNREFUSED,
+                    _errno.ECONNRESET,
+                    _errno.EHOSTUNREACH,
+                    _errno.ENETUNREACH,
+                    _errno.ENETDOWN,
+                    _errno.ETIMEDOUT,
+                    _errno.EAGAIN,
+                }:
+                    return True
+            if any(
+                needle in msg
+                for needle in (
+                    "nodename nor servname",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "network is unreachable",
+                )
+            ):
+                return True
+        # Bare RuntimeError/Exception that already carries the DNS text
+        # (format_runtime_provider_error sometimes surfaces the raw message).
+        if "nodename nor servname" in msg or "name or service not known" in msg:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _cron_preflight_enabled(cfg: dict) -> bool:
+    """Whether cron pre-dispatch configuration validation is enabled.
+
+    Default ON; only the literal boolean ``false`` under ``cron.preflight``
+    opts out (mirrors ``cron_model_drift_guard_enabled`` semantics).
+    """
+    cron_cfg = (cfg or {}).get("cron")
+    if not isinstance(cron_cfg, dict):
+        return True
+    return cron_cfg.get("preflight", True) is not False
+
+
+def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
+    """READ-ONLY probe: would provider resolution fail for lack of a key?
+
+    Mirrors the effective requested-provider computation from run_job's
+    resolution block without any side effects on the run. When a fallback
+    chain is configured the check is skipped entirely — the existing
+    auth-fallback path may legitimately rescue a missing primary key, so
+    blocking here would break that contract (and burning zero LLM calls is
+    already guaranteed by the fallback resolution being config-local).
+    """
+    try:
+        if get_fallback_chain(cfg):
+            return None
+    except Exception:
+        return None  # fail-open: never block on a preflight-internal error
+
+    _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    requested = (
+        job.get("provider")
+        or str((_cron_cfg or {}).get("model_provider") or "").strip()
+        or None
+    )
+    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+
+    from hermes_cli.auth import AuthError
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        kwargs = {"requested": requested, "target_model": model}
+        if job.get("base_url"):
+            kwargs["explicit_base_url"] = job.get("base_url")
+        resolve_runtime_provider(**kwargs)
+    except AuthError as exc:
+        return (
+            f"provider credential missing: {exc}. "
+            "Set the provider API key in .env (or `hermes setup`), or pin a "
+            "working provider via `hermes cron edit "
+            f"{job.get('id')} --provider <p>`."
+        )
+    except Exception:
+        # Non-auth resolution errors (bad config shapes, network probes,
+        # import issues) are NOT a missing-credential condition — let the
+        # real resolution path handle and report them as before.
+        return None
+    return None
+
+
+def _primary_profile_routes_for_current_home() -> list:
+    """Primary gateway ``profile_routes`` that target the profile currently
+    being served, or ``[]`` (also when this IS the primary home).
+
+    Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are
+    ticked by the primary gateway's in-process ticker (#69377) and delivered
+    through the primary gateway's live adapters — the satellite home never
+    holds the platform credentials itself (giving it a token of its own is a
+    ``duplicate_credential`` fatal). Reads the primary config.yaml directly
+    (both the top-level and nested ``gateway.`` forms) instead of
+    ``load_gateway_config()`` so no primary platform config leaks into this
+    process's environment. Shared by the preflight rescue (#97476) and the
+    delivery-time shared-transport resolver (#101113) so route semantics
+    cannot drift between the two halves.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        primary_home = get_default_hermes_root()
+        current_home = Path(get_hermes_home())
+        if (
+            primary_home.expanduser().resolve(strict=False)
+            == current_home.expanduser().resolve(strict=False)
+        ):
+            return []  # this IS the primary home — nothing to consult
+        config_path = primary_home.expanduser() / "config.yaml"
+        if not config_path.exists():
+            return []
+
+        import yaml
+
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        routes_raw = raw.get("profile_routes")
+        if routes_raw is None and isinstance(raw.get("gateway"), dict):
+            routes_raw = raw["gateway"].get("profile_routes")
+        if not isinstance(routes_raw, list):
+            return []
+
+        from gateway.profile_routing import parse_profile_routes
+        from hermes_cli.profiles import profile_matches_home
+
+        return [
+            route
+            for route in parse_profile_routes(routes_raw)
+            if route.enabled and profile_matches_home(route.profile)
+        ]
+    except Exception:
+        logger.debug(
+            "primary-gateway profile-route lookup unavailable",
+            exc_info=True,
+        )
+        return []
+
+
+def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
+    """True when the primary gateway routes this platform to the profile the
+    scheduler is currently serving (preflight rescue, #97476)."""
+    platform_key = platform_name.lower()
+    return any(
+        str(route.platform).lower() == platform_key
+        for route in _primary_profile_routes_for_current_home()
+    )
+
+
+class SharedRouteAdapters:
+    """Read-only adapter map for a credentialless satellite profile (#101113).
+
+    A satellite under ``gateway.profile_routes`` owns no bot credential and so
+    has no adapter map of its own; its inbound traffic arrives on the PRIMARY
+    adapter and is routed to it by an exact route. Its cron output must go
+    back out the same transport — but ONLY for targets an enabled primary
+    route maps to this profile. ``get(platform, target)`` resolves the primary
+    adapter iff the route matcher used by inbound routing
+    (``ProfileRoute.matches``) accepts the target's ``chat_id``/``thread_id``;
+    every other lookup is a miss, so an unmatched target, a disabled route, or
+    a route naming another profile still fails closed (never the default bot).
+    A plain ``get(platform)`` (no target) is always a miss: routing is
+    per-target, not per-platform.
+    """
+
+    def __init__(self, primary_adapters, routes) -> None:
+        self._primary = dict(primary_adapters or {})
+        self._routes = list(routes or [])
+
+    def __bool__(self) -> bool:
+        return bool(self._primary) and bool(self._routes)
+
+    def get(self, platform, target=None, default=None):
+        if not target:
+            return default
+        adapter = self._primary.get(platform)
+        if adapter is None:
+            return default
+        platform_key = str(getattr(platform, "value", platform)).lower()
+        chat_id = str(target.get("chat_id") or "") or None
+        thread_id = target.get("thread_id")
+        thread_id = str(thread_id) if thread_id else None
+        for route in self._routes:
+            if str(route.platform).lower() != platform_key:
+                continue
+            if not (route.chat_id or route.thread_id):
+                continue  # guild-only routes are not target-exact
+            if route.matches(str(route.platform), chat_id=chat_id, thread_id=thread_id):
+                return adapter
+        return default
+        return False
+
+
+def _preflight_check_delivery(job: dict) -> Optional[str]:
+    """Check the job's delivery target(s) resolve to configured platforms.
+
+    ``local``/``origin`` (and the ``all`` routing token) need no gateway
+    credentials and are never checked — a deliver=local job must not pay a
+    gateway-config load. For concrete platform targets, an unknown platform
+    always blocks; a known platform additionally blocks when the gateway
+    config is loadable and reports it unconnected (enabled + credentials —
+    the same source `cron_delivery_targets` uses). Gateway-config load
+    failures fail OPEN so a transient config hiccup never wedges delivery
+    that would have worked.
+
+    ``failure_deliver`` is checked with the same rules: a typo'd failure
+    platform would otherwise only surface when a failure occurs — exactly
+    when the notice must not be lost (NS-788 follow-up).
+    """
+    deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+    failure_deliver_value = _normalize_deliver_value(
+        _delivery_lane_value(job, for_failure=True)
+    )
+    lane_values = [deliver_value]
+    if failure_deliver_value != deliver_value:
+        lane_values.append(failure_deliver_value)
+    platform_parts: list[str] = []
+    for lane_value in lane_values:
+        for part in lane_value.split(","):
+            part = part.strip()
+            if not part or part.lower() in {"local", "origin", "all"}:
+                continue
+            # bot-chat targets need no gateway credentials — they deliver via a
+            # local chat subprocess. Unknown-profile failures surface per run in
+            # last_delivery_error (and are validated at create time).
+            if parse_bot_chat_deliver_token(part) is not None:
+                continue
+            platform_parts.append(part.split(":", 1)[0].strip())
+    if not platform_parts:
+        return None
+
+    connected: Optional[set] = None
+    for platform_name in platform_parts:
+        if not _is_known_delivery_platform(platform_name):
+            return (
+                f"delivery platform '{platform_name}' is not a known cron "
+                "delivery target. Fix the job's `deliver` value or configure "
+                "the platform's gateway credentials."
+            )
+        if connected is None:
+            try:
+                from gateway.config import load_gateway_config
+
+                gateway_config = load_gateway_config()
+                connected = {
+                    p.value for p in gateway_config.get_connected_platforms()
+                }
+                connected |= _relay_fronted_delivery_platforms(connected)
+            except Exception:
+                logger.debug(
+                    "preflight: gateway config unavailable — skipping "
+                    "delivery credential check", exc_info=True,
+                )
+                return None  # fail-open
+        if platform_name.lower() not in connected:
+            # Multiplex escape hatch: a satellite profile whose deliveries
+            # are routed by the primary gateway's profile_routes is served
+            # by the primary's adapters, so its own unconnected reading is
+            # a false block (#97476).
+            if _delivery_platform_routed_from_primary_gateway(platform_name):
+                continue
+            return (
+                f"delivery platform '{platform_name}' has no gateway "
+                "credentials configured (not connected). Configure it via "
+                "`hermes setup` or change the job's `deliver` target."
+            )
+    return None
+
+
+def _preflight_check_skills(job: dict) -> Optional[str]:
+    """Check attached skills report ready (no missing required env/commands).
+
+    Consults the same ``readiness_status`` payload ``skill_view`` computes
+    for interactive use. Skills that fail to load at all are left to the
+    existing skipped-skill handling in ``_build_job_prompt`` (fail-open):
+    this check only blocks on an affirmative "setup needed" verdict, i.e.
+    the skill exists but its required environment is missing — a run that
+    is guaranteed to misfire.
+    """
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
+    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    if not skill_names:
+        return None
+
+    from tools.skills_tool import skill_view
+
+    for skill_name in skill_names:
+        try:
+            payload = json.loads(skill_view(skill_name))
+        except Exception:
+            continue  # unreadable/missing skill → existing skip handling
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+        if (
+            payload.get("setup_needed")
+            or payload.get("readiness_status") == "setup_needed"
+        ):
+            missing = [
+                f"env ${name}"
+                for name in payload.get(
+                    "missing_required_environment_variables"
+                ) or []
+            ]
+            missing += [
+                f"command '{name}'"
+                for name in payload.get("missing_required_commands") or []
+            ]
+            missing += [
+                f"credential file {name}"
+                for name in payload.get("missing_credential_files") or []
+            ]
+            detail = ", ".join(missing) or "required setup incomplete"
+            return (
+                f"attached skill '{skill_name}' is not ready: missing "
+                f"{detail}. Provide the missing prerequisites or detach the "
+                "skill from this job."
+            )
+    return None
+
+
+def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
+    """Pre-dispatch configuration validation (T1-26).
+
+    Returns a human-readable reason when the job's configuration cannot
+    produce a successful run — missing provider API key, unconfigured
+    delivery platform, or an attached skill with missing required env —
+    so the caller can refuse the run BEFORE any agent machinery is
+    constructed and no LLM call is burned. Returns ``None`` when the
+    configuration validates (or when a check cannot be evaluated: every
+    check fails open, so preflight can only ever block on an affirmative
+    misconfiguration verdict).
+
+    Same fail-before-spend spirit as the #44585 drift guard and the
+    fail-loud-on-hidden-tools direction in #27948; alert dedup follows the
+    alert-once pattern from the dead-pin auto-pause (#73506).
+    """
+    for name, check in (
+        ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),
+        ("skills", lambda: _preflight_check_skills(job)),
+        ("delivery", lambda: _preflight_check_delivery(job)),
+    ):
+        try:
+            reason = check()
+        except Exception:
+            logger.debug(
+                "preflight check %s raised — failing open", name, exc_info=True
+            )
+            continue
+        if reason:
+            return reason
+    return None
+
+
 def _cron_cleanup_timeout_seconds() -> float:
     """Return the wall-clock bound for cron post-run cleanup."""
     default = 10.0

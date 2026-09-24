@@ -491,6 +491,11 @@ DEFAULT_CONFIG = {
         "auto_prune": True,
         "retention_days": 7,
         "min_interval_hours": 24,
+        # Periodic checkpoint interval (tool calls) for long-running sessions
+        # (#99869). Every N file-mutating tool calls the checkpoint manager
+        # bypasses the per-turn dedup and persists an extra snapshot so a
+        # kill mid-loop does not lose all progress.
+        "checkpoint_interval": 10,
     },
     # Hard cap (chars) for one auto-loaded context file (SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md,
     # .cursorrules) before head/tail truncation. null = scale with the model's context window (floor

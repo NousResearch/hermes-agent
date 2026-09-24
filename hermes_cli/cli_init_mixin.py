@@ -237,6 +237,13 @@ class CLIInitMixin:
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
+        # Periodic checkpoint interval for long-running sessions (#99869).
+        try:
+            self.checkpoint_interval = int(cp_cfg.get("checkpoint_interval", 10))
+        except Exception:
+            self.checkpoint_interval = 10
+        if self.checkpoint_interval < 1:
+            self.checkpoint_interval = 1
         self.pass_session_id = pass_session_id
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
         self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))

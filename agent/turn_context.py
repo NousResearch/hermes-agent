@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import os
 import threading
 import time
 import uuid
@@ -799,31 +800,11 @@ def _collect_pre_llm_call_context(
     return ""
 
 
-def _merge_gateway_notes(
-    agent: Any, messages: List[Any], current_turn_user_idx: int, plugin_user_context: str
-) -> str:
-    """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
-    ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
-    surface-switch correction. Multimodal (list) content can't take the string sidecar —
-    append a durable text part instead."""
-    _turn_notes = "\n\n".join(
-        part for part in (consume_gateway_turn_context_notes(agent),
-                          consume_surface_switch_note(agent)) if part
-    )
-    if not _turn_notes:
-        return plugin_user_context
-    _gw_turn_content = (
-        messages[current_turn_user_idx].get("content")
-        if 0 <= current_turn_user_idx < len(messages)
-        and isinstance(messages[current_turn_user_idx], dict)
-        else None
-    )
-    if isinstance(_gw_turn_content, list):
-        append_notes_to_multimodal_content(_gw_turn_content, _turn_notes)
-        return plugin_user_context
-    return (
-        plugin_user_context + "\n\n" + _turn_notes if plugin_user_context else _turn_notes
-    )
+    # Per-turn file-mutation verifier state.
+    agent._turn_failed_file_mutations = {}
+    agent._turn_file_mutation_paths = set()
+    agent._verification_stop_nudges = 0
+    agent._pre_verify_nudges = 0
 
 
 def _bind_interrupt_scope(agent: Any, ra) -> None:
@@ -1127,6 +1108,39 @@ def build_turn_context(
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )
+
+    # Interrupted-session note (#99869): when a PRIOR session died mid-task,
+    # the model must not trust stale tree state. Rides the same user-message
+    # injection channel as plugin/gateway context (API copy only — stored
+    # content stays clean, system prompt stays byte-stable). First turn per
+    # session only: the sidecar replays verbatim afterwards, and repeating it
+    # every turn would nag forever while untriaged markers exist. The human
+    # half (_vprint) lives in run_conversation and repeats while markers do.
+    try:
+        if (
+            not getattr(agent, "_interruption_note_injected", False)
+            and not bool(conversation_history)
+        ):
+            from tools.checkpoint_manager import build_interruption_note
+
+            try:
+                _note_cwd = os.getcwd()
+            except OSError:
+                _note_cwd = ""
+            _interruption_note = build_interruption_note(
+                working_dir=_note_cwd or None,
+                exclude_session_id=getattr(agent, "session_id", "") or "",
+            )
+            if _interruption_note:
+                plugin_user_context = (
+                    plugin_user_context + "\n\n" + _interruption_note
+                    if plugin_user_context
+                    else _interruption_note
+                )
+            agent._interruption_note_injected = True
+    except Exception as exc:
+        logger.debug("interruption-note injection failed: %s", exc)
+
 
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)

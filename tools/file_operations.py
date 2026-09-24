@@ -414,6 +414,41 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             # removed on every error path (cat failure, mv failure, signal) but NOT after a successful mv
             # (the temp no longer exists by then). - we `cat >` the temp, then `mv -f` it over the target.
             f"d={q_parent}; t={q_path}; "
+            # Durable-write fsync helper (#99869 review): a bare
+            # `sync FILE` is unsupported on Windows Git Bash / MSYS (the
+            # repro env — measured: `sync file` exits 1) and sync(1) without
+            # an operand only schedules a global flush. Do a real fsync(2)
+            # via python when available, keep `sync` as fallback for
+            # python-less backends, `true` as the final fallback so behavior
+            # never regresses. Always returns 0 (best-effort — durability
+            # must not fail the write itself).
+            #
+            # O_RDWR on Windows, O_RDONLY elsewhere. fsync(2) on Windows
+            # (FlushFileBuffers) needs a handle with write access: the
+            # read-only open raised OSError EBADF (errno 9), which the
+            # `2>/dev/null` chain swallowed — so the whole helper degraded to
+            # a no-op on the very platform this fix exists for (measured via
+            # `bash -x` on the generated script). POSIX keeps O_RDONLY: that
+            # is the only form that opens a *directory* (the `$d` call), and
+            # it works for files there too.
+            #
+            # The path handed to python must be NATIVE, not the MSYS /c/...
+            # form this shell builds — MSYS's python resolves /c/... as a
+            # literal path and exits ENOENT, silently killing durability
+            # again (same class as the node ENOENT of #84303). cygpath -m is
+            # MSYS-only and absent elsewhere, so the conversion is
+            # conditional and `p` falls back to "$1".
+            '_fsync() { '
+            'p="$1"; command -v cygpath >/dev/null 2>&1 && p="$(cygpath -m "$1" 2>/dev/null || true)"; [ -n "$p" ] || p="$1"; '
+            'command -v python3 >/dev/null 2>&1 && python3 -c "import os,sys; f=os.open(sys.argv[1], os.O_RDWR if os.name==\'nt\' else os.O_RDONLY); os.fsync(f); os.close(f)" "$p" 2>/dev/null && return 0; '
+            'command -v python >/dev/null 2>&1 && python -c "import os,sys; f=os.open(sys.argv[1], os.O_RDWR if os.name==\'nt\' else os.O_RDONLY); os.fsync(f); os.close(f)" "$p" 2>/dev/null && return 0; '
+            'sync "$1" 2>/dev/null && return 0; sync 2>/dev/null; return 0; }; '
+            # Follow a symlink target so we edit the file the link points at,
+            # rather than replacing the symlink itself with a plain file (which
+            # orphans the real target and destroys the link). Recompute the
+            # temp dir from the RESOLVED target so `mv` stays same-filesystem
+            # atomic. Best-effort: a broken link or missing readlink/realpath
+            # falls back to the original path (pre-fix behavior, no regression).
             'if [ -L "$t" ]; then '
             'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
             '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
@@ -429,11 +464,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
-            # new file: umask-default perms instead of mktemp's 0600 (#70856). Runs AFTER cat so a
-            # write-masking umask can't EACCES the stream; quoted "=rw" so zsh doesn't =word-expand it.
+            # fsync the temp file's data before the atomic rename (#99869).
+            '_fsync "$tmp"; '
+            # new file: umask-default perms instead of mktemp's 0600 (#70856).
+            # Runs AFTER cat so a write-masking umask can't EACCES the stream;
+            # quoted "=rw" so zsh doesn't =word-expand it.
             'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
-            "trap - EXIT")
+            # fsync the target and the parent dir after rename so a crash
+            # between mv and the dirent hitting disk can't lose the inode.
+            '_fsync "$t"; _fsync "$d"; '
+            "trap - EXIT"
+        )
         return self._exec(script, stdin_data=content)
 
     def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:

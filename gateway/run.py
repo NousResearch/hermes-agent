@@ -2911,9 +2911,37 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
     defaults = DEFAULT_CONFIG["checkpoints"]
     return {
         "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
-        "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
-        "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
-        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
+        "checkpoint_max_snapshots": cp_cfg.get(
+            "max_snapshots", defaults["max_snapshots"],
+        ),
+        "checkpoint_max_total_size_mb": cp_cfg.get(
+            "max_total_size_mb", defaults["max_total_size_mb"],
+        ),
+        "checkpoint_max_file_size_mb": cp_cfg.get(
+            "max_file_size_mb", defaults["max_file_size_mb"],
+        ),
+        "checkpoint_interval": int(cp_cfg.get("checkpoint_interval", defaults.get("checkpoint_interval", 10))),
+    }
+
+
+def _load_gateway_runtime_config() -> dict:
+    """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
+
+    Runtime helpers should honor the same env-template expansion documented for
+    ``config.yaml`` while still respecting tests that monkeypatch
+    ``gateway.run._hermes_home``. Build on ``_load_gateway_config()`` rather
+    than calling the canonical loader directly so both behaviors stay aligned.
+
+    Expansion failures are intentionally NOT swallowed — silently returning
+    the unexpanded dict would mask the very bug this helper exists to fix.
+    """
+    cfg = _load_gateway_config()
+    if not isinstance(cfg, dict) or not cfg:
+        return {}
+    from hermes_cli.config import _expand_env_vars
+
+    expanded = _expand_env_vars(cfg)
+    return expanded if isinstance(expanded, dict) else {}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:

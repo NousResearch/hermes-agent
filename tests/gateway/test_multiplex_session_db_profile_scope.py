@@ -578,6 +578,35 @@ def test_unscoped_staleness_check_reads_the_key_owner_store(multiplex_homes):
     assert store._is_session_ended_in_db(entry.session_id) is True
 
 
+def test_cached_routed_session_staleness_uses_its_routing_key_store(multiplex_homes):
+    """A reaped cached id has no index owner, so the cache guard must supply its routed key.
+
+    The launch store deliberately contains a live row with the same id.  The routed profile's
+    ended row is authoritative; consulting the ambient/default store would incorrectly reuse the
+    cached agent and let it write into the ended session again.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+        store._db.end_session(entry.session_id, "operator_teardown")
+    finally:
+        reset_hermes_home_override(token)
+
+    # Simulate routing self-heal: the cached id was replaced, so its owner cannot be inferred
+    # from the current routing index.  A contradictory live row in the default store exposes an
+    # accidental ambient lookup.
+    store._entries.clear()
+    store._db_for_key("agent:main:discord:dm:default").create_session(
+        entry.session_id, source="discord"
+    )
+
+    assert store._is_session_ended_in_db(entry.session_id, session_key=entry.session_key) is True
+    assert store._is_session_ended_in_db(entry.session_id) is False
+
+
 def test_default_namespace_keeps_ambient_resolution(multiplex_homes):
     """Guardrail: the legacy ``agent:main`` namespace must not change stores.
 

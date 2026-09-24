@@ -41,6 +41,29 @@ def cmd_usage(args: argparse.Namespace) -> int:
     from hermes_cli.runtime_provider import resolve_requested_provider
 
     provider = resolve_requested_provider(getattr(args, "provider", None))
+    if getattr(args, "all_credentials", False):
+        if not getattr(args, "json", False) or provider not in {"openai-codex", "openrouter"}:
+            print("--all-credentials requires --json and a provider with per-credential usage (openai-codex, openrouter).", file=sys.stderr)
+            return 2
+        from agent.credential_pool import PooledCredential, read_credential_pool
+
+        # Read persisted rows directly: pool.select() excludes exhausted accounts and load_pool()
+        # may seed/prune auth state. This command must probe each stored credential independently.
+        rows = read_credential_pool(provider)
+        if not isinstance(rows, list) or not rows:
+            print(f"No pooled credentials for provider '{provider}'.", file=sys.stderr)
+            return 1
+        credentials = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            entry = PooledCredential.from_dict(provider, row)
+            snapshot = fetch_account_usage(
+                provider, api_key=entry.runtime_api_key, base_url=entry.runtime_base_url,
+            ) if entry.runtime_api_key else None
+            credentials.append({"id": entry.id, "usage": usage_snapshot_document(snapshot) if snapshot else None})
+        print(json.dumps({"provider": provider, "credentials": credentials}, indent=2))
+        return 0 if any(item["usage"] is not None for item in credentials) else 1
     # No explicit key: the fetcher resolves the credential exactly as a session without a live agent
     # would (singleton store, then credential pool) — it never adopts or refreshes anything else.
     snapshot = fetch_account_usage(provider)
@@ -70,4 +93,6 @@ def build_usage_parser(subparsers) -> None:
         "--provider", default=None, help="Provider to query (default: the configured model provider)")
     usage_parser.add_argument(
         "--json", action="store_true", help="Print one JSON document instead of the human-readable block")
+    usage_parser.add_argument(
+        "--all-credentials", action="store_true", help="Probe each stored Codex/OpenRouter pool entry (requires --json)")
     usage_parser.set_defaults(func=cmd_usage)

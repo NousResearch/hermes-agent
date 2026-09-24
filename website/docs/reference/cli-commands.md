@@ -702,12 +702,14 @@ jobs can read it.
 hermes usage                          # configured model provider, human-readable block
 hermes usage --provider openai-codex  # a specific provider
 hermes usage --json                   # one JSON document on stdout
+hermes usage --provider openai-codex --json --all-credentials  # each stored pool account
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
 | `--json` | Print one JSON document instead of the human-readable block. |
+| `--all-credentials` | With `--json`, probe every persisted credential-pool row for `openai-codex` or `openrouter`, including exhausted rows. Does not select or rotate the pool. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
 the credential pool); the command never adds or refreshes a credential it would not use for chat. Exit code
@@ -734,6 +736,17 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 
 `used_percent` is `null` when the provider did not report the window; `resets_at` is ISO-8601 UTC or `null`
 (some windows carry a free-text `detail` instead); `plan` is `null` when unknown.
+
+`--json --all-credentials` emits a different envelope: `{"provider": "openai-codex", "credentials":
+[{"id": "a1b2c3", "usage": { ...the single-credential document above... }},
+{"id": "d4e5f6", "usage": null}]}`. IDs are stable pool identifiers, not access tokens; only the
+normalized usage document is emitted (never the raw provider response). A `null` usage means that
+row has no token or its probe failed; other rows still return. Exit `1` when the pool is empty or
+no probe succeeds, otherwise `0`. `--all-credentials` without `--json`, or on an unsupported
+provider, exits `2`. This reads persisted pool rows only, not singleton/env-only credentials;
+Codex's existing 401-recovery path may refresh the exact rejected pool token (never select another row).
+Anthropic is excluded because its current usage fetcher does not bind the supplied pool key
+(see [#20995](https://github.com/NousResearch/hermes-agent/pull/20995)).
 
 ## `hermes status`
 

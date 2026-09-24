@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from hermes_cli import main as hermes_main
+from hermes_cli.subcommands.usage import usage_snapshot_document
 
 _SNAPSHOT = AccountUsageSnapshot(
     provider="openai-codex", source="usage_api", fetched_at=datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc),
@@ -61,4 +62,82 @@ def test_hermes_usage_without_credential_exits_nonzero_with_one_stderr_line(caps
     out, err = capsys.readouterr()
     assert out == ""
     assert err.count("\n") == 1 and "openai-codex" in err
+
+
+def test_all_credentials_fetches_each_persisted_row_without_selecting_or_leaking_tokens(capsys):
+    rows = [
+        {"id": "alpha", "access_token": "secret-alpha", "base_url": "https://chatgpt.com/backend-api/codex"},
+        {"id": "beta", "access_token": "secret-beta", "last_status": "exhausted"},
+    ]
+    calls = []
+
+    def fetch(provider, **kwargs):
+        calls.append((provider, kwargs))
+        return _SNAPSHOT if kwargs["api_key"] == "secret-alpha" else None
+
+    with patch("agent.credential_pool.read_credential_pool", return_value=rows):
+        assert _run(["usage", "--json", "--all-credentials", "--provider", "openai-codex"], fetch) == 0
+    out, err = capsys.readouterr()
+    doc = json.loads(out)
+    assert err == ""
+    assert calls == [
+        ("openai-codex", {"api_key": "secret-alpha", "base_url": "https://chatgpt.com/backend-api/codex"}),
+        ("openai-codex", {"api_key": "secret-beta", "base_url": None}),
+    ]
+    assert doc == {"provider": "openai-codex", "credentials": [
+        {"id": "alpha", "usage": usage_snapshot_document(_SNAPSHOT)},
+        {"id": "beta", "usage": None},
+    ]}
+    assert "secret-alpha" not in out and "secret-beta" not in out
+
+
+def test_all_credentials_empty_or_failed_is_script_friendly(capsys):
+    with patch("agent.credential_pool.read_credential_pool", return_value=[]):
+        assert _run(["usage", "--json", "--all-credentials", "--provider", "openai-codex"], lambda *_a, **_kw: _SNAPSHOT) == 1
+    out, err = capsys.readouterr()
+    assert out == "" and "openai-codex" in err
+
+
+def test_all_credentials_requires_json_and_rejects_nous(capsys):
+    assert _run(["usage", "--all-credentials", "--provider", "openai-codex"], lambda *_a, **_kw: _SNAPSHOT) != 0
+    assert _run(["usage", "--json", "--all-credentials", "--provider", "nous"], lambda *_a, **_kw: _SNAPSHOT) != 0
+    # Anthropic's usage fetcher currently ignores its explicit api_key (see #20995).
+    assert _run(["usage", "--json", "--all-credentials", "--provider", "anthropic"], lambda *_a, **_kw: _SNAPSHOT) != 0
+    assert "secret" not in capsys.readouterr().out
+
+
+def test_codex_all_credentials_probes_distinct_tokens_through_actual_fetcher(capsys):
+    from agent.account_usage import fetch_account_usage
+
+    rows = [{"id": "one", "access_token": "token-one"}, {"id": "two", "access_token": "token-two"}]
+    seen = []
+
+    def respond(url, headers, *, timeout):
+        seen.append(headers["Authorization"])
+        return {"plan_type": "plus", "rate_limit": {"primary_window": {
+            "used_percent": 11 if headers["Authorization"] == "Bearer token-one" else 72,
+        }}}
+
+    with patch("agent.credential_pool.read_credential_pool", return_value=rows), \
+         patch("agent.account_usage._get_json", side_effect=respond):
+        assert _run(["usage", "--json", "--all-credentials", "--provider", "openai-codex"], fetch_account_usage) == 0
+    out, err = capsys.readouterr()
+    doc = json.loads(out)
+    assert err == "" and seen == ["Bearer token-one", "Bearer token-two"]
+    assert [c["usage"]["windows"][0]["used_percent"] for c in doc["credentials"]] == [11, 72]
+    assert "token-one" not in out and "token-two" not in out
+
+
+def test_all_credentials_all_probes_unavailable_returns_json_and_nonzero(capsys):
+    with patch("agent.credential_pool.read_credential_pool", return_value=[
+        {"id": "one", "access_token": "secret-one"},
+        {"id": "two", "access_token": ""},
+    ]):
+        assert _run(["usage", "--json", "--all-credentials", "--provider", "openrouter"],
+                    lambda *_a, **_kw: None) == 1
+    out, err = capsys.readouterr()
+    assert err == "" and json.loads(out) == {"provider": "openrouter", "credentials": [
+        {"id": "one", "usage": None}, {"id": "two", "usage": None},
+    ]}
+    assert "secret-one" not in out
 

@@ -1239,11 +1239,28 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await _await_with_thread_deadline(
                     send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
             except Exception as send_err:
-                if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
+                if (
+                    (metadata or {}).get("chat_type") == "dm"
+                    and self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id)
+                ):
+                    logger.warning(
+                        "[%s] Reply target deleted for Telegram %s, retrying without reply/topic anchor: %s",
+                        self.name, media_label, _redact_telegram_error_text(send_err))
+                elif (
+                    send_kwargs.get("message_thread_id") is not None
+                    and self._is_bad_request_error(send_err)
+                    and self._is_thread_not_found_error(send_err)
+                    and not (metadata or {}).get("telegram_dm_topic_created_for_send")
+                    and (metadata or {}).get("chat_type") == "dm"
+                    and send_kwargs.get("direct_messages_topic_id") is None
+                ):
+                    logger.warning(
+                        "[%s] Thread %s not found for Telegram %s, retrying without message_thread_id",
+                        self.name, send_kwargs.get("message_thread_id"), media_label)
+                    self._prune_stale_dm_topic_binding(
+                        send_kwargs.get("chat_id"), send_kwargs.get("message_thread_id"), metadata=metadata)
+                else:
                     raise
-                logger.warning(
-                    "[%s] Reply target deleted for Telegram %s, retrying without reply/topic anchor: %s",
-                    self.name, media_label, _redact_telegram_error_text(send_err))
                 if reset_media is not None:
                     reset_media()
                 retry_kwargs = dict(send_kwargs)

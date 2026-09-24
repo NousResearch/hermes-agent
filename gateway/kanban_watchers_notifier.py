@@ -239,7 +239,7 @@ class _Collector:
             *(_platform_names(m) for m in self.profile_adapters.values()))
 
     def collect(self) -> list[dict]:
-        if not self.active_platforms:
+        if not self.active_platforms and not self.gc_due:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
         # Poll each resolved DB path once: several slugs can map to one DB when
@@ -270,7 +270,7 @@ class _Collector:
             logger.debug("kanban notifier: read-only subscription probe failed "
                          "for board %s (%s); falling back to writable open", slug, exc)
             return True
-        if count == 0:
+        if count == 0 and not self.gc_due:
             logger.debug("kanban notifier: board %s has no subscriptions owned by %s; skipping open",
                          slug, sorted(self.notifier_profiles))
         return count != 0
@@ -284,6 +284,17 @@ class _Collector:
                             _purged, slug, self.gc_retention_days)
         except Exception as _gc_exc:
             logger.debug("kanban notifier: stale-sub GC failed for board %s: %s", slug, _gc_exc)
+
+    def _gc_delivery_receipts(self, conn: Any, slug: str) -> None:
+        from hermes_cli.config import load_config
+        try:
+            days = int(load_config().get("kanban", {}).get("notify_delivery_retention_days", 90))
+        except Exception:
+            days = 90
+        try:
+            _kbn().purge_stale_notify_deliveries(conn, max_age_days=days)
+        except Exception as exc:
+            logger.debug("kanban notifier: delivery-receipt GC failed for board %s: %s", slug, exc)
 
     def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
         """Claim one subscription's unseen events; None when skipped or nothing new."""
@@ -310,7 +321,7 @@ class _Collector:
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
-        if not self._board_has_subs(slug):
+        if not self._board_has_subs(slug) and not self.gc_due:
             return
         kb = self.kb
         try:
@@ -321,6 +332,7 @@ class _Collector:
         try:
             if self.gc_due:
                 self._gc_stale_subs(conn, slug)
+                self._gc_delivery_receipts(conn, slug)
             # No explicit init_db(): connect() already runs the migration once per
             # process, and init_db() would re-run it on a second connection racing
             # the first.
@@ -670,28 +682,37 @@ class _KanbanNotification:
         async def send_ping():
             nonlocal _send_res
             _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
-            return False
-        # SendResult(success=False) without an exception is a FAILED delivery
-        # (else the event is lost); None / non-SendResult keeps the
-        # "no exception == delivered" contract.
-        if getattr(_send_res, "success", True) is False:
-            raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
-        logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                     ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
-        # Upload artifact paths from the handoff payload / legacy result as
-        # native files. Both handoff kinds stage files for exactly this: a
-        # review-bound card's files exist precisely so the human sees them at
-        # handoff time. Retry exposure matches ``completed`` (the sub cursor is
-        # rewound only when a send failed).
-        if ev.kind in ("completed", "review_requested"):
+        if sub.get("chat_type") and not metadata.get("chat_type"):
+            metadata["chat_type"] = sub["chat_type"]
+        text_delivered = await _to_thread_process_service(partial(
+            self.runner._kanban_delivery_recorded, sub, event_id=int(ev.id),
+            delivery_key="text", board=self.board_slug,
+        ))
+        if not text_delivered:
+            if not await present_notification(
+                send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev),
+            ):
+                return False
+            if getattr(_send_res, "success", True) is False:
+                raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
             try:
-                await self.runner._deliver_kanban_artifacts(
-                    adapter=adapter, chat_id=sub["chat_id"], metadata=metadata,
-                    event_payload=getattr(ev, "payload", None), task=self.task,
-                )
-            except Exception as art_exc:
-                logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
+                await _to_thread_process_service(partial(
+                    self.runner._kanban_record_delivery, sub, event_id=int(ev.id),
+                    event_kind=ev.kind, message_id=getattr(_send_res, "message_id", None),
+                    delivery_key="text", board=self.board_slug,
+                ))
+            except Exception as exc:
+                # The platform already accepted the send; do not rewind solely
+                # because its audit write failed. A later partial failure can
+                # still retry an unreceipted part (not an exactly-once guarantee).
+                logger.error("kanban notifier: delivered %s for %s but could not persist its receipt: %s",
+                             ev.kind, self.task_id, exc)
+        if ev.kind in ("completed", "review_requested"):
+            await self.runner._deliver_kanban_artifacts(
+                adapter=adapter, chat_id=sub["chat_id"], metadata=metadata,
+                event_payload=getattr(ev, "payload", None), task=self.task,
+                sub=sub, event_id=int(ev.id), event_kind=ev.kind, board=self.board_slug,
+            )
         return True
 
     async def _send_pings(self) -> bool:

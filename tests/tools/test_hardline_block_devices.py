@@ -22,7 +22,9 @@ from tools.approval import (
     disable_session_yolo,
 )
 from tools.approval_context import reset_current_session_key, set_current_session_key
-from tools.terminal_tool import _resolved_guard_variants
+from tools.terminal_tool import (
+    _GuardTargetIndeterminate, _Rejected, _resolved_guard_variants, _run_approval_guards,
+)
 
 
 # Commands that MUST be hardline-blocked: every one destroys a whole disk.
@@ -297,13 +299,17 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
 
 
 class _FakeDeviceEnv:
-    def __init__(self, devices):
+    def __init__(self, devices, *, indeterminate=()):
         self.devices = devices
+        self.indeterminate = set(indeterminate)
         self.queries = []
 
-    def fetch_device_realpath(self, path):
+    def fetch_device_identity(self, path):
         self.queries.append(path)
-        return self.devices.get(path)
+        if path in self.indeterminate:
+            return ("indeterminate", None)
+        resolved = self.devices.get(path)
+        return ("device", resolved) if resolved else ("not_device", path)
 
 
 @pytest.mark.parametrize("command,cwd,devices,expected_fragment", [
@@ -313,7 +319,9 @@ class _FakeDeviceEnv:
     ("shred -n 1 /workspace/raw-disk", "/workspace",
      {"/workspace/raw-disk": "/dev/nvme0n1"}, "/dev/nvme0n1"),
     ('cat x > "../dev/rdisk0"', "/tmp", {"/dev/rdisk0": "/dev/rdisk0"},
-     '"/dev/rdisk0"'),
+     "/dev/rdisk0"),
+    ('wipefs -a "/tmp/raw disk"', "/", {"/tmp/raw disk": "/dev/sda"}, "/dev/sda"),
+    (r"wipefs -a /tmp/raw\ disk", "/", {"/tmp/raw disk": "/dev/sda"}, "/dev/sda"),
 ])
 def test_backend_resolved_device_identity_reaches_hardline(
     command, cwd, devices, expected_fragment
@@ -337,6 +345,53 @@ def test_non_mutating_command_does_not_probe_backend_paths():
     env = _FakeDeviceEnv({"/dev/sda": "/dev/sda"})
     assert _resolved_guard_variants("ls ../dev/sda", env, "/tmp") == []
     assert env.queries == []
+
+
+@pytest.mark.parametrize("command", [
+    "echo payload | tee /tmp/output",
+    "echo ready && shred /tmp/regular-file",
+])
+def test_harmless_prior_stage_does_not_trigger_compound_refusal(command):
+    env = _FakeDeviceEnv({})
+    assert _resolved_guard_variants(command, env, "/") == []
+
+
+def test_device_target_after_more_than_sixteen_paths_is_not_skipped():
+    paths = [f"/tmp/harmless-{index}" for index in range(17)]
+    command = "shred " + " ".join([*paths, "/tmp/raw-disk"])
+    env = _FakeDeviceEnv({"/tmp/raw-disk": "/dev/sda"})
+    variants = _resolved_guard_variants(command, env, "/")
+    assert variants and "/dev/sda" in variants[0]
+    assert env.queries[-1] == "/tmp/raw-disk"
+    assert len(env.queries) == 18
+
+
+def test_backend_probe_failure_fails_closed():
+    env = _FakeDeviceEnv({}, indeterminate={"/tmp/raw-disk"})
+    with pytest.raises(_GuardTargetIndeterminate, match="indeterminate"):
+        _resolved_guard_variants("wipefs -a /tmp/raw-disk", env, "/")
+
+
+@pytest.mark.parametrize("command", [
+    "cd /tmp && wipefs -a ../dev/sda",
+    "ln -sfn /dev/sda /tmp/raw; wipefs -a /tmp/raw",
+])
+def test_same_shell_cannot_change_alias_resolution_before_mutation(command):
+    with pytest.raises(_GuardTargetIndeterminate, match="compound command"):
+        _resolved_guard_variants(command, _FakeDeviceEnv({}), "/work")
+
+
+def test_force_replay_cannot_bypass_resolved_device_floor():
+    env = _FakeDeviceEnv({"/workspace/raw-disk": "/dev/nvme0n1"})
+    with pytest.raises(_Rejected):
+        _run_approval_guards(
+            "shred -n 1 /workspace/raw-disk",
+            "local",
+            {"docker_volumes": []},
+            force=True,
+            env=env,
+            cwd="/workspace",
+        )
 
 
 @pytest.mark.parametrize("command", _BLOCK_DEVICE_HARDLINE_BLOCK)

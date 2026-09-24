@@ -310,28 +310,41 @@ class BaseEnvironment(ABC):
             return None
         return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
 
-    def fetch_device_realpath(self, remote_path: str) -> str | None:
-        """Resolve *remote_path* in this backend only when it names a raw device.
+    def fetch_device_identity(self, remote_path: str) -> tuple[str, str | None]:
+        """Return an explicit identity outcome for a possible raw-device target.
 
-        The approval floor needs filesystem identity, not just lexical spelling. This probe is
-        read-only and runs inside the same backend that will execute the eventual command. Both
-        block devices (Linux/macOS ``/dev/disk*``) and character devices (macOS
-        ``/dev/rdisk*``) count; ordinary files and unresolved paths return None.
+        Outcomes are ``device`` with its canonical path, ``not_device``, ``missing``, or
+        ``indeterminate``. Transport/probe failures never collapse into a safe result.
         """
+        marker = f"__HERMES_DEVICE_ID_{uuid.uuid4().hex[:12]}__"
         quoted = shlex.quote(remote_path)
         script = (
             f'p={quoted}; '
-            'rp="$(readlink -f "$p" 2>/dev/null || realpath "$p" 2>/dev/null || true)"; '
-            '[ -n "$rp" ] && { [ -b "$rp" ] || [ -c "$rp" ]; } && printf "%s\\n" "$rp"'
+            f'm={shlex.quote(marker)}; '
+            'if [ ! -e "$p" ] && [ ! -L "$p" ]; then printf "%s:missing\\n" "$m"; exit 0; fi; '
+            'rp="$(readlink -f "$p" 2>/dev/null || realpath "$p" 2>/dev/null)" || '
+            '{ printf "%s:indeterminate\\n" "$m"; exit 0; }; '
+            'if [ -z "$rp" ]; then printf "%s:indeterminate\\n" "$m"; '
+            'elif [ -b "$rp" ] || [ -c "$rp" ]; then printf "%s:device\\t%s\\n" "$m" "$rp"; '
+            'else printf "%s:not_device\\t%s\\n" "$m" "$rp"; fi'
         )
         result = self.execute(script, rewrite_compound_background=False)
         if int(result.get("returncode") or 0) != 0:
-            return None
-        return next(
+            return ("indeterminate", None)
+        prefix = f"{marker}:"
+        line = next(
             (ln.strip() for ln in reversed((result.get("output") or "").splitlines())
-             if ln.strip().startswith("/")),
-            None,
+             if ln.strip().startswith(prefix)),
+            "",
         )
+        if not line:
+            return ("indeterminate", None)
+        status, _tab, resolved = line[len(prefix):].partition("\t")
+        if status == "device":
+            return ("device", resolved or None)
+        if status in {"not_device", "missing"}:
+            return (status, resolved or None)
+        return ("indeterminate", None)
 
     # --- Session snapshot (init_session) ---
     def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:

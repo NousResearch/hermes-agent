@@ -395,3 +395,39 @@ class TestStandaloneSendIsBounded:
 
         assert error is None
         assert f"delivered to telegram:{CHAT_ID}" in caplog.text
+
+
+class TestStandaloneLaneGetsTheEvidenceGate:
+    """#121725: the #100908 evidence gate covered only the live-adapter lane;
+    the standalone fallback still logged ``delivered`` for evidence-free acks
+    and left no trace on the job."""
+
+    def test_evidence_free_standalone_ack_is_flagged_unverified(self, caplog):
+        """A bare-ack success is accepted, but it must leave the same UNVERIFIED
+        trace (WARNING + ``last_delivery_unverified``) the live lane has left
+        since #100908 — not a silent ``delivered`` (#121725)."""
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error, _, standalone_calls = _run(
+                _job(), "Nightly report.", None, standalone_result={"success": True})
+
+        assert error is None
+        assert len(standalone_calls) == 1
+        assert "UNVERIFIED" in caplog.text
+        assert RECORDED_VERIFICATION == [("92e639af907f", [f"telegram:{CHAT_ID}"])]
+
+    def test_standalone_positive_evidence_clears_the_marker(self):
+        error, _, _ = _run(
+            _job(), "Nightly report.", None,
+            standalone_result={"success": True, "message_id": 7})
+
+        assert error is None
+        assert RECORDED_VERIFICATION == [("92e639af907f", [])]
+
+    def test_standalone_unconfirmed_result_is_not_delivered(self, caplog):
+        """A success-less sender response is a failed delivery, not a delivery."""
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error, _, _ = _run(_job(), "Nightly report.", None, standalone_result={})
+
+        assert error is not None
+        assert "unconfirmed result" in error
+        assert "delivered to" not in caplog.text

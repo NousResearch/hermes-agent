@@ -1183,7 +1183,8 @@ def _result_field(send_result, key: str, default=None):
 
 
 def _confirm_adapter_delivery(
-    send_result, job_id: str = "?", unverified: Optional[list] = None) -> bool:
+    send_result, job_id: str = "?", unverified: Optional[list] = None,
+    lane: str = "live adapter") -> bool:
     """Return True only if ``send_result`` unambiguously confirms delivery. ``None`` or no
     ``success`` attr/key is NOT success (would log "delivered" while nothing was sent).
     ``delivered is False`` REJECTS even with truthy ``success`` (the silence-narration filter
@@ -1212,10 +1213,10 @@ def _confirm_adapter_delivery(
         and not _result_field(send_result, "raw_response")
     ):
         logger.warning(
-            "Job '%s': live adapter reported success with no delivery evidence "
+            "Job '%s': %s reported success with no delivery evidence "
             "(no message_id, no raw_response) — treating as delivered but "
             "UNVERIFIED",
-            job_id)
+            job_id, lane)
         if unverified is not None:
             unverified.append(True)
     return True
@@ -1742,6 +1743,7 @@ def _standalone_send(
 
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
+    unverified_targets: list,
 ) -> None:
     """Standalone fallback for a target the live lane did not deliver."""
     job = t.job
@@ -1766,6 +1768,19 @@ def _deliver_standalone(
         msg = f"delivery warning: {_w} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
+    # The #100908 evidence gate covered only the live-adapter lane; the standalone lane
+    # logged ``delivered`` with no positive evidence and left no trace on the job (#121725).
+    # Same gate, same semantics: a bare ack is accepted but flagged UNVERIFIED; a
+    # success-less or ``None`` result is a failed delivery, not a delivery.
+    _evidence_gap: list = []
+    if not _confirm_adapter_delivery(result, job["id"], _evidence_gap, lane="standalone sender"):
+        msg = f"standalone send to {t.where} returned an unconfirmed result; not claiming delivery"
+        logger.error("Job '%s': %s", job["id"], msg)
+        target_errors.append(msg)
+        delivery_errors.extend(target_errors)
+        return
+    if _evidence_gap:
+        unverified_targets.append(t.where)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
@@ -2044,7 +2059,8 @@ def _deliver_result(
         )
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors,
+                unverified_targets=unverified_targets)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.

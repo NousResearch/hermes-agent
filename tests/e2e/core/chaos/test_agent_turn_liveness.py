@@ -14,8 +14,8 @@ Invariants after EVERY fault (the class, not one bug):
   is LONG_TIMEOUT_S, with a surfaced answer or error;
 * bounded provider calls: no retry storm (#92450); a 400 is not retried; a healthy slow
   stream is not retried at all;
-* reusability: the same agent answers the PROBE turn (no stuck interrupt flag, wedged client,
-  or tripped breaker), and the PROBE request still carries the faulted turn;
+* reusability: the same agent answers the PROBE turn and retains the faulted history; a latched
+  stale breaker refuses an unchanged provider, while an explicit model switch restores access;
 * history integrity: every assistant tool_call has its own tool result in state.db and in
   what is sent back to the model; in an 8-way parallel batch each id carries ITS output (#93251);
 * process hygiene: the driver exits on its own after close() and no process carrying the
@@ -146,6 +146,9 @@ class Scenario:
     # "answer": the PROBE gets the scripted reply; "breaker": the stale breaker refuses it
     # immediately with a surfaced error and no provider call.
     probe: str = "answer"
+    # A permanently hung provider may trip the cross-turn breaker. Exercise
+    # its documented recovery action through the real model-switch API.
+    probe_model: str = ""
     huge: bool = False
     background: bool = False  # the tool must really have started a tracked background job
     # Background scenarios: the provider holds its post-tool reply until this many tagged
@@ -161,7 +164,7 @@ def _hung(timeout: float) -> Callable[[Ctx], Response]:
 
 SCENARIOS: list[Scenario] = [
     # provider faults that last forever: the turn must give up on its own
-    Scenario("provider_hang", lambda c: Hang()),
+    Scenario("provider_hang", lambda c: Hang(), probe_model="fake-recovered-model"),
     # request_timeout LONG: only the explicit stale timeout can end it, and it must beat the
     # reasoning-model floor (#115024). The stale streak it leaves behind trips the cross-turn
     # stale breaker (#58962), so the PROBE must be refused at once, surfaced, and unbilled.
@@ -338,7 +341,8 @@ class Run:
         work.mkdir()
         spec = self.root / "spec.json"
         spec.write_text(json.dumps({
-            "session_id": self.session_id, "turns": [self.fault_msg, self.probe_msg]}), encoding="utf-8")
+            "session_id": self.session_id, "turns": [self.fault_msg, self.probe_msg],
+            "probe_model": sc.probe_model}), encoding="utf-8")
         env = hermetic_env(home, hermes_home, self.tag)
         env["TERMINAL_CWD"] = str(work)
         stderr = open(self.root / "driver.stderr", "wb")
@@ -402,6 +406,7 @@ class Run:
         probes = self.probe_requests()
         rep["probe_request"] = probes[-1] if probes else None
         rep["probe_count"] = len(probes)
+        rep["model_switches"] = [ev for _, ev in self.seen if ev["ev"] == "model_switched"]
         mains = [r["body"] for r in list(self.srv.requests) if r["kind"] == "main"]
         rep["last_request"] = mains[-1] if mains else None
         rep["max_request_bytes"] = max((len(json.dumps(b)) for b in mains), default=0)
@@ -479,6 +484,9 @@ def test_agent_turn_liveness(scenario_id: str, runs: dict[str, Future]) -> None:
             f"PROBE not answered: {rep['turn1']}\nfault calls {rep['fault_calls']}, probe requests "
             f"{rep['probe_count']}, stale log:\n" + "\n".join(rep.get("stale_log", [])))
         assert rep["probe_request"] is not None, "PROBE never reached the provider"
+        if sc.probe_model:
+            assert rep["model_switches"] == [{"ev": "model_switched", "model": sc.probe_model}]
+            assert rep["probe_request"]["model"] == sc.probe_model, "PROBE used the old provider runtime"
         sent = rep["probe_request"]["messages"]
         assert any(f"[[chaos:{scenario_id}]]" in _text(m.get("content")) for m in sent if m.get("role") == "user"), \
             "the faulted user turn vanished from the history sent with the next message"

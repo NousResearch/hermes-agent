@@ -10,6 +10,7 @@ Protocol (one JSON object per stdout line, prefixed ``CHAOS ``; everything else 
 stdout/stderr is the agent's own output and is ignored by the parent):
   {"ev": "ready"}                                    agent built
   {"ev": "turn_start", "i": n}
+  {"ev": "model_switched", "model": "..."}          explicit recovery before PROBE
   {"ev": "turn_end", "i": n, "failed": .., "interrupted": .., "completed": ..,
    "final": "...", "exit_reason": "..."}
   {"ev": "closed"}                                   agent.close() returned
@@ -59,6 +60,14 @@ def main(spec_path: str) -> None:
 
     history: list = []
     for i, message in enumerate(spec["turns"]):
+        if i == 1 and spec.get("probe_model"):
+            # A tripped cross-turn breaker intentionally stays latched. Follow
+            # the error's recovery instruction; never reset its counter directly.
+            agent.switch_model(
+                new_model=spec["probe_model"], new_provider=agent.provider,
+                api_key=agent.api_key, base_url=agent.base_url, api_mode=agent.api_mode,
+            )
+            _emit(ev="model_switched", model=agent.model)
         _emit(ev="turn_start", i=i)
         result = agent.run_conversation(message, conversation_history=history)
         history = result.get("messages") or history

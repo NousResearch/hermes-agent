@@ -847,5 +847,3 @@ class TestLineBufferPipedStdout:
         # setup_logging runs per AIAgent build: a second call must not re-flush/reconfigure.
         hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
         stream.reconfigure.assert_called_once_with(line_buffering=True)
-
-

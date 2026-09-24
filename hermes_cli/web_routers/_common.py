@@ -160,6 +160,19 @@ CORRUPT_STORE_DETAIL = {
     "error": "state_db_corrupt",
     "message": "state.db corrupt — run `hermes doctor` (then `hermes doctor --fix` or `hermes sessions repair`).",
 }
+# Same guidance as the deleted_wal / replaced turn explainers: `doctor --fix` while a holder
+# lives would repair the wrong generation in place, so it is deliberately NOT suggested here.
+DELETED_WAL_DETAIL = {
+    "error": "deleted_wal",
+    "message": "another Hermes process still holds an old copy of the session database's write-ahead log — "
+               "quit every Hermes process on this profile, run `hermes doctor` (it names the holders), "
+               "then start Hermes again. Do not run `hermes doctor --fix` while they run.",
+}
+STATE_DB_REPLACED_DETAIL = {
+    "error": "state_db_replaced",
+    "message": "state.db was replaced while Hermes was running — stop Hermes, run `hermes doctor`, "
+               "then start it again. Do not run `hermes doctor --fix`, which would repair the wrong file in place.",
+}
 
 
 @contextlib.contextmanager
@@ -176,21 +189,15 @@ def corrupt_store_as_status(db_path):
             raise
         key, now = str(db_path), time.monotonic()
         last = _corrupt_store_warned_at.get(key)
-        detail = dict(CORRUPT_STORE_DETAIL)
+        detail = CORRUPT_STORE_DETAIL
         if isinstance(exc, DeletedWalGenerationError):
-            detail = {
-                "error": "deleted_wal",
-                "message": "state.db replaced underneath with deleted WAL generation — click Recover or run `hermes doctor --fix`.",
-            }
+            detail = DELETED_WAL_DETAIL
         elif isinstance(exc, StateDbReplacedError):
-            detail = {
-                "error": "state_db_replaced",
-                "message": "state.db replaced underneath — click Recover or run `hermes doctor --fix`.",
-            }
+            detail = STATE_DB_REPLACED_DETAIL
         if last is None or now - last >= _CORRUPT_STORE_WARN_INTERVAL_S:
             _corrupt_store_warned_at[key] = now
-            log.warning("state.db at %s has error (%s); dashboard reads return a status payload until it is "
-                        "repaired — run `hermes doctor --fix`", db_path, exc)
+            log.warning("state.db at %s is unreadable (%s); dashboard reads return a status payload until it is "
+                        "repaired — run `hermes doctor`", db_path, exc)
         else:
             log.debug("state.db at %s still has error: %s", db_path, exc)
         raise HTTPException(status_code=503, detail={**detail, "path": key}) from exc

@@ -76,8 +76,15 @@ def collapse_continuation_trail(
         return ""
     messages[turn_start:] = retained
     from agent.conversation_loop import _join_truncated_parts
+    raw = fragment_parts if parts is None else parts
+    join_parts = []
+    for item in raw:
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+            join_parts.append(item)
+        elif isinstance(item, str) and item:
+            join_parts.append((item, False))
     partial = agent._strip_think_blocks(
-        _join_truncated_parts(fragment_parts if parts is None else parts)
+        _join_truncated_parts(join_parts)
     ).strip()
     if partial:
         append_message(messages, {"role": "assistant", "content": partial, "finish_reason": finish_reason})

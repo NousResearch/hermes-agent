@@ -216,10 +216,27 @@ def is_platform_supported() -> bool:
     return _detect_target() is not None
 
 
+def _optional_github_token() -> str | None:
+    """GITHUB_TOKEN if this caller can read one, else None.
+
+    The install runs on a boot-probe daemon thread that holds no profile secret scope, so
+    under multiplex ``get_secret`` fails closed. The token is a rate-limit nicety on a
+    PUBLIC release asset, not a requirement: classify the unscoped read at the catch site
+    (as ``tools/registry.py`` does for boot-time probes) and download anonymously rather
+    than aborting the install.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        return get_secret("GITHUB_TOKEN")
+    except UnscopedSecretError:
+        logger.debug("tirith install: no profile secret scope for GITHUB_TOKEN; "
+                     "downloading the public release asset anonymously")
+        return None
+
+
 def _download_file(url: str, dest: str, timeout: int = 10):
-    from agent.secret_scope import get_secret
     req = urllib.request.Request(url)
-    if token := get_secret("GITHUB_TOKEN"):
+    if token := _optional_github_token():
         req.add_header("Authorization", f"token {token}")
     with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f)

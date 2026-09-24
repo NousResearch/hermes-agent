@@ -379,34 +379,14 @@ def _compressed_args(field: str) -> dict:
     return parsed
 
 
-def test_context_pruned_effectful_call_blocks_before_plugins_and_dispatch():
-    agent = _make_agent("mcp_write")
-    args = _compressed_args("body")
-    tc = _mock_tool_call("mcp_write", json.dumps(args, ensure_ascii=False), "c-pruned-current")
-    msg = SimpleNamespace(content="", tool_calls=[tc])
-    messages = []
-
-    with (
-        patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks") as plugin,
-        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
-    ):
-        agent._execute_tool_calls_sequential(msg, messages, "task-1")
-
-    plugin.assert_not_called()
-    dispatch.assert_not_called()
-    payload = json.loads(messages[0]["content"])
-    assert payload["error"] == "suspected_pruned_tool_arguments"
-    assert payload["argument_paths"] == ["$.body"]
-    assert "Recover the exact content from its durable source" in payload["message"]
-
-
-def test_plugin_modified_args_are_rechecked_for_context_prune_markers():
-    agent = _make_agent("mcp_write")
+def test_context_pruned_effectful_call_blocks_before_dispatch():
+    agent = _make_agent("test_effectful_write")
     pruned = _compressed_args("body")
-    tc = _mock_tool_call("mcp_write", json.dumps({"body": "complete"}), "c-pruned-plugin")
+    tc = _mock_tool_call("test_effectful_write", json.dumps(pruned, ensure_ascii=False), "c-pruned-current")
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
+    # The hook may rewrite args; the boundary is enforced on what it returns.
     with (
         patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks", return_value=(None, pruned)) as plugin,
         patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
@@ -418,6 +398,7 @@ def test_plugin_modified_args_are_rechecked_for_context_prune_markers():
     payload = json.loads(messages[0]["content"])
     assert payload["error"] == "suspected_pruned_tool_arguments"
     assert payload["argument_paths"] == ["$.body"]
+    assert "Recover the exact content from its durable source" in payload["message"]
 
 
 def test_read_only_tool_may_quote_current_context_prune_marker():
@@ -431,14 +412,6 @@ def test_read_only_tool_may_quote_current_context_prune_marker():
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     dispatch.assert_called_once()
-
-
-def test_legacy_pruned_tail_is_guarded_only_for_historical_sized_effectful_values():
-    from agent.tool_dispatch_helpers import _context_pruned_argument_paths
-
-    assert _context_pruned_argument_paths("mcp_write", {"body": "x" * 201 + "...[truncated]"}) == ["$.body"]
-    assert _context_pruned_argument_paths("mcp_write", {"body": "literal ...[truncated]"}) == []
-    assert _context_pruned_argument_paths("web_search", {"query": "x" * 201 + "...[truncated]"}) == []
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

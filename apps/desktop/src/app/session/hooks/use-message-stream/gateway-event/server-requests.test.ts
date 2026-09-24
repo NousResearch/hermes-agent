@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setActiveSessionId, setSessions } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -80,6 +80,30 @@ describe('approval request routing', () => {
 })
 
 describe('preview action request routing', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('answers a scoped action for an on-screen tile even when another session is active', async () => {
+    $sessionTiles.set([{ runtimeId: 'session-a', storedSessionId: 'stored-a' } as never])
+    const { respond } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-b')
+
+    await vi.waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({
+        value: JSON.stringify({
+          error: 'No live page is open in the in-app browser — open one with open_preview first.',
+          success: false
+        })
+      })
+    })
+  })
+
+  it('routes a focused tree tab as visible', () => {
+    $focusedRuntimeId.set('session-a')
+    expect(previewSessionRoute({ replayed: false, sessionId: 'session-a', activeSessionId: 'session-b' })).toBe('run')
+    $focusedRuntimeId.set(null)
+  })
+
   it('retries a replayed scoped request only while no session is bound yet', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: null })).toBe('retry')
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-a' })).toBe('run')

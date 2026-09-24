@@ -19,6 +19,8 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _diff_staged_tree,
+    _project_refs,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,
     store_status,
@@ -300,6 +302,8 @@ class TestRestore:
 class TestSafeRestore:
     """Safe restore: preserve user hand-edits, revert only Hermes-authored changes.
 
+    Staging failures must fail closed rather than diffing a stale index.
+
     Inspired by Copilot CLI's /rewind, which "restores only the files Copilot
     changed, skipping any file whose contents no longer match what Copilot
     last wrote".
@@ -311,6 +315,17 @@ class TestSafeRestore:
         cps = mgr.list_checkpoints(str(work_dir))
         assert cps
         return cps[0]["hash"]
+
+    def test_diff_reports_staging_failure_instead_of_using_stale_index(self, mgr, work_dir, monkeypatch):
+        """A locked index must produce an honest failure, not a clean diff from old state."""
+        assert mgr.ensure_checkpoint(str(work_dir), "initial") is True
+        p = _project_refs(str(work_dir))
+        monkeypatch.setattr(
+            "tools.checkpoint_manager._stage_all",
+            lambda _p: (False, "", "index is locked"),
+        )
+        result = _diff_staged_tree(p, ["diff", "--cached"])
+        assert result == [(False, "", "index is locked")]
 
     def test_safe_restore_skips_user_edited_file(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)

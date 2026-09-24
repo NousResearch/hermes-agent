@@ -990,18 +990,18 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
-    # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
-    # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
-    # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
-    # the token-accounting guard as an anonymous session (#111999).
+    turn_author: dict | None = None, task_lease=None) -> bool:
+    # Synthesized turns enter here without prompt.submit's durable-row setup.
     if _ensure_session_db_row(session) is False:
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
+
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:
+        from tools.approval_task import release_task
+        release_task(session, task_lease)
         return False
     images, agent = admitted
     from gateway.warning_notifications import diagnostic_turn_muted
@@ -1049,9 +1049,11 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
-            _invoke_agent(
-                sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author, text)
+            from tools.approval_task import bind_task
+            with bind_task(task_lease if not display_kind and queued_prompt_generation is None else None):
+                _invoke_agent(
+                    sid, session, st, prompt, run_message, streamer, images, display_kind,
+                    display_metadata, turn_author, text)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
@@ -1065,6 +1067,9 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
+            # Only this generation: an old finalizer must not revoke its successor.
+            from tools.approval_task import release_task
+            release_task(session, task_lease)
             _finish_turn(sid, session, st)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
@@ -1100,14 +1105,18 @@ def _run_prompt_submit(
             _emit_settled_session_info(sid, session, st.agent)
         return st.result, goal_followup
     def run():
-        from agent.notification_presentation import notification_turn
-        # _prepare_turn_input owns profile binding for the worker. The context
-        # here only gates presentation; do not introduce a second runtime scope.
-        from agent.notification_presentation import notification_policy_snapshot
-        with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
-            followup = run_body()
-        if followup is not None:
-            _run_post_turn_followups(rid, sid, session, *followup)
+        from tools.approval_task import release_task
+        try:
+            from agent.notification_presentation import notification_turn
+            # _prepare_turn_input owns profile binding for the worker. The context
+            # here only gates presentation; do not introduce a second runtime scope.
+            from agent.notification_presentation import notification_policy_snapshot
+            with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
+                followup = run_body()
+            if followup is not None:
+                _run_post_turn_followups(rid, sid, session, *followup)
+        finally:
+            release_task(session, task_lease)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
     with _routing_provenance_db(session) as routing_db, _sessions_lock:
@@ -1120,6 +1129,8 @@ def _run_prompt_submit(
                 _reopen_routed_session_row(routing_db, sid, session)
             can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
     if not can_start:
+        from tools.approval_task import release_task
+        release_task(session, task_lease)
         with session["history_lock"]:
             session["running"] = False
     return can_start

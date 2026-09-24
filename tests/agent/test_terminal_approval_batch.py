@@ -2,6 +2,7 @@
 
 import json
 import queue
+import socket
 import threading
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -12,6 +13,9 @@ import pytest
 from run_agent import AIAgent
 from gateway.session_context import clear_session_vars
 from tools import approval
+from tools import terminal_tool as terminal
+from tools.approval_context import set_current_session_key, reset_current_session_key
+from tools.approval_task import bind_task, current_task, from_composer, release_task, revoke_session_task
 from tools.thread_context import propagate_context_to_thread
 
 
@@ -34,6 +38,231 @@ def _agent():
     ):
         return AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1",
                        quiet_mode=True, skip_context_files=True, skip_memory=True, platform="desktop")
+
+
+@pytest.mark.parametrize('revoke_before_effect', [False, True])
+@pytest.mark.parametrize('background', [False, True])
+def test_prepared_smart_approval_still_checks_live_task_at_effect(
+    tmp_path, monkeypatch, revoke_before_effect, background
+):
+    from agent import auxiliary_client
+    from agent import terminal_approval_batch
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tui_gateway import server
+
+    def unexpected_network(*args, **kwargs):
+        raise AssertionError('batch test attempted a network request')
+
+    monkeypatch.setattr(socket.socket, 'connect', unexpected_network)
+    monkeypatch.setattr(socket.socket, 'connect_ex', unexpected_network)
+    monkeypatch.setattr(socket, 'create_connection', unexpected_network)
+
+    key = f'prepared-task-effect-{background}-{revoke_before_effect}'
+    lease = from_composer(key, {'kind': 'desktop_composer', 'raw_text': 'Run the two checked commands'})
+    session = {'session_key': key, 'source': 'desktop', 'cwd': str(tmp_path),
+               '_approval_task_lease': lease}
+    agent = _agent()
+    session['agent'] = agent
+    monkeypatch.setattr(server, '_sessions', {key: session})
+    monkeypatch.setattr('tools.approval_context._get_approval_mode', lambda: 'smart')
+    monkeypatch.setattr('tools.approval._tirith_scan', lambda command: {'action': 'allow'})
+    monkeypatch.setattr('agent.title_generator.maybe_auto_title', lambda *a, **k: None)
+    monkeypatch.setenv('HERMES_EXEC_ASK', '1')
+    monkeypatch.setenv('TERMINAL_ENV', 'local')
+    monkeypatch.setenv('TERMINAL_CWD', str(tmp_path))
+    commands = ['rm -rf inert-sentinel-one', 'rm -rf inert-sentinel-two']
+    reviewed, consumed, effects, rows, failures, requests, flushed = [], [], [], [], [], [], []
+
+    def reviewer(**kwargs):
+        assert terminal_approval_batch.preparing_terminal_approval()
+        assert current_task() == lease.record
+        assert lease.active
+        prompt = kwargs['messages'][1]['content']
+        assert f'<raw_input>{lease.record.raw_text}</raw_input>' in prompt
+        assert f'<session>{key}</session>' in prompt
+        assert f'<task>{lease.record.task_id}</task>' in prompt
+        assert any(f'<command>\n{command}\n</command>' in prompt for command in commands)
+        reviewed.append(prompt)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='APPROVE'))])
+
+    def execute(command, **kwargs):
+        effects.append(command)
+        return {'output': 'inert', 'returncode': 0}
+
+    original_consume = terminal_approval_batch.consume_prepared_guard
+
+    def consume_after_preparation(*args):
+        preparing = terminal_approval_batch.preparing_terminal_approval()
+        decision = original_consume(*args)
+        if preparing:
+            assert decision is None
+            return None
+
+        assert decision is not None
+        assert decision['approved'] and decision.get('smart_approved')
+        assert len(reviewed) == 2
+        consumed.append(decision)
+        if len(consumed) == 1:
+            assert lease.active
+            assert effects == []
+            if revoke_before_effect:
+                revoke_session_task(session)
+            assert not agent._interrupt_requested
+        else:
+            assert any([row['tool_call_id'] for row in snapshot] == ['first'] for snapshot in flushed)
+        return decision
+
+    def deny_unexpected_request(data):
+        requests.append(data)
+        approval.resolve_gateway_approval(key, 'deny', request_id=data['request_id'])
+
+    def record_flush(messages, *args, **kwargs):
+        flushed.append([dict(row) for row in messages])
+        return True
+
+    monkeypatch.setattr(auxiliary_client, 'call_llm', reviewer)
+    monkeypatch.setattr(terminal_approval_batch, 'consume_prepared_guard', consume_after_preparation)
+    monkeypatch.setattr(terminal, '_acquire_env', lambda *a, **k: SimpleNamespace(
+        execute=execute, cwd=str(tmp_path)))
+    monkeypatch.setattr(terminal, '_pre_exec_block', lambda *a, **k: None)
+    monkeypatch.setattr(terminal, 'spawn_background_process',
+                        lambda **kwargs: effects.append(kwargs['command']) or json.dumps({
+                            'status': 'running', 'session_id': 'fake-background', 'output': ''}))
+    agent._flush_messages_to_session_db = record_flush
+    calls = [_call(name, command) for name, command in zip(('first', 'second'), commands)]
+    if background:
+        for call, command in zip(calls, commands):
+            call.function.arguments = json.dumps({'command': command, 'background': True})
+
+    def run():
+        try:
+            agent._execute_tool_calls(SimpleNamespace(tool_calls=calls), rows, key)
+        except BaseException as exc:
+            failures.append(exc)
+
+    scope_token = set_terminal_scope({'TERMINAL_ENV': 'local', 'TERMINAL_CWD': str(tmp_path)})
+    session_tokens = server._set_session_context(key)
+    approval_token = set_current_session_key(key)
+    approval.register_gateway_notify(key, deny_unexpected_request)
+    worker = None
+    try:
+        with bind_task(lease):
+            worker = threading.Thread(target=propagate_context_to_thread(run), daemon=True)
+            worker.start()
+            worker.join(15)
+        assert not worker.is_alive() and not failures, failures
+        assert len(reviewed) == 2
+        assert all('<task_evidence>' in prompt for prompt in reviewed)
+        assert all(f'<command>\n{command}\n</command>' in prompt
+                   for prompt, command in zip(reviewed, commands))
+        assert len(consumed) == 2
+        assert [row['tool_call_id'] for row in rows] == ['first', 'second']
+        assert requests == []
+        assert effects == ([] if revoke_before_effect else commands)
+        results = [json.loads(row['content']) for row in rows]
+        if revoke_before_effect:
+            assert all(result['status'] == 'blocked' and
+                       result['error'] == 'Task ended before command execution'
+                       for result in results)
+        elif background:
+            assert all(result['status'] == 'running' and
+                       result['session_id'] == 'fake-background' for result in results)
+        else:
+            assert all(result['exit_code'] == 0 and result['error'] is None
+                       for result in results)
+    finally:
+        approval.unregister_gateway_notify(key)
+        if worker is not None and worker.is_alive():
+            agent.interrupt('test cleanup')
+            worker.join(5)
+        release_task(session, lease)
+        approval.clear_session(key)
+        reset_current_session_key(approval_token)
+        clear_session_vars(session_tokens)
+        reset_terminal_scope(scope_token)
+
+
+@pytest.mark.parametrize('background', [False, True])
+def test_manual_once_after_correction_cannot_execute_old_batch(tmp_path, monkeypatch, background):
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tui_gateway import server
+
+    def unexpected_network(*args, **kwargs):
+        raise AssertionError('manual batch test attempted a network request')
+
+    monkeypatch.setattr(socket.socket, 'connect', unexpected_network)
+    monkeypatch.setattr(socket.socket, 'connect_ex', unexpected_network)
+    monkeypatch.setattr(socket, 'create_connection', unexpected_network)
+    key = f'late-manual-{background}'
+    lease = from_composer(key, {'kind': 'desktop_composer', 'raw_text': 'Original instruction'})
+    agent = _agent()
+    agent.steer = lambda text: True
+    session = {'session_key': key, 'source': 'desktop', 'agent': agent, 'cwd': str(tmp_path),
+               'history_lock': threading.Lock(), 'running': True, '_approval_task_lease': lease}
+    monkeypatch.setattr(server, '_sessions', {key: session})
+    monkeypatch.setattr('tools.approval_context._get_approval_mode', lambda: 'manual')
+    monkeypatch.setattr('tools.approval._tirith_scan', lambda command: {'action': 'allow'})
+    monkeypatch.setattr('agent.title_generator.maybe_auto_title', lambda *a, **k: None)
+    monkeypatch.setenv('HERMES_EXEC_ASK', '1')
+    monkeypatch.setenv('TERMINAL_ENV', 'local')
+    monkeypatch.setenv('TERMINAL_CWD', str(tmp_path))
+    effects, rows, failures, cards, corrections = [], [], [], [], []
+    monkeypatch.setattr(terminal, '_acquire_env', lambda *a, **k: SimpleNamespace(
+        execute=lambda command, **kwargs: effects.append(command) or {'output': 'inert', 'returncode': 0},
+        cwd=str(tmp_path)))
+    monkeypatch.setattr(terminal, '_pre_exec_block', lambda *a, **k: None)
+    monkeypatch.setattr(terminal, 'spawn_background_process',
+                        lambda **kwargs: effects.append(kwargs['command']) or json.dumps({
+                            'status': 'running', 'session_id': 'fake-background', 'output': ''}))
+    agent._flush_messages_to_session_db = lambda *a, **k: True
+
+    def on_card(data):
+        cards.append(data)
+        if len(cards) == 1:
+            corrections.append(server._methods['session.steer']('correction', {
+                'session_id': key, 'text': 'Do something else'}))
+            assert corrections[-1]['result']['status'] == 'queued'
+            assert not lease.active and not agent._interrupt_requested
+        assert approval.resolve_gateway_approval(key, 'once', request_id=data['request_id']) == 1
+
+    calls = [_call(name, f'rm -rf inert-manual-{name}') for name in ('first', 'second')]
+    if background:
+        for call in calls:
+            call.function.arguments = json.dumps({'command': json.loads(call.function.arguments)['command'],
+                                                   'background': True})
+
+    def run():
+        try:
+            agent._execute_tool_calls(SimpleNamespace(tool_calls=calls), rows, key)
+        except BaseException as exc:
+            failures.append(exc)
+
+    scope_token = set_terminal_scope({'TERMINAL_ENV': 'local', 'TERMINAL_CWD': str(tmp_path)})
+    session_tokens = server._set_session_context(key)
+    approval_token = set_current_session_key(key)
+    approval.register_gateway_notify(key, on_card)
+    worker = None
+    try:
+        with bind_task(lease):
+            worker = threading.Thread(target=propagate_context_to_thread(run), daemon=True)
+            worker.start()
+            worker.join(15)
+        assert not worker.is_alive() and not failures, failures
+        assert corrections and len(cards) == 2
+        assert approval.list_gateway_approvals(key) == []
+        assert [row['tool_call_id'] for row in rows] == ['first', 'second']
+        assert effects == []
+        assert all(json.loads(row['content'])['status'] == 'blocked' for row in rows)
+    finally:
+        approval.unregister_gateway_notify(key)
+        if worker is not None and worker.is_alive():
+            agent.interrupt('test cleanup')
+            worker.join(5)
+        release_task(session, lease)
+        approval.clear_session(key)
+        reset_current_session_key(approval_token)
+        clear_session_vars(session_tokens)
+        reset_terminal_scope(scope_token)
 
 
 @pytest.mark.parametrize("read_count", [0, 2])

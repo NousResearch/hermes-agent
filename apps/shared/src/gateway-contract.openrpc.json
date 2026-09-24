@@ -25300,6 +25300,16 @@
             "default": null,
             "title": "Queued"
           },
+          "input_provenance": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Provenance"
+          },
           "surface": {
             "anyOf": [
               {

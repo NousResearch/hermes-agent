@@ -784,6 +784,9 @@ def _cmd_steer(rid, params, session, name, arg):
         return _ok(rid, {"type": "send", "message": arg, "notice": f"No agent running; sent as next turn: {shown}"})
     agent = session.get("agent")
     if agent and hasattr(agent, "steer"):
+        # Revoke before steer publishes to a concurrent tool worker.
+        from tools.approval_task import revoke_session_task
+        revoke_session_task(session)
         with contextlib.suppress(Exception):
             if agent.steer(arg):
                 return _exec_out(rid, f"⏩ Steer queued — arrives after the next tool call: {shown}")

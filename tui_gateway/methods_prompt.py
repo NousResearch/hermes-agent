@@ -488,38 +488,48 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback,
+    turn_author=None, *, task_lease=None
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
-    # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
-    # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
-    # expires. See #63078.
-    err = _wait_agent_for_prompt(session, rid, sid)
-    if err:
-        # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
-        # the only way resume shows this to a disconnected client.
-        _emit_terminal_turn_error(
-            sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
-            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
-        with session["history_lock"]:
-            session["running"] = False
-            session["last_active"] = time.time()
-        _emit("session.info", sid, _session_info(session.get("agent"), session))
-        return
-    with session["history_lock"]:
-        if session.get("_turn_cancel_requested") or not session.get("running"):
-            session["running"] = False
-            _clear_inflight_turn(session)
-            # Without this emit the turn vanishes silently after {"status": "streaming"}.
-            _emit("error", sid, {"message": (
-                "Turn cancelled before the agent was ready"
-                if session.get("_turn_cancel_requested")
-                else "Session no longer running before the agent was ready")})
+    from tools.approval_task import release_task
+    worker_owns_lease = False
+    try:
+        # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
+        # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
+        # expires. See #63078.
+        err = _wait_agent_for_prompt(session, rid, sid)
+        if err:
+            release_task(session, task_lease)
+            # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
+            # the only way resume shows this to a disconnected client.
+            _emit_terminal_turn_error(
+                sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
+                error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+            with session["history_lock"]:
+                session["running"] = False
+                session["last_active"] = time.time()
+            _emit("session.info", sid, _session_info(session.get("agent"), session))
             return
-    _run_prompt_submit(
-        rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                release_task(session, task_lease)
+                session["running"] = False
+                _clear_inflight_turn(session)
+                # Without this emit the turn vanishes silently after {"status": "streaming"}.
+                _emit("error", sid, {"message": (
+                    "Turn cancelled before the agent was ready"
+                    if session.get("_turn_cancel_requested")
+                    else "Session no longer running before the agent was ready")})
+                return
+        worker_owns_lease = _run_prompt_submit(
+            rid, sid, session, text, display_kind=display_kind,
+            display_metadata=display_metadata, terminal_callback=hosted_terminal_callback,
+            turn_author=turn_author, task_lease=task_lease)
+    finally:
+        if not worker_owns_lease:
+            release_task(session, task_lease)
 
 
 _TRUNCATION_PARAMS = (
@@ -527,7 +537,8 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task,
+    display_kind, *, task_lease=None):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
@@ -548,6 +559,8 @@ def _lock_in_submit_turn(
                 rid, sid, session, params, requested_rebind_ids)
             if err is not None:
                 return err, {}
+        from tools.approval_task import install_session_task
+        install_session_task(session, task_lease)
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -628,6 +641,20 @@ def _(rid, params: dict) -> dict:
             return refusal
         if (t := current_transport()) is not None:
             _rebind_live_transport(sid, session, t)
+    from tools.approval_task import from_composer, revoke_session_task
+    # A new submission invalidates copied worker contexts too, including busy/queued sends.
+    revoke_session_task(session)
+    from tui_gateway.ws import WSTransport
+    from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
+    task_lease = None
+    if (not session.get("running") and not has_truncation and not turn_isolation
+            and not internal_hosted_submit and not display_kind and not params.get("queued")
+            and session.get("source") == "desktop" and not session.get("hidden")
+            # WSTransport exists only after the existing WS auth upgrade, including local-token auth.
+            and isinstance(t, WSTransport)
+            and (getattr(t, "auth_identity", None) or {}).get("provider") != INTERNAL_PROVIDER
+            and (getattr(t, "auth_identity", None) or {}).get("user_id") != INTERNAL_USER_ID):
+        task_lease = from_composer(session["session_key"], params.get("input_provenance"))
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
@@ -639,6 +666,9 @@ def _(rid, params: dict) -> dict:
                 break
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
+            if task_lease is not None:
+                task_lease.revoke()
+                task_lease = None
             busy_transport = t or session.get("transport")
         if has_truncation:
             # A rewind/edit/restore/regenerate must land as a truncation, never as a
@@ -657,8 +687,11 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task,
+        display_kind, task_lease=task_lease)
     if err is not None:
+        from tools.approval_task import release_task
+        release_task(session, task_lease)
         return err
     if turn_isolation:
         if turn_author:
@@ -681,23 +714,29 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
-        return err
-    # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
-    staged_user = session.get("_submit_user_row") or {}
-    if isinstance(staged_user.get("_row_id"), int):
-        survivor_fields["user_row_id"] = staged_user["_row_id"]
-    # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
+    from tools.approval_task import release_task
+    try:
+        if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
+            release_task(session, task_lease)
+            return err
+        staged_user = session.get("_submit_user_row") or {}
+        if isinstance(staged_user.get("_row_id"), int):
+            survivor_fields["user_row_id"] = staged_user["_row_id"]
+        # A completed FAILED build must not wedge the session: rebuild, don't replay it.
+        if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
+            _start_agent_build(sid, session)
+        run_thread = threading.Thread(
+            target=lambda: _run_after_agent_ready(
+                rid, sid, session, text, display_kind, display_metadata,
+                hosted_terminal_callback, turn_author, task_lease=task_lease),
+            daemon=True)
+        # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
+        session["_run_thread"] = run_thread
+        run_thread.start()
+        return _ok(rid, {"status": "streaming", **survivor_fields})
+    except BaseException:
+        release_task(session, task_lease)
+        raise
 
 
 # ── attachments ─────────────────────────────────────────────────────────────

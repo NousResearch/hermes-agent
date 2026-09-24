@@ -1,4 +1,4 @@
-import type { PromptSubmitResult } from '@hermes/shared'
+import type { PromptSubmitParams, PromptSubmitResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -791,9 +791,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(liveSessionId)
         const text = buildContextText(syncedAttachments)
 
+        let submitAttempts = 0
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          // Resume/busy retries are not a fresh deliberate human action.
+          ...(submitAttempts++ === 0 && targetId === liveSessionId &&
+            !options?.fromQueue && !options?.displayKind && !options?.displayText &&
+            options?.inputProvenance && { input_provenance: options.inputProvenance }),
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.
@@ -813,7 +818,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // the live turn with text the user explicitly queued.
           ...(options?.fromQueue && { queued: true }),
           ...(titlePreview && { title_preview: titlePreview })
-        })
+        } satisfies PromptSubmitParams)
 
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. The shared

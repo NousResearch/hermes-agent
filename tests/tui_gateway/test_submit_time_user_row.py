@@ -7,6 +7,8 @@ from agent.turn_context import _stage_turn_user_message
 from hermes_state import SessionDB
 from run_agent import AIAgent
 from tui_gateway import server
+from tui_gateway.transport import bind_transport, reset_transport
+from tui_gateway.ws import WSTransport
 
 
 def _desktop_session(monkeypatch, db):
@@ -50,6 +52,47 @@ def test_user_message_is_durable_at_submit_before_any_agent_turn(monkeypatch, tm
         db.close()
 
 
+def test_malformed_provenance_dispatch_persists_normal_user_row(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    transport = WSTransport(None, None)
+    session['transport'] = transport
+    monkeypatch.setattr(server, '_ensure_active_session_slot', lambda *a: None)
+    monkeypatch.setattr(server, '_session_uses_compute_host', lambda *a: False)
+    monkeypatch.setattr(server, '_start_agent_build', lambda *a: None)
+    monkeypatch.setattr(server, '_restart_completed_failed_agent_build', lambda *a: False)
+    seen = []
+    monkeypatch.setattr(server, '_run_after_agent_ready', lambda *a, task_lease=None: seen.append(task_lease))
+
+    class InlineThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(server.threading, 'Thread', InlineThread)
+    token = bind_transport(transport)
+    try:
+        for evidence in (42, {'kind': 'desktop_composer', 'raw_text': 'edit', 'extra': 1}):
+            session['running'] = False
+            response = server.handle_request({'id': 'p', 'method': 'prompt.submit', 'params': {
+                'session_id': sid, 'text': 'ordinary message', 'input_provenance': evidence}})
+            assert response['result']['status'] == 'streaming', response
+        rows = db.get_messages_as_conversation(key, include_row_ids=True)
+        assert [(row['role'], row['content']) for row in rows] == [
+            ('user', 'ordinary message'), ('user', 'ordinary message')]
+        assert seen == [None, None]
+        assert response['result']['user_row_id'] == rows[-1]['_row_id']
+        assert rows[0]['_row_id'] != rows[1]['_row_id']
+        assert '_approval_task_lease' not in session or session['_approval_task_lease'] is None
+    finally:
+        reset_transport(token)
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)
@@ -65,7 +108,8 @@ def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkey
     monkeypatch.setattr(server.threading, "Thread", InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
     monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
-    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: session.pop("_submit_user_row", None))
+    monkeypatch.setattr(server, "_run_after_agent_ready",
+                        lambda *args, task_lease=None: session.pop("_submit_user_row", None))
     try:
         replies = []
         for _ in range(2):
@@ -173,7 +217,7 @@ def test_failed_build_drops_the_staged_row_and_a_later_turn_never_adopts_it(monk
             session["running"] = True
             server._start_inflight_turn(session, "please refactor the login page")
         assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None) is None
-        server._run_after_agent_ready("rid", sid, session, "please refactor the login page", None, None, None)
+        server._run_after_agent_ready("rid", sid, session, "please refactor the login page", None, None, None, None)
         assert "_submit_user_row" not in session, "staged row survived a turn that never reached the agent"
 
         # Even if a staged row were still around, a turn whose raw submit differs must leave the DB alone.

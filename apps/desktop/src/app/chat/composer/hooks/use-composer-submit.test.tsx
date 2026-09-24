@@ -2,9 +2,16 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { useSubmitPrompt } from '@/app/session/hooks/use-prompt-actions/submit'
+import { registerRecoveredRuntime } from '@/app/session/hooks/use-prompt-actions/single-flight-resume'
+import type { GatewayRequest, SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
+import type { Translations } from '@/i18n'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
+import { $gateway } from '@/store/gateway'
+import { $parkedQueueSessions, $queuedPromptsBySession, enqueueQueuedPrompt } from '@/store/composer-queue'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import {
   clearAllPrompts,
@@ -19,9 +26,11 @@ import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerSubmit } from './use-composer-submit'
+import { useComposerQueue } from './use-composer-queue'
 
 interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
+  submit?: (text: string, options?: SubmitTextOptions) => Promise<boolean>
   busy?: boolean
   compacting?: boolean
   inputDisabled?: boolean
@@ -37,6 +46,7 @@ let surfaceSequence = 0
 
 function renderSubmitHook({
   attachments = [],
+  submit,
   busy = false,
   compacting = false,
   inputDisabled = false,
@@ -56,7 +66,7 @@ function renderSubmitHook({
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
   const onSteerHidden = vi.fn(async () => true)
-  const onSubmit = vi.fn(async () => true)
+  const onSubmit = vi.fn(submit ?? (async () => true))
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
   const queueCurrentDraft = vi.fn(() => true)
@@ -145,6 +155,207 @@ function renderSubmitHook({
     }
   }
 }
+
+function renderWireSubmit() {
+  const requestGateway = vi.fn<GatewayRequest>().mockResolvedValue({})
+  let state = createClientSessionState('stored-session')
+  const updatedSessions: string[] = []
+  const wire = renderHook(() =>
+    useSubmitPrompt({
+      activeSessionIdRef: { current: 'runtime-session' },
+      busyRef: { current: false },
+      copy: {} as Translations['desktop'],
+      createBackendSessionForSend: vi.fn(async () => null),
+      getRoutedStoredSessionId: () => 'stored-session',
+      getRuntimeIdForStoredSession: () => 'runtime-session',
+      getRouteToken: () => 'stored-session',
+      onRuntimeRecovered: vi.fn(),
+      requestGateway: requestGateway as GatewayRequest,
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-session', 'runtime-session']]) },
+      resumeStoredSession: vi.fn(),
+      selectedStoredSessionIdRef: { current: 'stored-session' },
+      syncAttachmentsForSubmit: async (sessionId, attachments) => ({ sessionId, attachments }),
+      updateSessionState: (id, updater) => {
+        updatedSessions.push(id)
+        state = updater(state)
+        return state
+      },
+      scope: {
+        readAttachments: () => [],
+        removeAttachments: vi.fn(),
+        setAwaitingResponse: vi.fn(),
+        setBusy: vi.fn(),
+        setMessages: vi.fn()
+      }
+    })
+  )
+  return { requestGateway, submit: wire.result.current, state: () => state, updatedSessions }
+}
+
+describe('composer producer to prompt.submit provenance', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('preserves raw deliberate text before path and attachment enrichment', async () => {
+    const wire = renderWireSubmit()
+    const raw = '  inspect @apps/desktop/  '
+    const composer = renderSubmitHook({
+      text: raw,
+      submit: wire.submit,
+      attachments: [{ id: 'context', kind: 'file', label: 'context', refText: '@file:context.md' }]
+    })
+    act(() => composer.hook.result.current.submitDraft())
+    await waitFor(() =>
+      expect(wire.requestGateway).toHaveBeenCalledWith(
+        'prompt.submit',
+        expect.objectContaining({ input_provenance: { kind: 'desktop_composer', raw_text: raw } }),
+        expect.any(Number)
+      )
+    )
+    const params = wire.requestGateway.mock.calls.find(([method]) => method === 'prompt.submit')![1]!
+    expect(params.text).toContain('@file:context.md')
+    expect(params.text).not.toBe(raw)
+  })
+
+  it.each([false, true])('binds an evidence-bearing submit ack to its own occurrence after recovery=%s', async recovered => {
+    const wire = renderWireSubmit()
+    const rowId = 71
+    const sameText = 'human text'
+    if (recovered) {
+      registerRecoveredRuntime('stored-session', 'recovered-runtime')
+      wire.requestGateway.mockRejectedValueOnce(new Error('session not found'))
+    }
+    wire.requestGateway.mockImplementation(async (method, params) => {
+      if (method === 'prompt.submit') {
+        const first = wire.state().messages.find(message => message.role === 'user')!
+        // An equal-text, later occurrence must not steal the delayed ack.
+        wire.state().messages.push({ ...first, id: 'later-equal-user', rowId: undefined })
+        return { status: 'started', user_row_id: rowId }
+      }
+      return {}
+    })
+    const composer = renderSubmitHook({ text: sameText, submit: wire.submit })
+    act(() => composer.hook.result.current.submitDraft())
+    await waitFor(() => expect(wire.state().messages[0]?.rowId).toBe(rowId))
+    const calls = wire.requestGateway.mock.calls.filter(([method]) => method === 'prompt.submit')
+    expect(calls[0][1]).toHaveProperty('input_provenance.raw_text', sameText)
+    if (recovered) {
+      expect(calls[1][1]).toMatchObject({ session_id: 'recovered-runtime' })
+      expect(calls[1][1]).not.toHaveProperty('input_provenance')
+      expect(wire.updatedSessions).toContain('recovered-runtime')
+    }
+    expect(wire.state().messages[1]).toMatchObject({ id: 'later-equal-user', rowId: undefined })
+    expect(wire.state().messages[0].id).not.toBe('later-equal-user')
+  })
+
+  it('does not promote generated external composer requests', async () => {
+    const wire = renderWireSubmit()
+    renderSubmitHook({ submit: wire.submit })
+    act(() => {
+      requestComposerSubmit('generated instruction', { target: 'main' })
+    })
+    await waitFor(() => expect(wire.requestGateway).toHaveBeenCalled())
+    expect(wire.requestGateway.mock.calls[0][0]).toBe('prompt.submit')
+    expect(wire.requestGateway.mock.calls[0][1]).not.toHaveProperty('input_provenance')
+  })
+
+  it('routes a hidden widget intent through the external composer producer without evidence', async () => {
+    const wire = renderWireSubmit()
+    renderSubmitHook({ submit: wire.submit })
+    act(() => {
+      requestComposerSubmit('widget intent', { target: 'main', displayKind: 'hidden' })
+    })
+    await waitFor(() => expect(wire.requestGateway).toHaveBeenCalled())
+    expect(wire.requestGateway.mock.calls[0][1]).toMatchObject({ text: 'widget intent', display_kind: 'hidden' })
+    expect(wire.requestGateway.mock.calls[0][1]).not.toHaveProperty('input_provenance')
+  })
+
+  it('drains a real queued entry into prompt.submit without composer evidence', async () => {
+    const wire = renderWireSubmit()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    const entry = enqueueQueuedPrompt('stored-session', { text: 'queued instruction', attachments: [] })!
+    const queue = renderHook(() =>
+      useComposerQueue({
+        activeQueueSessionKey: 'stored-session',
+        attachments: [],
+        busy: false,
+        clearDraft: vi.fn(),
+        draftRef: { current: '' },
+        focusInput: vi.fn(),
+        loadIntoComposer: vi.fn(),
+        onCancel: vi.fn(),
+        onSteer: undefined,
+        onSubmit: wire.submit,
+        queueEditRef: { current: null },
+        queueSessionKey: 'stored-session',
+        sessionId: 'runtime-session'
+      })
+    )
+    try {
+      await act(async () => {
+        await queue.result.current.sendQueuedNow(entry.id)
+      })
+      expect(wire.requestGateway).toHaveBeenCalledWith(
+        'prompt.submit',
+        expect.objectContaining({ queued: true, text: 'queued instruction' }),
+        expect.any(Number)
+      )
+      expect(wire.requestGateway.mock.calls[0][1]).not.toHaveProperty('input_provenance')
+    } finally {
+      queue.unmount()
+      $queuedPromptsBySession.set({})
+      $parkedQueueSessions.set({})
+    }
+  })
+
+  it.each([
+    ['widget', { displayText: 'Widget action' }],
+    ['hidden', { displayKind: 'hidden' }],
+    ['queue', { fromQueue: true }]
+  ] satisfies [string, SubmitTextOptions][])('strips composer evidence from %s submissions', async (_kind, options) => {
+    const wire = renderWireSubmit()
+    const composer = renderSubmitHook({
+      text: 'human text',
+      submit: (text, evidence) => wire.submit(text, { ...evidence, ...options })
+    })
+    act(() => composer.hook.result.current.submitDraft())
+    await waitFor(() => expect(wire.requestGateway).toHaveBeenCalled())
+    expect(wire.requestGateway.mock.calls[0][1]).not.toHaveProperty('input_provenance')
+  })
+
+  it('omits evidence on a busy retry after a deliberate composer send', async () => {
+    const wire = renderWireSubmit()
+    wire.requestGateway.mockRejectedValueOnce(new Error('session busy'))
+    const composer = renderSubmitHook({ text: 'human text', submit: wire.submit })
+    act(() => composer.hook.result.current.submitDraft())
+    await waitFor(() => expect(wire.requestGateway).toHaveBeenCalledTimes(2), { timeout: 5000 })
+    expect(wire.requestGateway.mock.calls[0][1]).toHaveProperty('input_provenance.raw_text', 'human text')
+    expect(wire.requestGateway.mock.calls[1][1]).not.toHaveProperty('input_provenance')
+  })
+
+  it('omits evidence when retrying a composer send on a recovered runtime', async () => {
+    const wire = renderWireSubmit()
+    registerRecoveredRuntime('stored-session', 'recovered-runtime')
+    wire.requestGateway.mockRejectedValueOnce(new Error('session not found'))
+    const composer = renderSubmitHook({ text: 'human text', submit: wire.submit })
+    act(() => composer.hook.result.current.submitDraft())
+    await waitFor(() => expect(wire.requestGateway).toHaveBeenCalledTimes(2))
+    expect(wire.requestGateway.mock.calls[0][1]).toHaveProperty('input_provenance.raw_text', 'human text')
+    expect(wire.requestGateway.mock.calls[1][1]).toMatchObject({ session_id: 'recovered-runtime' })
+    expect(wire.requestGateway.mock.calls[1][1]).not.toHaveProperty('input_provenance')
+  })
+
+  it('defaults helper sends to no evidence', async () => {
+    const wire = renderWireSubmit()
+    await act(async () => {
+      expect(await wire.submit('delegated task')).toBe(true)
+    })
+    expect(wire.requestGateway.mock.calls[0][1]).not.toHaveProperty('input_provenance')
+  })
+})
 
 describe('useComposerSubmit external request routing', () => {
   afterEach(() => {
@@ -451,6 +662,19 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 
+  it('captures the raw composer before reference expansion', async () => {
+    const raw = '  inspect @apps/desktop/  '
+    const { hook, onSubmit } = renderSubmitHook({ text: raw })
+    act(() => hook.result.current.submitDraft())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        inputProvenance: { kind: 'desktop_composer', raw_text: raw }
+      })
+    )
+  })
+
   it('submits a normal turn while idle', async () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({ text: 'ordinary question' })
 
@@ -461,6 +685,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('ordinary question', {
         attachments: [],
+        inputProvenance: { kind: 'desktop_composer', raw_text: 'ordinary question' },
         composerScope: 'stored-session'
       })
     )

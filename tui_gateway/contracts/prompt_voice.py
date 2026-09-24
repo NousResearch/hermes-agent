@@ -33,6 +33,9 @@ class PromptSubmitParams(SessionParams):
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
+    # Optional, untrusted JSON evidence. Malformed evidence is discarded by Desktop admission;
+    # it must not invalidate an otherwise valid submitted message.
+    input_provenance: JsonValue | None = None
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
     # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.

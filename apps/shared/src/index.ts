@@ -96,6 +96,7 @@ export {
   JsonRpcGatewayClient,
   type WebSocketLike
 } from './json-rpc-gateway'
+export type { ComposerInputProvenance } from './prompt-provenance'
 export { modelSearchText } from './model-search-text'
 export {
   DEFAULT_REASONING_EFFORT,

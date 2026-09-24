@@ -156,7 +156,8 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tools.bot_desktop import runtime as _bd_runtime
     try:
-        if _bd_runtime.rfb_socket_path() is None:
+        # The bridge dials either the host RFB socket or the sandbox relay; neither exists before start.
+        if _bd_runtime.rfb_socket_path() is None and not _bd_runtime.sandbox_screen_running():
             return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
         viewer_id = _mint_viewer_id(str(params.get("viewer_id") or "").strip())
         ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop",
@@ -176,6 +177,10 @@ def _(rid, params: dict) -> dict:
     from tools.bot_desktop import install as _bd_install, runtime as _bd_runtime
     if not _bd_runtime.is_supported_host():
         return _err(rid, _DISPLAY_ERR, "Bot Desktop runs on Linux gateway hosts only")
+    if _bd_runtime.in_sandbox():
+        return _err(rid, _DISPLAY_ERR, "this profile's screen lives inside the terminal backend's sandbox; give that "
+                                       "sandbox an image with the desktop stack (nousresearch/hermes-sandbox:desktop) "
+                                       "instead of installing on the gateway host")
     if _bd_runtime.install_command() is None:
         return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
     profile_key = hermes_home_key()

@@ -387,6 +387,7 @@ type BotsMessages = {
     autoOpenOffToast: (name: string) => string
     stoppedTitle: string
     stoppedBody: string
+    placementSandbox: (backend: string) => string
     start: string
     attaching: string
     streamLost: string
@@ -815,6 +816,7 @@ const en: BotsMessages = {
     autoOpenOffToast: name => `${name}’s Screen stays closed until you open it`,
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
+    placementSandbox: backend => `Screen runs inside the ${backend} sandbox, with the terminal`,
     start: 'Start screen',
     attaching: 'Connecting to the screen\u2026',
     streamLost: 'Screen stream ended',
@@ -1243,6 +1245,7 @@ const ja: BotsMessages = {
     autoOpenOffToast: name => `${name} の Screen は手動で開くまで閉じたままです`,
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
+    placementSandbox: backend => `画面は ${backend} サンドボックス内（ターミナルと同じ場所）で動作します`,
     start: '画面を起動',
     attaching: '画面に接続中…',
     streamLost: '画面ストリームが終了しました',
@@ -1656,6 +1659,7 @@ const zh: BotsMessages = {
     autoOpenOffToast: name => `${name} 的屏幕将保持关闭，直到你手动打开`,
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
+    placementSandbox: backend => `屏幕运行在 ${backend} 沙箱内，与终端同处`,
     start: '启动屏幕',
     attaching: '正在连接屏幕…',
     streamLost: '屏幕流已结束',
@@ -2069,6 +2073,7 @@ const zhHant: BotsMessages = {
     autoOpenOffToast: name => `${name} 的螢幕將保持關閉，直到你手動開啟`,
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
+    placementSandbox: backend => `畫面在 ${backend} 沙箱內執行，與終端同處`,
     start: '啟動螢幕',
     attaching: '正在連線至螢幕…',
     streamLost: '螢幕串流已結束',

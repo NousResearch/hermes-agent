@@ -1146,6 +1146,7 @@ export interface DisplayStatus {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
   lease: DisplayLease
   profile_key: string
 }
@@ -1183,6 +1184,7 @@ export interface DisplayStopResult {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
   lease: DisplayLease
   profile_key: string
   stopped: boolean
@@ -1206,6 +1208,7 @@ export interface DisplayObserveResult {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
   lease: DisplayLease
   profile_key: string
   ticket: string
@@ -4281,6 +4284,7 @@ export interface DisplayStatusPayload {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
   lease: DisplayLease
   profile_key: string
 }

@@ -563,7 +563,7 @@ Container resources are configurable in `~/.hermes/config.yaml`:
 ```yaml
 terminal:
   backend: docker
-  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_image: "nousresearch/hermes-sandbox:desktop"
   docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
   container_cpu: 1        # CPU cores
   container_memory: 5120  # MB (default 5GB)

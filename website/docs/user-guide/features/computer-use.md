@@ -39,6 +39,19 @@ For the underlying contract — *why* background mode matters, the
 no-foreground invariant, click-dispatch internals — see
 **[cua.ai/docs/explanation/the-no-foreground-contract](https://cua.ai/docs/explanation/the-no-foreground-contract)**.
 
+## Which machine it drives
+
+`computer_use` acts on the same machine the bot's screen lives on, never on
+the machine running Hermes Desktop. On a gateway with `terminal.backend:
+local` that is the gateway host. With a sandboxed terminal (`docker`, `ssh`,
+`singularity`) the driver runs **inside the sandbox** on the sandbox's own
+display, so it can only ever touch what the terminal can; the sandbox image
+must carry `cua-driver` (`nousresearch/hermes-sandbox:desktop` does). Modal,
+Daytona and Vercel sandboxes cannot host a display yet, so with those
+backends `computer_use` refuses unless `bot_desktop.placement: gateway` opts
+into driving the host. Details: [Bot Screen → Where the screen
+runs](./bot-screen.md#where-the-screen-runs).
+
 ## Enabling
 
 **Fresh installs already have the driver.** The Hermes installer

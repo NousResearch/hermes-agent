@@ -631,6 +631,24 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
+def _migrate_to_47(results: Dict[str, Any], quiet: bool) -> None:
+    # 46 → 47: the container sandbox default gains a display stack (nousresearch/hermes-sandbox:
+    # desktop) so Bot Screen / computer_use / the browser run inside the sandbox. Only a saved
+    # value still equal to the OLD default moves; any image the user pinned themselves stays.
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
+    for key, old, new in (
+        ("docker_image", LEGACY_SANDBOX_IMAGE, DEFAULT_SANDBOX_IMAGE),
+        ("modal_image", LEGACY_SANDBOX_IMAGE, DEFAULT_SANDBOX_IMAGE),
+        ("daytona_image", LEGACY_SANDBOX_IMAGE, DEFAULT_SANDBOX_IMAGE),
+        ("singularity_image", f"docker://{LEGACY_SANDBOX_IMAGE}", f"docker://{DEFAULT_SANDBOX_IMAGE}"),
+    ):
+        _rewrite_stale_default(
+            section="terminal", key=key, old=old, new=new,
+            added=f"terminal.{key} → {new}",
+            message=f"  ✓ terminal.{key}: sandbox image now {new} (Bot Screen inside the sandbox)",
+        )(results, quiet)
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -754,6 +772,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
     (46, _migrate_to_46),
+    # 46 → 47: stale default sandbox image → nousresearch/hermes-sandbox:desktop (see _migrate_to_47).
+    (47, _migrate_to_47),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

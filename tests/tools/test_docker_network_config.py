@@ -63,7 +63,7 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
 
 
 def _reuse_guard_harness(
-    monkeypatch, *, existing_mode: str, network: bool, extra_args=None
+    monkeypatch, *, existing_mode: str, network: bool, extra_args=None, existing_image: str = "python:3.11"
 ):
     """Drive DockerEnvironment through the cross-process reuse path with a
     fake existing container whose NetworkMode is *existing_mode*.
@@ -86,7 +86,8 @@ def _reuse_guard_harness(
             # missing label as "<no value>".
             Result.stdout = "existing-container-id\trunning\t<no value>\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
-            Result.stdout = f"{existing_mode}\n"
+            # Two probes share `inspect`: image identity (must match for reuse) and network mode.
+            Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
         elif len(cmd) > 1 and cmd[1] == "run":
             Result.stdout = "fresh-container-id\n"
         return Result()
@@ -129,9 +130,18 @@ def test_reuse_skips_inspect_when_network_enabled(monkeypatch):
 
     # Default-network config never churns containers, even air-gapped ones
     # (operators may have created them via docker_extra_args).
-    assert not any(cmd[1] == "inspect" for cmd in commands)
+    assert not any(cmd[1] == "inspect" and ".HostConfig.NetworkMode" in cmd[3] for cmd in commands)
     assert not any(cmd[1] == "rm" for cmd in commands)
     assert not any(cmd[1] == "run" for cmd in commands)
+
+
+def test_reuse_recreates_container_built_from_another_image(monkeypatch):
+    """docker_image changed (a user edit or a default flip): the old container is not this
+    config's sandbox and must be replaced, or the new image never takes effect."""
+    commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True, existing_image="old/image:1")
+
+    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), "container from another image must be removed"
+    assert any(len(cmd) > 2 and cmd[1:3] == ["run", "-d"] for cmd in commands)
 
 
 def test_extra_args_network_none_emits_flag_once(monkeypatch):

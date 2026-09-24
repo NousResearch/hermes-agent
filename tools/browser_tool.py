@@ -1212,11 +1212,19 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
         result = _lp._annotate_lightpanda_fallback(
             {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
     else:
-        screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
+        # In the sandbox the CLI writes to ITS filesystem; the file is fetched back below.
+        remote_path = _session.sandbox_screenshot_path(screenshot_path)
+        screenshot_args = (["--annotate"] if annotate else []) + ["--full", remote_path or str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command
         # doesn't trigger a redundant LP fallback.
         result = _session._run_browser_command(effective_task_id, "screenshot", screenshot_args,
                                       _engine_override="auto" if lp_prerouted else None)
+        if remote_path and result.get("success"):
+            try:
+                _session.fetch_sandbox_file(str((result.get("data") or {}).get("path") or remote_path), screenshot_path)
+                result.setdefault("data", {})["path"] = str(screenshot_path)
+            except Exception as exc:  # noqa: BLE001 — reported as the missing-file error below
+                logger.warning("could not fetch the sandbox screenshot %s: %s", remote_path, exc)
     if not result.get("success"):
         return result, screenshot_path, _json_with_fallback(_err(
             f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}"

@@ -14,7 +14,7 @@ from hermes_cli import nous_subscription
 
 logger = logging.getLogger("hermes_cli.setup")
 
-_SANDBOX_IMAGE = "nikolaik/python-nodejs:python3.11-nodejs20"
+from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as _SANDBOX_IMAGE
 _RUN_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 

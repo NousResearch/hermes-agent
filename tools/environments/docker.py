@@ -757,6 +757,21 @@ class DockerEnvironment(BaseEnvironment):
         if existing is None:
             return False
         container_id, state = existing
+        # A container built from another image is not this config's sandbox: the user (or a
+        # default flip) changed docker_image, and reusing the old one would silently pin the
+        # previous image forever (Bot Screen then reports a missing desktop stack the config
+        # says it has). Recreate; the image is immutable after creation.
+        actual_image = self._container_image(container_id)
+        if actual_image is not None and actual_image != self._image:
+            logger.warning(
+                "Existing container %s runs image %s but docker_image is %s — removing it and "
+                "starting fresh (task=%s, profile=%s).",
+                container_id[:12], actual_image, self._image, task_label, profile_name)
+            try:
+                run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
+            return False
         if not network:
             actual_mode = self._container_network_mode(container_id)
             if actual_mode != "none":
@@ -996,6 +1011,15 @@ class DockerEnvironment(BaseEnvironment):
             return False  # TimeoutExpired, missing binary; transient, retried next spawn
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok or False
+
+    def _container_image(self, container_id: str) -> Optional[str]:
+        """The image reference a container was created from (``Config.Image``: the tag as given
+        to ``docker run``, so it compares directly with ``docker_image``), or ``None`` when
+        inspection fails (callers then keep the container: a failed probe must not churn)."""
+        result = _docker_query(
+            [self._docker_exe, "inspect", "--format", "{{.Config.Image}}", container_id], timeout=10,
+            fail="docker inspect Image failed: %s", nonzero="docker inspect Image returned %d: %s")
+        return (result.stdout.strip() or None) if result is not None else None
 
     def _container_network_mode(self, container_id: str) -> Optional[str]:
         """``HostConfig.NetworkMode`` of a container, or ``None`` when inspection fails (callers

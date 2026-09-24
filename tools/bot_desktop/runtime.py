@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from hermes_constants import get_hermes_home
+from tools.bot_desktop import placement
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ class DesktopStatus:
     blocker: Optional[str] = None  # why start() would refuse right now (memory); None = may start
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
+    placement: str = "gateway"  # "gateway" | "terminal:<backend>" — where Xvnc runs
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -421,7 +423,7 @@ def stop_if_idle() -> bool:
     """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
     it was stopped."""
     limit = idle_stop_seconds()
-    if limit <= 0 or _launcher_pid() is None:
+    if limit <= 0 or not is_running():
         return False
     idle = idle_seconds()
     if idle is None or idle < limit:
@@ -434,7 +436,14 @@ def stop_if_idle() -> bool:
 
 
 def published_env() -> Dict[str, str]:
-    """Variables the launcher wrote once Xfce's private bus existed; empty when the desktop is down."""
+    """Variables the launcher wrote once Xfce's private bus existed; empty when the desktop is down.
+
+    Pure file reads on the common path: this is called from every browser / cua-driver env builder, so it
+    must not load config (that initializes HERMES_HOME). A sandbox-hosted screen leaves a host-side marker at
+    start; only its presence routes to the sandbox probe."""
+    from tools.bot_desktop import sandbox_host
+    if sandbox_host._read_marker():
+        return _sandbox_published_env()
     if _launcher_pid() is None:
         return {}
     raw = _read(state_dir() / "env")
@@ -449,8 +458,46 @@ def published_env() -> Dict[str, str]:
 
 
 def rfb_socket_path() -> Optional[Path]:
+    """Host path of the RFB socket; None when down OR when the screen lives in a sandbox (use
+    :func:`open_rfb_stream` there: the socket is not on this filesystem)."""
+    from tools.bot_desktop import sandbox_host
+    if sandbox_host._read_marker():
+        return None
     sock = state_dir() / "rfb.sock"
     return sock if _launcher_pid() is not None and sock.exists() else None
+
+
+def in_sandbox() -> bool:
+    """True when this profile's screen is placed inside the terminal backend (policy; reads config)."""
+    return placement.resolve().where == placement.TERMINAL
+
+
+def sandbox_screen_running() -> bool:
+    """True when a sandbox-hosted screen is UP for this profile: the start marker exists AND the terminal
+    environment it was started in is still registered in this process. No config read, no docker call,
+    so the browser and CUA can ask on every command. A marker whose sandbox is gone is stale (the
+    container was removed out from under us): drop it, so the next start rebuilds rather than the
+    browser exec-ing into a dead container."""
+    from tools.bot_desktop import sandbox_host
+    if not sandbox_host._read_marker():
+        return False
+    if _sandbox_env(create=False) is None:
+        sandbox_host._marker().unlink(missing_ok=True)
+        return False
+    return True
+
+
+def is_running() -> bool:
+    return bool(published_env().get("DISPLAY"))
+
+
+def open_rfb_stream() -> "subprocess.Popen":
+    """Popen whose stdin/stdout carry RFB bytes for a sandbox-hosted screen (``in_sandbox()`` only)."""
+    from tools.bot_desktop import sandbox_host
+    env = _sandbox_env(create=False)
+    if env is None:
+        raise RuntimeError("the sandbox hosting this screen is not running")
+    return sandbox_host.open_rfb_stream(env, _profile_name())
 
 
 def geometry() -> str:
@@ -462,6 +509,9 @@ def geometry() -> str:
 def status(profile: Optional[str] = None) -> DesktopStatus:
     from tools.bot_desktop import browser as _bd_browser
     from tools.bot_desktop import resources
+    where = placement.resolve()
+    if where.where == placement.TERMINAL:
+        return _sandbox_status(profile, where)
     missing: list[str] = missing_binaries() if is_supported_host() else list(REQUIRED_BINARIES)
     pid = _launcher_pid()
     env = published_env()
@@ -486,6 +536,40 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
     )
 
 
+def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
+    """Status of a sandbox-placed screen. Package presence is only known once the sandbox exists; before
+    that the pane shows "installed" with the image hint carried in ``install_command`` so Start can explain."""
+    from tools.bot_desktop import sandbox_host
+    env = _sandbox_env(create=False)
+    missing = sandbox_host.missing_binaries(env) if env is not None else []
+    published = sandbox_host.published_env(env, profile or _profile_name()) if env is not None else {}
+    running = bool(published.get("DISPLAY"))
+    # No install_command: the pane's Install button runs apt on the HOST, which is the wrong machine here.
+    # A sandbox missing the stack is a blocker (shown in place of Start) naming the image that has it.
+    blocker = None
+    if missing:
+        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. Use "
+                   f"{sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
+                   f"plus the desktop stack), or set bot_desktop.placement: gateway.")
+    return DesktopStatus(
+        profile=profile or _profile_name(),
+        supported=True,
+        installed=True,
+        missing=missing,
+        running=running,
+        pid=None,
+        display=published.get("DISPLAY"),
+        socket=None,
+        geometry=geometry(),
+        install_command=None,
+        browser=None,
+        blocker=blocker,
+        memory_available_mb=None,
+        memory_limit_mb=None,
+        placement=f"{placement.TERMINAL}:{where.backend}",
+    )
+
+
 def _profile_name() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -504,11 +588,20 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
 
+    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/singularity;
+    ``sandbox_host``), or on the gateway host (the rest of this function). A sandbox backend that cannot host
+    a screen refuses rather than silently falling back to the host beside it.
+
     Two locks: the per-profile ``start.lock``, held from the running-check to the launcher's publish so two
     start() calls for one profile spawn one launcher (the loser sees it running), and the host-wide
     display-allocation lock, held only until this Xvnc has written ``/tmp/.X<n>-lock`` (a second profile
     picking the same number before that would fail and its stale-lock cleanup could remove our socket).
     Holding it for the whole Xfce bring-up serialized every profile's start behind one desktop launch."""
+    where = placement.resolve()
+    if where.where == placement.REFUSED:
+        raise RuntimeError(where.reason)
+    if where.where == placement.TERMINAL:
+        return _start_in_sandbox(wait_seconds)
     if not is_supported_host():
         raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
     missing = missing_binaries()
@@ -608,9 +701,46 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         raise RuntimeError(f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
 
 
+def _sandbox_env(*, create: bool):
+    """The terminal environment hosting this profile's screen, or None. ``create=False`` for status probes
+    (a status call must never build a container)."""
+    return placement.terminal_environment(create=create)
+
+
+def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
+    from tools.bot_desktop import sandbox_host
+    env = _sandbox_env(create=True)
+    if env is None:
+        raise RuntimeError("the terminal backend's sandbox could not be started, so there is nowhere to put the screen")
+    sd = state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    os.chmod(sd, 0o700)
+    with _flocked(sd / "start.lock"):
+        published = sandbox_host.start(env, _profile_name(), geometry=geometry(), wait_seconds=max(wait_seconds, 20.0))
+    (sd / "env").write_text("".join(f"{k}={v}\n" for k, v in published.items()), encoding="utf-8")
+    touch_activity()
+    return status()
+
+
+def _sandbox_published_env() -> Dict[str, str]:
+    """Published env of a sandbox-hosted screen (the caller saw the host-side marker written at start)."""
+    from tools.bot_desktop import sandbox_host
+    env = _sandbox_env(create=False)
+    if env is None:
+        return {}
+    return sandbox_host.published_env(env, _profile_name())
+
+
 def stop() -> bool:
     """Stop this profile's desktop; True when a running launcher (or the X server a dead one left behind)
     was signalled."""
+    if placement.resolve().where == placement.TERMINAL:
+        from tools.bot_desktop import sandbox_host
+        env = _sandbox_env(create=False)
+        stopped = sandbox_host.stop(env, _profile_name()) if env is not None else False
+        for name in ("env", "activity"):
+            (state_dir() / name).unlink(missing_ok=True)
+        return stopped
     if not is_supported_host():
         return False
     sd = state_dir()

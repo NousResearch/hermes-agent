@@ -223,13 +223,13 @@ class _CuaDriverSession:
         self._startup_phase = "binary-check"
         try:
             driver_cmd = _driver.resolve_cua_driver_cmd()
-            if not driver_cmd:
+            if not driver_cmd and _cb.sandbox_mcp_invocation() is None:
                 raise RuntimeError(_driver.cua_driver_install_hint())
             self._startup_phase = "manifest-discovery"
             daemon = self._embedded_daemon
             (command, args), child_env = (
                 (daemon.proxy_invocation(), daemon.child_env()) if daemon is not None
-                else (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
+                else _cb.sandbox_mcp_invocation() or (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
             _t_manifest = _time.monotonic()
             # Telemetry policy first (default: disabled), then strip Hermes secrets.
             params = StdioServerParameters(command=command, args=args, env=_sanitize_subprocess_env(child_env))

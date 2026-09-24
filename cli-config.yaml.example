@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 46
+_config_version: 47
 
 # =============================================================================
 # Database Configuration
@@ -444,7 +444,7 @@ terminal:
 #   cwd: "/workspace"  # Path INSIDE the container (default: /)
 #   timeout: 180
 #   lifetime_seconds: 300
-#   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   docker_image: "nousresearch/hermes-sandbox:desktop"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
 #   # Optional: run the container as your host user's uid:gid so files written
 #   # into bind-mounted dirs are owned by you, not root. Drops SETUID/SETGID
@@ -474,7 +474,7 @@ terminal:
 #   cwd: "/workspace"  # Path INSIDE the container (default: /root)
 #   timeout: 180
 #   lifetime_seconds: 300
-#   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
+#   singularity_image: "docker://nousresearch/hermes-sandbox:desktop"
 
 # -----------------------------------------------------------------------------
 # OPTION 5: Modal cloud execution
@@ -486,7 +486,7 @@ terminal:
 #   cwd: "/workspace"  # Path INSIDE the sandbox (default: /root)
 #   timeout: 180
 #   lifetime_seconds: 300
-#   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   modal_image: "nousresearch/hermes-sandbox:desktop"
 
 # -----------------------------------------------------------------------------
 # OPTION 6: Daytona cloud execution
@@ -499,7 +499,7 @@ terminal:
 #   cwd: "~"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   daytona_image: "nousresearch/hermes-sandbox:desktop"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #

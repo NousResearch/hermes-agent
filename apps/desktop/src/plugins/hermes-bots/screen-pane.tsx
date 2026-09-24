@@ -403,6 +403,13 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             {status.display} · {status.geometry}
           </span>
         ) : null}
+        {status?.placement?.startsWith('terminal:') ? (
+          // Where the desktop lives matters for what a takeover can reach: inside the terminal's sandbox,
+          // not on the gateway host.
+          <span className="rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-muted-foreground">
+            {t.screen.placementSandbox(status.placement.slice('terminal:'.length))}
+          </span>
+        ) : null}
         <span className="grow" />
         {lease?.holder === 'human' && lease.reason ? (
           // Why control was taken stays readable while the human acts.

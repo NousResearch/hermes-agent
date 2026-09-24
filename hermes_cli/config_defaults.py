@@ -5,6 +5,13 @@ docs of config.yaml.
 """
 
 
+#: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
+#: user pins one. LEGACY_SANDBOX_IMAGE is what it was before the desktop stack; the config
+#: migration moves saved configs that still hold it, never a user's own pin.
+DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
+LEGACY_SANDBOX_IMAGE = "nikolaik/python-nodejs:python3.11-nodejs20"
+
+
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
 
@@ -325,15 +332,18 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # The default sandbox for every container backend: the nikolaik/python-nodejs base
+        # (Python 3.13 / Node 26) plus a display stack, so Bot Screen, computer_use and the
+        # bot's browser run INSIDE the sandbox and the pane can watch them (see bot_desktop).
+        "docker_image": DEFAULT_SANDBOX_IMAGE,
         "docker_forward_env": [],
         # Exact key-value env pairs set inside Docker containers (unlike docker_forward_env, which
         # reads host values) — useful under systemd without the user's shell env. Example:
         # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "singularity_image": f"docker://{DEFAULT_SANDBOX_IMAGE}",
+        "modal_image": DEFAULT_SANDBOX_IMAGE,
+        "daytona_image": DEFAULT_SANDBOX_IMAGE,
         "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
@@ -2487,6 +2497,16 @@ DEFAULT_CONFIG = {
         # long; it restarts on the next use. Idle Xvnc + Xfce hold ~220 MB, an abandoned browser far more.
         # 0 keeps screens up until stopped.
         "idle_stop_minutes": 30,
+        # Where the screen (and with it computer_use and the bot's browser) runs.
+        #   auto      follow the terminal backend: inside the docker / ssh / singularity sandbox when one is
+        #             configured, on the gateway host when terminal.backend is local. A sandbox backend that
+        #             cannot host a screen (modal, daytona, vercel) REFUSES rather than quietly running the
+        #             desktop on the host beside the sandbox you chose for the agent.
+        #   terminal  always inside the terminal backend (error when it cannot host one).
+        #   gateway   always on the gateway host, even with a sandbox terminal: the agent's screen, browser
+        #             and computer_use then act OUTSIDE the terminal sandbox. Explicit opt-in.
+        # The sandbox image needs the desktop stack: nousresearch/hermes-sandbox:desktop.
+        "placement": "auto",
     },
     "computer_use": {
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
@@ -2649,7 +2669,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 46,  # Config schema version - bump this when adding new required fields
+    "_config_version": 47,  # Config schema version - bump this when adding new required fields
 }
 
 

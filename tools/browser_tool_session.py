@@ -499,6 +499,15 @@ def _recycle_local_session(task_id: str, session_info: Dict[str, Any], task_sock
     _bt._browser_session_backend(task_id).mark_suspect(reason)
 
     session_name = str(session_info.get("session_name") or "")
+    if _browser_in_sandbox():
+        # The daemon lives in the sandbox: no host pid, no host socket. Ask the CLI there to close it, evict the record.
+        _sandbox_close_daemon(session_name)
+        with _bt._cleanup_lock:
+            if _bt._active_sessions.get(task_id) is session_info:
+                _bt._active_sessions.pop(task_id, None)
+                _bt._session_last_activity.pop(task_id, None)
+        _bt._suspect_browser_sessions.pop(task_id, None)
+        return
     daemon_pid = _read_browser_daemon_pid(task_socket_dir, session_name) if session_name else None
     daemon_alive = (
         daemon_pid is not None
@@ -517,6 +526,49 @@ def _recycle_local_session(task_id: str, session_info: Dict[str, Any], task_sock
     # The poisoned entry is gone either way; the flag must not poison a session
     # created later under the same key.
     _bt._suspect_browser_sessions.pop(task_id, None)
+
+
+def _sandbox_close_daemon(session_name: str) -> None:
+    """``agent-browser --session <name> close`` inside the sandbox (best effort; the daemon's own idle timer and
+    the sandbox's lifetime bound it otherwise)."""
+    from tools.bot_desktop import runtime as _bd_runtime, sandbox_host
+    from tools.environments import streams
+    env = _bd_runtime._sandbox_env(create=False)
+    if env is None or not session_name:
+        return
+    try:
+        streams.run_in(env, [_SANDBOX_AGENT_BROWSER, "--session", session_name, "close"],
+                       child_env={"AGENT_BROWSER_SOCKET_DIR": _sandbox_socket_dir(env)}, user=sandbox_host._user_for(env),
+                       timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _bt.logger.debug("sandbox browser close for %s failed: %s", session_name, exc)
+
+
+def _sandbox_socket_dir(env) -> str:
+    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/agent-browser"
+
+
+def sandbox_screenshot_path(host_path: "Path") -> Optional[str]:
+    """Where the sandboxed CLI should write a screenshot (its own tmp), or None on a gateway-hosted browser."""
+    if not _browser_in_sandbox():
+        return None
+    from tools.bot_desktop import runtime as _bd_runtime
+    env = _bd_runtime._sandbox_env(create=False)
+    if env is None:
+        return None
+    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/shots/{host_path.name}"
+
+
+def fetch_sandbox_file(remote_path: str, local_dest: "Path", *, max_bytes: int = 16 * 1024 * 1024) -> bool:
+    """Copy a file the sandboxed browser wrote (a screenshot) to the host; False when not in sandbox mode."""
+    if not _browser_in_sandbox():
+        return False
+    from tools.bot_desktop import runtime as _bd_runtime
+    env = _bd_runtime._sandbox_env(create=False)
+    if env is None:
+        return False
+    env.fetch_file(remote_path, local_dest, max_bytes=max_bytes)
+    return True
 
 
 def _is_recoverable_local_backend_failure(session_info: Dict[str, Any], result: Dict[str, Any]) -> bool:
@@ -574,9 +626,65 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
     return parsed
 
 
+_SANDBOX_AGENT_BROWSER = "agent-browser"  # the CLI baked into nousresearch/hermes-sandbox:desktop
+_SANDBOX_ENV_KEYS = ("AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_IDLE_TIMEOUT_MS", "AGENT_BROWSER_ARGS",
+                     "AGENT_BROWSER_PROFILE", "AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_HEADED",
+                     "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "ANONYMIZED_TELEMETRY", "TMPDIR")
+
+
+def _browser_in_sandbox() -> bool:
+    """The bot's browser runs INSIDE the terminal backend when its screen is placed there: same Chromium a
+    human takes over in the pane, same profile, and the host is never touched by a page the model chose."""
+    from tools.bot_desktop import runtime as _bd_runtime
+    return _bd_runtime.sandbox_screen_running()
+
+
+def _sandbox_wrap(cmd_parts: List[str], browser_env: Dict[str, str], task_socket_dir: str) -> "tuple[List[str], Dict[str, str]]":
+    """Rewrite one agent-browser invocation to run inside the sandbox: exec prefix + the CLI by name, with the
+    browser-relevant variables exported there (the daemon's socket dir mirrors the host path so the host-side
+    liveness probes keep their shape) and a screen-published DISPLAY. Identity on a gateway-hosted screen."""
+    if not _browser_in_sandbox():
+        return cmd_parts, browser_env
+    from tools.bot_desktop import runtime as _bd_runtime, sandbox_host
+    from tools.environments import streams
+    env = _bd_runtime._sandbox_env(create=True)
+    if env is None:
+        raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run the browser")
+    _bd_runtime.ensure_started_for_tool()
+    published = _bd_runtime.published_env()
+    if not published.get("DISPLAY"):
+        # The sandbox died under a live screen (container removed, ssh host rebooted). Fail here rather than
+        # let a DISPLAY-less agent-browser run headless inside a dead sandbox or, worse, fall back to the host.
+        raise RuntimeError("the screen inside the terminal backend's sandbox is gone; start it again")
+    remote_env = {k: v for k, v in browser_env.items() if k in _SANDBOX_ENV_KEYS}
+    remote_env.update(published)
+    remote_env["AGENT_BROWSER_SOCKET_DIR"] = _sandbox_socket_dir(env)
+    remote_env.pop("AGENT_BROWSER_EXECUTABLE_PATH", None)  # the sandbox image's Playwright Chromium, not a host path
+    remote_env["AGENT_BROWSER_PROFILE"] = f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/browser-profile"
+    remote_env["TMPDIR"] = env.get_temp_dir()
+    if not getattr(env, "_bd_browser_dirs_ready", False):
+        streams.run_in(env, ["mkdir", "-p", _sandbox_socket_dir(env), f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/shots",
+                             remote_env["AGENT_BROWSER_PROFILE"]], user=sandbox_host._user_for(env), timeout=15)
+        env._bd_browser_dirs_ready = True
+    remote_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)  # container: no userns for Chromium's own sandbox
+    prefix = sandbox_host.exec_prefix_for_tools(env)
+    if prefix is None:
+        raise RuntimeError(f"{type(env).__name__} cannot host the browser")
+    # cmd_parts = <agent-browser argv0 (+npx spec)> + backend args + command; keep everything after argv0.
+    tail = cmd_parts[len(_agent_browser_argv(cmd_parts[0])):]
+    wrapped = streams.remote_argv(prefix, [_SANDBOX_AGENT_BROWSER, *tail], env=remote_env)
+    host_env = {"PATH": browser_env.get("PATH", os.environ.get("PATH", "")), "HOME": os.environ.get("HOME", "")}
+    return wrapped, host_env
+
+
 def _browser_command_preflight() -> Dict[str, Any]:
     """Fail fast before spawning (missing CLI, Termux gap, interrupt, no Chromium in local
     mode — else every call hangs for command_timeout). Error result, or ``{"browser_cmd": path}``."""
+    if _browser_in_sandbox():
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return {"success": False, "error": "Interrupted"}
+        return {"browser_cmd": _SANDBOX_AGENT_BROWSER}  # resolved inside the sandbox, not on this host
     try:
         browser_cmd = _install._find_agent_browser()
     except FileNotFoundError as e:
@@ -630,6 +738,7 @@ def _spawn_and_collect(
 
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
+    cmd_parts, browser_env = _sandbox_wrap(cmd_parts, browser_env, task_socket_dir)
     proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command, stdin_payload)
 
     try:

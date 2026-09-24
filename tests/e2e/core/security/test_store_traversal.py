@@ -192,6 +192,8 @@ _DELETE_STEPS: tuple[tuple[str, str, str], ...] = (
     ("control_essential_bare", "hermes-agent", "autonomous-ai-agents/hermes-agent"),
     *((n, name, rel) for n, (name, rel) in DELETES.items()),
     ("control_unpinned_category", "research/free-skill", "research/free-skill"),
+    # bare-name discovery works, so a refused bare pinned/essential delete is the guard, not "not found"
+    ("control_unpinned_bare", "spare-skill", "research/spare-skill"),
 )
 
 
@@ -200,7 +202,7 @@ def deletes(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DeleteRun]:
     root = tmp_path_factory.mktemp("deletes")
     home = root / "home"
     skills = home / ".hermes" / "skills"
-    for rel in ("research/my-skill", "research/free-skill", "autonomous-ai-agents/hermes-agent"):
+    for rel in ("research/my-skill", "research/free-skill", "research/spare-skill", "autonomous-ai-agents/hermes-agent"):
         (skills / rel).mkdir(parents=True)
         (skills / rel / "SKILL.md").write_text(_skill_md(rel.rsplit("/", 1)[1]), encoding="utf-8")
     key = H.canary("sk-delete")
@@ -232,13 +234,14 @@ def test_delete_refuses_pinned_and_essential_by_category(deletes: DeleteRun, sce
     assert deletes.results[scenario].get("success") is False, deletes.results[scenario]
 
 
-@pytest.mark.parametrize("scenario, guard", [("control_pinned_bare", "pinned"), ("control_essential_bare", "essential")])
-def test_control_bare_name_delete_is_refused(deletes: DeleteRun, scenario: str, guard: str) -> None:
+@pytest.mark.parametrize("scenario", ["control_pinned_bare", "control_essential_bare"])
+def test_control_bare_name_delete_is_refused(deletes: DeleteRun, scenario: str) -> None:
     res = deletes.results[scenario]
     assert deletes.survived[scenario], f"{scenario}: the skill was deleted: {res}"
-    assert res.get("success") is False and guard in str(res.get("error", "")).lower(), res
+    assert res.get("success") is False and res.get("error"), res
 
 
-def test_control_unpinned_delete_by_category_succeeds(deletes: DeleteRun) -> None:
-    res = deletes.results["control_unpinned_category"]
-    assert res.get("success") is True and not deletes.survived["control_unpinned_category"], res
+@pytest.mark.parametrize("scenario", ["control_unpinned_category", "control_unpinned_bare"])
+def test_control_unpinned_delete_succeeds(deletes: DeleteRun, scenario: str) -> None:
+    res = deletes.results[scenario]
+    assert res.get("success") is True and not deletes.survived[scenario], res

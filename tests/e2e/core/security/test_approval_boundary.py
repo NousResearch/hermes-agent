@@ -160,7 +160,7 @@ def test_cli_dangerous_variant_blocked_without_approval(cli_deny, variant):
     result = cli_deny["results"][VARIANTS[variant].format(X=variant)]
     if not (victim / "keep.txt").exists():
         raise BoundaryBreach(f"{variant!r} deleted its victim with nobody to approve it; tool result: {result}")
-    if result.get("exit_code") == 0 or "BLOCKED" not in str(result.get("error")):
+    if result.get("exit_code") == 0 or result.get("status") != "blocked":
         raise BoundaryBreach(f"{variant!r}: tool result not marked blocked: {result}")
 
 
@@ -266,7 +266,7 @@ def _pending(chat: Chat, victim: Path, command: str) -> None:
 def _denied(victim: Path, result: Dict[str, Any]) -> None:
     if not (victim / "keep.txt").exists() or result.get("exit_code") == 0:
         raise BoundaryBreach(f"denied command ran: {result}")
-    assert "BLOCKED" in str(result.get("error")), result
+    assert result.get("status") == "blocked", result
 
 
 def test_gateway_approve_once_settles_only_its_own_chat(gateway):

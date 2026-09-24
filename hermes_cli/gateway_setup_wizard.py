@@ -161,7 +161,16 @@ def _platform_status(platform: dict) -> str:
         try:
             if entry.is_connected is not None:
                 from gateway.config import PlatformConfig
-                configured = bool(entry.is_connected(PlatformConfig(enabled=True)))
+                try:
+                    from gateway.config import Platform
+                    platform_config = _gw().load_gateway_config().platforms.get(
+                        Platform(entry.name), PlatformConfig(enabled=True),
+                    )
+                except ValueError:
+                    # Third-party platforms without a core Platform enum entry retain the
+                    # previous transient-config behavior.
+                    platform_config = PlatformConfig(enabled=True)
+                configured = bool(entry.is_connected(platform_config))
             else:
                 configured = bool(entry.check_fn())
         except Exception:

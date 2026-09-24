@@ -40,6 +40,7 @@ class EmptyResponseVerdict:
     turn_exit_reason: Any
     active_system_prompt: Any
     preflight_compression_blocked: bool
+    api_call_count: int
 
 
 def _retry_empty(
@@ -154,6 +155,7 @@ def recover_empty_response(
             action=action, result=result, final_response=final_response,
             turn_exit_reason=_turn_exit_reason, active_system_prompt=active_system_prompt,
             preflight_compression_blocked=_preflight_compression_blocked,
+            api_call_count=api_call_count,
         )
 
     # Partial stream recovery: content streamed before the connection died becomes the
@@ -279,6 +281,10 @@ def recover_empty_response(
             # OUTER loop: `continue` re-runs preflight against the fallback's window;
             # `break` would end the turn without calling the fallback.
             _preflight_compression_blocked = False
+            # The fallback hop is a provider switch, not a model turn: refund the empty
+            # call so a mid-turn fallback doesn't eat the iteration budget (#77305).
+            from agent.turn_context_compaction import _refund_api_call
+            api_call_count = _refund_api_call(agent, api_call_count)
             return _verdict("continue")
 
     _turn_exit_reason = "empty_response_exhausted"

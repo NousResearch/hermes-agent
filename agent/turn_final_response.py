@@ -40,6 +40,7 @@ class FinalResponseVerdict:
     length_continue_retries: Any
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
+    api_call_count: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -70,6 +71,7 @@ def finish_text_response(
             length_continue_retries=length_continue_retries,
             _pending_verification_response=_pending_verification_response,
             _pending_verification_response_previewed=_pending_verification_response_previewed,
+            api_call_count=api_call_count,
             result=result,
         )
 
@@ -119,6 +121,7 @@ def finish_text_response(
         _turn_exit_reason = _ev.turn_exit_reason
         active_system_prompt = _ev.active_system_prompt
         _preflight_compression_blocked = _ev.preflight_compression_blocked
+        api_call_count = _ev.api_call_count
         if _ev.action == "return":
             return _verdict("return", _ev.result)
         if _ev.action == "break":

@@ -272,6 +272,8 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
         if cache_root.resolve() not in file_path.resolve().parents:
             return None
         content = file_path.read_text(encoding="utf-8")
+        if content.strip() in ("", "##") or (entry.get("title") or "").strip().lower().startswith("just a moment"):
+            return None
     except Exception:  # noqa: BLE001 — evicted/pruned file == miss (or no cache dir)
         return None
     logger.info("web_extract cache hit: %s", url)
@@ -284,6 +286,8 @@ def extract_cache_put(
     """Store one successful extraction's full clean text for TTL reuse; pages over the truncate-store
     ceiling are not cached (serving a capped copy back as if whole would silently lose the tail)."""
     if not content or not _cacheable(url):
+        return
+    if content.strip() in ("", "##") or (title or "").strip().lower().startswith("just a moment"):
         return
     try:
         from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS

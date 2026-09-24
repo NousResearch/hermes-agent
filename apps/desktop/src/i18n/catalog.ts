@@ -1,5 +1,8 @@
 import { ar } from './ar'
+import { de } from './de'
 import { en } from './en'
+import { es } from './es'
+import { fr } from './fr'
 import { ja } from './ja'
 import { ko } from './ko'
 import { ru } from './ru'
@@ -14,5 +17,8 @@ export const TRANSLATIONS: Record<Locale, Translations> = {
   ja,
   ko,
   ar,
-  ru
+  ru,
+  fr,
+  de,
+  es
 }

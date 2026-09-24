@@ -28,6 +28,8 @@ A_API_KEY = "launch-api-key-0004"
 B_API_KEY = "secondary-api-key-0005"
 A_BASE_URL = "https://launch.example.invalid/v1"
 B_BASE_URL = "https://secondary.example.invalid/v1"
+A_CODEX_URL = "https://launch.example.invalid/codex"
+B_CODEX_URL = "https://secondary.example.invalid/codex"
 
 
 @pytest.fixture
@@ -37,10 +39,12 @@ def two_homes(tmp_path, monkeypatch):
     b = root / "profiles" / "b"
     b.mkdir(parents=True)
     (root / ".env").write_text(
-        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\nHERMES_BASE_URL={A_BASE_URL}\n",
+        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\nHERMES_BASE_URL={A_BASE_URL}\n"
+        f"HERMES_CODEX_BASE_URL={A_CODEX_URL}\n",
         encoding="utf-8")
     (b / ".env").write_text(
-        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\nHERMES_BASE_URL={B_BASE_URL}\n",
+        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\nHERMES_BASE_URL={B_BASE_URL}\n"
+        f"HERMES_CODEX_BASE_URL={B_CODEX_URL}\n",
         encoding="utf-8")
     for home in (root, b):
         (home / "config.yaml").write_text(
@@ -50,6 +54,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the launch process loaded its own .env
     monkeypatch.setenv("HERMES_API_KEY", A_API_KEY)
     monkeypatch.setenv("HERMES_BASE_URL", A_BASE_URL)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", A_CODEX_URL)
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
@@ -197,6 +202,67 @@ def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, 
     ]
     assert os.environ["A_ONLY_TOKEN"] == A_VAL
     assert "B_ONLY_TOKEN" not in os.environ
+
+
+def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch):
+    """Desktop /review is off-turn; start_review must still see the session's secrets (#117544)."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_constants import get_hermes_home
+    from tui_gateway.transport import StdioTransport
+
+    root, b = two_homes
+    seen = []
+
+    def fake_start_review(agent, snapshot, prompt):
+        seen.append((
+            Path(get_hermes_home()),
+            get_secret("A_ONLY_TOKEN"),
+            get_secret("B_ONLY_TOKEN"),
+            get_secret("HERMES_CODEX_BASE_URL"),
+        ))
+        return {"status": "dispatched", "delegation_id": "deleg_x"}
+
+    def invoke(profile_home):
+        sid = f"review-{len(seen)}"
+        session = {
+            "agent": object(),
+            "profile_home": str(profile_home) if profile_home else None,
+            "history": [{"role": "user", "content": "hi"}],
+            "history_lock": threading.Lock(),
+            "running": False,
+            "session_key": sid,
+            "cwd": "",
+            "source": "desktop",
+            "transport": StdioTransport(lambda: None, threading.Lock()),
+        }
+        server._sessions[sid] = session
+        token = server.bind_transport(session["transport"])
+        try:
+            with (
+                monkeypatch.context() as ctx,
+            ):
+                ctx.setattr(server, "_session_uses_compute_host", lambda value: False)
+                from unittest.mock import patch
+                with patch("agent.review_engine.start_review", fake_start_review):
+                    out = server._live_slash_command_output(sid, session, "review", "")
+            assert out == "Review started. Results will return here."
+        finally:
+            server.reset_transport(token)
+            server._sessions.pop(sid, None)
+
+    invoke(None)
+    _probe("b")
+    with pytest.raises(UnscopedSecretError):
+        get_secret("HERMES_CODEX_BASE_URL")
+    invoke(b)
+    invoke(None)
+
+    assert seen == [
+        (root, A_VAL, None, A_CODEX_URL),
+        (b, None, B_VAL, B_CODEX_URL),
+        (root, A_VAL, None, A_CODEX_URL),
+    ]
+    assert os.environ["HERMES_CODEX_BASE_URL"] == A_CODEX_URL
 
 
 def test_config_show_keeps_each_profiles_values_after_multiplex_activation(two_homes):

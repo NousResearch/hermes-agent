@@ -541,6 +541,11 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
 #: with whatever was pasted. 20k chars comfortably covers real tables while
 #: staying well under Slack's own 40k message ceiling.
 _SLACK_TABLE_MAX_CHARS = 20_000
+#: One ceiling for every ``attachments[].blocks[]`` projection in a message. Slack allows 20
+#: attachments each with its own blocks, so a per-attachment cap alone still grows 20x; the
+#: top-level ``blocks`` path is capped once (``_serialize_slack_blocks_for_agent``) and this
+#: keeps the unfurl path in the same order of magnitude.
+_SLACK_UNFURL_BLOCKS_MAX_CHARS = 6000
 
 
 def _collect_slack_table_cell_text(value: Any) -> str:
@@ -2357,7 +2362,8 @@ class SlackAdapter(BasePlatformAdapter):
             result = await self.edit_message(
                 chat_id, cached_id, content, finalize=False, metadata=metadata)
             if result.success:
-                if result.message_id:
+                # Only write back if nobody evicted/replaced this key during the await.
+                if result.message_id and self._status_message_ids.get(key) == cached_id:
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             # Edit failed: drop cached ts, fall through to a fresh send.
@@ -4121,6 +4127,7 @@ class SlackAdapter(BasePlatformAdapter):
         own content and is skipped. Dedup matches the rendered section, not the bare URL (which is
         usually already in the user's text while the preview body is not)."""
         att_parts: list[str] = []
+        blocks_budget = _SLACK_UNFURL_BLOCKS_MAX_CHARS
         for att in slack_attachments:
             att_title = att.get("title", "")
             att_url = att.get("title_link", "") or att.get("from_url", "")
@@ -4138,8 +4145,15 @@ class SlackAdapter(BasePlatformAdapter):
                 body = body[:497] + "..."
             # Pasted tables arrive as ``table`` blocks in ``attachments[].blocks[]``, absent from
             # ``text``/``fallback``/files; without this the agent sees only the sentence before them.
-            nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+            # The budget is shared across the whole array: a 20-attachment alert must not project
+            # 20x what a single one does, and a spent budget still leaves the header visible.
+            nested_text = ""
+            if blocks_budget > 0:
+                nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+                if len(nested_text) > blocks_budget:
+                    nested_text = nested_text[:blocks_budget].rstrip() + "\n... [truncated]"
             if nested_text and nested_text not in body:
+                blocks_budget -= len(nested_text)
                 body = f"{body}\n{nested_text}".strip() if body else nested_text
             if header:
                 section = f"{header}\n   {body}" if body else header

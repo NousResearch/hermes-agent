@@ -8,6 +8,7 @@ import { type ChatMessage, preserveLocalAssistantErrors, sealOpenToolParts, toCh
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos } from '@/lib/todos'
+import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
@@ -222,12 +223,31 @@ export async function reconcileTileTranscripts({
     const profileScope = profileScopeForTranscriptSession(tile)
 
     const signatureKey = tileTranscriptSignatureKey(tile)
-    const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
     try {
+      const replay = pendingSessionReplay(runtimeSessionId)
+
+      if (replay && !(await replay)) {
+        continue
+      }
+
+      if (
+        requestId !== requestSequenceRef.current ||
+        !tileStillPresent() ||
+        tileRuntimeOwnsLiveState(runtimeSessionId)
+      ) {
+        continue
+      }
+
+      const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
       // Passive: a hidden tile's refresh must never cold-start its owner
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
+      const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+      if (replayAtReturn && !(await replayAtReturn)) {
+        continue
+      }
 
       const current = $sessionStates.get()[runtimeSessionId]
 
@@ -295,6 +315,12 @@ export async function hydrateStoredSessionTranscript({
   storedProfile: ProfileScope
   updateSessionState: ActiveTranscriptRefreshDeps['updateSessionState']
 }): Promise<void> {
+  const replay = pendingSessionReplay(runtimeSessionId)
+
+  if (replay && !(await replay)) {
+    return
+  }
+
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
   const superseded = () =>
@@ -312,6 +338,11 @@ export async function hydrateStoredSessionTranscript({
 
     try {
       const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
+      const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+      if (replayAtReturn && !(await replayAtReturn)) {
+        return
+      }
 
       // This fallback belongs to the completed turn, not any subsequent turn
       // that ran during the read or retry delay. Its todo restore is stale too.
@@ -378,6 +409,22 @@ export async function reconcileActiveTranscript({
 
   const requestId = requestSequenceRef.current + 1
   requestSequenceRef.current = requestId
+  const replay = pendingSessionReplay(runtimeSessionId)
+
+  if (replay && !(await replay)) {
+    return
+  }
+
+  if (
+    requestId !== requestSequenceRef.current ||
+    busyRef.current ||
+    tileRuntimeOwnsLiveState(runtimeSessionId) ||
+    selectedStoredSessionIdRef.current !== storedSessionId ||
+    activeSessionIdRef.current !== runtimeSessionId
+  ) {
+    return
+  }
+
   // Busy at both endpoints can be false even though an entire turn streamed
   // while HTTP was in flight. Never let that older read replace newer text.
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
@@ -386,6 +433,12 @@ export async function reconcileActiveTranscript({
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+    const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+    if (replayAtReturn && !(await replayAtReturn)) {
+      return
+    }
+
     const current = $sessionStates.get()[runtimeSessionId]
 
     if (

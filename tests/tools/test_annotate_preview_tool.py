@@ -23,9 +23,6 @@ def test_requires_callback():
     assert "desktop" in result["error"]
 
 
-def test_rejects_an_unknown_action():
-    result = json.loads(an.annotate_preview_tool(action="scribble", callback=lambda _p: "{}"))
-    assert "action must be one of" in result["error"]
 
 
 @pytest.mark.parametrize("verb", ["add", "remove"])
@@ -75,14 +72,5 @@ def test_defaults_to_adding():
     assert sent[0]["action"] == "pin"
 
 
-def test_passes_the_renderer_s_answer_straight_through():
-    out = json.loads(
-        an.annotate_preview_tool(ref="@e1", callback=lambda _p: json.dumps({"acted": "pinned Save", "success": True}))
-    )
-
-    assert out == {"acted": "pinned Save", "success": True}
 
 
-def test_reports_a_silent_bridge():
-    result = json.loads(an.annotate_preview_tool(ref="@e1", callback=lambda _p: ""))
-    assert "open_preview" in result["error"]

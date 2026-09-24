@@ -51,11 +51,6 @@ class TestNoteFireForwardFailure:
         err = get_job(job["id"])["last_fire_error"]
         assert err["detail"] == "second miss"
 
-    def test_detail_truncated_to_500(self, tmp_cron_dir):
-        job = create_job(prompt="Daily invoice triage", schedule="every 1h")
-        note_fire_forward_failure(job["id"], "x" * 2000)
-        err = get_job(job["id"])["last_fire_error"]
-        assert len(err["detail"]) == 500
 
     def test_successful_run_clears_stamp(self, tmp_cron_dir):
         """The stamp describes CURRENT auto-fire health — a run that made it

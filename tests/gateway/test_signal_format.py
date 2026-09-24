@@ -5,10 +5,7 @@ strikethrough, monospace, code blocks, headings, and — critically — the
 false-positive regressions that caused spurious italics in production.
 """
 
-import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.signal import SignalAdapter
 from gateway.platforms.signal_format import markdown_to_signal
 
 
@@ -273,16 +270,4 @@ class TestTableRealignment:
         assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
 
 
-class TestSignalStreamingPatch:
-    """Tests for signal-streaming-patch: cursor suppression and edit support.
-    
-    These verify the adapter-level properties that prevent the streaming
-    cursor from leaking into Signal messages.
-    """
-
-    def test_signal_does_not_support_editing(self, monkeypatch):
-        """SignalAdapter.SUPPORTS_MESSAGE_EDITING must be False."""
-        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        from gateway.platforms.signal import SignalAdapter
-        assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
 

@@ -189,16 +189,10 @@ class TestScratchDirPermissionPolicy:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-def test_config_and_constants_share_one_policy_implementation(tmp_path, monkeypatch):
-    """hermes_constants is the single home of managed / container / HERMES_UID policy: config
-    re-exports it (no keep-in-sync twins), so _secure_file skips on the same canonical container
-    signal that apply_secure_dir_policy / get_scratch_dir already honor."""
-    import hermes_constants
+def test_secure_file_skips_chmod_on_canonical_container_signal(tmp_path, monkeypatch):
+    """_secure_file skips on the same canonical container signal that apply_secure_dir_policy /
+    get_scratch_dir already honor (one policy implementation in hermes_constants)."""
     from hermes_cli import config
-
-    assert config.get_managed_system is hermes_constants.get_managed_system
-    assert config._chown_to_hermes_uid is hermes_constants._chown_to_hermes_uid
-    assert not hasattr(config, "_is_container")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):

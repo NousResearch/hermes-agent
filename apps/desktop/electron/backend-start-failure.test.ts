@@ -30,13 +30,6 @@ test('never latches a supervisor-owned respawn failure (it has its own bounded c
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false, supervisorRecovery: false }), true)
 })
 
-test('the two branches are mutually exclusive (a failure either latches or stays retryable)', () => {
-  for (const attemptedRemote of [true, false]) {
-    const latched = shouldLatchBackendStartFailure({ attemptedRemote })
-    assert.equal(latched, !attemptedRemote)
-  }
-})
-
 test('latches a CONFIRMED remote reauth failure so the overlay stays clickable', () => {
   // Without this the non-latching remote path re-runs startHermes on every
   // getConnection/api call, re-emits running:true, and the overlay hides

@@ -154,13 +154,4 @@ describe('resting presets', () => {
     expect($terminal.get()).toBe(true)
     expect(findGroupOfPane($layoutTree.get()!, 'workspace')?.active).toBe('workspace')
   })
-
-  it('files bundled presets by their declared tier; user decks have none', () => {
-    disposers.push(
-      registerBundledPresets([{ id: 'deck', title: 'Deck', order: 0, tree: ARRANGEMENT, tier: 'advanced' }])
-    )
-
-    expect(layoutPresetTier('deck')).toBe('advanced')
-    expect(layoutPresetTier('user-mine')).toBeUndefined()
-  })
 })

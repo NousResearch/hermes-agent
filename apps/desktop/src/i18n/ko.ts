@@ -1,8 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introKo } from './intro-ko'
 
 export const ko = defineLocale({
+  intro: introKo,
   connectors: {
     title: '앱 연결하기',
     connect: '연결',
@@ -457,6 +459,7 @@ export const ko = defineLocale({
     details: '자세히',
     copyDetail: '상세 내용 복사',
     copyDetailFailed: '알림 상세 내용을 복사하지 못했습니다',
+    compressDeferredDone: '컨텍스트 압축 완료',
     backendOutOfDateTitle: '백엔드 버전이 오래됨',
     backendOutOfDateMessage:
       'Hermes 백엔드가 이 데스크톱 빌드보다 오래되어 정상 동작하지 않을 수 있습니다. 업데이트해 버전을 맞추세요.',
@@ -604,6 +607,7 @@ export const ko = defineLocale({
     title: '키보드 단축키',
     subtitle: open => `단축키를 클릭하면 다시 지정할 수 있습니다 · ${open}(으)로 이 패널을 다시 엽니다.`,
     search: '단축키 검색…',
+    clear: '지우기',
     rebind: '다시 지정',
     reset: '기본값으로 되돌리기',
     resetAll: '전체 초기화',
@@ -650,6 +654,7 @@ export const ko = defineLocale({
       'composer.focus': '입력창으로 이동',
       'composer.modelPicker': '모델 선택기 열기',
       'composer.voice': '음성 대화 시작 / 중지',
+      'composer.dictate': '받아쓰기 시작 / 중지',
       'view.toggleSidebar': '세션 사이드바 토글',
       'view.cycleSidebarGrouping': '세션 그룹 방식 순환',
       'view.toggleRightSidebar': '파일 브라우저 토글',
@@ -798,6 +803,7 @@ export const ko = defineLocale({
       keysTools: '도구',
       keysSettings: '설정',
       mcp: 'MCP',
+      sessions: '세션',
       archivedChats: '보관된 대화',
       about: '정보',
       billing: '결제',
@@ -1035,6 +1041,14 @@ export const ko = defineLocale({
       hideThreadTimelineDesc: '각 대화 오른쪽 가장자리의 탐색 막대를 숨깁니다.',
       reasoningCollapsedTitle: '추론 기본 접기',
       reasoningCollapsedDesc: '스트리밍된 추론을 직접 열기 전까지 펼치지 않고 보관합니다.',
+      textDirectionTitle: '텍스트 방향',
+      textDirectionDesc:
+        '대화 메시지와 입력창이 방향을 정하는 방식입니다. 자동은 각 문단의 첫 글자를 따르며, 혼합된 문장이 어긋나 보이면 방향을 직접 고르세요. 코드는 항상 왼쪽에서 오른쪽입니다.',
+      textDirection: {
+        auto: '자동',
+        rtl: '오른쪽에서 왼쪽',
+        ltr: '왼쪽에서 오른쪽'
+      },
       uiScaleTitle: 'UI 배율',
       uiScaleDesc: (percent: number) =>
         `앱 전체의 글자와 컨트롤 크기를 조절합니다. Cmd/Ctrl과 +, -, 0 조합도 동작합니다. 현재: ${percent}%.`,
@@ -1139,8 +1153,6 @@ export const ko = defineLocale({
           '앱 위를 떠다니며 Hermes의 동작에 반응하는 petdex 마스코트를 입양하세요 — 도구가 실행되면 뛰고, 성공하면 기뻐하고, 오류가 나면 시무룩해집니다.',
         restartHint:
           '펫을 쓰려면 앱을 재시작해야 합니다 — 이 기능이 추가되기 전에 실행된 앱입니다. Hermes를 종료했다 다시 연 뒤 여기로 돌아오세요.',
-        on: '켜짐',
-        off: '꺼짐',
         scaleTitle: '크기',
         scaleDesc: '플로팅 마스코트의 크기를 조절합니다. 모든 화면에 즉시 적용됩니다.',
         roamTitle: '돌아다니기',
@@ -1235,7 +1247,6 @@ export const ko = defineLocale({
         maxSnapshots: '체크포인트 한도'
       },
       voice: {
-        recordKey: '음성 단축키',
         maxRecordingSeconds: '최대 녹음 길이',
         autoTts: '응답 음성 출력',
         voiceChatMode: '음성 대화 방식',
@@ -1453,7 +1464,32 @@ export const ko = defineLocale({
     uninstallSection: {
       dangerZone: '위험 구역',
       confirmUninstall: '제거 확인',
-      uninstallHermes: 'Hermes 제거'
+      uninstallHermes: 'Hermes 제거',
+      checkingInstalled: '설치된 항목을 확인하는 중…',
+      chooseHowMuch:
+        '어디까지 제거할지 고르세요. 작업을 마치려면 앱이 종료되며, 설치 프로그램을 다시 열면 언제든 돌아올 수 있습니다.',
+      confirmBody: what => `${what}을(를) 제거합니다. 되돌릴 수 없습니다.`,
+      appLabel: '앱:',
+      couldNotStart: '제거를 시작하지 못했습니다.',
+      uninstalling: '제거하는 중…',
+      yesUninstall: '예, 제거합니다',
+      options: {
+        gui: {
+          title: '대화 GUI만 제거',
+          description: '이 데스크톱 앱만 제거합니다. Hermes 에이전트와 설정, 대화는 그대로 남습니다.',
+          consequence: '데스크톱 대화 GUI(이 앱과 그 데이터)'
+        },
+        lite: {
+          title: 'GUI와 에이전트 제거, 데이터는 유지',
+          description: '앱과 Hermes 에이전트를 제거하되 나중에 다시 설치할 수 있도록 설정, 대화, 비밀 값은 남깁니다.',
+          consequence: '대화 GUI와 Hermes 에이전트(설정, 대화, 비밀 값은 유지)'
+        },
+        full: {
+          title: '전부 제거',
+          description: '앱, 에이전트, 그리고 설정·대화·예약 작업·비밀 값·로그 등 모든 사용자 데이터를 제거합니다.',
+          consequence: '전부 — 대화 GUI, Hermes 에이전트, 그리고 모든 설정, 대화, 비밀 값, 로그'
+        }
+      }
     },
     poolLimits: {
       warmBotBackendsAria: '대기 중인 봇 백엔드',
@@ -1462,42 +1498,45 @@ export const ko = defineLocale({
       backendIdleTimeoutTitle: '백엔드 유휴 제한 시간'
     },
     customEndpoints: {
+      active: '사용 중',
+      apiKeySet: 'API 키 설정됨',
+      use: '사용',
+      editTitle: '엔드포인트 편집',
+      addTitle: '엔드포인트 추가',
+      fields: {
+        name: '이름',
+        providerId: '공급자 ID',
+        endpointUrl: '엔드포인트 URL',
+        defaultModel: '기본 모델',
+        context: '컨텍스트 길이',
+        apiKey: 'API 키',
+        apiKeyNewPlaceholder: '비워 두면 현재 키를 유지합니다',
+        apiKeyPlaceholder: '선택 사항',
+        useNewChats: '새 대화에 사용',
+        discoverModels: '모델 자동 검색'
+      },
+      test: '연결 테스트',
+      save: '저장',
+      newEndpoint: '새 엔드포인트',
+      apiMode: 'API 모드',
+      autoDetect: '자동 감지',
+      couldNotLoad: '사용자 엔드포인트를 불러오지 못했습니다',
+      endpointSaved: '사용자 엔드포인트를 저장했습니다.',
+      saveFailed: '저장 실패',
+      endpointReachable: '엔드포인트 연결을 확인했습니다.',
+      endpointReachableTransport: transport => `${transport} 경로의 엔드포인트 연결을 확인했습니다.`,
+      endpointReachableModels: (reachable, count) => `${reachable} 모델 ${count}개를 찾았습니다.`,
+      endpointValidationFailed: '엔드포인트 검증에 실패했습니다.',
+      validationFailed: '연결 테스트 실패',
+      activationFailed: '엔드포인트를 사용하도록 설정하지 못했습니다',
+      deleteConfirm: name => `“${name}” 엔드포인트를 삭제할까요?`,
+      deleteFailed: '삭제 실패',
       title: '사용자 엔드포인트',
       deleteEndpoint: '엔드포인트 삭제',
       emptyDescription: '아래에 OpenAI 호환 엔드포인트를 추가하세요.',
       emptyTitle: '사용자 엔드포인트 없음',
       namePlaceholder: 'Axet Proxy',
-      contextPlaceholder: '자동',
-      active: '사용 중',
-      apiKeySet: 'API 키 설정됨',
-      use: '사용',
-      editEndpoint: '엔드포인트 편집',
-      addEndpoint: '엔드포인트 추가',
-      newEndpoint: '새 엔드포인트',
-      nameLabel: '이름',
-      providerIdLabel: '공급자 ID',
-      endpointUrlLabel: '엔드포인트 URL',
-      apiModeLabel: 'API 모드',
-      apiModeAutoDetect: '자동 감지',
-      defaultModelLabel: '기본 모델',
-      contextLabel: '컨텍스트 길이',
-      apiKeyLabel: 'API 키',
-      apiKeyPlaceholderExisting: '비워 두면 현재 키를 유지합니다',
-      apiKeyPlaceholderOptional: '선택 사항',
-      useForNewChats: '새 대화에 사용',
-      discoverModels: '모델 자동 검색',
-      test: '연결 테스트',
-      loadFailed: '사용자 엔드포인트를 불러오지 못했습니다',
-      saved: '사용자 엔드포인트를 저장했습니다.',
-      saveFailed: '저장 실패',
-      testFailed: '연결 테스트 실패',
-      activateFailed: '엔드포인트를 사용하도록 설정하지 못했습니다',
-      deleteFailed: '삭제 실패',
-      deleteConfirmTitle: name => `“${name}” 엔드포인트를 삭제할까요?`,
-      reachable: '엔드포인트 연결을 확인했습니다.',
-      reachableWithTransport: transport => `${transport} 경로의 엔드포인트 연결을 확인했습니다.`,
-      foundModels: count => `모델 ${count}개를 찾았습니다.`,
-      validationFailed: '엔드포인트 검증에 실패했습니다.'
+      contextPlaceholder: '자동'
     },
     computerUse: {
       accessibility: '손쉬운 사용',
@@ -1573,6 +1612,12 @@ export const ko = defineLocale({
         '미리보기와 이미지 첨부를 위해 데스크톱이 불러올 로컬 파일의 최대 크기(MB)입니다. 기본값은 16입니다. 원격의 이미지가 아닌 첨부는 별도로 256MB 한도를 씁니다. 너무 크게 잡으면 파일 전체가 메모리에 올라가 앱이 멈추거나 종료될 수 있습니다.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '미리보기 / 이미지 최대 로드 크기(메가바이트)',
+      alwaysExternalLinksTitle: '링크를 항상 외부 브라우저로 열기',
+      alwaysExternalLinksDesc:
+        '클릭한 모든 링크를 앱 내 브라우저 대신 시스템 브라우저에서 엽니다. 마우스 오른쪽 버튼 메뉴의 "앱 내 브라우저에서 열기"는 그대로 동작합니다.',
+      voiceShortcutHintTitle: '음성 녹음 단축키 안내',
+      voiceShortcutHintDesc:
+        '음성 녹음 단축키는 설정 → 키보드 단축키("음성 대화 시작 / 중지")에서 지정합니다. voice.record_key 설정값은 CLI와 TUI에만 적용됩니다.',
       showOptions: '옵션 보기'
     },
     hudModifier: {
@@ -1958,6 +2003,22 @@ export const ko = defineLocale({
       moaPreset: '프리셋',
       moaDescription:
         'Mixture of Agents 공급자 아래에 모델처럼 표시될 이름 붙은 프리셋을 설정합니다. 집계자가 실제로 동작하는 모델입니다 — 도구 루프의 모든 단계를 실행하며, 실행 비용 대부분이 그 공급자에 청구됩니다. 참조 모델은 기본적으로 사용자 턴당 한 번만 의견을 냅니다.',
+      setupProviderFallback: '공급자',
+      setUpProvider: name => `${name} 설정`,
+      staleAuxBefore: (count, names) => `보조 작업 ${count}개(${names})가 여전히 다음에서 실행됩니다: `,
+      staleAuxAfter: '. 기본 모델이 아닙니다.',
+      staleAuxOtherProviders: '다른 공급자',
+      moaEnabled: '사용',
+      moaSetDefault: '기본으로 지정',
+      moaNewPresetPlaceholder: '새 프리셋',
+      moaAddPreset: '프리셋 추가',
+      customModel: '사용자 지정 모델…',
+      customModelPlaceholder: '모델 id',
+      chooseFromList: '목록에서 선택',
+      moaDefault: '기본값:',
+      moaReferenceToggle: (enabled, index) => `참조 ${index} ${enabled ? '끄기' : '켜기'}`,
+      moaReferenceTitle: index => `참조 ${index}`,
+      moaAddReference: '참조 모델 추가',
       moaAggregator: '집계자',
       moaAggregatorBilled: '실제 동작 모델 · 실행 비용 청구 대상',
       moaReferenceHint: '기본적으로 턴당 한 번 의견을 냅니다',
@@ -2091,6 +2152,277 @@ export const ko = defineLocale({
       deleteConfirm: model => `${model}을(를) 디스크에서 삭제할까요?`,
       deleted: model => `${model}을(를) 삭제했습니다.`,
       deleteFailed: '삭제 실패'
+    },
+    billing: {
+      perMonth: amount => `월 ${amount}`,
+      creditsPerMonth: amount => `월 ${amount} 크레딧`,
+      usageLabel: label => `${label} 사용량`,
+      freeTier: {
+        signIn: '로그인',
+        title: 'Nous 무료 등급을 사용 중입니다',
+        message: 'Nous 계정으로 로그인하면 더 많은 모델과 도구를 쓸 수 있습니다.',
+        caption:
+          'nous/welcome에서 실행되며 커넥터가 포함됩니다. 로그인하면 커넥터는 그대로 유지되고, 계정이 필요한 도구와 나머지 모든 모델이 추가됩니다.',
+        name: 'Nous · 무료 등급',
+        footnote: '무료 등급에는 잔액도 결제할 금액도 없습니다. Nous 계정으로 로그인하면 결제와 사용량이 표시됩니다.',
+        plan: '무료 등급',
+        model: '모델',
+        connectors: '커넥터',
+        included: '포함됨'
+      },
+      amountValidation: {
+        reloadTo: '충전 목표액',
+        greaterThanThreshold: '충전 목표액은 기준액보다 커야 합니다.',
+        decimal: label => `${label}: 소수점 두 자리까지의 금액을 입력하세요.`,
+        positive: label => `${label}: 금액은 $0보다 커야 합니다.`,
+        minimum: (label, amount) => `${label}: 최소 ${amount}입니다.`,
+        maximum: (label, amount) => `${label}: 최대 ${amount}입니다.`
+      },
+      stepUp: {
+        openVerification: '인증 페이지 열기',
+        dismiss: '닫기',
+        waiting: '인증 링크를 기다리는 중…',
+        verify: '계속하려면 인증하세요',
+        deniedTitle: '인증이 승인되지 않았습니다',
+        deniedBody: '이 터미널의 원격 지출을 허용하지 않은 채 인증이 끝났습니다.',
+        successTitle: '인증 완료',
+        successBody: '이 터미널의 원격 지출이 허용되었습니다.'
+      },
+      charge: {
+        added: amount => (amount ? `$${amount}을(를) 충전했습니다.` : '크레딧을 충전했습니다.'),
+        failedTitle: '결제 실패',
+        unconfirmedTitle: '결제 결과 미확인',
+        unconfirmedBody: message =>
+          `${message} 마지막 결제 결과가 확인되지 않았습니다 — 재시도 전에 잔액과 내역을 확인하세요.`,
+        checkTitle: '결제를 확인하지 못했습니다',
+        checkBody: '결제를 확인하지 못했습니다.',
+        untrackedTitle: '결제를 추적할 수 없습니다',
+        untrackedBody: '결제 서비스가 요청은 받았지만 결제 id를 반환하지 않았습니다.',
+        timeoutTitle: '5분이 지나도 처리 중입니다',
+        timeoutBody: '결제가 아직 확정될 수 있습니다. 재시도 전에 포털을 확인하세요.',
+        authenticationRequired: '은행이 3DS 인증을 요구합니다. 포털에서 인증을 마쳐야 결제가 완료됩니다.',
+        expired: '카드가 만료되었습니다. 포털에서 갱신하세요.',
+        declined: '카드가 거절되었습니다. 포털에서 다른 카드를 사용하세요.',
+        failedBody: reason => `결제가 처리되지 않았습니다(${reason}).`
+      },
+      title: '결제',
+      preview: '미리보기',
+      summary: {
+        balance: '잔액',
+        plan: '요금제',
+        autoRefill: '자동 충전'
+      },
+      sections: {
+        invoices: '청구서',
+
+        plan: '요금제',
+        paymentAndCredits: '결제 수단과 크레딧',
+        usage: '사용량'
+      },
+      usage: {
+        title: '사용량'
+      },
+      buyCredits: {
+        customAmount: '직접 입력한 크레딧 금액',
+        title: '지금 크레딧 구매',
+        buyButton: '구매',
+        processing: '처리 중… 정산을 확인하고 있습니다',
+        added: amount => `${amount}을(를) 충전했습니다. 잔액을 갱신하는 중입니다.`,
+        retry: '재시도',
+        openPortal: '포털 열기'
+      },
+      plan: {
+        title: '요금제',
+        changePlan: '요금제 변경',
+        viewPlans: '요금제 보기',
+        backAria: '결제로 돌아가기',
+        current: '현재 요금제',
+        scheduled: '예약됨',
+        empty: '지금 변경할 수 있는 요금제가 없습니다.',
+        undo: '취소',
+        undoing: '취소하는 중…',
+        downgrade: '하향',
+        confirmDowngrade: '하향 확인',
+        tryAgain: '재시도',
+        checkingChange: '이 변경을 확인하는 중…',
+        cannotChange: '여기서는 변경할 수 없습니다.',
+        alreadyOn: name => `이미 ${name} 요금제입니다 — 변경할 내용이 없습니다.`,
+        notScheduleable: '여기서는 이 변경을 예약할 수 없습니다.',
+        scheduling: '예약하는 중…',
+        cancel: '취소',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `${targetName}(으)로 변경 — ${effectiveAt}에 적용됩니다. 지금 청구되지 않으며 그때까지 현재 요금제를 유지합니다.${creditsDelta ? ` 월 크레딧 변동: ${creditsDelta}.` : ''}`
+      },
+      autoReload: {
+        threshold: '기준액',
+        thresholdAria: '자동 충전 기준액',
+        reloadTo: '충전 목표액',
+        reloadToAria: '자동 충전 목표액',
+        turnOffConfirm: '자동 충전을 끌까요?',
+        turnOff: '끄기',
+        disable: '비활성화',
+        updated: '자동 충전을 변경했습니다.',
+        turnedOff: '자동 충전을 껐습니다.',
+        manage: '관리',
+        save: '저장',
+        saving: '저장 중…',
+        cancel: '취소'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: 'Nous 계정을 연결하세요',
+            message: 'Nous 계정으로 로그인하면 잔액, 요금제, 사용량을 여기서 볼 수 있습니다.',
+            action: '로그인'
+          },
+          openPortal: '포털 열기 ↗',
+          noCard: {
+            title: '등록된 결제 수단 없음',
+            message: '카드를 등록하기 전까지 크레딧 충전과 자동 충전을 쓸 수 없습니다. 포털에서 등록하세요.',
+            action: '카드 추가 ↗'
+          }
+        },
+        paymentMethod: {
+          title: '결제 수단',
+          description: '충전과 구독 갱신에 쓰는 카드를 관리합니다.',
+          addAction: '결제 수단 추가',
+          updateAction: '변경',
+          provenance: {
+            autoRefill: '자동 충전 카드',
+            customerDefault: '고객 기본 카드',
+            subPin: '구독 카드',
+            suffix: label => ` - ${label}`
+          }
+        },
+        buyCredits: {
+          description: '카드에서 한 번 결제되어 오늘 잔액에 더해집니다.'
+        },
+        autoRefill: {
+          title: '잔액이 낮을 때 충전',
+          genericDescription: '잔액이 기준액 아래로 내려가면 자동으로 채웁니다.',
+          offPill: '꺼짐',
+          enabledPill: '켜짐',
+          notAvailablePill: '—',
+          manageCaption: '자동 충전은 포털에서 관리합니다.',
+          turnOnCaption: '포털에서 자동 충전을 켜세요',
+          chargesDescription: (reloadTo, threshold) =>
+            `잔액이 ${threshold} 아래로 내려가면 자동으로 ${reloadTo}을(를) 결제합니다.`,
+          distinctCardCaption: cardLabel => `자동 충전은 ${cardLabel}에 청구됩니다 — 포털에서 확인하세요`,
+          distinctCardFallback: '다른 카드',
+          reconcileAction: '확인하기 ↗'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: '구독 크레딧',
+            barLabel: '남은 구독 크레딧',
+            captionResets: date => `${date}에 초기화`,
+            valueOf: (remaining, monthly) => `${monthly} 중 ${remaining} 남음`,
+            valueOver: (remaining, monthly, over) => `${monthly} 중 ${remaining} 남음 · ${over} 초과`
+          },
+          topupCredits: {
+            title: '충전 크레딧',
+            caption: '만료되지 않음'
+          },
+          monthlyCap: {
+            title: '월 지출 한도',
+            barLabel: '사용한 월 지출 한도',
+            captionDefault: '기본 상한',
+            captionSpending: '월 원격 지출',
+            valueUsed: (spent, limit) => `${limit} 중 ${spent} 사용`
+          }
+        },
+        planCard: {
+          freeTier: '무료',
+          chooseAction: '선택 ↗',
+          adjustPlanAction: '요금제 조정 ↗',
+          unavailableCaption: '구독 정보를 가져올 수 없습니다. 포털은 그대로 열 수 있습니다.',
+          downgradeCaption: (tierName, when) => `${when}에 ${tierName}(으)로 변경됩니다.`,
+          cancellationCaption: when => `${when}에 해지됩니다.`,
+          renewsCaption: date => `${date}에 갱신`,
+          noSubscriptionCaption: '활성 구독 없음 — 유료 모델은 충전 크레딧에서 차감됩니다.'
+        }
+      },
+      errors: {
+        consentRequired: {
+          title: '카드 확인 필요',
+          message: '포털에서 이 카드의 터미널 결제를 확인하세요'
+        },
+        insufficientScope: {
+          title: '원격 지출 승인 필요',
+          message: '원격 지출 허용이 필요합니다. 충전을 시작해 허용한 뒤 재시도하세요.'
+        },
+        remoteSpendingRevoked: {
+          title: '원격 지출이 중단되었습니다',
+          messageByAdmin: '관리자가 이 터미널의 원격 지출을 중단했습니다.',
+          messageBySelf: '사용자가 이 터미널의 원격 지출을 중단했습니다.'
+        },
+        remoteSpendingReconnect: who => `${who} 이 기기를 다시 승인하려면 설정 → 게이트웨이에서 재연결하세요.`,
+        sessionRevoked: {
+          title: '세션이 로그아웃됨',
+          message: '세션이 로그아웃되었습니다. 설정 → 게이트웨이에서 다시 로그인하세요.'
+        },
+        cliBillingDisabled: {
+          title: '원격 지출이 꺼져 있습니다',
+          message: '이 계정의 원격 지출이 꺼져 있습니다 — 결제 관리자가 포털의 Hermes Agent 페이지에서 켤 수 있습니다.'
+        },
+        roleRequired: {
+          title: '관리자 권한 필요',
+          message: '충전에는 조직 관리자 또는 소유자 권한이 필요합니다. 관리자에게 요청하거나 포털에서 처리하세요.'
+        },
+        idempotencyConflict: {
+          title: '충전을 새로 시작하세요',
+          message: '🔴 해당 결제 키가 다른 금액으로 이미 사용되었습니다. 충전을 새로 시작하세요.'
+        },
+        noPaymentMethod: {
+          title: '저장된 카드 없음',
+          message:
+            '💳 터미널 결제에 쓸 저장된 카드가 아직 없습니다. 포털에서 등록하세요' +
+            '(일회성 크레딧 구매는 재사용 가능한 카드를 저장하지 않습니다).'
+        },
+        orgAccessDenied: {
+          title: '조직 접근 거부됨',
+          message: '이 토큰은 관리 권한이 있는 조직에 연결되어 있지 않습니다'
+        },
+        monthlyCapExceeded: {
+          title: '월 지출 한도 도달',
+          messageReached: '🔴 월 지출 한도에 도달했습니다.',
+          messageHeadroom: remaining => `🔴 월 지출 한도 도달 — $${remaining} 남았습니다.`
+        },
+        rateLimited: {
+          title: '지금은 결제 요청이 너무 많습니다',
+          message: mins =>
+            mins > 0
+              ? `🟡 지금은 결제 요청이 너무 많습니다(약 ${mins}분 뒤 재시도). 결제 실패가 아닙니다.`
+              : '🟡 지금은 결제 요청이 너무 많습니다. 결제 실패가 아닙니다.'
+        },
+        stripeUnavailable: {
+          title: 'Stripe에 문제가 있습니다',
+          message: mins =>
+            mins > 0
+              ? `Stripe에 문제가 있습니다 — 약 ${mins}분 뒤 재시도하세요`
+              : 'Stripe에 문제가 있습니다 — 잠시 후 재시도하세요'
+        },
+        upgradeCapExceeded: {
+          title: '하루 요금제 변경 한도 도달',
+          message: '하루 요금제 변경 한도에 도달했습니다 — 내일 다시 시도하세요'
+        },
+        endpointUnavailable: {
+          title: '결제 엔드포인트를 사용할 수 없음',
+          message: '결제 엔드포인트가 JSON이 아닌 응답을 반환했습니다(이 배포에서는 제공되지 않을 수 있습니다).'
+        },
+        timeout: {
+          title: '결제 요청 시간 초과',
+          message: '결제 요청이 시간 초과되었습니다.'
+        },
+        transport: {
+          title: '결제 연결 실패',
+          message: '결제 요청이 게이트웨이에 닿기 전에 실패했습니다.'
+        },
+        default: {
+          title: '결제 요청 실패',
+          message: '결제 요청이 실패했습니다.'
+        }
+      }
     },
     providers: {
       connectAccount: '계정 연결',
@@ -3336,6 +3668,37 @@ export const ko = defineLocale({
   },
 
   sidebar: {
+    filter: {
+      grouping: '그룹 기준',
+      ordering: '정렬',
+      show: '표시',
+      filters: '필터',
+      status: '상태',
+      pullRequest: '풀 리퀘스트',
+      profile: '프로필',
+      project: '프로젝트',
+      archived: '보관됨',
+      resetToDefaults: '기본값으로 초기화',
+      expandAll: '모두 펼치기',
+      collapseAll: '모두 접기',
+      inboxStyle: '수신함 방식',
+      updated: '수정일',
+      created: '생성일',
+      tokens: '토큰',
+      cost: '비용',
+      manual: '수동',
+      preview: '미리보기',
+      pr: 'PR',
+      needsInput: '입력 필요',
+      working: '작업 중',
+      unread: '읽지 않음',
+      draft: '초안',
+      idle: '대기',
+      open: '열림',
+      merged: '병합됨',
+      closed: '닫힘',
+      noPR: 'PR 없음'
+    },
     gatewayGroups: {
       grouping: '게이트웨이와 프로필',
       rename: '그룹 이름 변경',
@@ -3346,6 +3709,13 @@ export const ko = defineLocale({
       moveDown: '아래로 이동',
       reorder: '그룹 순서 변경',
       actions: '그룹 동작'
+    },
+    storageCorrupt: {
+      title: '세션 데이터베이스가 손상되었습니다',
+      body: profiles =>
+        `Hermes가 ${profiles}의 세션 기록을 전부 읽지 못합니다. 이 목록에서 빠진 대화가 삭제된 것은 아니며, 저장된 파일이 손상된 것입니다.`,
+      action: '이 프로필에서 Hermes를 종료한 뒤, 파일을 수정하지 말고 살펴보거나 스냅샷을 복원하세요:',
+      guide: '복구 안내'
     },
     profileRail: '프로필 레일',
     nav: {
@@ -3587,12 +3957,77 @@ export const ko = defineLocale({
     hotkeys: '단축키',
     helpFooter: '전체 패널 열기 · backspace로 닫기',
     commandDescs: {
-      '/help': '명령과 단축키 전체 목록',
+      '/help': '데스크톱 슬래시 명령 보기',
       '/clear': '새 세션 시작',
-      '/resume': '이전 세션 이어가기',
+      '/resume': '저장된 세션 이어가기',
       '/details': '대화 기록 상세 수준 조절',
       '/copy': '선택 영역 또는 마지막 답변 복사',
-      '/quit': 'hermes 종료'
+      '/quit': 'hermes 종료',
+      '/start': '플랫폼 시작 핑에 답장 없이 응답 처리',
+      '/new': '새 데스크톱 대화 시작',
+      '/topic': 'Telegram DM 토픽 세션 사용 또는 상태 확인',
+      '/save': '현재 대화 기록을 JSON으로 저장',
+      '/retry': '마지막 메시지 재시도(에이전트에 재전송)',
+      '/prompt': '$EDITOR에서 다음 프롬프트를 마크다운으로 작성한 뒤 전송',
+      '/undo': '사용자 턴 N개를 되돌리고 다시 프롬프트(기본 1)',
+      '/title': '현재 세션 이름 변경',
+      '/handoff': '이 세션을 메시징 플랫폼으로 넘기기',
+      '/branch': '최신 메시지를 새 대화로 분기',
+      '/worktree': '격리된 git 워크트리 보기, 목록, 생성, 정리',
+      '/compress': '이 대화의 컨텍스트 압축',
+      '/rollback': '파일 체크포인트 목록 또는 복원(복원해도 직접 수정한 내용은 유지, --all은 무시)',
+      '/export': '프로필(설정, 스킬, 테마)을 공유 가능한 아카이브로 내보내기',
+      '/import': '공유된 프로필 아카이브를 새 프로필로 가져오기',
+      '/stop': '진행 중인 턴과 백그라운드 프로세스 중지',
+      '/pause': "전체 작업 일시 중지(비상 정지). '/pause off'로 재개",
+      '/bg': '별도 백그라운드 세션에서 프롬프트 실행',
+      '/btw': '이 대화를 끊지 않고 곁가지 질문하기',
+      '/agents': '활성 에이전트와 실행 중인 작업 보기',
+      '/journey': '메모리 그래프 열기 — 시간순 스킬과 기억',
+      '/queue': '다음 턴에 쓸 프롬프트를 대기열에 넣거나, 대기 프롬프트를 목록·편집·삭제·이동·비우기',
+      '/steer': '다음 도구 호출 뒤에 메시지를 끼워 넣되 중단하지 않기',
+      '/goal': 'Hermes가 달성할 때까지 여러 턴에 걸쳐 붙드는 목표 설정',
+      '/heartbeat': '유휴 상태일 때 이 세션에 다시 들어오는 반복 프롬프트 설정',
+      '/refine': '지금 이 대화를 검토해 메모리와 스킬에 교훈 저장',
+      '/review': '방금 논의한 작업(PR, 코드, 문서)을 독립 서브에이전트로 검토',
+      '/loop': '이 세션에서 프롬프트를 일정 주기로 다시 실행',
+      '/plan': '아무것도 실행하지 않고 .hermes/plans/에 마크다운 구현 계획 작성',
+      '/moa': '기본 Mixture of Agents 프리셋으로 프롬프트를 한 번 실행한 뒤 모델 복원',
+      '/subgoal': '진행 중인 목표에 기준 추가 또는 관리',
+      '/status': '현재 세션 상태 보기',
+      '/egress': 'Docker 이그레스 프록시 상태 보기',
+      '/context': '사용량 게이지, 분류별 구성, 압축 통계, 처리량을 담은 컨텍스트 창 상세 보기',
+      '/whoami': '내 슬래시 명령 권한 보기(관리자 / 사용자)',
+      '/profile': '활성 Hermes 프로필 전환',
+      '/codex-runtime': 'OpenAI/Codex 모델의 codex app-server 런타임 전환',
+      '/personality': '미리 정의된 성향 설정',
+      '/battery': '상태 표시줄의 색상 배터리 표시 전환',
+      '/timestamps': '메시지와 /history의 [HH:MM] 타임스탬프 전환',
+      '/diff': '작업 디렉터리의 git 변경 사항 보기',
+      '/focus': '집중 보기 전환 — 내 프롬프트와 최종 응답만 표시',
+      '/yolo': 'YOLO 전환 — 위험한 명령 자동 승인',
+      '/approvals': '위험 명령 승인 방식 보기 또는 설정',
+      '/reasoning': '추론 강도 또는 표시 [<level> [--global]|show|hide|full|clamp]',
+      '/skin': '데스크톱 테마를 바꾸거나 다음 것으로 순환',
+      '/wake': '데스크톱 호출어 리스너 제어 [on|off|status]',
+      '/tools': '도구 관리: /tools [list|disable|enable] [name...]',
+      '/memory': '대기 중인 메모리 기록 검토 / 승인 게이트 전환',
+      '/bundles': '스킬 번들 목록(여러 스킬을 묶는 /<name> 별칭)',
+      '/pet': 'petdex 마스코트 전환 또는 입양(/pet, /pet list, /pet boba)',
+      '/hatch': '새 펫 생성(펫 생성기 열기)',
+      '/learn': '설명한 무엇이든(디렉터리, URL, 이 대화, 메모)에서 재사용 가능한 스킬 학습',
+      '/init': '저장소를 훑어 AGENTS.md 프로젝트 지시문 생성 또는 갱신',
+      '/suggestions': '제안된 자동화 검토(수락/거절)',
+      '/blueprint': '블루프린트 템플릿으로 자동화 설정',
+      '/browser': '브라우저 CDP 연결 관리 [connect|disconnect|status](로컬 게이트웨이 전용)',
+      '/palette': '퍼지 명령 팔레트 열기(Ctrl+P도 가능)',
+      '/usage': '토큰 사용량과 사용 한도 보기. `reset`은 적립된 Codex 한도 초기화를 사용합니다',
+      '/subscription': 'Nous 요금제를 보고 브라우저에서 변경',
+      '/topup': 'Nous 잔액을 보고 포털에서 결제 관리',
+      '/platform': '문제가 생긴 게이트웨이 플랫폼을 일시 중지, 재개, 목록 보기',
+      '/version': 'Hermes Agent 버전 보기',
+      '/debug': '디버그 보고서(시스템 정보 + 로그)를 올리고 공유 링크 받기',
+      '/model': '이 세션의 모델 전환'
     },
     hotkeyDescs: {
       'composer.mention': '파일, 폴더, url, git 참조',
@@ -3876,6 +4311,13 @@ export const ko = defineLocale({
       guiSkew: '데스크톱 앱 업데이트',
       error: '업데이트 중단됨'
     },
+    changeLogNew: '새로운 기능',
+    changeLogFixed: '수정',
+    changeLogFaster: '속도 개선',
+    changeLogImproved: '개선',
+    changeLogOther: '기타 개선',
+    changeLogFallbackLabel: '이번 업데이트',
+    changeLogFallbackItem: '개선 및 수정',
     checking: '업데이트를 확인하는 중…',
     checkFailedTitle: '업데이트를 확인하지 못했습니다',
     tryAgain: '재시도',
@@ -4193,6 +4635,9 @@ export const ko = defineLocale({
     unknown: '(알 수 없음)',
     search: '공급자와 모델 필터...',
     noModels: '모델을 찾을 수 없습니다.',
+    customModel: '사용자 지정 모델',
+    addCustomModelAction: '사용자 지정 모델 추가…',
+    customModelPlaceholder: '모델 id를 입력하세요. 예: openai/gpt-5',
     addProvider: '공급자 추가',
     loadFailed: '모델을 불러오지 못했습니다',
     loadingIntoMemory: '메모리에 불러오는 중',
@@ -4211,6 +4656,8 @@ export const ko = defineLocale({
     title: '모델',
     search: '모델 검색',
     noAuthenticatedProviders: '인증된 공급자가 없습니다.',
+    addCustomModel: '사용자 지정 모델 추가',
+    removeCustomModel: '사용자 지정 모델 삭제',
     addProvider: '공급자 추가…'
   },
   shell: {
@@ -4378,6 +4825,11 @@ export const ko = defineLocale({
     remotePickerTitle: '원격 폴더 선택',
     remotePickerDescription: '연결된 백엔드의 폴더를 둘러봅니다.',
     remotePickerSelect: '폴더 선택',
+    remotePickerNewFolder: '새 폴더',
+    remotePickerFolderName: '폴더 이름',
+    remotePickerCreateFolder: '폴더 만들기',
+    remotePickerInvalidFolderName: '슬래시 없이 폴더 이름 하나만 입력하세요.',
+    remotePickerCreateFolderFailed: error => `폴더를 만들지 못했습니다(${error}).`,
     folderTip: cwd => cwd,
     openFolder: '폴더 열기',
     refreshTree: '트리 새로고침',
@@ -5030,6 +5482,8 @@ export const ko = defineLocale({
     sudoDesc:
       'sudo 비밀번호를 입력하기 전에 명령을 확인하세요. 비밀번호는 명령을 실행하는 에이전트로 전달되며 이 세션 동안 캐시됩니다.',
     sudoCommandUnavailable: '이 에이전트가 명령을 제공하지 않았습니다. 대화에서 확인할 수 없다면 취소하세요.',
+    sudoInstallDesc:
+      'Hermes가 게이트웨이 호스트에 봇 화면 패키지(TigerVNC + Xfce)를 설치하려면 sudo 비밀번호가 필요합니다. 비밀번호는 그 호스트로만 전달됩니다.',
     sudoPlaceholder: 'sudo 비밀번호',
     secretTitle: '비밀 값 필요',
     secretDesc: '계속하려면 Hermes에 자격 증명이 필요합니다.',

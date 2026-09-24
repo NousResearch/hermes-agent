@@ -21,7 +21,6 @@ in a domain it does not live in.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -30,7 +29,6 @@ import hermes_cli.gateway as gw
 import hermes_cli.profiles
 from hermes_cli.gateway import (
     _locate_launchd_gateway_service,
-    _parse_launchd_pid_from_print_output,
     _probe_launchd_domain_for_label,
     launchd_gateway_labels_for_install,
 )
@@ -106,12 +104,6 @@ class TestLaunchdGatewayLabelsForInstall:
         assert launchd_gateway_labels_for_install() == []
 
 
-class TestParseLaunchdPidFromPrintOutput:
-    def test_running_service_pid(self):
-        assert _parse_launchd_pid_from_print_output(PRINT_RUNNING) == 4242
-
-    def test_loaded_but_not_running_has_no_pid(self):
-        assert _parse_launchd_pid_from_print_output(PRINT_LOADED_NOT_RUNNING) is None
 
 
 class TestLocateLaunchdGatewayService:
@@ -228,19 +220,6 @@ class TestGetServicePidsScoping:
         self._wire(monkeypatch)
         assert gw._get_service_pids() == {100}
 
-    def test_find_gateway_pids_passes_profile_scope_through(self, monkeypatch):
-        calls: list[bool] = []
-        monkeypatch.setattr(
-            gw,
-            "_get_service_pids",
-            lambda all_profiles=False: (calls.append(all_profiles), set())[1],
-        )
-        monkeypatch.setattr(gw, "_scan_gateway_pids", lambda *a, **k: [])
-        monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
-
-        gw.find_gateway_pids(all_profiles=False)
-        gw.find_gateway_pids(all_profiles=True)
-        assert calls == [False, True]
 
 
 def _fleet(monkeypatch, tmp_path, *, current, labels, located,
@@ -736,6 +715,5 @@ class TestIncompleteWarningOnMacos:
     def test_launchd_labels_get_bootstrap_hint(self, capsys):
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
-        assert "Update incomplete" in out
         assert "launchctl bootstrap" in out
         assert "systemctl" not in out

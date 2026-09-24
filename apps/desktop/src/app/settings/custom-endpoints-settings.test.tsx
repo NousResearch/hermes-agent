@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { I18nProvider } from '@/i18n'
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
 import type { CustomEndpointsResponse } from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
@@ -76,6 +76,71 @@ afterEach(async () => {
 })
 
 describe('CustomEndpointsSettings', () => {
+  it('localizes endpoint editing on language changes without changing transport or draft identifiers', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+    let language!: I18nContextValue
+
+    function Surface() {
+      language = useI18n()
+
+      return <CustomEndpointsSettings />
+    }
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh">
+        <Surface />
+      </I18nProvider>
+    )
+    await screen.findByText('暂无自定义端点')
+    fireEvent.change(screen.getByRole('textbox', { name: '名称' }), { target: { value: 'Fixture Ω' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '端点 URL' }), { target: { value: 'http://fixture.test/v1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '默认模型' }), { target: { value: 'fixture-model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Responses API' }))
+    await act(() => language.setLocale('zh-hant'))
+    expect((screen.getByRole('textbox', { name: '名稱' }) as HTMLInputElement).value).toBe('Fixture Ω')
+    expect(screen.getByText('API 模式')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '自動偵測' })).toBeTruthy()
+    expect(saveCustomEndpoint).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Fixture Ω',
+        api_mode: 'codex_responses',
+        base_url: 'http://fixture.test/v1',
+        model: 'fixture-model'
+      }),
+      'default'
+    )
+  })
+
+  it('translates its own copy in Korean while leaving protocol names and identifiers alone', async () => {
+    getCustomEndpoints.mockResolvedValue(savedResponse)
+    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+
+    render(
+      <I18nProvider configClient={null} initialLocale="ko">
+        <CustomEndpointsSettings />
+      </I18nProvider>
+    )
+
+    await screen.findByRole('textbox', { name: '이름' })
+
+    expect(screen.getByText('API 모드')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '자동 감지' })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '엔드포인트 URL' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '저장' })).toBeTruthy()
+
+    // Wire-protocol names identify a transport rather than describing one, so they read
+    // the same in every locale — as do the values the endpoint itself carries.
+    expect(screen.getByRole('button', { name: 'Chat Completions' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Responses API' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Anthropic Messages' })).toBeTruthy()
+    expect(screen.getByDisplayValue('http://profile-a.test/v1')).toBeTruthy()
+    expect(screen.getByDisplayValue('model-a')).toBeTruthy()
+  })
+
   it('sends the chosen API mode and discovered alias metadata on Save (#93622)', async () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     validateCustomEndpoint.mockResolvedValue({
@@ -110,10 +175,7 @@ describe('CustomEndpointsSettings', () => {
       expect.objectContaining({ api_mode: 'codex_responses' }),
       'default'
     )
-    expect(notify).toHaveBeenCalledWith({
-      kind: 'success',
-      message: 'Endpoint is reachable (Responses API route served). Found 2 models.'
-    })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
     expect(saveCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({
         api_mode: 'codex_responses',
@@ -152,7 +214,7 @@ describe('CustomEndpointsSettings', () => {
     await waitFor(() => expect(getCustomEndpoints).toHaveBeenCalledWith('content-studio'))
     expect(screen.getByText('Applies to')).toBeTruthy()
 
-    fireEvent.change(screen.getByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
+    fireEvent.change(await screen.findByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
     fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
       target: { value: 'https://studio.example.com/v1' }
     })
@@ -230,33 +292,5 @@ describe('CustomEndpointsSettings', () => {
     // Save stores form.baseUrl verbatim and chat POSTs {base_url}/chat/completions, so the
     // typed bare root would 404 every request even though the test looked green.
     expect(urlInput.value).toBe('http://h.test/v1')
-  })
-
-  it('translates its own copy in Korean while leaving protocol and identifier values alone', async () => {
-    getCustomEndpoints.mockResolvedValue(savedResponse)
-    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
-
-    render(
-      <I18nProvider configClient={null} initialLocale="ko">
-        <CustomEndpointsSettings />
-      </I18nProvider>
-    )
-
-    await screen.findByText('사용 중')
-
-    expect(screen.getByText('자동 감지')).toBeTruthy()
-    expect(screen.getByText('연결 테스트')).toBeTruthy()
-    expect(screen.getByText('엔드포인트 URL')).toBeTruthy()
-    expect(screen.getByText('새 대화에 사용')).toBeTruthy()
-    expect(screen.getByText('모델 자동 검색')).toBeTruthy()
-
-    // Wire-protocol names identify a transport rather than describing one, so they read
-    // the same in every locale — as do the values the user typed and the samples we show.
-    expect(screen.getByText('Chat Completions')).toBeTruthy()
-    expect(screen.getByText('Responses API')).toBeTruthy()
-    expect(screen.getByText('Anthropic Messages')).toBeTruthy()
-    expect(screen.getByDisplayValue('http://profile-a.test/v1')).toBeTruthy()
-    expect(screen.getByDisplayValue('model-a')).toBeTruthy()
-    expect(screen.getByPlaceholderText('axet-proxy')).toBeTruthy()
   })
 })

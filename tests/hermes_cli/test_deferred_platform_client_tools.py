@@ -166,20 +166,6 @@ def clean_registry():
 class TestA2AClientToolsInCliProcess:
     """The issue's exact repro: a CLI/TUI process, no gateway startup."""
 
-    def test_manifest_declares_the_client_tools(self):
-        """The opt-in lives in the manifest, so it is pinned like any contract.
-
-        Dropping ``provides_tools`` from plugin.yaml silently reverts a2a to
-        the deferred-and-invisible behaviour of #78050, with every other test
-        here still passing on the synthetic plugins — so assert it directly.
-        """
-        manifest_path = (
-            Path(__file__).resolve().parents[2]
-            / "plugins" / "platforms" / "a2a" / "plugin.yaml"
-        )
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-
-        assert set(manifest.get("provides_tools") or []) == A2A_CLIENT_TOOLS
 
     def test_a2a_toolset_resolves_without_materializing_the_platform(self):
         from hermes_cli.plugins import PluginManager

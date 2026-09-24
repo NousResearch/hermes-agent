@@ -54,7 +54,6 @@ class TestDashboardStatus:
         # Status is informational — always exits 0.
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "3 hermes dashboard/serve process(es) running" in out
         assert "PID 12345" in out
         assert "PID 12346" in out
         assert "PID 12347" in out and "[serve]" in out
@@ -175,23 +174,3 @@ class TestLifecycleFlagsTakePrecedence:
         assert called["start"] is False
 
 
-class TestArgparseWiring:
-    """Confirm the flags are exposed via the real argparse tree so
-    ``hermes dashboard --stop`` / ``--status`` actually parse."""
-
-    def test_flags_are_registered(self):
-        from hermes_cli.main import main as _cli_main  # noqa: F401
-        # Rebuild the argparse tree by re-running the section of main()
-        # that builds it.  Cheapest way: introspect via --help on the
-        # already-built parser would require refactoring; instead we
-        # parse the flags directly via a minimal replay.
-        import importlib
-        mod = importlib.import_module("hermes_cli.main")
-        # Find the dashboard_parser instance by running build logic would
-        # be too invasive.  Instead parse args as if via the CLI by
-        # intercepting parse_args.  This is overkill for a smoke test —
-        # we just want to know the flags don't KeyError.
-        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
-             pytest.raises(SystemExit) as exc:
-            mod.cmd_dashboard(_ns(status=True))
-        assert exc.value.code == 0

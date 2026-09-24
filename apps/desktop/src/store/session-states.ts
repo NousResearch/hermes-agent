@@ -1527,6 +1527,43 @@ export function resetTileRuntimeBindings(
   }
 }
 
+/** Reset for a pooled secondary route that reopened while it was NOT the
+ *  window's ambient gateway. Only tiles whose exact owner route names that
+ *  runtime can hold ids it minted; un-owned tiles and the main thread ride the
+ *  ambient socket, whose own reconnect path runs `resetTileRuntimeBindings`.
+ *  Background request leases (the Bot relay drain) reopen such a route every
+ *  tick, and a window-wide reset there re-resumed every open tile each time —
+ *  remounting its composer (caret reset, layout shift, model pick reverted). */
+export function resetRouteOwnedTileRuntimeBindings(scope: RuntimeReconnectScope) {
+  const connectionId = scope.connectionId.trim()
+  const profile = scope.profile?.trim() || null
+  const tiles = $sessionTiles.get()
+
+  const ownedStoredIds = new Set(
+    tiles
+      .filter(tile => {
+        const route = tile.ownerRoute
+
+        return (
+          Boolean(connectionId) &&
+          route?.connectionId === connectionId &&
+          (!profile || (route.targetProfile || route.profile) === profile)
+        )
+      })
+      .map(tile => tile.storedSessionId)
+  )
+
+  if (ownedStoredIds.size === 0) {
+    return
+  }
+
+  sessionTileDelegate()?.dropRuntimeBindings?.(ownedStoredIds)
+
+  if (tiles.some(tile => tile.runtimeId && ownedStoredIds.has(tile.storedSessionId))) {
+    $sessionTiles.set(tiles.map(tile => (ownedStoredIds.has(tile.storedSessionId) ? toStored(tile) : tile)))
+  }
+}
+
 /** Unbind ONE reclaimed runtime from whichever tile holds it — the targeted
  *  sibling of resetTileRuntimeBindings. The reconnect-time reset can't cover a
  *  backend reclaim: the WS re-dials immediately, but the orphan reaper fires a
@@ -1569,6 +1606,11 @@ export interface SessionTileDelegate {
    *  warm path re-binds tiles to dead runtime ids (the sleep/wake "empty
    *  right pane" bug). Bindings re-record from live post-reconnect events. */
   invalidateRuntimeBindings?(preserveStoredSessionIds?: ReadonlySet<string>): void
+  /** Drop ONLY these stored→runtime bindings from the wiring cache — the
+   *  route-scoped twin of invalidateRuntimeBindings for a reopened secondary
+   *  (`resetRouteOwnedTileRuntimeBindings`). Bindings for every other stored
+   *  session, including the main thread, stay warm. */
+  dropRuntimeBindings?(storedSessionIds: ReadonlySet<string>): void
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws.
    *  `refreshTranscript` forces a REST merge even when a warm cached

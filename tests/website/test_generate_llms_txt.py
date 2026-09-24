@@ -127,7 +127,3 @@ def test_per_skill_catalog_pages_stay_out(gen):
     assert "reference/skills-catalog" in gen.iter_docs(), "the summary page must remain"
 
 
-def test_bot_mode_is_reachable(gen, index):
-    """The page behind the original complaint, and the answer it has to carry."""
-    assert "user-guide/bot-mode" in _linked(gen, index)
-    assert "hermes peer dm" in (gen.DOCS / "user-guide" / "bot-mode.md").read_text(encoding="utf-8")

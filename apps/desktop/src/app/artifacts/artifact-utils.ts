@@ -1,5 +1,5 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
+import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -82,6 +82,12 @@ function artifactSessionTitle(session: SessionInfo): string {
 
 function normalizeValue(value: string): string {
   return value.trim().replace(/[),.;]+$/, '')
+}
+
+// Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
+// classification so the Artifacts page keeps the path, not the href.
+function decodeMediaHrefValue(value: string): string {
+  return mediaPathFromMarkdownHref(value) ?? value
 }
 
 function unquoteMediaValue(value: string): string {
@@ -288,7 +294,7 @@ function collectArtifactsFromText(text: string, pushValue: PushValue): void {
       continue
     }
 
-    const value = match[2] || ''
+    const value = decodeMediaHrefValue(match[2] || '')
 
     if (looksLikeArtifact(value)) {
       pushValue(value)
@@ -388,7 +394,7 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
 
       collectMediaValues(value, pushValue)
 
-      const normalized = normalizeValue(value)
+      const normalized = normalizeValue(decodeMediaHrefValue(value))
 
       if (normalized && looksLikeArtifact(normalized)) {
         pushValue(normalized)
@@ -407,7 +413,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
     }
 
     collectArtifactsFromMessage(message, (candidate, explicit = false) => {
-      const value = normalizeValue(candidate)
+      const value = normalizeValue(decodeMediaHrefValue(candidate))
 
       if (!value || !looksLikeArtifact(value, explicit)) {
         return

@@ -463,7 +463,19 @@ class _ProfileRoutingFileHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._handler_for_home(self._home_for_record(record)).handle(record)
+            home = self._home_for_record(record)
+            handler = self._handler_for_home(home)
+            if home == self._default_home:
+                handler.handle(record)
+                return
+            # Formatted here, on the listener thread, where the record's profile scope is gone: bind its home so
+            # RedactingFormatter applies THAT profile's redact_secrets policy and vault values, not the launch's.
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            token = set_hermes_home_override(str(home))
+            try:
+                handler.handle(record)
+            finally:
+                reset_hermes_home_override(token)
         except Exception:
             self.handleError(record)
 

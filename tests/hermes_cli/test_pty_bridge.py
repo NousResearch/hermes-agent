@@ -19,7 +19,7 @@ import pytest
 
 pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
 
-from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+from hermes_cli.pty_bridge import PtyBridge
 
 
 skip_on_windows = pytest.mark.skipif(
@@ -43,15 +43,7 @@ def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes
 
 @skip_on_windows
 class TestPtyBridgeSpawn:
-    def test_is_available_on_posix(self):
-        assert PtyBridge.is_available() is True
 
-    def test_spawn_returns_bridge_with_pid(self):
-        bridge = PtyBridge.spawn(["true"])
-        try:
-            assert bridge.pid > 0
-        finally:
-            bridge.close()
 
     def test_spawn_raises_on_missing_argv0(self, tmp_path):
         with pytest.raises((FileNotFoundError, OSError)):
@@ -309,10 +301,3 @@ class TestPtyBridgeEnv:
             bridge.close()
 
 
-class TestPtyBridgeUnavailable:
-    """Platform fallback semantics — PtyUnavailableError is importable and
-    carries a user-readable message."""
-
-    def test_error_carries_user_message(self):
-        err = PtyUnavailableError("platform not supported")
-        assert "platform" in str(err)

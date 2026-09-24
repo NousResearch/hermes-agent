@@ -636,7 +636,8 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
 #: configs already AT v12 still get every step below; only configs BELOW 12 are refused by the
 #: floor gate in run_migrations()'s caller. Versions absent here (15, 18-20, 22, 24, 26-28, 30)
-#: only added a schema default that runtime merging supplies without a write.
+#: only added a schema default that runtime merging supplies without a write. When adding a step,
+#: decide whether it belongs in LEGACY_KEY_STEPS below (the only steps an unversioned file gets).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),

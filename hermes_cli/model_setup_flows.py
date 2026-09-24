@@ -390,7 +390,7 @@ def _model_flow_openai_codex(config, current_model=""):
     codex_models = get_codex_model_ids(access_token=_codex_token, base_url=_codex_base)
     selected = _prompt_model_selection(
         codex_models, current_model=current_model, confirm_provider="openai-codex",
-        confirm_base_url=DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
+        confirm_base_url=_codex_base or DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
     _activate_provider_model(selected, "openai-codex", DEFAULT_CODEX_BASE_URL,
                              f"Default model set to: {selected} (via OpenAI Codex)")
 

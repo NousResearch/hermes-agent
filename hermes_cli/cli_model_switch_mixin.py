@@ -379,7 +379,7 @@ class CLIModelSwitchMixin:
             try:
                 # self.base_url is the route resolved with self.api_key (#121486).
                 available = get_codex_model_ids(
-                    access_token=self.api_key if self.api_key else None, base_url=getattr(self, "base_url", None) or None)
+                    access_token=self.api_key if self.api_key else None, base_url=self.base_url or None)
                 if available:
                     fallback_model = available[0]
             except Exception:

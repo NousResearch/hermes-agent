@@ -58,7 +58,6 @@ def codex_backend(monkeypatch):
     # Seed the auth.json token below the credential/base resolver so generate() exercises the real
     # (token, base_url) binding; no pool present.
     from agent import auxiliary_client
-    monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
     monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
     state = {"requests": [], "respond": None}
@@ -106,16 +105,16 @@ class TestMetadata:
 
 class TestAvailability:
     def test_unavailable_without_codex_token(self, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
     def test_available_with_codex_token(self, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "tok")
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: ("tok", "https://chatgpt.com/backend-api/codex"))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
 
     def test_openai_api_key_alone_is_not_enough(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
 
@@ -187,7 +186,6 @@ class TestGenerate:
 
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
         from agent import auxiliary_client
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
         monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: None)
         result = provider.generate("a cat")

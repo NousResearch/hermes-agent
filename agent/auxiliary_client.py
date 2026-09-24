@@ -2113,17 +2113,6 @@ def _read_codex_access_token() -> Optional[str]:
     return _read_codex_singleton_token()
 
 
-def _codex_pool_entry_base_url(entry: Any) -> str:
-    """Host the chat route sends this pooled Codex entry's key to (``model.base_url`` included)."""
-    row_base = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL)
-    try:
-        from hermes_cli.auth_codex import _codex_pool_route_base_url
-        return _codex_pool_route_base_url(row_base) or row_base
-    except Exception as exc:
-        logger.debug("Codex pool route base resolution failed: %s", exc)
-        return row_base
-
-
 def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
@@ -2134,11 +2123,13 @@ def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
-            return token, override or _codex_pool_entry_base_url(entry) or _CODEX_AUX_BASE_URL
-    # A present pool whose selection gave no token: read auth.json directly — re-selecting could
-    # rotate to another pool row and pair its key with the default host.
-    token = _read_codex_singleton_token() if pool_present else _read_codex_access_token()
-    return token, override or _CODEX_AUX_BASE_URL
+            if override:
+                return token, override
+            # Same route rule as the chat path (row URL, else ``model.base_url``); never empty.
+            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            return token, _codex_pool_route_base_url(_pool_runtime_base_url(entry))
+    # No usable pool token: auth.json only (re-selecting could pair another row's key with the default).
+    return _read_codex_singleton_token(), override or _CODEX_AUX_BASE_URL
 
 
 def _read_codex_singleton_token() -> Optional[str]:

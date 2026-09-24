@@ -85,7 +85,11 @@ def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
             "openai-codex", None, model_cfg if isinstance(model_cfg, dict) else {}, "", base)[1]
     except Exception:
         logger.debug("Codex pool route base resolution failed", exc_info=True)
-        return _stripped(os.getenv("HERMES_CODEX_BASE_URL")).rstrip("/") or base or DEFAULT_CODEX_BASE_URL
+        # Profile-scoped override only (never the raw process env: a multiplexed sibling's gateway).
+        with suppress(Exception):
+            from agent.secret_scope import get_secret_str
+            base = _stripped(get_secret_str("HERMES_CODEX_BASE_URL", "")).rstrip("/") or base
+        return base or DEFAULT_CODEX_BASE_URL
 
 
 def _codex_runtime_result(
@@ -910,18 +914,13 @@ def _pool_entries(auth_store: Dict[str, Any], provider_id: str) -> Optional[List
     return entries if isinstance(entries, list) else None
 
 
-def _pool_codex_access_token() -> str:
-    """First non-empty pool access_token not in an exhaustion cooldown window, else "".
+def _pool_codex_credential() -> Tuple[str, str]:
+    """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
+    not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
+    to; ``("", "")`` when none is usable.
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
-    through ``read_credential_pool`` so a profile inherits the global-root pool (#34143).
-    """
-    return _pool_codex_credential()[0]
-
-
-def _pool_codex_credential() -> Tuple[str, str]:
-    """``(access_token, row base_url)`` of the entry ``_pool_codex_access_token`` picks, so the
-    caller routes the token to the host that row belongs to; ``("", "")`` when none is usable."""
+    through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
     from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:

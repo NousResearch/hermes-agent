@@ -33,7 +33,6 @@ from plugins.image_gen._common import (
 
 logger = logging.getLogger(__name__)
 
-_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _MAX_ERROR_BODY_CHARS = 500
 
 _MAX_REFERENCE_IMAGES = 16
@@ -65,28 +64,18 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Usable Codex OAuth token or None (``agent.auxiliary_client`` owns expiry/pool/JWT)."""
-    try:
-        from agent.auxiliary_client import _read_codex_access_token as _reader
-
-        token = _reader()
-        return token.strip() if isinstance(token, str) and token.strip() else None
-    except Exception as exc:
-        logger.debug("Could not resolve Codex access token: %s", exc)
-        return None
-
-
 def _read_codex_credential() -> Tuple[Optional[str], Optional[str]]:
-    """``(token, base_url)`` from one resolution: the image request goes to the host the token's
-    credential routes to (pool row / ``model.base_url`` / profile override), never a default the
-    credential does not belong to (#121486)."""
+    """``(token, base_url)`` from one resolution (``agent.auxiliary_client`` owns expiry/pool/JWT):
+    the image request goes to the host the token's credential routes to (pool row /
+    ``model.base_url`` / profile override), never a default it does not belong to (#121486).
+    ``(None, None)`` without a usable token."""
     try:
         from agent.auxiliary_client import _resolve_codex_credential_and_base
 
         token, base_url = _resolve_codex_credential_and_base()
-        token = token.strip() if isinstance(token, str) and token.strip() else None
-        return token, (base_url or None) if token else None
+        if isinstance(token, str) and token.strip():
+            return token.strip(), base_url
+        return None, None
     except Exception as exc:
         logger.debug("Could not resolve Codex credential: %s", exc)
         return None, None
@@ -202,19 +191,16 @@ def _build_image_request(
 
 def _post_image_request(
     token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None,
-    base_url: Optional[str] = None,
+    base_url: str,
 ) -> Dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
     ``imagegen_request_id`` (backend correlation id, for support tickets).
 
-    ``base_url`` should come from the same resolution as ``token`` (``_read_codex_credential``)."""
+    ``base_url`` must come from the same resolution as ``token`` (``_read_codex_credential``)."""
     import httpx
-    from agent.auxiliary_client import _codex_base_url_override
     from agent.codex_headers import codex_cloudflare_headers
 
-    # Match the text auxiliary route, including profile-scoped overrides. Resolve
-    # per request: a multiplexed process can serve different Codex gateways.
-    base_url = (base_url or "").strip().rstrip("/") or _codex_base_url_override() or _CODEX_BASE_URL
+    base_url = base_url.strip().rstrip("/")
     headers = codex_cloudflare_headers(token, base_url=base_url)
     headers.update({
         "Authorization": f"Bearer {token}",
@@ -256,7 +242,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     price = "varies"
 
     def is_available(self) -> bool:
-        return bool(_read_codex_access_token()) and _httpx_available()
+        return bool(_read_codex_credential()[0]) and _httpx_available()
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {

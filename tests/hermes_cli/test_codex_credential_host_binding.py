@@ -163,12 +163,15 @@ def test_model_setup_flow_catalog_goes_to_the_pool_entry_gateway(monkeypatch, pi
     _write_config(home, base_url=GW)
     _write_pool(home, OPAQUE)
     monkeypatch.setattr("builtins.input", lambda prompt="": "1")  # reuse existing credentials
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *a, **kw: None)
+    confirm = {}
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *a, **kw: confirm.update(kw))
     from hermes_cli.model_setup_flows import _model_flow_openai_codex
 
     _model_flow_openai_codex({}, current_model="gpt-5.5")
 
     assert _authorized_hosts(picker_http) == {"codex-gw.example"}
+    # The confirm guards see the key together with its own route, not the chatgpt.com default.
+    assert (confirm["confirm_api_key"], confirm["confirm_base_url"]) == (OPAQUE, GW)
 
 
 def test_cli_default_model_swap_asks_the_session_route(monkeypatch, picker_http):
@@ -306,3 +309,25 @@ def test_image_request_goes_to_the_pool_entry_gateway(monkeypatch, key):
     assert result["success"] is True, result
     assert _authorized_hosts(seen) == {"codex-gw.example"}
     assert seen[0][1] == f"Bearer {key}"
+
+
+def test_route_fallback_reads_the_profile_scoped_override_not_a_sibling_process_env(monkeypatch):
+    """If route resolution itself fails, the fallback still honours only the routed profile's
+    ``HERMES_CODEX_BASE_URL`` — never a multiplexed sibling's process env."""
+    from agent import secret_scope
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_cli import runtime_provider
+    from hermes_cli.auth_codex import _codex_pool_route_base_url
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("route resolution failed")
+
+    monkeypatch.setattr(runtime_provider, "_pool_entry_mode_and_url", _boom)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)
+    for scope, expected in [({}, GW), ({"HERMES_CODEX_BASE_URL": OTHER_GW + "/"}, OTHER_GW)]:
+        token = set_secret_scope(scope)
+        try:
+            assert _codex_pool_route_base_url(GW) == expected
+        finally:
+            reset_secret_scope(token)

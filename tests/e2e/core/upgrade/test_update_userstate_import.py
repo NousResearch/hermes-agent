@@ -34,10 +34,7 @@ class Gap(Exception):
     """Contract breach tracked in KNOWN (not an AssertionError: a crash still fails the test)."""
 
 
-KNOWN: dict[str, str] = {
-    "partial": "#119953 import that skipped members prints 'restored' and exits 0",
-    "rotten-member": "#121258 import of an archive with one corrupt member dies with a zlib.error traceback",
-}
+KNOWN: dict[str, str] = {}
 
 
 def known(key: str):

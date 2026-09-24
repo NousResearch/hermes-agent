@@ -678,6 +678,46 @@ class TestGitEnvIsolation:
 class TestErrorResilience:
 
 
+    def test_timeout_removes_the_index_lock_our_killed_git_left_behind(self, tmp_path):
+        # subprocess.run() SIGKILLs git on timeout, so git never deletes its
+        # ``<index>.lock``.  Left in place, every later checkpoint of the project
+        # fails forever with "Unable to create ...lock: File exists".
+        work = tmp_path / "work"
+        work.mkdir()
+        index_file = tmp_path / "store" / "indexes" / "abc123"
+        index_file.parent.mkdir(parents=True)
+        lock = Path(str(index_file) + ".lock")
+
+        def killed_mid_add(*args, **kwargs):
+            lock.write_text("")  # git took the lock, then got killed
+            raise subprocess.TimeoutExpired(cmd="git add -A", timeout=60)
+
+        with patch("tools.checkpoint_manager.subprocess.run", side_effect=killed_mid_add):
+            ok, _, err = _run_git(["add", "-A"], tmp_path / "store", str(work), index_file=index_file)
+        assert ok is False
+        assert "timed out" in err
+        assert not lock.exists()
+
+    def test_stale_index_lock_is_cleared_but_a_fresh_one_is_respected(self, mgr, work_dir, checkpoint_base):
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        store = _store_path(checkpoint_base)
+        lock = store / "indexes" / (_project_hash(str(work_dir)) + ".lock")
+
+        # Fresh lock: could be a live git from another Hermes process — hands off.
+        lock.write_text("")
+        (work_dir / "main.py").write_text("print('v2')\n")
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "blocked by live lock") is False
+        assert lock.exists()
+
+        # Same lock an hour old: its owner is long dead (git calls are capped at
+        # three minutes) — recover instead of failing until someone deletes it.
+        old = time.time() - 3600
+        os.utime(lock, (old, old))
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "recovered") is True
+        assert not lock.exists()
+
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):
         def broken_run_git(*args, **kwargs):
             raise OSError("git exploded")

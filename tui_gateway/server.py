@@ -1713,6 +1713,8 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             if db is not None:
                 row_id = db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
                 entry["_row_id"] = row_id
+                from agent.context_compressor import _DB_PERSISTED_MARKER
+                entry[_DB_PERSISTED_MARKER] = True
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
 

@@ -24,8 +24,8 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
-import { $sessions, sessionMatchesStoredId } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -130,15 +130,49 @@ export function requestNamesActiveSession({
     )
 }
 
-/** This window hosts the session: it is the primary view or an open session tile. */
+/**
+ * This window hosts the session: the primary view, an open session tile, or
+ * (identity-tolerantly) a window showing the conversation under another id.
+ *
+ * The strict runtime-id checks alone strand real states (#121609): the HUD
+ * shows the conversation but never holds it active (main holds the id on its
+ * behalf — hud-shell.tsx), and after the HUD hands the session back the app
+ * window's active id can still name the pre-handoff runtime until a resume
+ * re-binds it. In both, every attached window ignored the request and the
+ * tool stalled its full 30s deadline; only an explicit session resume fixed
+ * it. So alongside the strict checks, the asked id may resolve to a
+ * conversation this window SHOWS: the selected stored session or a tile's
+ * stored session, matched through lineageAliases (compression rotates the
+ * runtime tip under the stored identity) and the session-state cache, which
+ * records which stored id each runtime id maps to. Without evidence of a
+ * shown conversation — no selection, no tile, no state mapping — nothing is
+ * claimed, exactly as before.
+ */
 export function windowHostsSession(
   sessionId: string,
   activeSessionId: null | string,
   storedIdForRuntimeId?: (runtimeId: string) => string | undefined
 ): boolean {
-  return (
+  if (
     requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
     $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+  ) {
+    return true
+  }
+
+  const sessions = $sessions.get()
+
+  const shown = [
+    $selectedStoredSessionId.get(),
+    ...$sessionTiles.get().map(tile => tile.storedSessionId)
+  ]
+
+  return shown.some(
+    stored =>
+      stored !== null &&
+      (stored === sessionId ||
+        lineageAliases(stored, sessions).includes(sessionId) ||
+        ($sessionStates.get()[sessionId]?.storedSessionId ?? null) === stored)
   )
 }
 
@@ -586,6 +620,10 @@ export function handleServerRequest(
     const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId, storedIdForRuntimeId })
 
     if (route === 'ignore') {
+      // #121609's unclaimed window.read lands here too: with the claim widened
+      // to shown conversations, a window that still does not show the session
+      // declines, and the backend settles fast once every attached window
+      // declined (#119333) instead of the tool stalling its full 30s deadline.
       declineNotShown(request)
 
       return true

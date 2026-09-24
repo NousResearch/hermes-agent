@@ -44,7 +44,7 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     (tmp_path / "work").mkdir()
 
     def tmux(*args: str) -> str:
-        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, timeout=30).stdout
+        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
 
     def transcript() -> str:
         return tmux("capture-pane", "-p", "-J", "-t", "p", "-S", "-", "-E", "-")
@@ -59,7 +59,7 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
         out = [f"fake provider requests: main={kinds['main']} aux={kinds['aux']}"]
         for name in ("agent.log", "errors.log"):
             log = home / ".hermes" / "logs" / name
-            tail = log.read_text(errors="replace").splitlines()[-40:] if log.exists() else ["<missing>"]
+            tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:] if log.exists() else ["<missing>"]
             out += [f"--- {name} (tail) ---", *tail]
         pid = tmux("display-message", "-p", "-t", "p", "#{pane_pid}").strip()
         if pid.isdigit():
@@ -84,9 +84,11 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
         tmux("send-keys", "-t", "p", "-l", question)
         # The CLI reads an Enter processed within 50 ms of the last buffer change as a pasted
         # newline. A fixed sleep after send-keys is not enough on a starved runner: a CLI still
-        # busy with the typed batch reads the Enter right after it. The echo proves every typed
-        # key was processed; the gap after it is then real time the Enter cannot fall inside.
-        wait_for(question)
+        # busy with the typed batch reads the Enter right after it. The question on the composer
+        # row proves the app processed every typed key (a bare match could be the tty's own echo
+        # of keys typed before prompt_toolkit took raw mode); the gap after it is then real time
+        # the Enter cannot fall inside.
+        wait_for(f"\u276f {question}")
         time.sleep(0.5)
         tmux("send-keys", "-t", "p", "Enter")
 
@@ -104,7 +106,13 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
                         "-y", "24", "-c", str(tmp_path / "work"), *argv], env=env, check=True, timeout=30)
         try:
             tmux("set", "-g", "window-size", "manual")
+            tmux("set", "-g", "remain-on-exit", "on")  # keeps a crash or the diagnostics' dump readable
             wait_for("Welcome to Hermes", timeout=120)
+            # The welcome line is printed before the input loop exists. Keys typed then land in the
+            # still-cooked tty: the kernel echoes them (a plain transcript row) and hands the app
+            # text + Enter in one read, which it takes for a pasted newline — the question sits
+            # unsent in a two-line draft. The status bar is painted by the running app, in raw mode.
+            wait_for("\u2624 fake-model \u2502", timeout=120)
             time.sleep(2.0)
 
             ask(1)

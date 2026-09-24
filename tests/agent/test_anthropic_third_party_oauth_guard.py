@@ -126,6 +126,26 @@ class TestOAuthFlagOnRefresh:
         assert result is True
         assert agent._anthropic_api_key == new
 
+    def test_refresh_moves_every_holder_of_the_revoked_token(self, agent):
+        """Claude Code revokes the old token on refresh. The compressor forwards its OWN
+        ``api_key`` as the aux main_runtime, so if only the native client moves, every
+        compression summary 401s ("OAuth access token has been revoked") for the session's life."""
+        old, new = "sk-ant-oat01-old", "sk-ant-oat01-new"
+        agent.api_mode, agent.provider = "anthropic_messages", "anthropic"
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._anthropic_client = MagicMock()
+        agent.api_key = agent._anthropic_api_key = agent.context_compressor.api_key = old
+        agent._primary_runtime = {"api_key": old, "anthropic_api_key": old, "compressor_api_key": old}
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch.object(AIAgent, "_build_direct_anthropic_client", return_value=MagicMock()),
+        ):
+            assert agent._try_refresh_anthropic_client_credentials() is True
+
+        assert agent._anthropic_api_key == agent.api_key == agent.context_compressor.api_key == new
+        assert set(agent._primary_runtime.values()) == {new}
+
 
 
 class TestOAuthFlagOnCredentialSwap:

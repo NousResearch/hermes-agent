@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import yaml
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -779,6 +779,26 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     return payload
 
 
+async def _plugin_api_profile_scope(request: Request):
+    """Bind the served profile's secret scope around a plugin backend request.
+
+    Plugin ``plugin_api.py`` routes were mounted bare, unlike core routers which enter
+    ``web_server_profiles._config_profile_scope`` per request. In a process that hosts more than
+    one profile home — ``hermes serve`` / ``hermes dashboard`` pooling, the multiplexed messaging
+    gateway, hosted rooms — ``agent.secret_scope`` is fail-closed, so the first unscoped
+    credential read inside a plugin RAISES and the panel renders an error card instead of its
+    data (``hermes-memory-ui``'s whole Honcho read path goes through ``get_secret``, which is how
+    a SystemOS dashboard showed "could not read this profile's HERMES_HONCHO_HOST"). Bind the same
+    scope core routers get: ``?profile=`` when the caller names one, else the launch profile's own
+    scope. A bad ``?profile=`` stays a 400/404 because the resolver raises inside the router.
+    """
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    profile = (request.query_params.get("profile") or "").strip() or None
+    with _config_profile_scope(profile):
+        yield
+
+
 def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disabled_set: set) -> Optional[str]:
     """Why a plugin's backend ``api`` must NOT be imported, or None when it may be.
 
@@ -868,7 +888,15 @@ def _mount_plugin_api_routes():
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
-            app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            app.include_router(
+                router,
+                prefix=f"/api/plugins/{plugin['name']}",
+                # Every plugin route runs under the served profile's secret scope, exactly like
+                # the core routers' ``_config_profile_scope`` — without it a fail-closed
+                # multi-profile process turns each credential read in a plugin backend into an
+                # error card (see ``_plugin_api_profile_scope``).
+                dependencies=[Depends(_plugin_api_profile_scope)],
+            )
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)

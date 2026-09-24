@@ -101,6 +101,29 @@ _EXACT_HANDLERS = {
 }
 
 
+def _queue(mgr, arg, *, render, progress=None):
+    """``/goal queue`` lists; ``/goal queue <objective>`` queues behind the active goal (or, when no
+    goal is active, sets it directly — queueing with nothing running is just starting)."""
+    if not arg:
+        return GoalCommandResult(mgr.render_queue())
+    if not mgr.has_goal():
+        return _set(mgr, arg, drafting=False, last_user_message=None, render=render, progress=progress)
+    depth = mgr.queue_goal(arg)
+    return GoalCommandResult(
+        render("gateway.goal.queued", "⊙ Queued behind the active goal ({depth} in queue): {goal}",
+               depth=depth, goal=arg),
+    )
+
+
+def _queue_remove(mgr, arg):
+    return GoalCommandResult(f"✓ Queued goal removed: {mgr.remove_queued_goal(int(arg))}")
+
+
+def _queue_clear(mgr, arg):
+    count = mgr.clear_queued_goals()
+    return GoalCommandResult(f"✓ Cleared {count} queued goal{'s' if count != 1 else ''}.")
+
+
 def _gate(mgr, arg, authorize_gate):
     if not arg or arg.lower() == "list":
         return GoalCommandResult(mgr.render_gates())
@@ -185,6 +208,19 @@ def dispatch_goal_command(
         if verb == "gate":
             prefix = "/goal gate"
             return _gate(mgr, rest, authorize_gate)
+        if verb == "queue":
+            prefix = "/goal queue"
+            if rest and rest.split(None, 1)[0].lower() in {"remove", "rm", "clear"}:
+                tokens = rest.split(None, 1)
+                sub, sub_rest = tokens[0].lower(), tokens[1].strip() if len(tokens) > 1 else ""
+                if sub == "clear":
+                    if sub_rest:
+                        raise ValueError(f"unexpected argument: {sub_rest}")
+                    return _queue_clear(mgr, "")
+                if not sub_rest:
+                    raise ValueError(f"{sub} requires a queue index (see /goal queue)")
+                return _queue_remove(mgr, sub_rest)
+            return _queue(mgr, rest, render=render, progress=progress)
         return _set(mgr, rest if verb == "draft" else arg,
                     drafting=verb == "draft", last_user_message=last_user_message,
                     render=render, progress=progress)

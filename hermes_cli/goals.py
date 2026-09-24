@@ -427,6 +427,10 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    # /goal queue <text>: goals waiting for the current one to finish. Promoted automatically when
+    # the active goal reaches a terminal boundary (done, blocked-pause, budget-pause). Empty by
+    # default so pre-queue state_meta rows load unchanged.
+    queued_goals: List[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -453,6 +457,7 @@ class GoalState:
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
             ],
+            queued_goals=[str(g).strip() for g in (data.get("queued_goals") or []) if str(g).strip()],
             **ints, **floats,
         )
 
@@ -1192,6 +1197,58 @@ class GoalManager:
         self._state.last_reason = reason
         self._save()
 
+    # --- /goal queue ---------------------------------------------------
+
+    def queue_goal(self, text: str) -> int:
+        """Append a goal to the queue; raises ``RuntimeError`` without ``has_goal()``.
+        Returns the queue length."""
+        state = self._require_goal()
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("queued goal text is empty")
+        state.queued_goals.append(text)
+        self._save()
+        return len(state.queued_goals)
+
+    def pop_queued_goal(self) -> Optional[str]:
+        """Remove and return the next queued goal, or None when the queue is empty."""
+        if self._state is None or not self._state.queued_goals:
+            return None
+        goal = self._state.queued_goals.pop(0)
+        self._save()
+        return goal
+
+    def remove_queued_goal(self, index_1based: int) -> str:
+        """Remove a queued goal by 1-based index. Returns the removed text."""
+        return self._pop_item("queued_goals", index_1based)
+
+    def clear_queued_goals(self) -> int:
+        """Wipe the queue. Returns the previous count."""
+        return self._clear_items("queued_goals")
+
+    def render_queue(self) -> str:
+        """Public helper for the /goal queue slash command (no argument)."""
+        if self._state is None:
+            return "(no active goal)"
+        if not self._state.queued_goals:
+            return "(queue empty — /goal queue <objective> lines one up behind the active goal)"
+        return "\n".join(f"- {i}. {text}" for i, text in enumerate(self._state.queued_goals, start=1))
+
+    def _promote_queued(self) -> Optional[GoalState]:
+        """When the active goal reached a terminal state and goals are queued, promote the next one.
+        Returns the promoted GoalState (fresh active goal), or None."""
+        if self._state is None or not self._state.queued_goals:
+            return None
+        if self._state.status not in ("done", "cleared"):
+            return None
+        next_goal = self._state.queued_goals.pop(0)
+        self._state = GoalState(
+            goal=next_goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
+            max_turns=self.default_max_turns,
+            queued_goals=self._state.queued_goals,
+        )
+        return self._save()
+
     # --- /subgoal user controls ---------------------------------------
 
     def add_subgoal(self, text: str) -> str:
@@ -1495,6 +1552,9 @@ class GoalManager:
         # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
         # of scope, needs user input). See #100954.
         if verdict == "blocked":
+            # The paused goal stays paused (recoverable via /goal resume); the queue is left intact
+            # for the user to manage — auto-replacing a judged-unachievable goal with the next one
+            # would silently discard the blocked objective.
             return self._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,
                 f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
@@ -1503,7 +1563,18 @@ class GoalManager:
         if verdict == "done":
             state.status = "done"
             self._save()
-            return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
+            decision = _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
+            promoted = self._promote_queued()
+            if promoted is not None:
+                decision["status"] = "active"
+                decision["verdict"] = "done"
+                decision["continuation_prompt"] = self.next_continuation_prompt()
+                decision["should_continue"] = True
+                decision["message"] = (
+                    f"✓ Previous goal achieved: {reason}\n"
+                    f"⊙ Queued goal now active ({len(promoted.queued_goals)} still queued): {promoted.goal}"
+                )
+            return decision
 
         # Persistent judge failures (API unreachable / unparseable output) auto-pause and point at the
         # goal_judge config so a broken judge can't burn the whole turn budget.

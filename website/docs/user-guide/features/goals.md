@@ -70,8 +70,22 @@ What you'll see:
 | `/goal gate` or `/goal gate list` | List the goal's gates and their pass/fail state. |
 | `/goal gate remove <N>` | Remove the Nth gate (1-based). |
 | `/goal gate clear` | Remove all gates. |
+| `/goal queue <text>` | Line a goal up behind the active one. When the active goal is judged done, the next queued goal is promoted automatically and its loop starts. With no active goal, sets it directly. |
+| `/goal queue` or `/goal queue list` | Show the queued goals. |
+| `/goal queue remove <N>` | Remove the Nth queued goal (1-based). |
+| `/goal queue clear` | Remove all queued goals. |
 
 The classic CLI, TUI, Desktop, dashboard chat, and messaging gateway use one shared `/goal` command handler. This includes draft/show, inline contracts, wait/unwait, quality gates, and the clear/stop/done aliases. Desktop goal controls use the same handler, too. ACP does not currently advertise or implement `/goal`.
+
+### Goal queue
+
+Setting a goal while one is already active **replaces** it — deliberate, so a typo or re-scope is one command. When you instead want the new objective to run *after* the current one finishes, queue it:
+
+```
+/goal queue publish the release notes
+```
+
+Queued goals wait while the active goal's loop runs. When the judge rules the active goal **done**, the first queued goal is promoted in place: it becomes the active goal with a fresh turn budget, and the continuation loop keeps going without a new message from you. A **blocked** or budget-exhausted goal pauses for your review and never silently swaps in the next queued goal — you decide with `/goal resume`, `/goal set`, or `/goal clear`.
 
 `/goal draft <text>` both creates the goal and starts its first turn, including when drafting is unavailable and Hermes falls back to a free-form goal. `draft` is a whole-word subcommand: `/goal drafting docs` keeps `drafting docs` as the literal objective without calling the draft model.
 

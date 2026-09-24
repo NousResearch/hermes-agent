@@ -60,7 +60,7 @@ def test_run_job_respects_report_floor(tmp_path, response, minimum, expected, no
         deliver.assert_not_called()
 
 
-def test_cli_floor_roundtrip_validation_and_reset(tmp_path):
+def test_cli_floor_roundtrip_validation_and_reset(tmp_path, capsys):
     import argparse
     from cron.jobs import get_job, list_jobs
     from hermes_cli.cron import cron_create, cron_edit
@@ -72,11 +72,15 @@ def test_cli_floor_roundtrip_validation_and_reset(tmp_path):
                               "--paused", "--min-response-chars", "20"])
     with patch("hermes_cli.cron._warn_if_gateway_not_running"):
         assert cron_create(args) == 0
+    assert "Minimum report length: 20 characters" in capsys.readouterr().out
     job = list_jobs(include_disabled=True)[0]
     assert job["min_response_chars"] == 20
     for value in ("10", "-1", "0"):
         args = parser.parse_args(["cron", "edit", job["id"], "--min-response-chars", value])
         assert cron_edit(args) == (1 if value == "-1" else 0)
+        printed = capsys.readouterr().out
+        if value == "10":
+            assert "Minimum report length: 10 characters" in printed
         assert get_job(job["id"])["min_response_chars"] == (10 if value == "-1" else int(value))
     from cron.jobs import create_job, update_job
     for bad in (True, -1, 1.5, "20"):

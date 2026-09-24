@@ -1,5 +1,5 @@
 """Regression tests for #100339: cloned / borrowed single-use Anthropic OAuth
-grants must never fork across profiles.
+grants must never fork across profiles, nor be rolled back by a stale pool.
 
 Real imports, real temp HERMES_HOME root + named profile, real auth.json I/O.
 The Anthropic token endpoint is replaced at the ``urllib.request.urlopen``
@@ -756,3 +756,50 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     _new_process(auth_mod)
     assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
     assert grants._oauth_heal_clean_mark_path().read_text() != marked
+
+
+# ── F. a stale pool never writes a spent pair back ───────────────────────
+#
+# Two live pools over one store (two cached gateway sessions, or two
+# processes): one rotates a row's single-use refresh token, the other still
+# holds the old pair in memory and persists its whole snapshot.
+
+@pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
+def test_stale_pool_write_keeps_the_pair_a_peer_rotated(fleet, borrowed):
+    from agent.credential_pool import load_pool
+
+    fleet["use"](_profile(fleet, "kid") if borrowed else fleet["root"])
+    stale, peer = load_pool("anthropic"), load_pool("anthropic")
+    assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
+
+    stale.mark_exhausted_and_rotate(status_code=429, credential_id="abc123")
+
+    assert fleet["rows"](fleet["root"])[0]["refresh_token"] == "sk-ant-ort-RT1"
+    refreshed = load_pool("anthropic").try_refresh_matching(credential_id="abc123")
+    assert refreshed is not None and refreshed.refresh_token == "sk-ant-ort-RT2"
+    assert [e[0] for e in fleet["server"]["log"]] == ["ROTATE", "ROTATE"], fleet["server"]["log"]
+
+
+def test_stale_pool_refresh_lands_without_rolling_back_the_peer(fleet):
+    """The stale pool's pre-refresh re-read adopts one peer-rotated row, and its next refresh
+    mints from that pair: the minted pair must land, and the other row must not revert."""
+    from agent.credential_pool import load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text())
+    rows = store["credential_pool"]["anthropic"]
+    rows.append(dict(rows[0], id="def456", label="second", priority=1,
+                     access_token="sk-ant-oat01-B0", refresh_token="sk-ant-ort-B0"))
+    (root / "auth.json").write_text(json.dumps(store))
+    fleet["server"]["valid"].add("sk-ant-ort-B0")
+    fleet["use"](root)
+
+    stale, peer = load_pool("anthropic"), load_pool("anthropic")
+    assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
+    assert peer.try_refresh_matching(credential_id="def456").refresh_token == "sk-ant-ort-RT2"
+    assert stale.try_refresh_matching(credential_id="def456").refresh_token == "sk-ant-ort-RT2"
+    assert stale.try_refresh_matching(credential_id="def456").refresh_token == "sk-ant-ort-RT3"
+
+    on_disk = {row["id"]: row["refresh_token"] for row in fleet["rows"](root)}
+    assert on_disk == {"abc123": "sk-ant-ort-RT1", "def456": "sk-ant-ort-RT3"}
+    assert [e[0] for e in fleet["server"]["log"]] == ["ROTATE"] * 3, fleet["server"]["log"]

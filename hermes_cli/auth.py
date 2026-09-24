@@ -29,7 +29,7 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
-from agent.credential_persistence import sanitize_borrowed_credential_payload
+from agent.credential_persistence import keep_rotated_disk_tokens, sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
@@ -957,16 +957,20 @@ def write_credential_pool(
     provider_id: str, entries: List[Dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
-) -> Path:
-    """Persist one provider's credential pool under auth.json.
+    token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Persist one provider's credential pool under auth.json; returns its rows as written.
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
     disk but missing from *entries* (added concurrently) are merged back unless in *removed_ids*,
     so a rotation/exhaustion rewrite never drops a concurrent credential. Entries in
     *status_cleared_ids* were cleared deliberately (``hermes auth reset``) and skip the
     recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
-    epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
+    epoch 0) as a stale snapshot and copy a still-binding cooldown back. *token_bases* maps an
+    entry id to the token pair the caller last read from or wrote to disk; an entry whose disk
+    pair moved since keeps the disk's tokens (``keep_rotated_disk_tokens``)."""
     removed = {rid for rid in (removed_ids or ()) if rid}
+    bases = token_bases or {}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = _store_section(auth_store, "credential_pool")
@@ -980,7 +984,8 @@ def write_credential_pool(
         status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = [
             _merge_disk_cooldown_state(
-                e, None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
+                keep_rotated_disk_tokens(e, existing_by_id.get(e.get("id")), bases.get(e.get("id"))),
+                None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
             )
             if isinstance(e, dict) else e
             for e in sanitized]
@@ -989,7 +994,8 @@ def write_credential_pool(
             if disk_id and disk_id not in new_ids and disk_id not in removed:
                 merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
         pool[provider_id] = merged
-        return _save_auth_store(auth_store)
+        _save_auth_store(auth_store)
+        return merged
 
 
 def _suppressed_source_list(suppressed: Dict[str, Any], provider_id: str) -> Optional[List[str]]:

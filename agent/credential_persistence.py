@@ -1,13 +1,14 @@
 """Credential-pool disk-boundary sanitization: strip raw secrets from *borrowed*
-pool entries before they reach ``auth.json``. Deliberately free of
-``hermes_cli.auth`` imports so the pool model and the auth-store write boundary
-share one policy without import cycles."""
+pool entries before they reach ``auth.json``, and never write a spent token pair
+over a newer rotation. Deliberately free of ``hermes_cli.auth`` imports so the
+pool model and the auth-store write boundary share one policy without import
+cycles."""
 
 from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 
 # Sources Hermes owns and may persist with secrets.  Any other non-empty,
@@ -114,3 +115,37 @@ def sanitize_borrowed_credential_payload(
     if fingerprint:
         sanitized["secret_fingerprint"] = fingerprint
     return sanitized
+
+
+# Fields one token refresh mints together; a row takes all of them from one side, never a mix.
+_TOKEN_FIELDS = (
+    "access_token", "refresh_token", "expires_at", "expires_at_ms", "expires_in", "obtained_at",
+    "last_refresh", "agent_key", "agent_key_expires_at", "agent_key_expires_in", "agent_key_id",
+    "agent_key_obtained_at", "agent_key_reused",
+)
+
+
+def token_pair(row: Any) -> Tuple[Any, Any]:
+    """``(access_token, refresh_token)`` of a pool row; ``(None, None)`` for a non-mapping."""
+    if not isinstance(row, Mapping):
+        return (None, None)
+    return (row.get("access_token"), row.get("refresh_token"))
+
+
+def keep_rotated_disk_tokens(
+    entry: Dict[str, Any], disk_entry: Any, base: Optional[Tuple[Any, Any]],
+) -> Dict[str, Any]:
+    """Keep the disk's token fields when its pair moved since the writer's *base*.
+
+    Pools write back a whole in-memory snapshot. When another pool instance (a second cached
+    session, another process) rotated this row's single-use refresh token after the snapshot was
+    read, the snapshot's pair is already spent upstream, and writing it back loses the login.
+    *base* is the pair the writer last read from or wrote to disk, so a disk pair that differs
+    from it was minted by someone else, while a pair the writer minted itself still lands. A
+    disk row without token material is never a rotation (a borrowed row keeps none on disk)."""
+    disk_pair = token_pair(disk_entry)
+    if base is None or not any(disk_pair) or disk_pair == base:
+        return entry
+    kept = {k: v for k, v in entry.items() if k not in _TOKEN_FIELDS}
+    kept.update((k, disk_entry[k]) for k in _TOKEN_FIELDS if k in disk_entry)
+    return kept

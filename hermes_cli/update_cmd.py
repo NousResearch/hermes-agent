@@ -188,10 +188,12 @@ def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
     terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
     try:
         return subprocess.run(
             git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
             text=True, encoding="utf-8", errors="replace", check=check,
+            creationflags=windows_hide_flags(),
             **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
     except subprocess.TimeoutExpired as exc:
         # subprocess.run already killed the child; the checkout stays consistent because

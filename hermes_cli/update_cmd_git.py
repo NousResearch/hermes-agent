@@ -13,12 +13,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
 _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
 
-_GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
+_GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    creationflags=windows_hide_flags())
 _BAR = "=" * 68
 _UPSTREAM_ADD_CMD = "git remote add upstream https://github.com/NousResearch/hermes-agent.git"
 

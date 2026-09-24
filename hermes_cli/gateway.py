@@ -86,6 +86,7 @@ from hermes_cli.gateway_service_unit import (  # noqa: F401 — resolved lazily 
     _refuse_temp_home_service_write,
     refresh_systemd_unit_if_needed,
 )
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -2025,6 +2026,7 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
         result = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return None

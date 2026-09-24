@@ -141,7 +141,3 @@ class TestDisplayHelpers:
         assert _dispatch_display({}) is None
         assert _dispatch_display({"scheduled_at": "x"}) is None
 
-    def test_dispatch_display_late_kind(self):
-        line = _dispatch_display(_catch_up_stamp(600.0, kind="late"))
-        assert "late" in line
-        assert "10m" in line

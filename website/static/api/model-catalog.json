@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-16T16:50:25Z",
+  "updated_at": "2026-09-23T07:20:37Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -18,6 +18,10 @@
         },
         {
           "id": "anthropic/claude-fable-5",
+          "description": ""
+        },
+        {
+          "id": "anthropic/claude-opus-5.5",
           "description": ""
         },
         {
@@ -69,27 +73,19 @@
           "description": "0.5x price, flex tier"
         },
         {
-          "id": "openai/gpt-5.6-sol",
+          "id": "openai/gpt-6-sol",
           "description": ""
         },
         {
-          "id": "openai/gpt-5.6-sol-pro",
+          "id": "openai/gpt-6-sol-pro",
           "description": ""
         },
         {
-          "id": "openai/gpt-5.6-terra",
+          "id": "openai/gpt-6-luna",
           "description": ""
         },
         {
-          "id": "openai/gpt-5.6-terra-pro",
-          "description": ""
-        },
-        {
-          "id": "openai/gpt-5.6-luna",
-          "description": ""
-        },
-        {
-          "id": "openai/gpt-5.6-luna-pro",
+          "id": "openai/gpt-6-luna-pro",
           "description": ""
         },
         {
@@ -114,6 +110,10 @@
         },
         {
           "id": "google/gemini-3.7-flash",
+          "description": ""
+        },
+        {
+          "id": "x-ai/grok-4.7",
           "description": ""
         },
         {
@@ -161,9 +161,25 @@
           "description": ""
         },
         {
+          "id": "z-ai/glm-5.3-flashx",
+          "description": "high-speed tier of glm-5.3-flash"
+        },
+        {
           "id": "z-ai/glm-5.2",
           "description": "default",
           "default": true
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-flash",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.5-pro",
@@ -264,6 +280,9 @@
           "id": "anthropic/claude-fable-5"
         },
         {
+          "id": "anthropic/claude-opus-5.5"
+        },
+        {
           "id": "anthropic/claude-opus-5"
         },
         {
@@ -294,22 +313,16 @@
           "id": "openai/gpt-6-astra-pro-flex"
         },
         {
-          "id": "openai/gpt-5.6-sol"
+          "id": "openai/gpt-6-sol"
         },
         {
-          "id": "openai/gpt-5.6-sol-pro"
+          "id": "openai/gpt-6-sol-pro"
         },
         {
-          "id": "openai/gpt-5.6-terra"
+          "id": "openai/gpt-6-luna"
         },
         {
-          "id": "openai/gpt-5.6-terra-pro"
-        },
-        {
-          "id": "openai/gpt-5.6-luna"
-        },
-        {
-          "id": "openai/gpt-5.6-luna-pro"
+          "id": "openai/gpt-6-luna-pro"
         },
         {
           "id": "openai/gpt-5.5"
@@ -328,6 +341,9 @@
         },
         {
           "id": "google/gemini-3.7-flash"
+        },
+        {
+          "id": "x-ai/grok-4.7"
         },
         {
           "id": "x-ai/grok-4.6"
@@ -363,8 +379,20 @@
           "id": "z-ai/glm-5.3-flash"
         },
         {
+          "id": "z-ai/glm-5.3-flashx"
+        },
+        {
           "id": "z-ai/glm-5.2",
           "default": true
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro"
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-flash"
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro-ultraspeed"
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"

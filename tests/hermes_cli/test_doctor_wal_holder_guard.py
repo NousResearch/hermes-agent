@@ -49,3 +49,30 @@ def test_wal_checkpoint_skipped_while_live_writer_holds_db(tmp_path):
 
     assert finding.fixed == 0
     assert any("gateway" in issue for issue in finding.issues)
+
+
+def test_doctor_names_retired_wal_holders_instead_of_healthy_state_db(tmp_path, monkeypatch, capsys):
+    """After the deleted-WAL guard fires (#110054), doctor must name the PIDs holding the retired
+    generation, must not print a healthy state.db line, and must not open the store itself (the
+    health probe is another opener) nor checkpoint under --fix."""
+    import hermes_cli.doctor as doctor
+    import hermes_cli.doctor_state as doctor_state
+    import hermes_state_dbfile
+
+    db = tmp_path / "state.db"
+    db.write_bytes(b"")
+    monkeypatch.setattr(doctor, "HERMES_HOME", tmp_path)
+    monkeypatch.setattr(hermes_state_dbfile, "iter_deleted_sqlite_sidecar_holders",
+                        lambda path: [(4242, f"{path}-wal"), (4242, f"{path}-shm")])
+    probed = []
+    monkeypatch.setattr(doctor_state, "_state_db_health", lambda *a, **k: probed.append(a))
+    monkeypatch.setattr(doctor_state, "_state_db_stats", lambda *a, **k: probed.append(a))
+    monkeypatch.setattr(doctor_state, "_state_db_wal", lambda *a, **k: probed.append(a))
+
+    finding = doctor_state._check_state_db(True)
+    out = capsys.readouterr().out
+
+    assert "4242" in out and "retired WAL" in out
+    assert "✓" not in out
+    assert probed == [] and finding.fixed == 0
+    assert any("4242" in issue and "gateway stop" in issue for issue in finding.issues)

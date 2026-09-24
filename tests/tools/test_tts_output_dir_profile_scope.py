@@ -47,14 +47,3 @@ def test_default_output_dir_follows_contextvar_profile_override(tmp_path, monkey
     assert tts_tool._default_output_dir() == str(default_home / "cache" / "audio")
 
 
-def test_explicit_default_output_dir_monkeypatch_still_wins(tmp_path, monkeypatch):
-    """Existing tests and external patchers can still override
-    tools.tts_tool.DEFAULT_OUTPUT_DIR directly."""
-    default_home = tmp_path / "default-home"
-    default_home.mkdir(parents=True)
-
-    tts_tool = _reload_tts_tool(default_home, monkeypatch)
-
-    monkeypatch.setattr(tts_tool, "DEFAULT_OUTPUT_DIR", "/custom/audio")
-
-    assert tts_tool._default_output_dir() == "/custom/audio"

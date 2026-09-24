@@ -259,7 +259,8 @@ class SkillsShSource(SkillSource):
         # One recursive tree lookup before brute-forcing every top-level dir
         # (avoids request bursts on categorized repos like borghei/claude-skills).
         found = (next((f for f in map(_match_in, self._STANDARD_BASE_PATHS) if f), None)
-                 or self.github._find_skill_in_repo_tree(repo, skill_token))
+                 or self.github._find_skill_in_repo_tree(repo, skill_token)
+                 or self.github._find_repo_root_skill(repo))
         if found:
             return found
 

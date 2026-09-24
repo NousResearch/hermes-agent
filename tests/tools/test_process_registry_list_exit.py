@@ -45,7 +45,7 @@ def _probe(root):
             session.notify_on_complete = True
         owner, sibling = sessions
         deadline = time.monotonic() + 5
-        while not all(s.output_buffer for s in sessions):
+        while not all(name + "-output" in s.output_buffer for name, s in zip(("owner", "sibling"), sessions)):
             assert time.monotonic() < deadline, "writers did not become ready"
             time.sleep(0.01)
         assert all(s.process.poll() is None for s in sessions)

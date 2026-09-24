@@ -15,13 +15,13 @@ PDF files: create, read, merge, fill, OCR, edit text.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\pdf` |
+| Path | `skills/productivity/pdf` |
 | Version | `1.1.0` |
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `pdf`, `documents`, `forms`, `ocr`, `text-extraction`, `reportlab`, `pypdf`, `pdfplumber`, `pymupdf`, `marker` |
-| Related skills | [`docx`](./productivity-docx.md), [`xlsx`](./productivity-xlsx.md), [`powerpoint`](./productivity-powerpoint.md) |
+| Related skills | [`docx`](../../bundled/productivity/productivity-docx.md), [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`powerpoint`](../../bundled/productivity/productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
 

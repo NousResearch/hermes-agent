@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -38,7 +38,7 @@ import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
+import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -239,6 +239,7 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
  * switchover UX is the connection-mode controls above this section.
  */
 export function ConnectionsRegistrySection() {
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const { t } = useI18n()
   const s = t.settings.connections
   const activeConnectionId = useStore($activeConnectionId)
@@ -652,8 +653,8 @@ export function ConnectionsRegistrySection() {
   }
 
   return (
-    <div className="mt-8 border-t border-border/60 pt-6">
-      <SectionHeading icon={Globe} title={s.title} />
+    <div className={hasBreadcrumb ? undefined : 'mt-8 border-t border-border/60 pt-6'}>
+      <SectionHeading icon={Globe} page title={s.title} />
       <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
       {/* Source selection lives in Sessions. Primary is the registry fallback,
           not an immediate workspace switch. */}

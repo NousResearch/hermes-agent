@@ -245,10 +245,12 @@ def _full_identifier(identifier: str, sources, c) -> str:
 
 def _resolve_identifier(identifier: str, sources, c) -> tuple:
     """Short-name resolution + (meta, bundle, source). identifier == "" means unresolved."""
-    identifier = _full_identifier(identifier, sources, c)
-    if not identifier:
-        return "", None, None, None
-    return (identifier, *_resolve_source_meta_and_bundle(identifier, sources))
+    from tools.skills_hub import skills_hub_http_session
+    with skills_hub_http_session():
+        identifier = _full_identifier(identifier, sources, c)
+        if not identifier:
+            return "", None, None, None
+        return (identifier, *_resolve_source_meta_and_bundle(identifier, sources))
 
 
 def _is_valid_installed_skill_name(name: str) -> bool:
@@ -675,7 +677,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere."""
-    from tools.skills_hub import HubLockFile, ensure_hub_dirs
+    from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
     c = console or _console
@@ -683,11 +685,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
         return
-    identifier = _full_identifier(identifier, sources, c)
-    if not identifier:
-        return
-    c.print(f"\n[bold]Fetching:[/] {identifier}")
-    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    # One pooled guarded client for the whole resolve + fetch fan-out (tree, SKILL.md, N support files).
+    with skills_hub_http_session():
+        identifier = _full_identifier(identifier, sources, c)
+        if not identifier:
+            return
+        c.print(f"\n[bold]Fetching:[/] {identifier}")
+        meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
         _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return

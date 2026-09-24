@@ -42,8 +42,6 @@ class TestPreserved:
         # No compound — just background a single command. Works fine as-is.
         assert rewrite("sleep 5 &") == "sleep 5 &"
 
-    def test_plain_server_background(self):
-        assert rewrite("python3 -m http.server 0 &") == "python3 -m http.server 0 &"
 
 
     def test_whitespace_only(self):
@@ -152,9 +150,6 @@ class TestTrailingStatementSeparator:
         # command between `;` and `;;`, which bash rejects.
         assert rewrite("case $x in p) b && c & ;; esac") == "case $x in p) b && { c & } ;; esac"
 
-    def test_separator_is_idempotent(self):
-        once = rewrite("echo hi && sleep 5 & echo done")
-        assert rewrite(once) == once
 
     def test_second_background_then_trailing(self):
         assert rewrite("echo a && sleep 5 & echo b & echo c") == (

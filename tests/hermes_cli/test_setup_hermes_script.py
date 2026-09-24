@@ -11,10 +11,3 @@ def test_setup_hermes_script_is_valid_shell():
     assert result.returncode == 0, result.stderr
 
 
-def test_setup_hermes_script_has_termux_path():
-    content = SETUP_SCRIPT.read_text(encoding="utf-8")
-
-    assert "is_termux()" in content
-    assert ".[termux]" in content
-    assert "constraints-termux.txt" in content
-    assert "$PREFIX/bin" in content

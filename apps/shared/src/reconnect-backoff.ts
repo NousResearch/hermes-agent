@@ -25,6 +25,18 @@ export interface ReconnectBackoffOptions {
 }
 
 const DEFAULT_BASE_DELAY_MS = 300
+/**
+ * A socket that opens and dies inside this window (an accept-then-close proxy, a gateway that
+ * refuses the first frame) counts as a FAILED attempt: resetting the ladder on every such
+ * "open" redials at attempt 0 forever (#83134: 55 sockets in 12 s).
+ */
+export const RECONNECT_STABLE_OPEN_MS = 5_000
+
+/** True when a socket opened at `openedAt` stayed up long enough to reset the backoff ladder. */
+export function isStableOpen(openedAt: number | null, now = Date.now()): boolean {
+  return openedAt !== null && now - openedAt >= RECONNECT_STABLE_OPEN_MS
+}
+
 const DEFAULT_CAP_MS = 15_000
 // 2 ** attempt overflows to Infinity long before it matters (attempt would
 // need to be ~1024) and Math.min against a finite cap keeps the ceiling sane

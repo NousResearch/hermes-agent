@@ -4,6 +4,7 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
+import { clearAllPrompts, clearClarifyRequest } from '@/store/prompts'
 import {
   $activeSessionId,
   $currentCwd,
@@ -284,6 +285,18 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
     if (runningChanged && sessionId) {
+      // The agent loop's finally block emits running=false even when a
+      // reconnect gap or provider crash swallowed message.complete — and
+      // message.complete is where the turn-end prompt clear lives. An
+      // approval left parked by that miss re-mounts the floating "needs
+      // approval" bar on a session whose turn is already finished, so treat
+      // the end of a turn we knew was live as an authoritative clear edge
+      // too (#86577). Bystander sessions keep their prompts: the clear is
+      // scoped to this sessionId.
+      if (!payload!.running && (knownState?.busy || knownState?.awaitingResponse)) {
+        clearAllPrompts(sessionId)
+        clearClarifyRequest(undefined, sessionId)
+      }
       // Set when THIS event releases a confirmed live turn whose terminal
       // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.

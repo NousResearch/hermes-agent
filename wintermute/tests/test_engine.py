@@ -753,3 +753,13 @@ def test_silence_is_free_when_wanted_and_piles_up_when_not(home):
     social.withhold(state, T0)
     social.open_outreach(state, {}, KEY, T0, "here", 30)
     assert state["meta"]["silent_streak"] == 0
+
+
+def test_the_local_terminal_is_the_operator_not_a_stranger(plugin):
+    plugin.hooks["pre_llm_call"](session_id="t1", user_message="yo", platform="cli", sender_id="")
+    assert "cli:local" not in _peers() and _peers()[KEY]["messages_from_them"] == 1
+    assert _drives()["modulators"]["adrenaline"] < 0.5          # no stranger jolt
+    from wintermute_engine import status
+    with store.locked_state() as (_, peers):
+        peers["cli:local"] = store.new_peer(T0)
+    assert "forgotten" in status.forget("cli:local") and "cli:local" not in _peers()

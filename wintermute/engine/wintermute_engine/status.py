@@ -5,6 +5,7 @@
     wm graph [h]    each value over the last h hours (48): its range, its average, where it is now
     wm alerts       what the witness saw, with his reasons
     wm ack [item]   accept the current state of watched files (all, or one: soul, engine...)
+    wm forget <peer>  erase one peer entirely (e.g. a test that registered as a stranger)
 
 Read-only except ``ack``. The physics is advanced in memory to "now" so the numbers are
 live; nothing is written. Wintermute never sees these numbers, only sensations.
@@ -220,6 +221,7 @@ def _temperament_rows(snap: Dict[str, Any]) -> List[str]:
     rows = [_title("TEMPERAMENT", "drift of resting levels")]
     for key, offset in (snap["drives"].get("temperament") or {}).items():
         layer, name = key.split(".", 1)
+        offset = round(offset, 2 if layer == "modulators" else 1) + 0.0   # no "-0.00"
         shown = f"{offset:+.2f}" if layer == "modulators" else f"{offset:+.1f}"
         rows.append(f"{name:<15}{shown:>6}" + dim(f"  of ±{physics.PLASTIC[layer][name]:g}"))
     return rows
@@ -410,6 +412,15 @@ def acknowledge(items: List[str]) -> str:
                  + " — the witness starts again from the current state")
 
 
+def forget(key: str) -> str:
+    with store.locked_state() as (drives, peers):
+        if key not in peers:
+            return f"no peer {key!r} (known: {', '.join(peers) or 'none'})"
+        del peers[key]
+        physics.refresh_oxytocin_global(drives, peers)
+    return green(f"forgotten: {key}")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -445,6 +456,8 @@ def main(args: List[str]) -> int:
         print(render_alerts())
     elif command == "ack":
         print(acknowledge(args[1:]))
+    elif command == "forget" and len(args) == 2:
+        print(forget(args[1]))
     elif command in ("", "full"):
         print(render_full())
     else:

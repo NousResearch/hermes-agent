@@ -121,6 +121,16 @@ def _keep_thread(drives: Dict[str, Any], session_id: str, response: Any, where: 
         drives["meta"]["thread"] = {"at": store.iso(ts), "where": where, "text": text[-400:]}
 
 
+def _peer_for(platform: str, sender_id: str) -> str:
+    """Who is talking. The local terminal (``hermes`` on the VPS) is only reachable as root:
+    that is the operator, the same person as the pulse target, not a stranger."""
+    if (platform or "cli") == "cli":
+        target = str(store.load_drives()["meta"].get("pulse_target") or "")
+        if target:
+            return target
+    return social.peer_key(platform or "cli", sender_id or "local")
+
+
 def _ok(**payload: Any) -> str:
     return json.dumps({"success": True, **payload}, ensure_ascii=False)
 
@@ -155,7 +165,7 @@ def _on_pre_llm_call(session_id: str = "", user_message: Any = None, platform: s
                     _pulse_sessions.add(session_id)
                     _can_feel.add(session_id)
             return None
-        key = social.peer_key(platform or "cli", sender_id or "local")
+        key = _peer_for(platform, sender_id)
         with _lock:
             _session_peer[session_id] = key
             _can_feel.add(session_id)

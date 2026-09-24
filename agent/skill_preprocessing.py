@@ -82,7 +82,9 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
         return f"[inline-shell exit {completed.returncode} with no output: {command}]"
     if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
+        from agent.compression_marker import elide_text
+
+        output = elide_text(output, _INLINE_SHELL_MAX_OUTPUT)
     return output
 
 

@@ -401,7 +401,9 @@ class TrajectoryCompressor:
             turn = trajectory[i]
             value = turn.get("value", "")
             if len(value) > 3000:
-                value = value[:1500] + "\n...[truncated]...\n" + value[-500:]
+                from agent.compression_marker import elide_text
+
+                value = elide_text(value, 1500, 500)
             parts.append(f"[Turn {i} - {turn.get('from', 'unknown').upper()}]:\n{value}")
         return "\n\n".join(parts)
 

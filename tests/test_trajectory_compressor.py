@@ -268,7 +268,7 @@ class TestExtractTurnContent:
             {"from": "tool", "value": "x" * 5000},
         ]
         content = tc._extract_turn_content_for_summary(trajectory, 0, 1)
-        assert "...[truncated]..." in content
+        assert "HERMES-CONTEXT-COMPRESSION" in content
         assert len(content) < 5000
 
     def test_empty_range(self):

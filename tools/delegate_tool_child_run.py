@@ -184,7 +184,9 @@ def _dump_subagent_timeout_diagnostic(
         dump_path = logs_dir / f"subagent-timeout-{subagent_id}-{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         _goal_preview = (goal or "").strip()
         if len(_goal_preview) > 1000:
-            _goal_preview = _goal_preview[:1000] + " ...[truncated]"
+            from agent.compression_marker import elide_text
+
+            _goal_preview = elide_text(_goal_preview, 1000)
         def _attr_line(attr):
             try:
                 return f"  {attr}: {getattr(child, attr, None)!r}"

@@ -177,7 +177,9 @@ def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
             if was_err:
                 bad_calls += 1
             if len(out) > 30000:
-                out = out[:30000] + "...[truncated]"
+                from agent.compression_marker import elide_text
+
+                out = elide_text(out, 30000)
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": out})
     return {

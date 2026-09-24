@@ -539,8 +539,8 @@ def test_refresh_error_body_bounded_and_readable_with_real_client():
     msg = str(exc_info.value)
     assert "invalid_grant" in msg
     assert exc_info.value.relogin_required is True
-    # Bounded: 16KB limit + truncation marker, never the full 64KB body.
+    # Bounded: 16KB limit + elision marker, never the full 64KB body.
     assert len(msg) < 20 * 1024
-    assert "...[truncated]" in msg
+    assert "HERMES-CONTEXT-COMPRESSION" in msg
 
 

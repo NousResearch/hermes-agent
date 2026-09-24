@@ -32,7 +32,11 @@ def _minimax_response_error_text(response: httpx.Response, *, limit: int = _MINI
     try:
         if getattr(response, "is_stream_consumed", False):
             text = response.text
-            return text[:limit] + ("...[truncated]" if len(text) > limit else "")
+            if len(text) > limit:
+                from agent.compression_marker import elide_text
+
+                return elide_text(text, limit)
+            return text
         # Read at most limit+1 bytes so truncation can be detected without buffering the whole body.
         chunks: list[bytes] = []
         total = 0
@@ -44,8 +48,12 @@ def _minimax_response_error_text(response: httpx.Response, *, limit: int = _MINI
             if total > limit:
                 break
         raw = b"".join(chunks)
-        text = raw[:limit].decode(response.encoding or "utf-8", errors="replace")
-        return text + ("...[truncated]" if len(raw) > limit else "")
+        if len(raw) > limit:
+            from agent.compression_marker import elide_text
+
+            full = raw.decode(response.encoding or "utf-8", errors="replace")
+            return elide_text(full, limit)
+        return raw.decode(response.encoding or "utf-8", errors="replace")
     finally:
         response.close()
 

@@ -29,3 +29,23 @@ _COMPRESSION_MARKER_RE = re.compile(
     .replace(re.escape("{omitted:,}"), r"\d[\d,]*")
     .replace(re.escape("{total:,}"), r"\d[\d,]*")
 )
+
+
+def elide_text(text: str, head_chars: int, tail_chars: int = 0) -> str:
+    """Elide ``text`` to ``head_chars`` (+ optional ``tail_chars``) with the non-imitable marker.
+
+    Central helper for #121572: every renderer that truncates model-visible text must call
+    this instead of open-coding a bare truncation marker, which models imitate
+    into new tool calls (#83714). Counts make each instance unique so copies go stale.
+    """
+    if _COMPRESSION_MARKER_PREFIX in text:
+        return text
+    total = len(text)
+    head = text[:head_chars]
+    omitted = total - head_chars - tail_chars
+    if omitted <= 0:
+        return text
+    marker = _COMPRESSION_MARKER_TEMPLATE.format(omitted=omitted, total=total)
+    if tail_chars > 0:
+        return head + marker + text[total - tail_chars :]
+    return head + marker

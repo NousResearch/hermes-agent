@@ -132,11 +132,12 @@ class TestSummarizeToolResultClarify:
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
-        # Strictly below the prune floor so a later prune pass can never
-        # re-summarize the preserved answer away (idempotency below).
-        assert len(summary) == _PRUNE_MIN_CHARS - 1
+        # Elided with the non-imitable marker (#121572); total stays small so a
+        # later prune pass can never re-summarize the preserved answer away.
+        assert len(summary) < 300
         assert summary.startswith('[clarify] user responded: "AAA')
-        assert summary.endswith("...[truncated]")
+        assert summary.endswith("\u27eb")
+        assert "HERMES-CONTEXT-COMPRESSION" in summary
         assert (
             _summarize_tool_result("clarify", "{}", summary)
             == "[clarify] asked user a question"
@@ -186,7 +187,10 @@ class TestSummarizeToolResultClarify:
         summary = pruned_messages[1]["content"]
 
         assert pruned_count == 1
-        assert len(summary) <= _PRUNE_MIN_CHARS
+        # #121572: non-imitable marker (~190 chars with counts) grows the summary
+        # past the old 200-char floor; functional invariants below still hold.
+        assert len(summary) <= _PRUNE_MIN_CHARS + 200
+        assert "HERMES-CONTEXT-COMPRESSION" in summary
         assert summary.encode("utf-8")
         assert "Привет 😀" in summary
         assert "\\ud83d" in summary

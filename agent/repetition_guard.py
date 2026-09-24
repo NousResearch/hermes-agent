@@ -9,6 +9,7 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 
 # Below this length the check doesn't run: short truncations trivially
@@ -55,7 +56,23 @@ def is_repetition_dominated(text: str) -> bool:
     if _line_repetition_dominated(text, n):
         return True
 
-    return _periodic_run_dominated(text, n)
+    # Window-count scan (#86581) catches loops whose repeats differ by a counter or noise token;
+    # the periodic scan catches long exact units whose 60-char windows each recur too rarely.
+    return _window_count_dominated(text, n) or _periodic_run_dominated(text, n)
+
+
+def _window_count_dominated(text: str, n: int) -> bool:
+    """True when one 60-char window recurs often enough to cover half of ``text``."""
+    window = _REPEAT_WINDOW
+    needed = max(_MIN_REPEAT_COUNT, math.ceil(n * _DOMINANCE_RATIO / window))
+    counts: dict[str, int] = {}
+    for i in range(n - window + 1):
+        key = text[i : i + window]
+        c = counts.get(key, 0) + 1
+        if c >= needed:
+            return True
+        counts[key] = c
+    return False
 
 
 def _periodic_run_dominated(text: str, n: int) -> bool:
@@ -79,6 +96,9 @@ def _periodic_run_dominated(text: str, n: int) -> bool:
     if sample_starts[-1] != max_start:
         sample_starts.append(max_start)
 
+    # Runs already expanded and rejected, as (left, right, period). A later anchor inside one of
+    # them whose period is a multiple of that run's period would re-walk the same run.
+    rejected: list[tuple[int, int, int]] = []
     for start in sample_starts:
         anchor = text[start : start + window]
         search_from = start + 1
@@ -87,20 +107,18 @@ def _periodic_run_dominated(text: str, n: int) -> bool:
             if match < 0:
                 break
             period = match - start
-            if _candidate_run_dominated(text, n, start, period, window):
-                return True
             search_from = match + 1
+            if any(lo <= start < hi and period % p == 0 for lo, hi, p in rejected):
+                continue
+            left, right = _expand_run(text, n, start, period, window)
+            if right - left >= _MIN_REPEAT_COUNT * period and right - left >= n * _DOMINANCE_RATIO:
+                return True
+            rejected.append((left, right, period))
     return False
 
 
-def _candidate_run_dominated(
-    text: str,
-    n: int,
-    start: int,
-    period: int,
-    matched: int,
-) -> bool:
-    """Expand one known equal window and judge its exact run coverage."""
+def _expand_run(text: str, n: int, start: int, period: int, matched: int) -> tuple[int, int]:
+    """Expand one known equal window to the ``[left, right)`` bounds of its exact periodic run."""
     left = start
     while left > 0 and text[left - 1] == text[left - 1 + period]:
         left -= 1
@@ -108,12 +126,7 @@ def _candidate_run_dominated(
     right = start + matched
     while right + period < n and text[right] == text[right + period]:
         right += 1
-
-    run_length = right + period - left
-    return (
-        run_length >= _MIN_REPEAT_COUNT * period
-        and run_length >= n * _DOMINANCE_RATIO
-    )
+    return left, right + period
 
 
 def is_runaway_repetition(text: str) -> bool:

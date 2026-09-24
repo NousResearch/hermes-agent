@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import random
 
+import pytest
+
 from agent.repetition_guard import MIN_FRAGMENT_LENGTH, is_repetition_dominated
 
 # The exact sentence from the #86581 incident (echoed hundreds of times by
@@ -35,7 +37,17 @@ class TestRepetitionGuard:
         for repeat_count in (100, 1_000, 10_000):
             assert is_repetition_dominated(paragraph * repeat_count) is True
 
-    def test_dominant_run_with_unique_prefix_and_suffix_flags(self):
+    @pytest.mark.parametrize("shape", ["unique_prefix_suffix", "counter_loop"])
+    def test_dominant_run_with_unique_prefix_and_suffix_flags(self, shape):
+        if shape == "counter_loop":
+            # A changing counter breaks exact periodicity; main's window scan (#86581) must
+            # still flag it.
+            text = "".join(
+                f"Step {i}: I will now carefully re-check the configuration file for the error again.\n"
+                for i in range(200)
+            )
+            assert is_repetition_dominated(text) is True
+            return
         paragraph = (
             "A deliberately long repeated paragraph has enough distinct text "
             "to make its period exceed the guard's minimum anchor length.\n"

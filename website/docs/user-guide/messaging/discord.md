@@ -399,9 +399,15 @@ When enabled, the bot only responds in server channels when directly `@mentioned
 
 **Type:** boolean — **Default:** `false`
 
-By default, once the bot has participated in a thread (auto-created on `@mention` or replied in once), it keeps responding to every subsequent message in that thread without needing to be `@mentioned` again. That's the right default for one-on-one conversations.
+By default, once the bot joins a thread, follow-up requests do not require another `@mention`.
 
-In **multi-bot threads** where users address one bot per turn, this default becomes a footgun — every other bot in the thread also fires on every message, burning credits and spamming the channel. Set `thread_require_mention: true` to disable the in-thread shortcut and gate threads the same way channels are gated. Explicit `@mentions` still work as before.
+With history backfill enabled, unaddressed human messages in joined threads receive a contextual attention check before they can interrupt a task or start a reply. Clear human-to-human FYIs stay as thread context. Explicit bot mentions, replies to the bot, commands, attachments, and DMs bypass this judgment. Uncertain judgments and unavailable classifiers admit the message normally, so a mention is not required for genuine requests.
+
+The check uses `auxiliary.discord_contextual_quiet` through the existing auxiliary model resolver (the normal automatic route unless configured). It may add up to ten seconds for model judgment. Only the exact `CONTEXT_ONLY` verdict suppresses a turn. Subsequent requests include up to 20 recent thread messages, capped by `history_backfill_limit`, including conversation before the bot's latest response. Disabling history backfill disables the attention check.
+
+In shared Discord conversations, a successful agent turn may also choose exactly `NO_REPLY`; this is intentional silence, not an empty-output error. DMs retain their normal reply behavior.
+
+For multi-bot setups that need an explicit mention gate, set `thread_require_mention: true`:
 
 ```yaml
 discord:
@@ -553,7 +559,7 @@ discord:
   history_backfill: false
 ```
 
-> **Note:** Messages that arrive *while* the bot is processing (between a trigger and its response) are not captured. This is an accepted simplification — the user can re-send or tag again.
+> **Note:** Joined threads retain recent human conversation as context for the next request, including messages posted while the bot was working. The history window is bounded; it is not a complete archive.
 
 #### `discord.history_backfill_limit`
 

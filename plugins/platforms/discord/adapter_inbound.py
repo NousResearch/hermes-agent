@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 from gateway.platforms.event import MessageEvent, MessageType
+
+if TYPE_CHECKING:
+    from discord import Message as DiscordMessage
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
@@ -225,6 +229,9 @@ class DiscordInboundMixin:
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+        from plugins.platforms.discord.contextual_quiet import prepare_thread_turn
+        if not await prepare_thread_turn(self, event, explicitly_addressed=mention_prefix):
+            return False
         if (
             getattr(getattr(message, "author", None), "bot", False)
             and self._is_bot_tag_debounce_continuation(message)
@@ -240,4 +247,3 @@ class DiscordInboundMixin:
         else:
             await self.handle_message(event)
         return True
-

@@ -29,7 +29,7 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 )
 
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
-# machinery kind the gateway produces; only these may vanish on a bare silence marker.
+# machinery kind the gateway produces. Shared conversation silence is separate policy below.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
 
@@ -114,13 +114,26 @@ def display_kind_for_event(event: Any) -> str | None:
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:
-    """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
+    """Identify machinery independently of the surface's intentional-silence policy.
 
     The caller passes the current turn's persisted display kind instead of inferring it from the
     transcript: the inbound user row is not persisted yet, and a previous internal row must never
     authorize silence on a human turn.
     """
     return display_kind in MACHINERY_DISPLAY_KINDS
+
+
+def allows_intentional_silence(source: Any, display_kind: Any) -> bool:
+    """Shared Discord conversations can contain human turns requiring no bot reply.
+
+    DMs and other interactive surfaces retain their visible failure fallback.
+    This policy only applies after a successful, exact silence-marker result.
+    """
+    platform = getattr(source, "platform", None)
+    return is_machinery_display_kind(display_kind) or (
+        getattr(platform, "value", platform) == "discord"
+        and getattr(source, "chat_type", None) in {"group", "thread"}
+    )
 
 
 def is_partial_silence_marker(text: Any) -> bool:

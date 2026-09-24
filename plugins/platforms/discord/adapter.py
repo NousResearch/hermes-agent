@@ -2552,7 +2552,7 @@ class DiscordAdapter(DiscordInboundMixin, DiscordMediaMixin, BasePlatformAdapter
             # "discovered" only says the scan saw the row: it never overwrites a completed row or an
             # in-flight claim (queued/processing) — the active-claim guard reads that status and its
             # original updated_at, so a died dispatch still expires after the 10-minute window.
-            keep = bool(existing) and (existing[0] == "responded" or status == "discovered")
+            keep = bool(existing) and (existing[0] in {"responded", "context_only"} or status == "discovered")
             final_status = existing[0] if keep else status
             updated_at = (existing[1] or now) if keep else now
             conn.execute(
@@ -2701,7 +2701,7 @@ class DiscordAdapter(DiscordInboundMixin, DiscordMediaMixin, BasePlatformAdapter
             if not row:
                 return False
             status, replied, outage = row
-            return status == "responded" and bool(replied) and not bool(outage)
+            return status == "context_only" or (status == "responded" and bool(replied) and not bool(outage))
         return bool(self._with_discord_recovery_db(_op, default=False))
 
     def _discord_message_has_active_claim(self, message_id: str) -> bool:

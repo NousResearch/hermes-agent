@@ -760,10 +760,12 @@ class GatewayStartupMixin:
     def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
-        silence marker on a machinery turn, a muted diagnostic wake); else the text to send, with a
-        human turn's bare silence marker replaced by the same notice the live path sends."""
+        permitted silence marker, a muted diagnostic wake); else the text to send, with a
+        disallowed silence marker replaced by the same notice the live path sends."""
         from gateway.platforms.base import _strip_media_directives
-        from gateway.response_filters import is_intentional_silence_response, is_machinery_display_kind
+        from gateway.response_filters import (
+            allows_intentional_silence, is_intentional_silence_response, is_machinery_display_kind,
+        )
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
         from gateway.warning_notifications import diagnostic_turn_muted
@@ -785,7 +787,7 @@ class GatewayStartupMixin:
                 if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform):
                     return ""
         if is_intentional_silence_response(last["content"]):
-            return "" if machinery else _UNEXPECTED_SILENCE_REPLY
+            return "" if allows_intentional_silence(origin, prompt.get("display_kind")) else _UNEXPECTED_SILENCE_REPLY
         return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, last["content"])).strip() or None
 
     @staticmethod

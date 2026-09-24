@@ -25,6 +25,7 @@ import { useNavigate } from 'react-router'
 
 import type { ProfileScope } from '@/api/client'
 import { CodeEditor } from '@/components/chat/code-editor'
+import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
@@ -822,7 +823,7 @@ function ProfileDropdown({
             <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
               <ConnectionGlyph connection={group} />
               <span className="truncate">{group.label}</span>
-              {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
+              {!group.reachable && <StatusDot tone="warn" />}
             </DropdownMenuLabel>
             {[group.defaultAgent, ...group.named].map(agent => (
               <ProfileLaunchContextMenu
@@ -980,7 +981,7 @@ function FleetDivider({
     >
       {!first && <span className="h-3 w-px bg-(--ui-stroke-tertiary)" />}
       <ConnectionGlyph connection={connection} />
-      {!reachable && <span className="size-1.5 rounded-full bg-amber-500" data-slot="profile-rail-unreachable" />}
+      {!reachable && <StatusDot data-slot="profile-rail-unreachable" tone="warn" />}
     </span>
   )
 

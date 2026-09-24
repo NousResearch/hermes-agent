@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { StatusDot } from '@/components/status-dot'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -20,7 +21,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
-import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from '../../cron/job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_TONE } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -362,14 +363,7 @@ function CronJobSidebarRow({
               onClick={onTogglePeek}
             >
               <SidebarRowLead>
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    'size-1 rounded-full',
-                    STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
-                    state === 'running' && 'size-1.5 animate-pulse'
-                  )}
-                />
+                <StatusDot className={state === 'running' ? 'animate-pulse' : undefined} tone={STATE_TONE[state] ?? 'muted'} />
               </SidebarRowLead>
               <SidebarRowLabel className="group-hover/cron:text-foreground">{label}</SidebarRowLabel>
               <DisclosureCaret

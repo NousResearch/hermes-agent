@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -206,7 +207,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
                 <ConnectionGlyph connection={group} />
                 <span className="truncate">{group.label}</span>
                 {!group.reachable && (
-                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+                  <StatusDot tone="warn" />
                 )}
               </DropdownMenuLabel>
               {[group.defaultAgent, ...group.named].map(agent => (

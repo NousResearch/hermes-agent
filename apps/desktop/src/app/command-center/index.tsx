@@ -3,6 +3,7 @@ import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRe
 
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
+import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { SearchField } from '@/components/ui/search-field'
@@ -440,12 +441,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     <div className="flex items-start justify-between gap-3 max-[47.5rem]:flex-col max-[47.5rem]:gap-2">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              'size-2 shrink-0 rounded-full',
-                              status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
-                            )}
-                          />
+                          <StatusDot tone={status.gateway_running ? 'good' : 'warn'} />
                           <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
                             {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
                           </span>

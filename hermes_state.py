@@ -1620,11 +1620,12 @@ class SessionDB(
         gate = f"kanban_worker_source_retagged:{prefix}"
         if self.get_meta(gate) == "1":
             return 0
+        from hermes_state_sessions import _cwd_prefix_clause
+        cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
         def _do(conn):
             cursor = conn.execute(
-                "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, _escape_like(prefix) + "/%"),
+                f"UPDATE sessions AS s SET source = 'kanban' WHERE s.source = 'cli' AND {cwd_clause}",
+                cwd_params,
             )
             # rowcount BEFORE set_meta reuses this cursor for its INSERT.
             retagged = cursor.rowcount or 0

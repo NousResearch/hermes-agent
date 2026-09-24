@@ -53,12 +53,12 @@ def _parse_model_config(raw: Any) -> Dict[str, Any]:
 
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
-    # prefix also matches sibling directories. The ``=`` arm keeps the raw prefix.
-    esc = _escape_like(prefix)
+    # LIKE folds ASCII case even with escaped wildcards, crossing case-distinct
+    # workspaces during resume/archive/prune. Match literal, separator-bounded
+    # prefixes with the same case sensitivity as the exact-directory arm.
     return (
-        "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
+        "(s.cwd = ? OR instr(s.cwd, ?) = 1 OR instr(s.cwd, ?) = 1)",
+        [prefix, f"{prefix}/", f"{prefix}\\"],
     )
 
 

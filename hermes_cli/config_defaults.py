@@ -2222,6 +2222,10 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Optional root for durable deliverables. When set, each root conversation exposes
+        # <artifacts_dir>/<session-id>/artifacts as HERMES_SESSION_ARTIFACTS_DIR; child sessions inherit it.
+        # Directories are created by the first writer, never at session startup.
+        "artifacts_dir": "",
         # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
         # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a

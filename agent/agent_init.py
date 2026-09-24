@@ -1148,6 +1148,14 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     agent.session_start = datetime.now()
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
+    from agent.session_artifacts import resolve_session_artifacts_dir
+    agent.session_artifacts_dir = resolve_session_artifacts_dir(agent.session_id, parent_session_id)
+    try:
+        from gateway.session_context import set_session_artifacts_dir
+        set_session_artifacts_dir(agent.session_artifacts_dir)
+    except Exception:
+        if agent.session_artifacts_dir:
+            os.environ["HERMES_SESSION_ARTIFACTS_DIR"] = agent.session_artifacts_dir
 
     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.
     agent.logs_dir = get_hermes_home() / "sessions"

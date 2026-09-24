@@ -1,8 +1,45 @@
+from gateway.config import Platform
+from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
+    INTERNAL_NOTIFICATION_DISPLAY_KIND,
+    display_kind_for_event,
     is_autonomous_silence_response,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
+    is_machinery_display_kind,
 )
+from gateway.session import SessionSource
+
+
+def test_webhook_route_event_is_machinery_but_a_human_turn_is_not():
+    """A webhook route is built by the adapter after HMAC auth. It must count as
+    machinery so a bare silence marker is not rewritten into the user-facing
+    warning. A human platform, and the separate Microsoft Graph webhook, stay
+    ordinary turns."""
+    webhook = MessageEvent(
+        text="[SILENT]",
+        source=SessionSource(
+            platform=Platform.WEBHOOK,
+            chat_id="webhook:mail:delivery-1",
+            chat_type="webhook",
+            user_id="webhook:mail",
+        ),
+    )
+    kind = display_kind_for_event(webhook)
+    assert kind == INTERNAL_NOTIFICATION_DISPLAY_KIND
+    assert is_machinery_display_kind(kind)
+
+    human = MessageEvent(
+        text="[SILENT]",
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm"),
+    )
+    assert display_kind_for_event(human) is None
+
+    graph = MessageEvent(
+        text="[SILENT]",
+        source=SessionSource(platform=Platform.MSGRAPH_WEBHOOK, chat_id="g1", chat_type="dm"),
+    )
+    assert display_kind_for_event(graph) is None
 
 
 def test_exact_silence_tokens_are_intentional_silence():

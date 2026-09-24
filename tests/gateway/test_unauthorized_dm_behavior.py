@@ -486,3 +486,31 @@ def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
         assert store.has_recent_decline("telegram", "67890") is False
         with _patch("gateway.pairing.time.time", return_value=time.time() + pairing_mod.DECLINE_DEDUPE_SECONDS + 1):
             assert store.has_recent_decline("telegram", "12345") is False
+
+
+@pytest.mark.asyncio
+async def test_dm_from_sibling_profile_bot_is_not_treated_as_a_stranger(monkeypatch):
+    """A multiplex gateway serves every profile's bot. When one profile's Signal bot DMs the
+    account another profile listens on (its home channel is the owner's number), that sender is
+    this gateway's own adapter — never a stranger to report to the home channel, pair or decline.
+    A genuinely unknown sender on the same runner still reaches the stranger path."""
+    from gateway.platforms.signal import SignalAdapter
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15550000001")  # owner only; sibling bot not listed
+    sibling_cfg = PlatformConfig(enabled=True)
+    sibling_cfg.extra = {"http_url": "http://localhost:8080", "account": "+15550000002"}
+    sibling_bot = SignalAdapter(sibling_cfg)
+
+    config = GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)})
+    runner, adapter = _make_runner(Platform.SIGNAL, config)
+    runner._profile_adapters = {"latourette": {Platform.SIGNAL: sibling_bot}}
+    runner._hm_report_ignored_dm = AsyncMock()
+
+    assert await runner._handle_message(_make_event(Platform.SIGNAL, "+15550000002", "+15550000002")) is None
+    runner._hm_report_ignored_dm.assert_not_awaited()
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+    assert await runner._handle_message(_make_event(Platform.SIGNAL, "+15559999999", "+15559999999")) is None
+    runner._hm_report_ignored_dm.assert_awaited_once()

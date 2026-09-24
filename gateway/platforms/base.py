@@ -1999,6 +1999,12 @@ class BasePlatformAdapter(ABC):
         ABSENT — every network-exposed direct adapter leaves it False."""
         return False
 
+    def is_own_identity(self, user_id: Optional[str]) -> bool:
+        """Whether *user_id* is the account this adapter itself sends as. One gateway serving
+        several profiles sees each profile's bot DM the others (a sibling's home channel is the
+        owner's own account); the runner uses this to keep that traffic out of the stranger path."""
+        return False
+
     def supports_draft_streaming(
         self, chat_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
         chat_id: Optional[str] = None) -> bool:

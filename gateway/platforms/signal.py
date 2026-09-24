@@ -525,6 +525,11 @@ class SignalAdapter(BasePlatformAdapter):
         return bool(acct) and (author == acct or author == self._recipient_uuid_by_number.get(acct)
                                or self._recipient_number_by_uuid.get(author) == acct)
 
+    def is_own_identity(self, user_id: Optional[str]) -> bool:
+        acct = self._account_normalized
+        uid = str(user_id or "").strip()
+        return bool(acct and uid) and (uid == acct or uid == self._recipient_uuid_by_number.get(acct))
+
     def _remember_sent_message_timestamp(self, timestamp: Any) -> None:
         """Keep a bounded cache of outbound Signal timestamps for quote matching."""
         if timestamp is None:

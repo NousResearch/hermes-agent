@@ -125,9 +125,22 @@ def test_frames_play_through_grows_visibility():
         assert fr["grid"]
 
 
+def test_memory_rows_carry_their_card_body_for_fingerprinted_ids(tmp_path, monkeypatch):
+    """The chart looks a memory card up by node id. Node ids carry the card's fingerprint, so a
+    lookup keyed on the bare `memory:<source>:<index>` shape would render every body empty."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_constants
 
+    monkeypatch.setattr(hermes_constants, "_cached_default_hermes_root", None, raising=False)
+    memories = tmp_path / "memories"
+    memories.mkdir(parents=True)
+    (memories / "MEMORY.md").write_text("alpha note\n§\nbeta note", encoding="utf-8")
 
+    from agent.learning_graph import build_learning_graph
+    from agent.learning_graph_render import render_frames
 
+    payload = build_learning_graph()
+    rows = [n for bucket in render_frames(payload, cols=80, rows=24, frames=1)["buckets"] for n in bucket["nodes"]]
 
-
-
+    assert [n["id"].count(":") for n in rows] == [3, 3]
+    assert sorted(n["body"] for n in rows) == ["alpha note", "beta note"]

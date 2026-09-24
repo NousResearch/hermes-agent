@@ -380,7 +380,10 @@ TOOL_CATEGORIES = {
 # Env-var fallback for toolsets NOT in TOOL_CATEGORIES. `vision` is only a presence marker (reconfigure menu +
 # "[no API key]" suffix): setup runs `_configure_vision_backend()` and `_toolset_has_keys("vision")` uses
 # `resolve_vision_provider_client()` — never forcing OpenRouter.
-TOOLSET_ENV_REQUIREMENTS = {"vision": [("OPENROUTER_API_KEY", "https://openrouter.ai/keys")]}
+TOOLSET_ENV_REQUIREMENTS = {
+    "vision": [("OPENROUTER_API_KEY", "https://openrouter.ai/keys")],
+    "skills": [("GITHUB_TOKEN", "https://github.com/settings/tokens")],
+}
 
 # --- Platform / Toolset Helpers ---
 _PLATFORM_ENABLE_ENV_VARS = (

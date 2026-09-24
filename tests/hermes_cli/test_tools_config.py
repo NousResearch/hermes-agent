@@ -26,6 +26,25 @@ from hermes_cli.tools_config import (
 )
 
 
+def test_skills_hub_setup_offers_token_and_gh_auth_paths(monkeypatch, capsys):
+    """Skills Hub setup must tell users how to use either supported GitHub auth source."""
+    from hermes_cli.tools_config import _configure_simple_requirements
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    prompts = []
+    monkeypatch.setattr(
+        "hermes_cli.tools_config_providers._prompt_secret",
+        lambda *args, **kwargs: prompts.append((args, kwargs)),
+    )
+
+    _configure_simple_requirements("skills")
+
+    assert prompts[0][0][:3] == (
+        "GITHUB_TOKEN", "GITHUB_TOKEN", "https://github.com/settings/tokens",
+    )
+    assert "gh auth login" in capsys.readouterr().out
+
+
 
 
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):

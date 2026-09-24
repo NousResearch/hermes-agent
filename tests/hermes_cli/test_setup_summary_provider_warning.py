@@ -12,6 +12,42 @@ from hermes_cli.auth import AuthError
 from hermes_cli import nous_subscription
 
 
+def test_skills_hub_summary_accepts_gh_cli_auth(monkeypatch):
+    """A keyring-backed ``gh auth login`` is enough for Skills Hub access."""
+    from hermes_cli import setup
+    from hermes_cli.setup_summary import _skills_hub_row
+
+    monkeypatch.setattr(setup, "get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.doctor_state._gh_authenticated", lambda: True)
+
+    assert _skills_hub_row({}, None) == ("Skills Hub (GitHub)", True, None)
+
+
+def test_skills_hub_summary_accepts_github_token(monkeypatch):
+    """A configured token remains the primary Skills Hub auth path."""
+    from hermes_cli import setup
+    from hermes_cli.setup_summary import _skills_hub_row
+
+    monkeypatch.setattr(setup, "get_env_value", lambda key: "github-token")
+    monkeypatch.setattr(
+        "hermes_cli.doctor_state._gh_authenticated",
+        lambda: (_ for _ in ()).throw(AssertionError("token auth must not invoke gh")),
+    )
+
+    assert _skills_hub_row({}, None) == ("Skills Hub (GitHub)", True, None)
+
+
+def test_skills_hub_summary_reports_missing_auth(monkeypatch):
+    """The summary remains unavailable when neither supported auth source exists."""
+    from hermes_cli import setup
+    from hermes_cli.setup_summary import _skills_hub_row
+
+    monkeypatch.setattr(setup, "get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.doctor_state._gh_authenticated", lambda: False)
+
+    assert _skills_hub_row({}, None) == ("Skills Hub (GitHub)", False, "GITHUB_TOKEN or gh auth login")
+
+
 def _summary_output(capsys, provider_ready: bool):
     from hermes_cli import setup as setup_mod
 

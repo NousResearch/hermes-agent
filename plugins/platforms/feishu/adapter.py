@@ -63,7 +63,7 @@ _LARK_SDK_IMPORTS = (
     ("lark_oapi.api.application.v6", ("GetApplicationRequest",)),
     ("lark_oapi.api.im.v1", (
         "CreateFileRequest", "CreateFileRequestBody", "CreateImageRequest", "CreateImageRequestBody",
-        "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
+        "CreateMessageRequest", "CreateMessageRequestBody", "DeleteMessageRequest", "GetChatRequest", "GetMessageRequest",
         "GetMessageResourceRequest", "P2ImMessageMessageReadV1", "ReplyMessageRequest", "ReplyMessageRequestBody",
         "UpdateMessageRequest", "UpdateMessageRequestBody",
     )),
@@ -1711,8 +1711,16 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             msg_type, payload = self._build_outbound_payload(content)
             result = await _update(msg_type, payload)
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and msg_type == "post":
+                # The wording of a post-content rejection is not stable across Feishu's
+                # validation changes, and matching one exact string here strands the edit
+                # channel: the stream consumer then falls back to a fresh send and the
+                # frozen preview duplicates the reply. Retry any rejected post update as
+                # plain text so the in-place edit survives.
+                logger.warning(
+                    "[Feishu] Post update rejected by API (%s); retrying update as plain text",
+                    result.error,
+                )
                 result = await _update(
                     "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
                 )
@@ -1722,6 +1730,23 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a bot-sent message so stream-preview cleanup can remove frozen partials.
+
+        Without this override the base adapter reports "no deletion API" and the stream
+        consumer's fresh-final / fallback-final preview cleanup silently no-ops, leaving a
+        truncated streaming preview next to the completed reply.
+        """
+        if not self._client:
+            return False
+        try:
+            request = _sdk_build(DeleteMessageRequest, message_id=message_id)
+            response = await self._run_blocking(self._client.im.v1.message.delete, request)
+            return self._response_succeeded(response)
+        except Exception as e:
+            logger.debug("[Feishu] Failed to delete message %s in chat %s: %s", message_id, chat_id, e)
+            return False
 
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.

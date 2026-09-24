@@ -272,6 +272,90 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_falls_back_to_text_for_any_post_update_failure(self):
+        # A post-type update rejection with NON-canonical wording (Feishu's validation
+        # messages are not stable) must still retry as plain text: matching one exact
+        # error string strands the edit channel and the stream consumer then delivers
+        # a duplicate fresh send next to the frozen preview (#121108).
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(
+                        success=lambda: False, code=230001,
+                        msg="some other validation wording entirely")
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="可以用 **粗体** 和 *斜体*。",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_delete_message_deletes_via_sdk_and_returns_true(self):
+        # The stream consumer's fresh-final / fallback-final cleanup calls
+        # delete_message; without the override the base adapter answers False and
+        # a frozen streaming preview stays on screen next to the completed reply.
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"requests": []}
+
+        class _MessageAPI:
+            def delete(self, request):
+                captured["requests"].append(request)
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        deleted = asyncio.run(adapter.delete_message("oc_chat", "om_preview"))
+
+        self.assertTrue(deleted)
+        self.assertEqual(len(captured["requests"]), 1)
+        self.assertEqual(captured["requests"][0].message_id, "om_preview")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_delete_message_swallows_failures_and_returns_false(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _ExplodingMessageAPI:
+            def delete(self, request):
+                raise RuntimeError("boom")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_ExplodingMessageAPI())))
+        self.assertFalse(asyncio.run(adapter.delete_message("oc_chat", "om_preview")))
+
+        # No client connected → not deletable, still no raise.
+        adapter._client = None
+        self.assertFalse(asyncio.run(adapter.delete_message("oc_chat", "om_preview")))
+
 
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):

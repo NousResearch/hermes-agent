@@ -180,7 +180,7 @@ def _model_title_upgrade_enabled() -> bool:
 def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
-    A ``custom`` / ``custom:<name>`` / ``lmstudio`` main route (llama.cpp, Ollama, vLLM, LM Studio…)
+    A self-hosted main route (``_is_self_hosted_provider``: custom, lmstudio, local and their aliases)
     whose ``auxiliary.title_generation`` is not pinned elsewhere (a pin naming the same custom route —
     ``custom:<name>``, bare ``<name>`` or its display name — is not "elsewhere", #120558)
     shares one local server between the streaming main request and the

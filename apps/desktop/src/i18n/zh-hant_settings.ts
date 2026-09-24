@@ -52,6 +52,7 @@ export const zhHantSettings = {
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
       gatewayManagedUpdatesEmpty: '請在已儲存的連線中新增 SSH 連線，即可在此管理更新。',
       keyboardShortcuts: '按鍵繫結',
+      sendBehavior: '傳送行為',
       hudGesture: 'HUD 手勢',
       screenCapture: '螢幕擷取',
       notificationAlerts: '桌面通知',

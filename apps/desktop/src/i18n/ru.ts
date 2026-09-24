@@ -494,6 +494,7 @@ export const ru = defineLocale({
       gatewayManagedUpdatesUnavailable: 'Нужна версия приложения с поддержкой управляемых обновлений SSH.',
       gatewayManagedUpdatesEmpty: 'Добавьте SSH в сохранённые подключения, чтобы управлять его обновлениями здесь.',
       keyboardShortcuts: 'Назначения клавиш',
+      sendBehavior: 'Поведение отправки',
       hudGesture: 'Жест HUD',
       screenCapture: 'Захват экрана',
       notificationAlerts: 'Системные уведомления',

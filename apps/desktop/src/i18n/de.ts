@@ -848,6 +848,7 @@ export const deOverrides = {
       gatewayManagedUpdatesEmpty:
         'Fügen Sie unter „Gespeicherte Verbindungen“ eine SSH-Verbindung hinzu, um deren Updates hier zu verwalten.',
       keyboardShortcuts: 'Tastenbelegung',
+      sendBehavior: 'Sende-Verhalten',
       hudGesture: 'HUD-Geste',
       screenCapture: 'Bildschirmaufnahme',
       notificationAlerts: 'Desktop-Hinweise',

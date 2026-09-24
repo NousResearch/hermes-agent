@@ -849,6 +849,7 @@ export const esOverrides = {
       gatewayManagedUpdatesEmpty:
         'Añade una conexión SSH en Conexiones guardadas para gestionar sus actualizaciones aquí.',
       keyboardShortcuts: 'Atajos de teclado',
+      sendBehavior: 'Comportamiento de envío',
       hudGesture: 'Gesto del HUD',
       screenCapture: 'Captura de pantalla',
       notificationAlerts: 'Alertas de escritorio',

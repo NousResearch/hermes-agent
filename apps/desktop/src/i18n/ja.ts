@@ -426,6 +426,7 @@ export const ja = defineLocale({
       gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',
       gatewayManagedUpdatesEmpty: '保存済みの接続に SSH 接続を追加すると、ここで更新を管理できます。',
       keyboardShortcuts: 'キー割り当て',
+      sendBehavior: '送信の動作',
       hudGesture: 'HUDジェスチャー',
       screenCapture: '画面キャプチャ',
       notificationAlerts: 'デスクトップ通知',

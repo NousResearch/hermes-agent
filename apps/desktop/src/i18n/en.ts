@@ -898,6 +898,7 @@ export const en: Translations = {
       gatewayManagedUpdatesUnavailable: 'Remote updates need a desktop version with managed SSH update support.',
       gatewayManagedUpdatesEmpty: 'Add an SSH connection in Saved connections to manage its updates here.',
       keyboardShortcuts: 'Key bindings',
+      sendBehavior: 'Send behavior',
       hudGesture: 'HUD gesture',
       screenCapture: 'Screen capture',
       notificationAlerts: 'Desktop alerts',

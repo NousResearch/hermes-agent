@@ -541,6 +541,7 @@ export const zh = defineLocale({
       gatewayManagedUpdatesUnavailable: '远程更新需要支持托管 SSH 更新的桌面版本。',
       gatewayManagedUpdatesEmpty: '请在已保存的连接中添加 SSH 连接，即可在此管理更新。',
       keyboardShortcuts: '按键绑定',
+      sendBehavior: '发送行为',
       hudGesture: 'HUD 手势',
       screenCapture: '屏幕捕获',
       notificationAlerts: '桌面通知',

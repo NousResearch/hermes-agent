@@ -11,6 +11,9 @@
 
 import type { Locator } from '@playwright/test'
 
+import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
+
+import { commentaryAppEnv, seedCodexCommentarySession } from './codex-commentary-fixture'
 import {
   createSandbox,
   launchDesktop,
@@ -19,9 +22,7 @@ import {
   writeEnvFile,
   writeMockProviderConfig
 } from './fixtures'
-import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
-import { commentaryAppEnv, seedCodexCommentarySession } from './codex-commentary-fixture'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 const SESSION_TITLE = 'E2E commentary hydration fixture'

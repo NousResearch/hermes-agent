@@ -442,6 +442,7 @@ export function appendReasoningPart(
 
     if (tail?.type === 'reasoning' && tail.sourceId === sourceId && tail.completedAt === undefined) {
       next[next.length - 1] = { ...tail, text: `${tail.text}${delta}` }
+
       return next
     }
 

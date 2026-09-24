@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+
 import { appendReasoningPart, assistantTextPart, reasoningPart, toChatMessages, upsertToolPart } from './chat-messages'
 
 const toolCallPart = (id: string) =>
@@ -28,6 +29,7 @@ describe('native reasoning identity without a second commentary projector (#7972
         { type: 'reasoning', id: 'private', summary: [{ type: 'summary_text', text: 'Not authorized' }] }
       ]
     }
+
     const [message] = toChatMessages([row])
     expect(message.parts.filter(part => part.type === 'reasoning').map(part => [part.sourceId, part.text])).toEqual([
       ['rs:summary:0', 'Inspect'],
@@ -42,6 +44,7 @@ describe('native reasoning identity without a second commentary projector (#7972
 
   it('never joins native sources across text, tools, completion, or legacy chunks', () => {
     const first = reasoningPart('Before', 1, 'rs')
+
     for (const boundary of [assistantTextPart('Public', 2), toolCallPart('tc')]) {
       expect(appendReasoningPart([first, boundary], 'After', 3, 'rs')).toEqual([
         first,
@@ -49,6 +52,7 @@ describe('native reasoning identity without a second commentary projector (#7972
         reasoningPart('After', 3, 'rs')
       ])
     }
+
     expect(appendReasoningPart([{ ...first, completedAt: 2 }], 'Later', 3, 'rs')).toHaveLength(2)
     expect(appendReasoningPart([first], 'Legacy', 3)).toEqual([first, reasoningPart('Legacy', 3)])
     expect(appendReasoningPart([first], ' continuation', 2, 'rs')).toEqual([

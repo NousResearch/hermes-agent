@@ -248,10 +248,13 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
 /** Only the backend may attach native summary identities. A mismatch keeps the
  * flat reasoning view rather than recovering any extra text from replay data. */
 function nativeReasoningParts(value: unknown, expected: string, timestamp?: number): ChatMessagePart[] {
-  if (!Array.isArray(value) || !expected) return []
+  if (!Array.isArray(value) || !expected) {
+    return []
+  }
   const result: ChatMessagePart[] = []
   const groups: string[] = []
   const seen = new Set<string>()
+
   for (const item of value) {
     if (
       !item ||
@@ -261,17 +264,24 @@ function nativeReasoningParts(value: unknown, expected: string, timestamp?: numb
       seen.has(item.id) ||
       !Array.isArray(item.summary) ||
       !item.summary.length
-    )
+    ) {
       return []
+    }
+
     seen.add(item.id)
     const texts: string[] = []
+
     for (const [index, part] of item.summary.entries()) {
-      if (!part || part.type !== 'summary_text' || typeof part.text !== 'string' || !part.text) return []
+      if (!part || part.type !== 'summary_text' || typeof part.text !== 'string' || !part.text) {
+        return []
+      }
       texts.push(part.text)
       result.push(reasoningPart(part.text, timestamp, `${item.id}:summary:${index}`))
     }
+
     groups.push(texts.join('\n'))
   }
+
   return groups.join('\n\n') === expected ? result : []
 }
 

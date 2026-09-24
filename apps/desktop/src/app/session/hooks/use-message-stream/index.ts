@@ -1033,6 +1033,7 @@ export function useMessageStream({
       if (!sourceId) {
         return
       }
+
       flushQueuedDeltas(sessionId)
       updateSessionState(sessionId, state => ({
         ...state,

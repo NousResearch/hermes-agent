@@ -46,6 +46,26 @@ _TOOL_CALL_BLOCK_PATTERNS = tuple(
     for name in _TOOL_CALL_TAG_NAMES
 )
 
+# DeepSeek native DSML tool-call serialization leaks into visible text via
+# OpenRouter (fullwidth pipes U+FF5C, sometimes ASCII |) — #119261. Same
+# fail-soft as ASCII tool-call XML: closed blocks, orphan closers, cut tails.
+_DSML_PIPE = r'[|\uFF5C]'
+_DSML_KINDS = r'(?:tool_calls|invoke|parameter)'
+_DSML_BLOCK_PATTERN = re.compile(
+    rf'<{_DSML_PIPE}DSML{_DSML_PIPE}(tool_calls|invoke|parameter)\b[^>]*>'
+    rf'(?:(?!</?{_DSML_PIPE}DSML{_DSML_PIPE}\1>).)*'
+    rf'</{_DSML_PIPE}DSML{_DSML_PIPE}\1>',
+    re.DOTALL | re.IGNORECASE,
+)
+_DSML_ORPHAN_CLOSER_PATTERN = re.compile(
+    rf'</{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}>\s*', re.IGNORECASE
+)
+# A DSML opener with no closer means the stream was cut mid-serialization
+# (#101899 analog). The call can't be recovered; strip to end of text.
+_DSML_UNTERMINATED_PATTERN = re.compile(
+    rf'(?:^|\n)[ \t]*<{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}\b[^>]*>.*$',
+    re.DOTALL | re.IGNORECASE,
+)
 # Named <function name=...> blocks; boundary- and name-gated (see _THINK_STRIP_PATTERNS note).
 _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
@@ -668,17 +688,20 @@ def _flatten_content_text(content: Any) -> str:
 # tool-call CLOSERS only (bare/unterminated <function> is kept: a truncated streaming tail may still
 # be valuable, matching OpenClaw's asymmetry).
 _THINK_STRIP_PATTERNS = (
-    *_REASONING_BLOCK_PATTERNS, *_TOOL_CALL_BLOCK_PATTERNS, _NAMED_FUNCTION_BLOCK_PATTERN,
+    *_REASONING_BLOCK_PATTERNS, *_TOOL_CALL_BLOCK_PATTERNS, _DSML_BLOCK_PATTERN,
+    _NAMED_FUNCTION_BLOCK_PATTERN,
     _UNTERMINATED_REASONING_BLOCK_PATTERN, _ORPHAN_REASONING_TAG_PATTERN,
-    _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN,
+    _STRAY_TOOL_CALL_CLOSER_PATTERN, _DSML_ORPHAN_CLOSER_PATTERN,
+    _UNTERMINATED_TOOL_CALL_PATTERN, _DSML_UNTERMINATED_PATTERN,
 )
 
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
     pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
-    stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
+    stray orphan tags (all case-insensitive variants), standalone tool-call XML blocks some
+    open models emit, and DeepSeek native DSML blocks (``<｜DSML｜invoke>``) leaked via
+    OpenRouter (#119261); ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
     content = _flatten_content_text(content) if content else ""
     for pattern in _THINK_STRIP_PATTERNS if content else ():
         content = pattern.sub('', content)

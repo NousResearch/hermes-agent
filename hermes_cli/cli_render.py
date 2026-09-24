@@ -52,6 +52,16 @@ def _strip_reasoning_tags(text: str) -> str:
             rf"<(?:[\w.-]+:)?{tc_tag}\b[^>]*>.*?</(?:[\w.-]+:)?{tc_tag}>\s*",
             "", cleaned, flags=re.DOTALL | re.IGNORECASE,
         )
+    # DeepSeek native DSML serialization (fullwidth ｜ U+FF5C, sometimes ASCII |)
+    # randomly leaks via OpenRouter (#119261) — same fail-soft: strip, don't die.
+    _DSML_PIPE = r'[|｜]'
+    _DSML_KINDS = r'(?:tool_calls|invoke|parameter)'
+    cleaned = re.sub(
+        rf'<{_DSML_PIPE}DSML{_DSML_PIPE}(tool_calls|invoke|parameter)\b[^>]*>'
+        rf'(?:(?!</?{_DSML_PIPE}DSML{_DSML_PIPE}\1>).)*'
+        rf'</{_DSML_PIPE}DSML{_DSML_PIPE}\1>',
+        '', cleaned, flags=re.DOTALL | re.IGNORECASE,
+    )
     # <function name="..."> — boundary + attribute gated to avoid prose false positives.
     cleaned = re.sub(
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
@@ -61,11 +71,16 @@ def _strip_reasoning_tags(text: str) -> str:
         r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
         flags=re.IGNORECASE,
     )
+    cleaned = re.sub(
+        rf'</{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}>\s*', '', cleaned,
+        flags=re.IGNORECASE,
+    )
     # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
     # mid tool-call serialization (#101899); strip to end of text.
     cleaned = re.sub(
         r'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
-        r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
+        r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$'
+        rf'|(?:^|\n)[ \t]*<{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}\b[^>]*>.*$',
         '',
         cleaned,
         flags=re.DOTALL | re.IGNORECASE,

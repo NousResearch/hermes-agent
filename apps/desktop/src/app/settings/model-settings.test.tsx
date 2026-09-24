@@ -130,6 +130,91 @@ describe('ModelSettings profile scope', () => {
     expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
     expect(getMoaModels).toHaveBeenCalledWith('research')
   })
+
+  // #118432-class regression (Settings "Applies to" chip): on a chip click the
+  // shared ConfigSettingsInner remounts (key={scopeProfile}), but ModelSettings
+  // is rendered as a child without a scope key, so it stays mounted across the
+  // chip switch. Its selectedProvider / selectedModel React state then hold the
+  // previous chip's values; refresh()'s `prev || modelInfo.provider` fallback
+  // never overwrites them, and the Select trigger paints the WRONG profile's
+  // model under the new chip until the user actively clears it. Pin the
+  // contract: when scopeProfile flips, the displayed Select trigger MUST show
+  // the new profile's model — not preserve the previous chip's draft.
+  it('repaints the Select trigger with the new chip\'s model on a mid-mount scope change', async () => {
+    // First chip: "bobby" — SenseNova + deepseek. The initial render seeds
+    // selectedProvider / selectedModel from the fetched modelInfo.
+    getGlobalModelInfo
+      .mockResolvedValueOnce({ provider: 'sensenova', model: 'deepseek-v4-flash' })
+      .mockResolvedValueOnce({ provider: 'custom:ark.cn-beijing.volces.com', model: 'glm-5-3-flash' })
+      .mockResolvedValueOnce({ provider: 'custom:ark.cn-beijing.volces.com', model: 'glm-5-3-flash' })
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'SenseNova',
+            slug: 'sensenova',
+            models: ['deepseek-v4-flash'],
+            authenticated: true,
+            capabilities: { 'deepseek-v4-flash': { reasoning: false, fast: false } }
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Volces Ark',
+            slug: 'custom:ark.cn-beijing.volces.com',
+            models: ['glm-5-3-flash'],
+            authenticated: true,
+            capabilities: { 'glm-5-3-flash': { reasoning: false, fast: false } }
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Volces Ark',
+            slug: 'custom:ark.cn-beijing.volces.com',
+            models: ['glm-5-3-flash'],
+            authenticated: true,
+            capabilities: { 'glm-5-3-flash': { reasoning: false, fast: false } }
+          }
+        ]
+      })
+
+    const { ModelSettings } = await import('./model-settings')
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <ModelSettings scopeProfile="bobby" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    // Wait for the first chip's data to seed the Select trigger.
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith('bobby'))
+    const triggers = await screen.findAllByRole('combobox')
+    await waitFor(() => expect(triggers[0].textContent).toContain('SenseNova'))
+
+    // Second chip click: "nana" — same mounted ModelSettings, only the
+    // scopeProfile prop changes (mirrors the in-app chip click flow).
+    rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <ModelSettings scopeProfile="nana" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith('nana'))
+    const triggersAfter = screen.getAllByRole('combobox')
+    await waitFor(() => expect(triggersAfter[0].textContent).toContain('Volces Ark'))
+    // The PREVIOUS chip's provider/model must NOT linger in the trigger text.
+    expect(triggersAfter[0].textContent).not.toContain('SenseNova')
+    expect(triggersAfter[0].textContent).not.toContain('deepseek-v4-flash')
+  })
 })
 
 describe('ModelSettings', () => {

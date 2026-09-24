@@ -17,7 +17,12 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hermes', () => ({
-  saveHermesConfig: (config: Record<string, unknown>, scope?: unknown) => mocks.save(config, scope)
+  saveHermesConfig: (config: Record<string, unknown>, scope?: unknown) => mocks.save(config, scope),
+  // The new $settingsRequestProfile import chain reaches @/store/profile, which
+  // calls setApiRequestProfile inside $activeGatewayProfile.subscribe(...).
+  // The real function is side-effecting on the request scope; the test does
+  // not exercise that path, so a no-op is sufficient.
+  setApiRequestProfile: () => {}
 }))
 
 vi.mock('@/i18n', () => ({
@@ -43,7 +48,11 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('../hooks/use-config-record', () => ({
-  setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
+  // After the B1 fix, the component calls `hermesConfigCacheWriter(scopeProfile)`
+  // — a higher-order function that returns the actual writer. Wire the same
+  // mock observer so the existing `mocks.cache` assertion still pins the
+  // cache-write contract.
+  hermesConfigCacheWriter: () => (config: Record<string, unknown>) => mocks.cache(config),
   useHermesConfigRecord: () => ({
     data: mocks.loadedConfig,
     dataUpdatedAt: mocks.configUpdatedAt,

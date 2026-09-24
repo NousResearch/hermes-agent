@@ -17404,7 +17404,20 @@ async function dispatchRegistryApiRequest(
         ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
       )
 
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
+  // A delegated local profile (connectionId 'local' over a genuinely local
+  // v1 route) lands on the SHARED primary backend — ensureBackend's
+  // `sharedPrimary` route, one home serving every profile. Scope the path the
+  // way the v1 handler does (resolveProfileApiRequest → the route table's
+  // scoped GETs carry ?profile=); pathForRegistryBackendRequest alone only
+  // translates an EXISTING ?profile= for isolated backends or scopes shared
+  // remotes, so scoped reads like GET /api/model/info left unscoped and the
+  // primary answered from its launch home — the Settings → 模型 page showed
+  // (and applied) the launch profile's model under every other profile's chip
+  // (#118431/#118432 through the registry route).
+  const requestPath = connection?.sharedPrimary
+    ? resolveProfileApiRequest(requestProfile, request.path, profileRouteOptions(requestProfile, request))
+        .requestPath
+    : pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,

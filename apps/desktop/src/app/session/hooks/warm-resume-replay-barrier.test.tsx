@@ -1,0 +1,266 @@
+import { type GatewayEvent, JsonRpcGatewayClient } from '@hermes/shared'
+import { QueryClient } from '@tanstack/react-query'
+import { act, cleanup, renderHook } from '@testing-library/react'
+import { useRef } from 'react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+
+import { getLatestSessionMessages } from '@/hermes'
+import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
+import { setPrimaryGateway } from '@/store/gateway'
+import { $activeGatewayProfile } from '@/store/profile'
+import {
+  _resetSessionOwnerHintsForTests,
+  setActiveSessionId,
+  setAwaitingResponse,
+  setBusy,
+  setConnection,
+  setMessages,
+  setSelectedStoredSessionId,
+  setSessions
+} from '@/store/session'
+import { clearAllSessionStates } from '@/store/session-states'
+import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
+
+import { useMessageStream } from './use-message-stream'
+import { useSessionActions } from './use-session-actions'
+import { useSessionStateCache } from './use-session-state-cache'
+
+vi.mock('@/hermes', async original => ({
+  ...(await original<Record<string, unknown>>()),
+  getLatestSessionMessages: vi.fn()
+}))
+vi.mock('@/store/profile', async original => ({
+  ...(await original<Record<string, unknown>>()),
+  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+}))
+
+const storedId = 'warm-replay-stored'
+const runtimeId = 'warm-replay-runtime'
+const noop = async () => undefined
+const user: SessionMessage = { id: 1, role: 'user', content: 'Review example', timestamp: 1 }
+
+class Socket extends EventTarget {
+  readyState = 0
+  sent: { id: string; method: string; params: Record<string, unknown> }[] = []
+  send(data: string) {
+    this.sent.push(JSON.parse(data))
+  }
+  close() {
+    this.readyState = 3
+    this.dispatchEvent(new CloseEvent('close'))
+  }
+  open() {
+    this.readyState = 1
+    this.dispatchEvent(new Event('open'))
+  }
+  frame(frame: unknown) {
+    this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(frame) }))
+  }
+  event(event: GatewayEvent) {
+    this.frame({ jsonrpc: '2.0', method: 'event', params: event })
+  }
+}
+
+function event(seq: number, type: GatewayEvent['type'], payload: Record<string, unknown> = {}): GatewayEvent {
+  return { session_id: runtimeId, seq, type, payload: { timestamp: seq, ...payload } } as GatewayEvent
+}
+
+const replay = [
+  event(2, 'message.start'),
+  event(3, 'message.delta', { text: 'Finished result.' }),
+  event(4, 'message.complete', { text: 'Finished result.' }),
+  event(5, 'session.info', { running: false })
+]
+
+const snapshot: SessionResumeResult = {
+  session_id: runtimeId,
+  resumed: storedId,
+  messages: [],
+  message_count: 0,
+  running: false
+}
+
+async function mountWithPendingReplay() {
+  const requestGateway = vi.fn().mockResolvedValue(snapshot)
+
+  const hook = renderHook(() => {
+    const busyRef = useRef(false)
+    const creatingSessionRef = useRef(false)
+    const queryClient = useRef(new QueryClient()).current
+
+    const cache = useSessionStateCache({
+      activeSessionId: null,
+      selectedStoredSessionId: null,
+      busyRef,
+      setMessages,
+      setBusy,
+      setAwaitingResponse
+    })
+
+    const actions = useSessionActions({
+      ...cache,
+      activeSessionId: null,
+      selectedStoredSessionId: null,
+      busyRef,
+      creatingSessionRef,
+      getRouteToken: () => 'A',
+      getRoutedStoredSessionId: () => null,
+      navigate: vi.fn(),
+      requestGateway
+    })
+
+    const stream = useMessageStream({
+      ...cache,
+      queryClient,
+      hydrateFromStoredSession: noop,
+      refreshHermesConfig: noop,
+      refreshSessions: noop
+    })
+
+    return { cache, actions, stream }
+  })
+
+  const sockets: Socket[] = []
+
+  const client = new JsonRpcGatewayClient({
+    heartbeatIntervalMs: 0,
+    heartbeatDeadlineMs: 0,
+    socketFactory: () => {
+      const socket = new Socket()
+      sockets.push(socket)
+
+      return socket as unknown as WebSocket
+    }
+  })
+
+  setPrimaryGateway(client)
+  client.onEvent(gatewayEvent => hook.result.current.stream.handleGatewayEvent(gatewayEvent))
+
+  const connect = async () => {
+    const promise = client.connect('ws://fixture.test')
+    const socket = sockets.at(-1)!
+    socket.open()
+    await promise
+
+    return socket
+  }
+
+  // Warm cache: the runtime is already known and has seen seq 1.
+  act(() => {
+    hook.result.current.cache.updateSessionState(
+      runtimeId,
+      state => ({ ...state, messages: toChatMessages([user]) }),
+      storedId
+    )
+  })
+  const first = await connect()
+  act(() => first.event(event(1, 'session.info', { running: false })))
+  client.invalidate()
+  const second = await connect()
+  const request = second.sent.find(item => item.method === 'session.events.since')!
+  expect(request.params).toMatchObject({ session_id: runtimeId, last_seen: 1 })
+
+  return { ...hook, client, requestGateway, second, request }
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  clearAllSessionStates()
+  resetInFlightTurnJournalStateForTests()
+  _resetSessionOwnerHintsForTests()
+  $activeGatewayProfile.set('default')
+  setConnection(null)
+  setMessages([])
+  setActiveSessionId(null)
+  setSelectedStoredSessionId(null)
+  setBusy(false)
+  setAwaitingResponse(false)
+  setSessions([
+    {
+      id: storedId,
+      title: storedId,
+      source: 'desktop',
+      message_count: 3,
+      tool_call_count: 0,
+      is_active: true,
+      started_at: 1,
+      last_active: 1,
+      ended_at: null,
+      model: null,
+      preview: null,
+      input_tokens: 0,
+      output_tokens: 0
+    }
+  ])
+  vi.mocked(getLatestSessionMessages).mockReset()
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({
+    session_id: storedId,
+    messages: [user, { id: 2, role: 'assistant', content: 'Finished result.', timestamp: 2 }]
+  })
+})
+
+afterEach(() => {
+  cleanup()
+  clearAllSessionStates()
+  resetInFlightTurnJournalStateForTests()
+  setPrimaryGateway(null)
+  localStorage.clear()
+  setSessions([])
+  setMessages([])
+  setActiveSessionId(null)
+  setSelectedStoredSessionId(null)
+  setBusy(false)
+  setAwaitingResponse(false)
+  vi.restoreAllMocks()
+})
+
+const activateCalls = (requestGateway: ReturnType<typeof vi.fn>) =>
+  requestGateway.mock.calls.filter(([method]) => method === 'session.activate')
+
+it('waits for reconnect replay before activating and reading warm history', async () => {
+  const { result, client, requestGateway, second, request } = await mountWithPendingReplay()
+
+  try {
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = result.current.actions.resumeSession(storedId, true)
+    })
+    // The completed turn is already durable; neither the activation snapshot
+    // nor REST history may publish it ahead of the replay that carries it.
+    expect(activateCalls(requestGateway)).toHaveLength(0)
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+
+    await act(async () => {
+      second.frame({ id: request.id, jsonrpc: '2.0', result: { events: replay } })
+      await pending
+    })
+
+    expect(activateCalls(requestGateway)).toHaveLength(1)
+    const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+    const text = rows.map(chatMessageText).join('\n')
+    expect(text).toContain('Review example')
+    expect(text.match(/Finished result\./g)).toHaveLength(1)
+  } finally {
+    client.close()
+  }
+})
+
+it('abandons a warm resume whose replay socket is invalidated', async () => {
+  const { result, client, requestGateway } = await mountWithPendingReplay()
+
+  try {
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = result.current.actions.resumeSession(storedId, true)
+    })
+    await act(async () => {
+      client.invalidate()
+      await pending
+    })
+    expect(activateCalls(requestGateway)).toHaveLength(0)
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+  } finally {
+    client.close()
+  }
+})

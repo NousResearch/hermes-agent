@@ -34,6 +34,7 @@ import {
   $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
+  pendingSessionReplay,
   requestGatewayForAgent,
   retainGatewayForAgent
 } from '@/store/gateway'
@@ -1290,6 +1291,12 @@ export function useSessionActions({
           setSessionStartedAt(Date.now())
 
           try {
+            const replay = pendingSessionReplay(cachedRuntimeId)
+
+            if (replay && (!(await replay) || !isCurrentResume())) {
+              return
+            }
+
             let activated: SessionResumeResult | null = null
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
@@ -1463,6 +1470,13 @@ export function useSessionActions({
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
+                const replayAtReturn = pendingSessionReplay(cachedRuntimeId)
+
+                if (replayAtReturn && !(await replayAtReturn)) {
+                  hydration.release()
+
+                  return
+                }
 
                 // Navigation only revokes foreground publication, not this
                 // runtime's display read. Edits/rebinds revoke both.

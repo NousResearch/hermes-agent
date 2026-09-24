@@ -533,6 +533,23 @@ export function activeGateway(): HermesGateway | null {
   return g.secondaries.get(g.activeKey)?.gateway ?? null
 }
 
+/** Passive ordering barrier for a runtime's transcript reads. Inspect only
+ * existing sockets: waiting must never dial, activate, or retain a backend.
+ * Each client names its own replaying runtime IDs; no ambient route is used
+ * to decide which session's events are safe to paint over. */
+export function pendingSessionReplay(runtimeId: string): Promise<boolean> | undefined {
+  const clients = new Set([g.primaryGateway, ...[...g.secondaries.values()].map(entry => entry.gateway)])
+
+  const pending = [...clients].flatMap(client => {
+    // A dev-HMR survivor can predate the barrier method.
+    const barrier = client?.sessionReplayBarrier?.(runtimeId)
+
+    return barrier ? [barrier] : []
+  })
+
+  return pending.length ? Promise.all(pending).then(results => results.every(Boolean)) : undefined
+}
+
 /**
  * The registry connection serving the gateway the user is currently looking
  * at. A registry-backed primary takes its identity from the published primary

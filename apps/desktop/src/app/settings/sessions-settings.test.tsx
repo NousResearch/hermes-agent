@@ -2,17 +2,20 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getHermesConfigRecord, listAllProfileSessions, saveHermesConfig, setSessionArchived } from '@/hermes'
+import { deleteSession, getHermesConfigRecord, listAllProfileSessions, saveHermesConfig, setSessionArchived } from '@/hermes'
 import { en } from '@/i18n/en'
+import { confirm } from '@/store/confirm'
 import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
 
 vi.mock('@/i18n', () => ({ useI18n: () => ({ t: en }) }))
+vi.mock('@/store/confirm', () => ({ confirm: vi.fn() }))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  deleteSession: vi.fn().mockResolvedValue({ ok: true }),
   getHermesConfigRecord: vi.fn().mockResolvedValue({ config: {} }),
   listAllProfileSessions: vi.fn(),
   saveHermesConfig: vi.fn().mockResolvedValue({ ok: true }),
@@ -41,6 +44,7 @@ beforeEach(() => {
   setSessions([])
   setMessagingSessions([])
   vi.mocked(listAllProfileSessions).mockResolvedValue({ sessions: [archivedMatrixSession], total: 1 } as never)
+  vi.mocked(confirm).mockResolvedValue(true)
 })
 
 afterEach(() => {
@@ -76,6 +80,57 @@ describe('SessionsSettings unarchive', () => {
       expect(setSessionArchived).toHaveBeenCalledWith('matrix-1', false, {
         connectionId: 'gateway-b',
         profile: 'default'
+      })
+    )
+  })
+
+  it('pins the archived list and unarchive mutation to the immutable settings owner', async () => {
+    const owner = {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      connectionOwner: { baseUrl: 'http://127.0.0.1:9001', mode: 'local' as const, token: 'synthetic-token' }
+    }
+
+    vi.mocked(listAllProfileSessions).mockResolvedValue({
+      sessions: [{ ...archivedMatrixSession, profile: 'research' }],
+      total: 1
+    } as never)
+
+    render(<SessionsSettings settingsOwner={owner} />)
+    const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
+
+    expect(listAllProfileSessions).toHaveBeenCalledWith(200, 0, 'only', 'recent', 'all', {}, owner)
+    await act(async () => fireEvent.click(button))
+
+    await waitFor(() =>
+      expect(setSessionArchived).toHaveBeenCalledWith('matrix-1', false, {
+        ...owner,
+        profile: 'research'
+      })
+    )
+  })
+
+  it('pins permanent delete to the immutable settings owner', async () => {
+    const owner = {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      connectionOwner: { baseUrl: 'http://127.0.0.1:9001', mode: 'local' as const, token: 'synthetic-token' }
+    }
+
+    vi.mocked(listAllProfileSessions).mockResolvedValue({
+      sessions: [{ ...archivedMatrixSession, profile: 'research' }],
+      total: 1
+    } as never)
+
+    render(<SessionsSettings settingsOwner={owner} />)
+    const button = await screen.findByRole('button', { name: en.settings.sessions.deletePermanently })
+
+    await act(async () => fireEvent.click(button))
+
+    await waitFor(() =>
+      expect(deleteSession).toHaveBeenCalledWith('matrix-1', {
+        ...owner,
+        profile: 'research'
       })
     )
   })

@@ -7,12 +7,10 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
-  confirmOnboardingModel,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
-  saveOnboardingApiKey,
   saveOnboardingLocalEndpoint,
   setOnboardingModel,
   submitOnboardingCode
@@ -34,25 +32,11 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
   }
 }
 
-function installApiMock(
-  api: (request: { connectionId?: string; method?: string; path: string; profile?: string }) => Promise<unknown>
-) {
+function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { api }
   })
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason: Error) => void
-
-  const promise = new Promise<T>((yes, no) => {
-    resolve = yes
-    reject = no
-  })
-
-  return { promise, reject, resolve }
 }
 
 function emptyOpenRouterGateway(): OnboardingContext['requestGateway'] {
@@ -98,49 +82,6 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
 }
 
 describe('refreshOnboarding', () => {
-  it('keeps a manual OAuth flow on its initiating gateway owner', async () => {
-    const { startManualOnboarding, startProviderOAuth } = await import('./onboarding')
-    const requests: { connectionId?: string; path: string; profile?: string }[] = []
-    installApiMock(async request => {
-      requests.push(request)
-
-      if (request.path === '/api/providers/oauth') {
-        return { providers: [] }
-      }
-
-      if (request.path.endsWith('/start')) {
-        return { flow: 'pkce', session_id: 'fixture', auth_url: 'https://example.com', expires_in: 600 }
-      }
-
-      return { ok: true }
-    })
-    vi.spyOn(window, 'open').mockReturnValue(null)
-    const scope = { connectionId: 'remote-a', profile: 'research' }
-
-    startManualOnboarding(null, scope)
-    await vi.waitFor(() => expect(requests.some(request => request.path === '/api/providers/oauth')).toBe(true))
-    await startProviderOAuth(makeOAuthProvider('fixture'), {
-      profile: 'research',
-      scope,
-      requestGateway: async () => ({}) as never
-    })
-
-    expect(requests).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          connectionId: 'remote-a',
-          path: '/api/providers/oauth',
-          profile: 'research'
-        }),
-        expect.objectContaining({
-          connectionId: 'remote-a',
-          path: '/api/providers/oauth/fixture/start',
-          profile: 'research'
-        })
-      ])
-    )
-  })
-
   it('keeps onboarding work in its initiating lifetime and profile', async () => {
     const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
       await import('./onboarding')
@@ -206,7 +147,7 @@ describe('refreshOnboarding', () => {
       release()
       await pending
       expect(requests.some(r => r.path === '/api/model/set')).toBe(false)
-      expect($desktopOnboarding.get()).toMatchObject({ targetProfile: 'alpha', flow: { status: 'idle' } })
+      expect($desktopOnboarding.get()).toMatchObject({ targetScope: { profile: 'alpha' }, flow: { status: 'idle' } })
       closeManualOnboarding()
       delayKey = false
       profile = 'beta'
@@ -220,80 +161,6 @@ describe('refreshOnboarding', () => {
     } finally {
       closeManualOnboarding()
     }
-  })
-
-  it('stops provider setup after its gateway owner changes while env reload is pending', async () => {
-    const requests: string[] = []
-    let releaseReload!: () => void
-    let current = true
-
-    installApiMock(async ({ path }) => {
-      requests.push(path)
-
-      if (path === '/api/env') {
-        return { ok: true }
-      }
-
-      if (path.startsWith('/api/model/options')) {
-        return { providers: [{ slug: 'fireworks', name: 'Fireworks', models: ['fixture-model'] }] }
-      }
-
-      if (path.startsWith('/api/model/recommended-default')) {
-        return { model: 'fixture-model' }
-      }
-
-      return { ok: true }
-    })
-
-    const pending = saveOnboardingApiKey('FIREWORKS_API_KEY', 'fake-key', 'Fireworks', {
-      isCurrent: () => current,
-      requestGateway: async method => {
-        if (method === 'reload.env') {
-          await new Promise<void>(resolve => {
-            releaseReload = resolve
-          })
-
-          return {} as never
-        }
-
-        return { ok: true } as never
-      }
-    })
-
-    await vi.waitFor(() => expect(releaseReload).toBeTypeOf('function'))
-    current = false
-    releaseReload()
-
-    await expect(pending).resolves.toEqual({ ok: false })
-    expect(requests.some(path => path.startsWith('/api/model/'))).toBe(false)
-  })
-
-  it('does not notify after a credential write rejects for a retired owner', async () => {
-    let rejectWrite!: (error: Error) => void
-    let current = true
-    const notifyError = vi.spyOn(notifications, 'notifyError')
-
-    installApiMock(async ({ path }) => {
-      if (path === '/api/env') {
-        return new Promise((_, reject) => {
-          rejectWrite = reject
-        })
-      }
-
-      throw new Error(`unexpected api path: ${path}`)
-    })
-
-    const pending = saveOnboardingApiKey('FIREWORKS_API_KEY', 'fake-key', 'Fireworks', {
-      isCurrent: () => current,
-      requestGateway: async () => ({}) as never
-    })
-
-    await vi.waitFor(() => expect(rejectWrite).toBeTypeOf('function'))
-    current = false
-    rejectWrite(new Error('retired owner'))
-
-    await expect(pending).resolves.toEqual({ ok: false })
-    expect(notifyError).not.toHaveBeenCalled()
   })
 
   beforeEach(() => {
@@ -717,36 +584,6 @@ describe('saveOnboardingLocalEndpoint', () => {
     }
   }
 
-  it('stops before assigning a local endpoint when its owner changes during the probe', async () => {
-    const calls: string[] = []
-    let resolveProbe!: (value: unknown) => void
-    let current = true
-
-    installApiMock(async ({ path }: { path: string }) => {
-      calls.push(path)
-
-      if (path === '/api/providers/validate') {
-        return new Promise(resolve => {
-          resolveProbe = resolve
-        })
-      }
-
-      throw new Error(`unexpected api path: ${path}`)
-    })
-
-    const pending = saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
-      isCurrent: () => current,
-      requestGateway: readyGateway()
-    })
-
-    await vi.waitFor(() => expect(calls).toContain('/api/providers/validate'))
-    current = false
-    resolveProbe({ ok: true, reachable: true, message: '', models: ['llama-3.1-8b'] })
-
-    await expect(pending).resolves.toEqual({ ok: false })
-    expect(calls).not.toContain('/api/model/set')
-  })
-
   it('errors when the endpoint advertises no models (nothing to route to)', async () => {
     const calls: string[] = []
     installApiMock(async ({ path }: { path: string }) => {
@@ -933,150 +770,6 @@ describe('saveOnboardingLocalEndpoint', () => {
   })
 })
 
-describe('OAuth owner lifetime', () => {
-  beforeEach(() => {
-    window.localStorage.clear()
-    $desktopOnboarding.set(baseState())
-  })
-
-  afterEach(() => {
-    window.localStorage.clear()
-    $desktopOnboarding.set(baseState())
-    vi.restoreAllMocks()
-    vi.useRealTimers()
-  })
-
-  it('cancels a delayed start response without opening a browser after its owner changes', async () => {
-    const start = deferred<unknown>()
-    const requests: Array<{ connectionId?: string; method?: string; path: string; profile?: string }> = []
-    let current = true
-    installApiMock(async request => {
-      requests.push(request)
-
-      if (request.path.endsWith('/start')) {
-        return start.promise
-      }
-
-      if (request.method === 'DELETE') {
-        return { ok: true }
-      }
-
-      throw new Error(`unexpected api path: ${request.path}`)
-    })
-    const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    const { startProviderOAuth } = await import('./onboarding')
-    const scope = { connectionId: 'owner-a', profile: 'research' }
-
-    const pending = startProviderOAuth(makeOAuthProvider('fixture'), {
-      isCurrent: () => current,
-      requestGateway: async () => undefined as never,
-      scope
-    })
-
-    await vi.waitFor(() => expect(requests.some(request => request.path.endsWith('/start'))).toBe(true))
-    current = false
-    start.resolve({ auth_url: 'https://example.invalid/oauth', expires_in: 600, flow: 'pkce', session_id: 'stale' })
-    await pending
-
-    expect(open).not.toHaveBeenCalled()
-    await vi.waitFor(() =>
-      expect(requests).toContainEqual(
-        expect.objectContaining({ connectionId: 'owner-a', method: 'DELETE', path: '/api/providers/oauth/sessions/stale' })
-      )
-    )
-  })
-
-  it('does not use the browser fallback after its owner changes', async () => {
-    const bridgeOpen = deferred<never>()
-    const requests: Array<{ method?: string; path: string }> = []
-    let current = true
-    installApiMock(async request => {
-      requests.push(request)
-
-      if (request.path.endsWith('/start')) {
-        return { auth_url: 'https://example.invalid/oauth', expires_in: 600, flow: 'pkce', session_id: 'stale-open' }
-      }
-
-      if (request.method === 'DELETE') {
-        return { ok: true }
-      }
-
-      throw new Error(`unexpected api path: ${request.path}`)
-    })
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { ...window.hermesDesktop, openExternal: vi.fn(() => bridgeOpen.promise) }
-    })
-    const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    const { startProviderOAuth } = await import('./onboarding')
-
-    const pending = startProviderOAuth(makeOAuthProvider('fixture'), {
-      isCurrent: () => current,
-      requestGateway: async () => undefined as never,
-      scope: { connectionId: 'owner-a', profile: 'research' }
-    })
-
-    await vi.waitFor(() => expect(window.hermesDesktop?.openExternal).toHaveBeenCalled())
-    current = false
-    bridgeOpen.reject(new Error('no browser handler'))
-    await pending
-
-    expect(open).not.toHaveBeenCalled()
-    await vi.waitFor(() =>
-      expect(requests).toContainEqual(
-        expect.objectContaining({ method: 'DELETE', path: '/api/providers/oauth/sessions/stale-open' })
-      )
-    )
-  })
-
-  it('does not publish a delayed code-submit result after its owner changes', async () => {
-    const submit = deferred<unknown>()
-    const requests: Array<{ method?: string; path: string }> = []
-    let current = true
-    installApiMock(async request => {
-      requests.push(request)
-
-      if (request.path.endsWith('/submit')) {
-        return submit.promise
-      }
-
-      if (request.method === 'DELETE') {
-        return { ok: true }
-      }
-
-      throw new Error(`unexpected api path: ${request.path}`)
-    })
-    $desktopOnboarding.set(
-      baseState({
-        flow: {
-          code: 'fixture-code',
-          provider: makeOAuthProvider('fixture'),
-          start: { auth_url: 'https://example.invalid/oauth', expires_in: 600, flow: 'pkce', session_id: 'stale-submit' },
-          status: 'awaiting_user'
-        }
-      })
-    )
-
-    const pending = submitOnboardingCode({
-      isCurrent: () => current,
-      requestGateway: async () => undefined as never,
-      scope: { connectionId: 'owner-a', profile: 'research' }
-    })
-
-    await vi.waitFor(() => expect(requests.some(request => request.path.endsWith('/submit'))).toBe(true))
-    current = false
-    submit.resolve({ ok: true, status: 'approved' })
-    await pending
-
-    expect($desktopOnboarding.get().flow.status).toBe('submitting')
-    await vi.waitFor(() =>
-      expect(requests).toContainEqual(
-        expect.objectContaining({ method: 'DELETE', path: '/api/providers/oauth/sessions/stale-submit' })
-      )
-    )
-  })
-})
-
 describe('device-code poll expiry', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -1106,52 +799,6 @@ describe('device-code poll expiry', () => {
       verification_url: 'https://portal.example/device'
     }
   }
-
-  it('cancels a delayed poll result without completing after its owner changes', async () => {
-    vi.useFakeTimers()
-    const poll = deferred<unknown>()
-    const requests: Array<{ method?: string; path: string }> = []
-    let current = true
-    installApiMock(async request => {
-      requests.push(request)
-
-      if (request.path.endsWith('/start')) {
-        return deviceStart(600)
-      }
-
-      if (request.path.includes('/poll/')) {
-        return poll.promise
-      }
-
-      if (request.method === 'DELETE') {
-        return { ok: true }
-      }
-
-      throw new Error(`unexpected api path: ${request.path}`)
-    })
-    vi.spyOn(window, 'open').mockReturnValue(null)
-    const { startProviderOAuth } = await import('./onboarding')
-    await startProviderOAuth(deviceCodeProvider(), {
-      isCurrent: () => current,
-      requestGateway: emptyOpenRouterGateway(),
-      scope: { connectionId: 'owner-a', profile: 'research' }
-    })
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000)
-    })
-    expect(requests.some(request => request.path.includes('/poll/'))).toBe(true)
-    current = false
-    poll.resolve({ status: 'approved' })
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    expect($desktopOnboarding.get().flow.status).toBe('polling')
-    expect(requests).toContainEqual(
-      expect.objectContaining({ method: 'DELETE', path: '/api/providers/oauth/sessions/device-sess-1' })
-    )
-  })
 
   it('lapses to an error with actionable guidance when the window expires still pending', async () => {
     vi.useFakeTimers()
@@ -1259,27 +906,5 @@ describe('setOnboardingModel', () => {
       expect(flow.label).toBe('OpenAI OAuth (ChatGPT)')
       expect(flow.saving).toBe(false)
     }
-  })
-})
-
-describe('confirmOnboardingModel', () => {
-  it('does not complete onboarding after its owner becomes stale', () => {
-    const onCompleted = vi.fn()
-    $desktopOnboarding.set(
-      baseState({
-        flow: {
-          status: 'confirming_model',
-          currentModel: 'fixture/model',
-          label: 'Fixture',
-          providerSlug: 'fixture',
-          saving: false
-        }
-      })
-    )
-
-    confirmOnboardingModel({ isCurrent: () => false, onCompleted, requestGateway: async () => undefined as never })
-
-    expect($desktopOnboarding.get().flow.status).toBe('confirming_model')
-    expect(onCompleted).not.toHaveBeenCalled()
   })
 })

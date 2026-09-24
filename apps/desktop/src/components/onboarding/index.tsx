@@ -7,10 +7,10 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
+import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
-import { requestModelOptions } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -63,8 +63,8 @@ export {
   sortProviders
 } from './providers'
 
-import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
-import { $settingsOwner } from '@/store/settings-scope'
+import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
+import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -132,7 +132,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // other api_key provider is appended with a generic "paste {KEY}" affordance.
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
-function useApiKeyCatalog(ctx: OnboardingContext): ApiKeyOption[] {
+function useApiKeyCatalog(scope: OnboardingContext['scope']): ApiKeyOption[] {
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
@@ -142,14 +142,7 @@ function useApiKeyCatalog(ctx: OnboardingContext): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() =>
-        requestModelOptions({
-          explicitOnly: false,
-          profile: ctx.profile,
-          request: ctx.requestGateway,
-          scope: ctx.scope ?? ctx.profile
-        })
-      )
+      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, scope))
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -162,7 +155,7 @@ function useApiKeyCatalog(ctx: OnboardingContext): ApiKeyOption[] {
     return () => {
       cancelled = true
     }
-  }, [ctx])
+  }, [scope])
 
   return useMemo(() => {
     const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
@@ -218,71 +211,32 @@ export function DesktopOnboardingOverlay({
   useStore($onboardingSurfaces)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
-  const targetProfile = onboarding.targetProfile ?? profile
-  const targetScope = onboarding.targetScope
+  useStore($gateway)
+  const connectionId = activeGatewayConnectionId()
+
+  const scope = useMemo(
+    () => onboarding.targetScope ?? captureOnboardingScope({ connectionId, profile }),
+    [onboarding.targetScope, profile, connectionId]
+  )
 
   // Async flows retain the initiating route even after the overlay closes.
-  const ctx = useMemo<OnboardingContext>(() => {
-    const isCurrent = () => {
-      const currentOwner = $settingsOwner.get()
-
-      const current =
-        !targetScope ||
-        typeof targetScope === 'string' ||
-        (targetScope.connectionId
-          ? !targetScope.connectionOwner || currentOwner === targetScope
-          : !targetScope.legacyConnection ||
-            (currentOwner?.legacyConnection === targetScope.legacyConnection && currentOwner?.profile === targetProfile))
-
-      if (!current && $desktopOnboarding.get().manual) {
-        closeManualOnboarding()
-      }
-
-      return current
-    }
-
-    return {
-      isCurrent,
-      profile: targetProfile,
-      scope: targetScope,
+  const ctx = useMemo<OnboardingContext>(
+    () => ({
+      scope,
+      profile: scope.profile ?? undefined,
       requestGateway:
-        targetScope && typeof targetScope === 'object' && targetScope.connectionId
-          ? async (method, params) => {
-              if (!isCurrent()) {
-                throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
-              }
-
-              return requestGatewayForAgent(targetScope.connectionId ?? null, targetProfile, method, params)
-            }
-          : targetScope && typeof targetScope === 'object' && targetScope.legacyConnection
-            ? async (method, params) => {
-                if (!isCurrent()) {
-                  throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
-                }
-
-                return requestGatewayForProfile(targetProfile, method, params)
-              }
-            : onboarding.targetProfile
-              ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-              : requestGateway,
+        scope.connectionId || (scope.profile && onboarding.targetScope)
+          ? (method, params) => requestOnboardingGateway(scope, method, params)
+          : requestGateway,
       onCompleted: () => onCompletedRef.current?.()
-    }
-  }, [onboarding.targetProfile, requestGateway, targetProfile, targetScope])
+    }),
+    [onboarding.targetScope, scope, requestGateway]
+  )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
   // behind), THEN finalize so the unmount lands after the fade — mirrors the
   // connecting overlay's exit choreography instead of cutting instantly.
   const [leaving, setLeaving] = useState(false)
-  const completionTimer = useRef<number | null>(null)
-
-  useEffect(
-    () => () => {
-      if (completionTimer.current !== null) {
-        window.clearTimeout(completionTimer.current)
-      }
-    },
-    []
-  )
 
   const finalizeOnboarding = () => {
     if (leaving) {
@@ -298,10 +252,7 @@ export function DesktopOnboardingOverlay({
     }
 
     setLeaving(true)
-    completionTimer.current = window.setTimeout(() => {
-      completionTimer.current = null
-      confirmOnboardingModel(ctx)
-    }, ONBOARDING_EXIT_MS)
+    window.setTimeout(() => confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
   }
 
   // The free-tier intro's three doors share one exit: consume the notice, play
@@ -664,7 +615,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
-  const apiKeyOptions = useApiKeyCatalog(ctx)
+  const apiKeyOptions = useApiKeyCatalog(ctx.scope)
 
   // localEndpoint forces the key form regardless of `mode` (which a manual
   // provider refresh may flip back to 'oauth'); it preselects the local option

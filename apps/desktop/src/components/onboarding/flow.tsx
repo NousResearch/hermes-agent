@@ -6,10 +6,9 @@ import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
-import { profileScopeKey } from '@/hermes'
+import { getGlobalModelOptions, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
-import { requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import {
   cancelOnboardingFlow,
@@ -235,15 +234,15 @@ function CancelBtn({ size = 'default' }: { size?: 'default' | 'sm' }) {
 }
 
 function ConfirmingModelPanel({
-  ctx,
   flow,
   leaving,
-  onBegin
+  onBegin,
+  ctx
 }: {
-  ctx: OnboardingContext
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
   leaving: boolean
   onBegin: () => void
+  ctx: OnboardingContext
 }) {
   const { t } = useI18n()
   const scrambledModel = useScramble(flow.currentModel, leaving)
@@ -258,14 +257,8 @@ function ConfirmingModelPanel({
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
   const options = useQuery({
-    queryKey: ['onboarding-model-options', flow.providerSlug, profileScopeKey(ctx.scope ?? ctx.profile)],
-    queryFn: () =>
-      requestModelOptions({
-        explicitOnly: false,
-        profile: ctx.profile,
-        request: ctx.requestGateway,
-        scope: ctx.scope ?? ctx.profile
-      })
+    queryKey: ['onboarding-model-options', profileScopeKey(ctx.scope ?? ctx.profile), flow.providerSlug],
+    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, ctx.scope ?? ctx.profile)
   })
 
   const providerRow = options.data?.providers?.find(
@@ -359,13 +352,8 @@ function ConfirmingModelPanel({
           setPickerOpen(false)
         }}
         open={pickerOpen}
-        ownerConnectionId={
-          ctx.scope && typeof ctx.scope === 'object'
-            ? (ctx.scope.connectionId ?? ctx.scope.legacyConnection?.baseUrl)
-            : undefined
-        }
+        ownerConnectionId={ctx.scope ? (ctx.scope.connectionId ?? null) : undefined}
         profile={ctx.profile}
-        providerSetupScope={ctx.scope ?? ctx.profile}
         request={ctx.requestGateway}
       />
     </div>

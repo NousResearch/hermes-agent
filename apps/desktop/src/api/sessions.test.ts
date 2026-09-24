@@ -15,6 +15,7 @@ const client = await import('./client')
 const {
   deleteSession,
   getSession,
+  listAllProfileSessions,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
@@ -27,6 +28,27 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(client.getApiRequestConnection).mockReturnValue('prometheus')
   vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
+})
+
+describe('listAllProfileSessions owner scoping', () => {
+  it('pins archived metadata reads to the captured owner', async () => {
+    const owner = {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      connectionOwner: { baseUrl: 'http://127.0.0.1:9001', mode: 'local' as const, token: 'synthetic-token' }
+    }
+
+    hermesApi.mockResolvedValue({ sessions: [], total: 0 } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue(owner)
+
+    await listAllProfileSessions(200, 0, 'only', 'recent', 'all', {}, owner)
+
+    expect(client.capabilityScoped).toHaveBeenCalledWith(owner)
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      ...owner,
+      path: '/api/profiles/sessions?limit=200&offset=0&min_messages=0&archived=only&order=recent&profile=all'
+    })
+  })
 })
 
 describe('deleteSession profile scoping', () => {

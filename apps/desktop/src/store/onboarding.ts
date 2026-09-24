@@ -7,12 +7,12 @@ import {
   getRecommendedDefaultModel,
   listOAuthProviders,
   pollOAuthSession,
+  type ProfileScope,
   setEnvVar,
   startOAuthLogin,
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
-import type { ProfileScope } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
@@ -20,7 +20,7 @@ import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFree
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError } from '@/store/notifications'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
-import { $settingsOwner } from '@/store/settings-scope'
+import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -74,8 +74,7 @@ export interface DesktopOnboardingState {
    *  picker's "Add provider" button). Forces the overlay to show the picker
    *  even when configured === true, and adds a close affordance. */
   manual: boolean
-  targetProfile?: string
-  targetScope?: ProfileScope
+  targetScope?: OnboardingScope
   /** True when the overlay was opened specifically to configure a local /
    *  custom OpenAI-compatible endpoint (e.g. from Settings → Model's "Set up
    *  custom endpoint"). Forces the API-key form with the local option
@@ -90,10 +89,9 @@ export interface DesktopOnboardingState {
 }
 
 export interface OnboardingContext {
-  isCurrent?: () => boolean
   onCompleted?: () => void
   profile?: string
-  scope?: ProfileScope
+  scope?: OnboardingScope
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -176,11 +174,15 @@ const INITIAL: DesktopOnboardingState = {
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let flowGeneration = 0
-let flowScope: ProfileScope
+let flowScope: OnboardingScope | undefined
 let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+function captureContext(ctx: OnboardingContext): OnboardingContext & { scope: OnboardingScope } {
+  return { ...ctx, scope: captureOnboardingScope(ctx.scope ?? ctx.profile) }
+}
 
 // One plain sentence for every way a provider sign-in can fail (start, poll,
 // code exchange); the raw error text rides along as `detail` (desktop-09).
@@ -373,18 +375,23 @@ async function completeWithModelConfirm(
   // user is allowed through onboarding regardless. Used by the API-key path,
   // where we intentionally don't validate the key (it blocked too many users).
   ignoreRuntimeGate = false
-): Promise<boolean> {
+) {
   const generation = flowGeneration
-  await ctx.requestGateway('reload.env').catch(() => undefined)
 
-  if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-    return false
+  // Scoped readiness reads fresh credentials; reload.env only mutates the
+  // launch process environment and cannot reload another profile safely.
+  if (!ctx.scope?.profile) {
+    await ctx.requestGateway('reload.env').catch(() => undefined)
   }
 
-  const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.scope ?? ctx.profile)
+  if (generation !== flowGeneration) {
+    return
+  }
 
-  if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-    return false
+  const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.scope)
+
+  if (generation !== flowGeneration) {
+    return
   }
 
   if (defaults) {
@@ -397,38 +404,38 @@ async function completeWithModelConfirm(
           provider: defaults.providerSlug,
           model: defaults.defaultModel
         },
-        ctx.scope ?? ctx.profile,
+        ctx.scope,
         // Headless automated flow: nothing is mounted to click a guard
         // prompt, so fail with the message instead of hanging.
         { skipConfirmPrompt: true }
       )
 
-      if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-        return false
+      if (generation !== flowGeneration) {
+        return
       }
 
       notifyGatewayTools(res.gateway_tools)
     } catch (error) {
-      if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-        return false
+      if (generation !== flowGeneration) {
+        return
       }
 
       onFail(error instanceof Error ? error.message : 'Hermes could not save the selected model.')
 
-      return false
+      return
     }
   }
 
   const runtime = await checkRuntime(ctx, preferredSlugs[0])
 
-  if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-    return false
+  if (generation !== flowGeneration) {
+    return
   }
 
   if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
-    return false
+    return
   }
 
   if (!defaults) {
@@ -437,7 +444,7 @@ async function completeWithModelConfirm(
     completeDesktopOnboarding()
     ctx.onCompleted?.()
 
-    return true
+    return
   }
 
   setFlow({
@@ -447,8 +454,6 @@ async function completeWithModelConfirm(
     label: providerLabel,
     saving: false
   })
-
-  return true
 }
 
 function providerResolutionFailure(reason: null | string) {
@@ -475,33 +480,17 @@ async function refreshProviders() {
   }
 
   const generation = flowGeneration
-  const state = $desktopOnboarding.get()
-  const target = state.targetScope ?? state.targetProfile
-
-  const isCurrent = () => {
-    const current = $desktopOnboarding.get()
-
-    return (
-      generation === flowGeneration &&
-      (current.targetScope ?? current.targetProfile) === target &&
-      (!state.manual ||
-        typeof target === 'string' ||
-        !target?.connectionOwner ||
-        $settingsOwner.get() === target)
-    )
-  }
-
   providersRefreshPromise = (async () => {
     try {
-      const { providers } = await listOAuthProviders(target)
+      const { providers } = await listOAuthProviders($desktopOnboarding.get().targetScope)
 
-      if (!isCurrent()) {
+      if (generation !== flowGeneration) {
         return
       }
 
       patch({ mode: providers.length > 0 ? 'oauth' : 'apikey', providers })
     } catch {
-      if (!isCurrent()) {
+      if (generation !== flowGeneration) {
         return
       }
 
@@ -570,14 +559,13 @@ export function consumePendingCredentialWarning(): null | string {
 // even though configured===true, and refreshes the provider list.
 export function startManualOnboarding(
   reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON,
-  scope?: ProfileScope
+  profile?: ProfileScope
 ) {
   cancelOnboardingFlow()
   providersRefreshPromise = null
   patch({
     manual: true,
-    targetProfile: typeof scope === 'string' ? scope : (scope?.profile ?? undefined),
-    targetScope: scope,
+    targetScope: captureOnboardingScope(profile),
     providers: null,
     requested: true,
     localEndpoint: false,
@@ -597,13 +585,12 @@ export function startManualOnboarding(
 // configure the endpoint instead of dead-ending on the OAuth provider list
 // (`custom` is not an OAuth provider, so the generic manual flow would just
 // re-show the picker — the original "booted back to the first screen" loop).
-export function startManualLocalEndpoint(reason: null | string = null, scope?: ProfileScope) {
+export function startManualLocalEndpoint(reason: null | string = null, profile?: ProfileScope) {
   cancelOnboardingFlow()
   pendingProviderOAuthId = null
   patch({
     manual: true,
-    targetProfile: typeof scope === 'string' ? scope : (scope?.profile ?? undefined),
-    targetScope: scope,
+    targetScope: captureOnboardingScope(profile),
     providers: null,
     requested: true,
     localEndpoint: true,
@@ -621,9 +608,9 @@ export function startManualLocalEndpoint(reason: null | string = null, scope?: P
 // overlay render and never needs to persist or re-render anything itself.
 let pendingProviderOAuthId: null | string = null
 
-export function startManualProviderOAuth(providerId: string, scope?: ProfileScope) {
+export function startManualProviderOAuth(providerId: string, profile?: ProfileScope) {
   pendingProviderOAuthId = providerId
-  startManualOnboarding(null, scope)
+  startManualOnboarding(null, profile)
 }
 
 // Read the pending provider id without clearing it. The overlay only clears it
@@ -647,7 +634,6 @@ export function closeManualOnboarding() {
   pendingProviderOAuthId = null
 
   patch({
-    targetProfile: undefined,
     targetScope: undefined,
     manual: false,
     requested: false,
@@ -810,7 +796,7 @@ export function clearFreeTierIntro() {
 // when the bridge isn't present (e.g. the web dashboard / dev preview) so
 // the flow never silently stalls in a waiting state. Mirrors the pattern in
 // apps/desktop/src/app/artifacts/index.tsx.
-async function openSignInUrl(url: string, ctx: OnboardingContext, generation: number) {
+async function openSignInUrl(url: string) {
   if (window.hermesDesktop?.openExternal) {
     try {
       await window.hermesDesktop.openExternal(url)
@@ -823,30 +809,13 @@ async function openSignInUrl(url: string, ctx: OnboardingContext, generation: nu
     }
   }
 
-  if (!onboardingOwnerCurrent(ctx, generation)) {
-    return
-  }
-
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-function onboardingOwnerCurrent(ctx: OnboardingContext, generation: number) {
-  return generation === flowGeneration && ctx.isCurrent?.() !== false
-}
-
-function cancelStaleOAuthSession(sessionId: string, ctx: OnboardingContext) {
-  void cancelOAuthSession(sessionId, ctx.scope ?? ctx.profile).catch(() => undefined)
-}
-
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
-  ctx = { ...ctx }
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-
-  if (!onboardingOwnerCurrent(ctx, generation)) {
-    return
-  }
-
-  flowScope = ctx.scope ?? ctx.profile
+  flowScope = ctx.scope
   clearPoll()
 
   if (provider.flow === 'external') {
@@ -858,19 +827,19 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   setFlow({ status: 'starting', provider })
 
   try {
-    const start = await startOAuthLogin(provider.id, ctx.scope ?? ctx.profile)
+    const start = await startOAuthLogin(provider.id, ctx.scope)
 
-    if (!onboardingOwnerCurrent(ctx, generation)) {
-      cancelStaleOAuthSession(start.session_id, ctx)
+    if (generation !== flowGeneration) {
+      void cancelOAuthSession(start.session_id, ctx.scope).catch(() => undefined)
 
       return
     }
 
     const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
-    await openSignInUrl(browserUrl, ctx, generation)
+    await openSignInUrl(browserUrl)
 
-    if (!onboardingOwnerCurrent(ctx, generation)) {
-      cancelStaleOAuthSession(start.session_id, ctx)
+    if (generation !== flowGeneration) {
+      void cancelOAuthSession(start.session_id, ctx.scope).catch(() => undefined)
 
       return
     }
@@ -882,19 +851,17 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     }
 
     setFlow({ status: 'polling', provider, start, copied: false })
-    schedulePollExpiry(start, () => {
-      if (onboardingOwnerCurrent(ctx, generation)) {
-        setFlow({
-          status: 'error',
-          provider,
-          start,
-          message: translateNow('onboarding.signInExpired')
-        })
-      }
-    })
+    schedulePollExpiry(start, () =>
+      setFlow({
+        status: 'error',
+        provider,
+        start,
+        message: translateNow('onboarding.signInExpired')
+      })
+    )
     pollTimer = window.setInterval(() => void pollSession(provider, start, ctx, generation), POLL_MS)
   } catch (error) {
-    if (!onboardingOwnerCurrent(ctx, generation)) {
+    if (generation !== flowGeneration) {
       return
     }
 
@@ -905,16 +872,9 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
 // Poll a session-backed device-code flow until it resolves.
 async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext, generation: number) {
   try {
-    const { error_message, status } = await pollOAuthSession(
-      provider.id,
-      start.session_id,
-      ctx.scope ?? ctx.profile
-    )
+    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id, ctx.scope)
 
-    if (!onboardingOwnerCurrent(ctx, generation)) {
-      clearPoll()
-      cancelStaleOAuthSession(start.session_id, ctx)
-
+    if (generation !== flowGeneration) {
       return
     }
 
@@ -933,7 +893,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
       setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error_message || status) })
     }
   } catch (error) {
-    if (!onboardingOwnerCurrent(ctx, generation)) {
+    if (generation !== flowGeneration) {
       return
     }
 
@@ -951,14 +911,9 @@ export function setOnboardingCode(code: string) {
 }
 
 export async function submitOnboardingCode(ctx: OnboardingContext) {
-  ctx = { ...ctx }
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-
-  if (!onboardingOwnerCurrent(ctx, generation)) {
-    return
-  }
-
-  flowScope = ctx.scope ?? ctx.profile
+  flowScope = ctx.scope
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'awaiting_user' || !flow.code.trim()) {
@@ -969,11 +924,9 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
   setFlow({ status: 'submitting', provider, start })
 
   try {
-    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), ctx.scope ?? ctx.profile)
+    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), ctx.scope)
 
-    if (!onboardingOwnerCurrent(ctx, generation)) {
-      cancelStaleOAuthSession(start.session_id, ctx)
-
+    if (generation !== flowGeneration) {
       return
     }
 
@@ -990,7 +943,7 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
       setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, resp.message) })
     }
   } catch (error) {
-    if (!onboardingOwnerCurrent(ctx, generation)) {
+    if (generation !== flowGeneration) {
       return
     }
 
@@ -1004,10 +957,10 @@ export function cancelOnboardingFlow() {
   const sessionId = sessionIdFor($desktopOnboarding.get().flow)
 
   if (sessionId) {
-    const state = $desktopOnboarding.get()
-    cancelOAuthSession(sessionId, flowScope ?? state.targetScope ?? state.targetProfile).catch(() => undefined)
+    cancelOAuthSession(sessionId, flowScope ?? $desktopOnboarding.get().targetScope).catch(() => undefined)
   }
 
+  flowScope = undefined
   setFlow({ status: 'idle' })
 }
 
@@ -1057,8 +1010,8 @@ export async function copyExternalCommand() {
 }
 
 export async function recheckExternalSignin(ctx: OnboardingContext) {
-  ctx = { ...ctx }
-  flowScope = ctx.scope ?? ctx.profile
+  ctx = captureContext(ctx)
+  flowScope = ctx.scope
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'external_pending') {
@@ -1087,9 +1040,9 @@ export async function saveOnboardingApiKey(
   // providers (their key IS `value`).
   endpointApiKey?: string
 ) {
-  ctx = { ...ctx }
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-  flowScope = ctx.scope ?? ctx.profile
+  flowScope = ctx.scope
   const trimmed = value.trim()
 
   if (!trimmed) {
@@ -1110,9 +1063,9 @@ export async function saveOnboardingApiKey(
   // provider probes, self-hosted endpoints). We now save the value as-is and
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
-    await setEnvVar(envKey, trimmed, ctx.scope ?? ctx.profile)
+    await setEnvVar(envKey, trimmed, ctx.scope)
 
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    if (generation !== flowGeneration) {
       return { ok: false }
     }
 
@@ -1124,18 +1077,10 @@ export async function saveOnboardingApiKey(
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
     // ignoreRuntimeGate=true: never block onboarding on the runtime check.
-    const completed = await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
-
-    if (!completed || generation !== flowGeneration) {
-      return { ok: false }
-    }
+    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
 
     return { ok: true }
   } catch (error) {
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-      return { ok: false }
-    }
-
     notifyError(error, `Could not save ${label}`)
 
     return { ok: false, message: errMessage(error) }
@@ -1159,9 +1104,9 @@ export async function saveOnboardingApiKey(
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
 export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
-  ctx = { ...ctx }
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-  flowScope = ctx.scope ?? ctx.profile
+  flowScope = ctx.scope
   const url = baseUrl.trim()
   const key = apiKey.trim()
 
@@ -1179,9 +1124,9 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   let resolvedUrl = url
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key, ctx.scope ?? ctx.profile)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key, ctx.scope)
 
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    if (generation !== flowGeneration) {
       return { ok: false }
     }
 
@@ -1196,10 +1141,6 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     model = (probe.models?.[0] ?? '').trim()
     resolvedUrl = probe.resolved_base_url?.trim() || url
   } catch {
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-      return { ok: false }
-    }
-
     return { ok: false, message: `Could not reach ${url}.` }
   }
 
@@ -1211,24 +1152,23 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setMainModelAssignment(
-      { provider: 'custom', model, base_url: resolvedUrl, api_key: key },
-      ctx.scope ?? ctx.profile
-    )
+    await setMainModelAssignment({ provider: 'custom', model, base_url: resolvedUrl, api_key: key }, ctx.scope)
 
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    if (generation !== flowGeneration) {
       return { ok: false }
     }
 
-    await ctx.requestGateway('reload.env').catch(() => undefined)
+    if (!ctx.scope?.profile) {
+      await ctx.requestGateway('reload.env').catch(() => undefined)
+    }
 
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    if (generation !== flowGeneration) {
       return { ok: false }
     }
 
     const runtime = await checkRuntime(ctx)
 
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+    if (generation !== flowGeneration) {
       return { ok: false }
     }
 
@@ -1244,10 +1184,6 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
 
     return { ok: true }
   } catch (error) {
-    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
-      return { ok: false }
-    }
-
     notifyError(error, 'Could not save local endpoint')
 
     return { ok: false, message: errMessage(error) }
@@ -1286,8 +1222,7 @@ export async function setOnboardingModel(model: string, providerSlug: string, la
         provider: providerSlug,
         model
       },
-      flowScope ?? $desktopOnboarding.get().targetScope ?? $desktopOnboarding.get().targetProfile,
-      { isCurrent: () => generation === flowGeneration }
+      flowScope ?? $desktopOnboarding.get().targetScope
     )
 
     if (generation !== flowGeneration) {
@@ -1320,7 +1255,7 @@ export async function setOnboardingModel(model: string, providerSlug: string, la
 export function confirmOnboardingModel(ctx: OnboardingContext) {
   const { flow } = $desktopOnboarding.get()
 
-  if (flow.status !== 'confirming_model' || ctx.isCurrent?.() === false) {
+  if (flow.status !== 'confirming_model') {
     return
   }
 

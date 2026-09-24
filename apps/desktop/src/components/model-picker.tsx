@@ -16,7 +16,6 @@ import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from 
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
-import type { ProfileScope } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
@@ -28,7 +27,6 @@ import { HighlightMatches } from './ui/highlight-matches'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
-  allowProviderSetup?: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   gw?: HermesGateway
@@ -36,9 +34,10 @@ interface ModelPickerDialogProps {
   currentModel: string
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
-  ownerConnectionId?: string
-  providerSetupScope?: ProfileScope
+  ownerConnectionId?: null | string
   profile?: string
+  /** Desktop route profile for provider setup; `profile` may be the backend-side target. */
+  setupProfile?: string
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
@@ -50,7 +49,6 @@ interface ModelPickerDialogProps {
 }
 
 export function ModelPickerDialog({
-  allowProviderSetup = true,
   open,
   onOpenChange,
   gw,
@@ -59,9 +57,9 @@ export function ModelPickerDialog({
   currentProvider,
   onSelect,
   ownerConnectionId,
-  providerSetupScope,
   profile = 'default',
   request,
+  setupProfile,
   contentClassName
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
@@ -79,14 +77,7 @@ export function ModelPickerDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: () =>
-      requestModelOptions({
-        gateway: gw,
-        profile,
-        request,
-        scope: providerSetupScope ?? (ownerConnectionId ? { connectionId: ownerConnectionId, profile } : profile),
-        sessionId
-      }),
+    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
     enabled: open
   })
 
@@ -196,7 +187,12 @@ export function ModelPickerDialog({
   // model-confirm) instead of duplicating provider UI here. Closes the picker
   // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
-    startManualOnboarding(undefined, providerSetupScope)
+    const ownerProfile = setupProfile ?? profile
+
+    startManualOnboarding(
+      undefined,
+      ownerConnectionId !== undefined ? { connectionId: ownerConnectionId, profile: ownerProfile } : ownerProfile
+    )
     onOpenChange(false)
   }
 
@@ -249,11 +245,9 @@ export function ModelPickerDialog({
           <Button className="mr-auto" onClick={enterSlug} variant="ghost">
             {copy.addCustomModelAction}
           </Button>
-          {allowProviderSetup && (
-            <Button onClick={addProvider} variant="ghost">
-              {copy.addProvider}
-            </Button>
-          )}
+          <Button onClick={addProvider} variant="ghost">
+            {copy.addProvider}
+          </Button>
           <Button onClick={() => onOpenChange(false)} variant="outline">
             {t.common.cancel}
           </Button>

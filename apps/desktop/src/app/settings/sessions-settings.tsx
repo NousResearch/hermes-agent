@@ -34,6 +34,14 @@ const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
 
+function archivedSessionScope(settingsOwner: ProfileScope, session: SessionInfo): ProfileScope {
+  if (settingsOwner && typeof settingsOwner === 'object') {
+    return { ...settingsOwner, profile: session.profile ?? settingsOwner.profile }
+  }
+
+  return sessionOwnerRouteFromRow(session) ?? session.profile
+}
+
 interface SessionsSettingsProps {
   settingsOwner?: ProfileScope
   subpage?: string
@@ -66,29 +74,46 @@ function ArchivedSessionsSettings({
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let alive = true
+
     setLoading(true)
 
-    try {
-      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
-      setLocalSessions(result.sessions)
-    } catch (err) {
-      notifyError(err, s.failedLoad)
-    } finally {
+    if (settingsOwner === null) {
+      setLocalSessions([])
       setLoading(false)
-    }
-  }, [s.failedLoad])
 
-  useEffect(() => {
-    void load()
-  }, [load])
+      return
+    }
+
+    void listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only', 'recent', 'all', {}, settingsOwner)
+      .then(result => {
+        if (alive) {
+          setLocalSessions(result.sessions)
+        }
+      })
+      .catch(err => {
+        if (alive) {
+          notifyError(err, s.failedLoad)
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setLoading(false)
+        }
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [s.failedLoad, settingsOwner])
 
   const unarchive = useCallback(
     async (session: SessionInfo) => {
       setBusyId(session.id)
 
       try {
-        await setSessionArchived(session.id, false, sessionOwnerRouteFromRow(session) ?? session.profile)
+        await setSessionArchived(session.id, false, archivedSessionScope(settingsOwner, session))
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
@@ -102,7 +127,7 @@ function ArchivedSessionsSettings({
         setBusyId(null)
       }
     },
-    [s]
+    [s, settingsOwner]
   )
 
   const remove = useCallback(
@@ -120,7 +145,7 @@ function ArchivedSessionsSettings({
       setBusyId(session.id)
 
       try {
-        await deleteSession(session.id, sessionOwnerRouteFromRow(session) ?? session.profile)
+        await deleteSession(session.id, archivedSessionScope(settingsOwner, session))
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
@@ -132,7 +157,7 @@ function ArchivedSessionsSettings({
         setBusyId(null)
       }
     },
-    [s]
+    [s, settingsOwner]
   )
 
   useDeepLinkHighlight({

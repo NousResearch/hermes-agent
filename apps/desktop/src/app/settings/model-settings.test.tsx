@@ -146,7 +146,7 @@ describe('ModelSettings', () => {
       getGlobalModelInfo.mockResolvedValueOnce({ provider, model: '' })
       getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-      await renderModelSettings()
+      await renderModelSettings('leverage-ai')
 
       const providerSelect = (await screen.findAllByRole('combobox'))[0]
 
@@ -156,7 +156,8 @@ describe('ModelSettings', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, undefined)
+      expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
+      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, 'leverage-ai')
       expect(startManualOnboarding).not.toHaveBeenCalled()
       expect(startManualProviderOAuth).not.toHaveBeenCalled()
     }
@@ -166,16 +167,17 @@ describe('ModelSettings', () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'retired-provider', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-    await renderModelSettings()
+    await renderModelSettings('leverage-ai')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-    expect(startManualOnboarding).toHaveBeenCalledWith(undefined, undefined)
+    expect(startManualOnboarding).toHaveBeenCalledOnce()
+    expect(startManualOnboarding).toHaveBeenCalledWith(undefined, 'leverage-ai')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualProviderOAuth).not.toHaveBeenCalled()
   })
 
-  it('deep-links a known OAuth provider row into its setup flow', async () => {
+  it('deep-links a known OAuth provider row into its scoped setup flow', async () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({
       providers: [
@@ -189,11 +191,11 @@ describe('ModelSettings', () => {
       ]
     })
 
-    await renderModelSettings()
+    await renderModelSettings('leverage-ai')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', undefined)
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', 'leverage-ai')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualOnboarding).not.toHaveBeenCalled()
   })

@@ -2512,6 +2512,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
             "context": "resume",
             "name": "search_files",
             "role": "tool",
+            "tool_call_id": history[2]["tool_call_id"],
         },
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},

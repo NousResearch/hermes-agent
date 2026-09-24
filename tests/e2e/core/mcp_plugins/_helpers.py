@@ -250,10 +250,3 @@ def provider(responder: Callable[[dict[str, Any]], Any]) -> Iterator[FakeLLMServ
     finally:
         srv.stop()
 
-
-def wait_for(pred: Callable[[], Any], timeout: float, what: str) -> Any:
-    return wait_until(pred, timeout, what)
-
-
-def now() -> float:
-    return time.monotonic()

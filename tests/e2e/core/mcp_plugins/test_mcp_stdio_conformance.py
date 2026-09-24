@@ -43,7 +43,7 @@ from tests.e2e.core.mcp_plugins._plugin_helpers import reap_tagged
 
 pytestmark = [
     pytest.mark.skipif(not sys.platform.startswith("linux"), reason="orphan sweep uses /proc"),
-    pytest.mark.live_system_guard_bypass,  # kill_tagged signals only this run's tagged tree
+    pytest.mark.live_system_guard_bypass,  # reap_tagged signals only this run's tagged tree
 ]
 
 SERVER = "e2e"

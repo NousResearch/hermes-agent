@@ -238,7 +238,12 @@ def _finalize_wav_output(wav_path: str, output_path: str) -> str:
     if not ffmpeg:
         os.rename(wav_path, output_path)
         return output_path
-    _ffmpeg_run(ffmpeg, ["-i", wav_path, "-y", "-loglevel", "error", output_path],
+    # ``.ogg`` MUST be Opus: the muxer's default codec is Vorbis, and a build without libvorbis
+    # (a bare ``ffmpeg -i in.wav out.ogg``, exit 0) silently writes Ogg/FLAC instead — real Ogg
+    # holding something other than the Opus a voice note carries, so the reply can't be
+    # advertised as one and lands as an attachment instead of a bubble.
+    opus = _OPUS_VOICE_ARGS if output_path.lower().endswith(".ogg") else []
+    _ffmpeg_run(ffmpeg, ["-i", wav_path, *opus, "-y", "-loglevel", "error", output_path],
                 check=True, capture=False)
     _remove_quietly(wav_path)
     return output_path
@@ -286,10 +291,18 @@ def _write_wav_bytes_as(wav_bytes: bytes, output_path: str) -> str:
     return output_path
 
 
+def _transcode_to_ogg_opus(path: str, *, bitrate: str = "48k", timeout: int = 30,
+                           output_path: Optional[str] = None) -> Optional[str]:
+    """``gateway.platforms.base.transcode_to_ogg_opus`` resolved per call: the tools layer must
+    not import the gateway at module load, and tests monkeypatch the gateway seam."""
+    from gateway.platforms.base import transcode_to_ogg_opus
+    return transcode_to_ogg_opus(path, bitrate=bitrate, timeout=timeout, output_path=output_path)
+
+
 def _convert_to_opus(mp3_path: str) -> Optional[str]:
     """Convert any ffmpeg-readable audio file to OGG Opus next to it; None on failure."""
-    from gateway.platforms.base import transcode_to_ogg_opus
-    return transcode_to_ogg_opus(mp3_path, bitrate="48k", timeout=30, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
+    return _transcode_to_ogg_opus(mp3_path, bitrate="48k", timeout=30,
+                                  output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
 
 
 # --- Container sniffing / repair ---
@@ -307,15 +320,40 @@ def _sniff_audio_container(path: str) -> str:
         return "unknown"
 
 
-def _repair_ogg_container(file_str: str) -> str:
-    """Ensure a ``.ogg`` path really holds Ogg: transcode in place, else rename to the sniffed
-    real extension so platforms get an honest file instead of a 0-second voice bubble."""
+def _sniff_ogg_codec(path: str) -> Optional[str]:
+    """Codec inside an Ogg container ('opus', 'vorbis', 'flac', ...) or None when unknown."""
+    from tools.audio_container import sniff_ogg_codec
+    try:
+        with open(path, "rb") as fh:
+            return sniff_ogg_codec(fh.read(1024))
+    except OSError:
+        return None
+
+
+def _repair_ogg_container(file_str: str, *, want_opus: bool = False) -> str:
+    """Ensure a ``.ogg`` path really holds playable Ogg — and, where the destination platform
+    needs it, really holds Opus: transcode in place, else rename to the sniffed real extension so
+    platforms get an honest file instead of a 0-second voice bubble."""
     container = _sniff_audio_container(file_str) if file_str.endswith(".ogg") else "ogg"
-    if container in ("ogg", "unknown"):
+    if container == "ogg":
+        # A real Ogg container is not enough for a voice bubble: Ogg/Vorbis and Ogg/FLAC (the
+        # latter is what a libvorbis-less ffmpeg writes for a bare ``out.ogg``) hold something
+        # other than the Opus those platforms expect. Unknown codecs are left alone — never
+        # rewrite what we can't ID.
+        codec = _sniff_ogg_codec(file_str) if want_opus else None
+        if codec is not None and codec != "opus":
+            logger.info("TTS wrote Ogg/%s into a .ogg path (%s) — transcoding to real Ogg/Opus",
+                        codec, file_str)
+            repaired = _transcode_to_ogg_opus(file_str, bitrate="48k", timeout=30, output_path=file_str)
+            if repaired:
+                return repaired
+            logger.warning("Could not transcode Ogg/%s to Ogg/Opus: %s — leaving the file as-is",
+                           codec, file_str)
+        return file_str
+    if container == "unknown":
         return file_str
     logger.info("TTS wrote %s bytes into a .ogg path (%s) — transcoding to real Ogg/Opus", container, file_str)
-    from gateway.platforms.base import transcode_to_ogg_opus
-    repaired = transcode_to_ogg_opus(file_str, bitrate="48k", timeout=30, output_path=file_str)
+    repaired = _transcode_to_ogg_opus(file_str, bitrate="48k", timeout=30, output_path=file_str)
     if repaired:
         return repaired
     honest = f"{file_str[:-4]}.{container}"

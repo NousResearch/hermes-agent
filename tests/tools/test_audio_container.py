@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.audio_container import CONTAINER_TO_EXT, sniff_audio_ext, sniff_container
+from tools.audio_container import CONTAINER_TO_EXT, sniff_audio_ext, sniff_container, sniff_ogg_codec
 
 # --- canonical headers ------------------------------------------------------
 OGG = b"OggS\x00\x02" + b"\x00" * 64
@@ -146,6 +146,46 @@ class TestInboundCacheUsesSniffer:
 
         result = await base.cache_audio_from_url("https://example.com/voice.ogg", ext=".ogg")
         assert result.endswith(".mp3")
+
+
+class TestSniffOggCodec:
+    """An ``OggS`` prefix only proves the container: voice bubbles need Opus inside it.
+
+    Regression: ffmpeg's ``.ogg`` muxer default codec is Vorbis, and a build without
+    libvorbis silently writes Ogg/FLAC (``ffmpeg -i in.wav out.ogg`` exits 0) — real Ogg
+    holding something other than the Opus a voice bubble needs, so a reply that looks
+    like a voice note to the extension checks isn't one.
+    """
+
+    @staticmethod
+    def _page(payload: bytes, segments: int = 1) -> bytes:
+        header = (b"OggS" + b"\x00" + b"\x02" + b"\x00" * 8 + b"\x00" * 4
+                  + b"\x00" * 4 + b"\x00" * 4 + bytes([segments]))
+        return header + bytes([min(len(payload), 255)] * segments) + payload
+
+    @pytest.mark.parametrize(
+        "payload,expected",
+        [
+            (b"OpusHead" + b"\x01\x02" + b"\x00" * 8, "opus"),
+            (b"\x01vorbis" + b"\x00" * 16, "vorbis"),
+            (b"\x7fFLAC\x01\x00\x00\x00" + b"\x00" * 8, "flac"),
+            (b"Speex   " + b"\x00" * 16, "speex"),
+            (b"\x80theora" + b"\x00" * 16, "theora"),
+            (b"mystery-codec-header", None),
+        ],
+    )
+    def test_first_page_payload_identifies_the_codec(self, payload, expected):
+        assert sniff_ogg_codec(self._page(payload)) == expected
+
+
+    def test_multiple_lacing_segments_shift_the_payload(self):
+        page = self._page(b"OpusHead" + b"\x00" * 32, segments=3)
+        assert sniff_ogg_codec(page) == "opus"
+
+
+    @pytest.mark.parametrize("data", [MP3_ID3, WAV, FLAC, UNKNOWN, b"", b"OggS\x00"])
+    def test_non_ogg_or_too_short_is_none(self, data):
+        assert sniff_ogg_codec(data) is None
 
 
 class TestSignalDelegatesToCentralSniffer:

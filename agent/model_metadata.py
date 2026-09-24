@@ -1028,13 +1028,30 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
         return resp
     def _n_ctx(props: Dict[str, Any]) -> Any:
         return (props.get("default_generation_settings") or {}).get("n_ctx")
+    def _safe_json(resp):
+        try:
+            return resp.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            return None
     props_resp = _props()
     if props_resp.ok:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
-        if n_ctx and model_alias and model_alias in cache:
-            cache[model_alias]["context_length"] = n_ctx
-        return
+        props = _safe_json(props_resp)
+        if props is not None:
+            n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
+            if n_ctx and model_alias and model_alias in cache:
+                cache[model_alias]["context_length"] = n_ctx
+                return
+            # /v1/props returned 200 without default_generation_settings — try /props fallback
+            if not n_ctx:
+                fallback = requests.get(base + "/props", headers=headers, timeout=5, verify=verify)
+                if fallback.ok:
+                    fb_props = _safe_json(fallback)
+                    if fb_props is not None:
+                        fb_ctx = _n_ctx(fb_props)
+                        fb_alias = fb_props.get("model_alias", model_alias)
+                        if fb_ctx and fb_alias and fb_alias in cache:
+                            cache[fb_alias]["context_length"] = fb_ctx
+                            return
     native = requests.get(base + "/models", headers=headers, timeout=5, verify=verify)
     if not native.ok:
         return

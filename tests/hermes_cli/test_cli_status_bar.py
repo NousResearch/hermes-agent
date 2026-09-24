@@ -76,8 +76,14 @@ class TestCLIStatusBar:
         assert snapshot["session_title"] == "user-profiles"
 
     def test_status_bar_config_helper_treats_persisted_off_as_hidden(self):
-        for value in (False, "off", "false", "hidden", "no", "0"):
+        for value in (False, 0, "off", "false", "hidden", "no", "0"):
             assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is False
+            assert cli_mod._status_bar_visible_from_display_config({"statusbar": value}) is False
+
+        # A seeded null default must not shadow an explicit tui_statusbar.
+        assert cli_mod._status_bar_visible_from_display_config(
+            {"statusbar": None, "tui_statusbar": "off"}
+        ) is False
 
         for value in (True, "top", "bottom", "on", None):
             assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is True

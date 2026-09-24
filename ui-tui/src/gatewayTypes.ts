@@ -85,6 +85,11 @@ export interface ConfigDisplayConfig {
   sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
+  /**
+   * Classic CLI status-bar placement. The TUI reads `tui_statusbar` first
+   * and falls back here. `hidden` / `no` / `false` / `0` / `off` hide it.
+   */
+  statusbar?: boolean | number | string | null
   /** CLI/TUI status-bar field visibility filter (shared with the classic
    *  CLI bar — see display.status_bar.fields in configuration docs).
    *  Raw YAML: callers must runtime-validate entries. */

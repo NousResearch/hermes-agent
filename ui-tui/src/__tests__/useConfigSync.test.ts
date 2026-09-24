@@ -47,6 +47,19 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(false)
   })
 
+  it('hides the bar from display.statusbar when tui_statusbar is unset', () => {
+    applyDisplay({ config: { display: { statusbar: 'hidden' } } }, vi.fn())
+    expect($uiState.get().statusBar).toBe('off')
+  })
+
+  it('lets an explicit tui_statusbar win over display.statusbar', () => {
+    applyDisplay(
+      { config: { display: { statusbar: 'hidden', tui_statusbar: 'bottom' } } },
+      vi.fn()
+    )
+    expect($uiState.get().statusBar).toBe('bottom')
+  })
+
   it('hydrates the destructive slash confirmation policy from approvals', () => {
     const setBell = vi.fn()
 
@@ -181,6 +194,13 @@ describe('normalizeStatusBar', () => {
     expect(normalizeStatusBar('TOP')).toBe('top')
     expect(normalizeStatusBar('  on  ')).toBe('top')
     expect(normalizeStatusBar('OFF')).toBe('off')
+  })
+
+  it('accepts the classic CLI hidden vocabulary', () => {
+    for (const hidden of ['hidden', 'no', 'false', '0', ' Hidden ']) {
+      expect(normalizeStatusBar(hidden)).toBe('off')
+    }
+    expect(normalizeStatusBar(0)).toBe('off')
   })
 })
 

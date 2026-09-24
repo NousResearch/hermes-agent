@@ -875,6 +875,11 @@ DEFAULT_CONFIG = {
         # UI language for static messages (approval prompts, some gateway slash replies); not agent
         # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",
+        # Status-bar placement for the classic CLI (read before tui_statusbar) and
+        # the TUI fallback when tui_statusbar is unset. None means unset, so a
+        # seeded default does not shadow tui_statusbar. top | bottom | off.
+        # hidden, no, false, and 0 also hide the bar.
+        "statusbar": None,
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock

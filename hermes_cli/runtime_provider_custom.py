@@ -38,6 +38,60 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+_KEYLESS_PLACEHOLDERS = frozenset({"no-key-required", "no-key", "none"})
+
+
+def named_custom_declares_auth(entry: Dict[str, Any]) -> bool:
+    """Whether a named custom entry declares an auth credential source.
+
+    A declared source that resolves to nothing is a configuration error on
+    auth-required endpoints, not a silent keyless server. An entry with no
+    ``api_key``/``key_env``/``key_cmd`` at all IS the keyless-server shape.
+    An inline ``api_key`` holding only a keyless placeholder is also keyless.
+    """
+    inline = _clean(entry.get("api_key", ""))
+    if inline and inline.lower() not in _KEYLESS_PLACEHOLDERS:
+        return True
+    if _clean(entry.get("key_env") or entry.get("api_key_env")):
+        return True
+    if _clean(entry.get("key_cmd", "")):
+        return True
+    return False
+
+
+def named_custom_key_env_value(entry: Dict[str, Any]) -> str:
+    """Silent ``key_env``/``api_key_env`` read (no warning).
+
+    Precedence probing must not warn when a later source (pool) still
+    supplies a credential; the warning belongs to the fail-closed path.
+    """
+    key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
+    if not key_env:
+        return ""
+    return get_secret_str(key_env, "").strip()
+
+
+def is_loopback_base_url(base_url: str) -> bool:
+    """True for local keyless-server endpoints (localhost/127.0.0.1/::1)."""
+    try:
+        return bool(_rp()._loopback_hostname(base_url_hostname(base_url or "")))
+    except Exception:
+        return False
+
+
+def missing_named_custom_credential_message(entry_name: str, key_env: str, base_url: str) -> str:
+    """Actionable error for a declared-but-unresolvable named custom credential."""
+    where = f" for '{entry_name}'" if entry_name else ""
+    if key_env:
+        return (f"Named custom provider{where} declares key_env '{key_env}' but no value "
+                f"could be resolved for {base_url or '(unknown endpoint)'}. Set {key_env} in "
+                f"~/.hermes/.env (or the process environment), or run 'hermes auth' / "
+                f"'hermes model' to reconfigure the provider.")
+    return (f"Named custom provider{where} declares a credential but none could be "
+            f"resolved for {base_url or '(unknown endpoint)'}. Configure its api_key/key_env "
+            f"or run 'hermes auth' / 'hermes model' to reconfigure the provider.")
+
+
 def _key_env_secret(entry: Dict[str, Any], label: str) -> str:
     """The credential named by ``key_env`` / ``api_key_env`` on a config block, or "".
 
@@ -548,22 +602,16 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
-        base_url, "custom", custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
-    )
-    if pool_result:
-        # The pool doesn't know the custom_providers fields — propagate them here too.
-        _apply_custom_provider_extras(custom_provider, target_model, pool_result)
-        return pool_result
+    # Unified named-custom credential precedence (shared with the auxiliary
+    # client): explicit --api-key > key_cmd bearer > inline api_key > key_env >
+    # credential pool > host-gated env candidates. A configured key always beats
+    # the pool so the same provider/model/URL resolves the same credential on
+    # both paths; the pool is the durable-rotation fallback, not an override.
     explicit_key = (explicit_api_key or "").strip()
-    candidates = [
-        explicit_key,
-        _clean(custom_provider.get("api_key", "")),
-        _key_env_secret(custom_provider, f"custom provider '{custom_provider.get('name', requested_provider)}'"),
-        *rp._host_gated_env_key_candidates(base_url, ollama=False),
-    ]
-    api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
+    inline_key = _clean(custom_provider.get("api_key", ""))
+    key_env_name = _clean(custom_provider.get("key_env") or custom_provider.get("api_key_env"))
+    key_env_val = named_custom_key_env_value(custom_provider)
+    api_key: Any = ""
     # ``key_cmd`` credentials are minted per request (short-lived bearers would go stale
     # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
     # explicit --api-key still wins as the one-off recovery escape hatch.
@@ -573,6 +621,46 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
         if token_provider is not None:
             api_key = token_provider
+    if not api_key:
+        for candidate in (explicit_key, inline_key, key_env_val):
+            if rp.has_usable_secret(candidate):
+                api_key = candidate
+                break
+    pool_result = None
+    if not api_key or (isinstance(api_key, str) and not rp.has_usable_secret(api_key)):
+        api_key = "" if not isinstance(api_key, str) or not rp.has_usable_secret(api_key) else api_key
+        if not api_key:
+            pool_result = rp._try_resolve_from_custom_pool(
+                base_url, "custom", custom_provider.get("api_mode"),
+                provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+            )
+            if pool_result:
+                # The pool doesn't know the custom_providers fields — propagate them here too.
+                _apply_custom_provider_extras(custom_provider, target_model, pool_result)
+                return pool_result
+    if not api_key:
+        for candidate in rp._host_gated_env_key_candidates(base_url, ollama=False):
+            if rp.has_usable_secret(candidate):
+                api_key = candidate
+                break
+    if not api_key:
+        # A declared credential source with no resolvable value is a
+        # configuration error on auth-required endpoints — fail closed instead
+        # of sending the keyless placeholder to a 401. Loopback endpoints and
+        # entries with no declared source keep the placeholder (keyless local).
+        if named_custom_declares_auth(custom_provider) and not is_loopback_base_url(base_url):
+            from hermes_cli.auth_constants import AuthError
+            entry_name = str(custom_provider.get("name", requested_provider) or requested_provider)
+            logger.error(missing_named_custom_credential_message(entry_name, key_env_name, base_url))
+            raise AuthError(
+                missing_named_custom_credential_message(entry_name, key_env_name, base_url),
+                provider=requested_provider,
+                code="missing_api_key",
+            )
+        if key_env_name:
+            logger.warning("%s: key_env %s is set but the variable is empty/unset — the request will carry the "
+                           "placeholder no-key-required and the endpoint will reject it",
+                           f"custom provider '{custom_provider.get('name', requested_provider)}'", key_env_name)
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)

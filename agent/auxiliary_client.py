@@ -4719,9 +4719,16 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
 
 
 def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_base: str) -> Any:
-    """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
-    Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
-    honoured at the same precedence or every aux call 401s."""
+    """Credential for a named custom provider, shared contract with the main runtime.
+
+    Precedence: inline api_key → key_env → key_cmd bearer → credential pool.
+    A configured key always beats the pool so main and auxiliary resolve the
+    same credential for the same provider/model/URL. Returns "" when a
+    declared source exists but nothing resolves on a non-loopback endpoint —
+    the caller fails closed instead of sending the keyless placeholder.
+    Loopback endpoints and entries with no declared source still get the
+    ``no-key-required`` placeholder (keyless local servers).
+    """
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
@@ -4748,7 +4755,17 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
                 if str(pool_api_key).strip():
                     custom_key = str(pool_api_key).strip()
                     break
-    return custom_key or "no-key-required"
+    if custom_key:
+        return custom_key
+    try:
+        from hermes_cli.runtime_provider_custom import is_loopback_base_url, named_custom_declares_auth
+        declares = named_custom_declares_auth(custom_entry)
+        loopback = is_loopback_base_url(custom_base)
+    except Exception:
+        declares, loopback = bool(custom_key_env or custom_key_cmd), False
+    if declares and not loopback:
+        return ""
+    return "no-key-required"
 
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
@@ -5127,6 +5144,21 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
     custom_key = _normalize_api_key(req.explicit_api_key) or _named_custom_api_key(custom_entry, provider, custom_base)
+    if not custom_key:
+        # Declared credential with no resolvable value on an auth-required
+        # endpoint: fail closed instead of sending a placeholder to a 401.
+        # Loopback/keyless entries still resolve the placeholder inside
+        # _named_custom_api_key, so empty here is exactly the error shape.
+        try:
+            from hermes_cli.runtime_provider_custom import missing_named_custom_credential_message
+            entry_name = str(custom_entry.get("name") or provider)
+            key_env = str(custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
+            message = missing_named_custom_credential_message(entry_name, key_env, custom_base)
+        except Exception:
+            message = (f"Named custom provider '{custom_entry.get('name') or provider}' declares "
+                       f"a credential but none could be resolved for {custom_base or '(unknown endpoint)'}.")
+        logger.error("resolve_provider_client: %s", message)
+        return None, None
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "

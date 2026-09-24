@@ -89,6 +89,28 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - Custom (`provider: custom`) — first-class provider for any OpenAI-compatible endpoint
 - Named custom providers (`providers:` dict in config.yaml; the legacy `custom_providers` list is still read for backward compatibility)
 
+## Named custom providers (`providers:` / `custom_providers:`)
+
+Main (`resolve_runtime_provider`) and auxiliary (`resolve_provider_client`)
+share one credential contract for a named custom entry:
+
+1. explicit `--api-key` / per-call override
+2. `key_cmd` bearer (per-request callable; explicit still wins)
+3. inline `api_key`
+4. `key_env` / `api_key_env`
+5. matching credential-pool entry (rotation fallback, never an override)
+6. host-gated env candidates (`OPENAI_API_KEY` on its own host, `<VENDOR>_API_KEY`)
+
+A configured key always beats the pool, so the same provider/model/URL
+resolves the same credential on both paths. A declared source
+(`api_key`, `key_env`, `key_cmd`) that resolves to nothing fails closed on
+non-loopback endpoints: the main resolver raises `AuthError`
+(`missing_api_key`) with an actionable message, and the auxiliary resolver
+returns `(None, None)` instead of sending the `no-key-required` placeholder
+to a 401. Loopback endpoints (`localhost`, `127.0.0.1`, `::1`) and entries
+with no declared source keep the placeholder — that is the keyless local
+server shape.
+
 ## Output of runtime resolution
 
 The runtime resolver returns data such as:

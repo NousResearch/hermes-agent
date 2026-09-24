@@ -897,6 +897,52 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 _POOL_STATUS_FIELDS = (
     "last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message",
     "last_error_reset_at", "status_cleared_at")
+_POOL_TOKEN_GENERATION_FIELDS = (
+    "access_token", "refresh_token", "expires_at", "expires_at_ms", "expires_in", "obtained_at",
+    "last_refresh", "agent_key", "agent_key_expires_at", "agent_key_expires_in", "agent_key_id",
+    "agent_key_obtained_at", "agent_key_reused",
+)
+
+
+def _credential_token_pair(row: Any) -> Tuple[Any, Any]:
+    if not isinstance(row, dict):
+        return (None, None)
+    return row.get("access_token"), row.get("refresh_token")
+
+
+def _merge_pool_row_generation(
+    entry: Dict[str, Any],
+    disk_entry: Optional[Dict[str, Any]],
+    provider_id: str,
+    *,
+    base_pair: Optional[Tuple[Any, Any]] = None,
+    status_cleared: bool = False,
+) -> Dict[str, Any]:
+    """Keep a newer on-disk token generation authoritative during stale writes."""
+    merge_disk = None if status_cleared else disk_entry
+    if not isinstance(disk_entry, dict) or base_pair is None:
+        return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
+    disk_pair = _credential_token_pair(disk_entry)
+    if not any(disk_pair) or disk_pair == base_pair:
+        return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
+
+    merged = dict(entry)
+    for field in _POOL_TOKEN_GENERATION_FIELDS:
+        if field in disk_entry:
+            merged[field] = disk_entry[field]
+        else:
+            merged.pop(field, None)
+    if not status_cleared:
+        for field in _POOL_STATUS_FIELDS:
+            if field in disk_entry:
+                merged[field] = disk_entry[field]
+            else:
+                merged.pop(field, None)
+        if "failure_reason" in disk_entry:
+            merged["failure_reason"] = disk_entry["failure_reason"]
+        else:
+            merged.pop("failure_reason", None)
+    return _merge_disk_cooldown_state(merged, merge_disk, provider_id)
 
 
 def _merge_disk_cooldown_state(
@@ -957,7 +1003,8 @@ def write_credential_pool(
     provider_id: str, entries: List[Dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
-) -> Path:
+    token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Persist one provider's credential pool under auth.json.
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
@@ -967,6 +1014,7 @@ def write_credential_pool(
     recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
     epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
     removed = {rid for rid in (removed_ids or ()) if rid}
+    bases = token_bases or {}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = _store_section(auth_store, "credential_pool")
@@ -979,8 +1027,10 @@ def write_credential_pool(
         new_ids = set(_entry_ids(sanitized))
         status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = [
-            _merge_disk_cooldown_state(
-                e, None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
+            _merge_pool_row_generation(
+                e, existing_by_id.get(e.get("id")), provider_id,
+                base_pair=bases.get(e.get("id")),
+                status_cleared=e.get("id") in status_cleared,
             )
             if isinstance(e, dict) else e
             for e in sanitized]
@@ -989,7 +1039,8 @@ def write_credential_pool(
             if disk_id and disk_id not in new_ids and disk_id not in removed:
                 merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
         pool[provider_id] = merged
-        return _save_auth_store(auth_store)
+        _save_auth_store(auth_store)
+        return merged
 
 
 def _suppressed_source_list(suppressed: Dict[str, Any], provider_id: str) -> Optional[List[str]]:

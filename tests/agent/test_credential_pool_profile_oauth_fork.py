@@ -756,3 +756,58 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     _new_process(auth_mod)
     assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
     assert grants._oauth_heal_clean_mark_path().read_text() != marked
+
+
+
+# ── G. token generation is the authority boundary (#120815) ─────────────
+
+@pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
+def test_stale_pool_cannot_roll_back_peer_token_generation(fleet, borrowed):
+    from agent.credential_pool import load_pool
+
+    fleet["use"](_profile(fleet, "stale-write") if borrowed else fleet["root"])
+    stale, peer = load_pool("anthropic"), load_pool("anthropic")
+    assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
+
+    stale.mark_exhausted_and_rotate(status_code=429, credential_id="abc123")
+
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT1"
+    selected = stale.select()
+    assert selected is not None and selected.refresh_token == "sk-ant-ort-RT1"
+
+
+@pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
+def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowed):
+    from agent.credential_pool import STATUS_DEAD, load_pool
+
+    fleet["use"](_profile(fleet, "stale-dead") if borrowed else fleet["root"])
+    stale, peer = load_pool("anthropic"), load_pool("anthropic")
+    assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
+
+    stale.mark_exhausted_and_rotate(
+        status_code=401, credential_id="abc123",
+        error_context={"reason": "invalid_grant", "message": "refresh token already used"},
+    )
+
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT1"
+    assert row.get("last_status") != STATUS_DEAD
+    selected = stale.select()
+    assert selected is not None and selected.refresh_token == "sk-ant-ort-RT1"
+
+
+def test_terminal_verdict_for_current_token_generation_still_persists(fleet):
+    from agent.credential_pool import STATUS_DEAD, load_pool
+
+    fleet["use"](fleet["root"])
+    pool = load_pool("anthropic")
+    pool.mark_exhausted_and_rotate(
+        status_code=401, credential_id="abc123",
+        error_context={"reason": "invalid_grant", "message": "refresh token already used"},
+    )
+
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT0"
+    assert row["last_status"] == STATUS_DEAD
+    assert pool.select() is None

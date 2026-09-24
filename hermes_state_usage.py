@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import json
 import logging
 import threading
 import time
@@ -315,7 +316,7 @@ class SessionUsageMixin:
 
         def _do(conn):
             row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
+                "SELECT model, model_config, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
             ).fetchone()
             existing = dict(row) if row is not None else {}
             # create_session records the requested route before any API call. If that fails
@@ -327,10 +328,18 @@ class SessionUsageMixin:
                 and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
             )
             if first_accounted_route:
+                try:
+                    requested = json.loads(existing.get("model_config") or "{}")
+                except (TypeError, ValueError):
+                    requested = {}
+                # An explicit requested route is not the first provider that managed to answer.
+                # Billing and per-model usage still follow the served route below.
+                requested_model = requested.get("model") if isinstance(requested, dict) else None
+                session_model = existing["model"] if requested_model == existing["model"] else model
                 conn.execute("""UPDATE sessions
                        SET model = ?, billing_provider = ?,
                        billing_base_url = ?, billing_mode = ?
-                       WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
+                       WHERE id = ?""", (session_model, billing_provider, billing_base_url, billing_mode, session_id))
             conn.execute(sql, params)
             if record_model_usage:
                 self._record_model_usage(conn, session_id, **usage)

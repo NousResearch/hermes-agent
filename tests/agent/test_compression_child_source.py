@@ -24,6 +24,7 @@ def _agent(db, session_id):
         working_directory=None, _memory_manager=None, context_compressor=types.SimpleNamespace(),
         _flush_messages_to_session_db=lambda *a, **k: None, _persist_user_message_idx=None,
         _session_messages=None, _gateway_session_key=None, _cached_system_prompt="sys",
+        _session_row_model_config=lambda: None,
     )
 
 

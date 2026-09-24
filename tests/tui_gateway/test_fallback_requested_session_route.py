@@ -60,6 +60,24 @@ def test_cli_lazy_row_uses_primary_snapshot(tmp_path):
         agent._ensure_db_session()
         row = db.get_session(agent.session_id)
         assert row["model"] == "primary-model"
+        config = json.loads(row["model_config"])
+        assert {key: config[key] for key in ("model", "provider", "base_url", "api_mode")} == {
+            key: agent._primary_runtime[key] for key in ("model", "provider", "base_url", "api_mode")
+        }
+        db.update_token_counts(
+            agent.session_id, model="fallback-model", billing_provider="nous",
+            billing_base_url="https://fallback.example/v1", input_tokens=17,
+            output_tokens=3, api_call_count=1,
+        )
+        row = db.get_session(agent.session_id)
+        assert row["model"] == "primary-model"
+        assert row["billing_provider"] == "nous"
         assert stored_session_route(row, current_model="fallback-model", current_provider="nous")[:2] == (
             "primary-model", "anthropic")
+        with db._lock:
+            usage = db._conn.execute(
+                "SELECT model, billing_provider, input_tokens FROM session_model_usage WHERE session_id = ?",
+                (agent.session_id,),
+            ).fetchone()
+        assert tuple(usage) == ("fallback-model", "nous", 17)
         assert json.loads(row["model_config"])["reasoning_config"] == {"effort": "high"}

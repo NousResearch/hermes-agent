@@ -325,9 +325,9 @@ class AIAgent(
         from agent.session_route import requested_session_runtime
         route = requested_session_runtime(self)
         model_config = dict(self._session_init_model_config or {})
+        model_config.update({key: route.get(key) for key in ("model", "provider", "base_url", "api_mode") if route.get(key)})
         if getattr(self, "_fallback_activated", False):
             model_config["reasoning_config"] = route.get("reasoning_config")
-            model_config.update({key: route.get(key) for key in ("provider", "base_url", "api_mode") if route.get(key)})
         try:
             from tools.approval import is_session_yolo_enabled
             if is_session_yolo_enabled(self.session_id):

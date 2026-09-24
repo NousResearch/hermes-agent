@@ -95,6 +95,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
     ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
+    ("exec", ("POST", "/exec")),
     ("browser_control_register", ("POST", "/v1/browser-control/register")),
     ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
     ("artifact_upload", ("POST", "/v1/artifacts/upload")),
@@ -700,6 +701,16 @@ def _chat_usage_payload(usage: Dict[str, Any]) -> Dict[str, int]:
     """OpenAI Chat Completions ``usage`` block (prompt/completion/total) from the agent's usage."""
     values = (usage.get(key, 0) for key in _USAGE_TOKEN_KEYS)
     return dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), values))
+
+
+def _build_usage_block(usage: Dict[str, Any]) -> Dict[str, Any]:
+    """OpenAI ``usage`` block preserving ``prompt_tokens_details``/``completion_tokens_details``
+    (cached_tokens, cache_creation_tokens, reasoning_tokens) — ecoseek fork feature."""
+    out = _chat_usage_payload(usage)
+    for detail_key in ("prompt_tokens_details", "completion_tokens_details"):
+        if detail_key in usage:
+            out[detail_key] = usage[detail_key]
+    return out
 
 
 def _responses_usage_payload(usage: Dict[str, Any]) -> Dict[str, int]:
@@ -2925,6 +2936,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
                 "cors": bool(self._cors_origins),
+                "fast_bypass": True,
+                "reasoner_bypass": True,
                 # Always advertised for feature-detection; enabled follows config.
                 "browser_extension_control": {
                     "enabled": self._browser_control_enabled(),
@@ -4508,6 +4521,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         usage = {"input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                  "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                  "total_tokens": getattr(agent, "session_total_tokens", 0) or 0}
+        # Preserve token detail sub-objects for OpenAI-compatible clients (ecoseek fork).
+        # Only real ints populate — test doubles may expose non-numeric attributes.
+        _cached = getattr(agent, "session_cache_read_tokens", 0)
+        _cache_write = getattr(agent, "session_cache_write_tokens", 0)
+        _reasoning = getattr(agent, "session_reasoning_tokens", 0)
+        if not isinstance(_cached, int): _cached = 0
+        if not isinstance(_cache_write, int): _cache_write = 0
+        if not isinstance(_reasoning, int): _reasoning = 0
+        if _cached or _cache_write:
+            usage["prompt_tokens_details"] = {"cached_tokens": _cached}
+            if _cache_write:
+                usage["prompt_tokens_details"]["cache_creation_tokens"] = _cache_write
+        if _reasoning:
+            usage["completion_tokens_details"] = {"reasoning_tokens": _reasoning}
         # Effective session id lets callers track compression-triggered rotations.
         # (#16938)
         _eff_sid = getattr(agent, "session_id", session_id)

@@ -570,7 +570,7 @@ class OpenAICompatRoutesMixin:
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
+            ThreadSafeAsyncQueue, _build_usage_block, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
@@ -773,7 +773,7 @@ class OpenAICompatRoutesMixin:
             "model": model_name,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
-            "usage": _chat_usage_payload(usage)}
+            "usage": _build_usage_block(usage)}
         # Non-streaming twin of ``delta.reasoning_content`` (#99552).
         reasoning_text = _turn_reasoning_text(history, user_message, result)
         if reasoning_text and not presentation_muted:
@@ -785,8 +785,11 @@ class OpenAICompatRoutesMixin:
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg and not presentation_muted:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
-        # Attach hermes_trace when opt-in and available (ecoseek fork feature)
-        if _trace_obj is not None and isinstance(result, dict):
+        # Attach hermes_trace when opt-in and available (ecoseek fork feature).
+        # _run_agent's attach is authoritative; fall back to the request-scoped object.
+        if isinstance(result, dict) and result.get("hermes_trace"):
+            response_data["hermes_trace"] = result["hermes_trace"]
+        elif _trace_obj is not None and isinstance(result, dict):
             _trace_data = getattr(_trace_obj, "to_dict", None)
             if _trace_data:
                 response_data["hermes_trace"] = _trace_data()
@@ -846,7 +849,7 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _sse_frame)
+            _abandon_agent_task, _build_usage_block, _chat_usage_payload, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
@@ -884,7 +887,7 @@ class OpenAICompatRoutesMixin:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error)
-            finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
+            finish_chunk = _chunk({}, finish_reason, usage=_build_usage_block(usage))
             presentation_muted = (
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
                 or getattr(agent_error, "_notification_presentation_suppressed", False) is True
@@ -897,6 +900,9 @@ class OpenAICompatRoutesMixin:
                 finish_chunk["hermes"] = _hermes_extras(
                     completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
             await response.write(_sse_frame(finish_chunk))
+            # Opt-in telemetry rides its own event before the stream closes (ecoseek fork).
+            if isinstance(result, dict) and result.get("hermes_trace"):
+                await response.write(_sse_frame(result["hermes_trace"], event="hermes.trace"))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")

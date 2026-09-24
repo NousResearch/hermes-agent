@@ -14,6 +14,7 @@ Tests cover:
 
 import asyncio
 import json
+import os
 import time
 import types
 import uuid
@@ -854,7 +855,8 @@ class TestModelsEndpoint:
             assert resp.status == 200
             data = await resp.json()
             assert data["object"] == "list"
-            assert len(data["data"]) == 1
+            # ecoseek fork advertises the bypass aliases alongside the primary model.
+            assert len(data["data"]) == 3
             assert data["data"][0]["id"] == "hermes-agent"
             assert data["data"][0]["owned_by"] == "hermes"
 

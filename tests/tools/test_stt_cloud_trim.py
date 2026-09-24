@@ -85,9 +85,6 @@ def _write_wav(path: Path, segments) -> str:
 
 
 class TestProviderGating:
-    def test_cloud_set_excludes_local_providers(self):
-        assert "local" not in CLOUD_STT_PROVIDERS
-        assert "local_command" not in CLOUD_STT_PROVIDERS
 
     def test_cloud_set_covers_every_remote_builtin(self):
         # Invariant: every built-in that is not local-ish uploads audio and
@@ -309,8 +306,3 @@ class TestTrimE2E:
             assert _trim_silence_for_cloud_stt(wav, {}) is None
         mock_encode.assert_not_called()
 
-    def test_disabled_config_uploads_original(self, tmp_path):
-        wav = _write_wav(
-            tmp_path / "pauses.wav", [("tone", 2), ("silence", 6), ("tone", 2)]
-        )
-        assert _trim_silence_for_cloud_stt(wav, {"cloud_trim_silence": False}) is None

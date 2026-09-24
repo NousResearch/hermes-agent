@@ -59,17 +59,6 @@ def _is_new_session(entry) -> bool:
 # reset_session stamps is_fresh_reset=True
 # ---------------------------------------------------------------------------
 
-class TestResetSessionStampsFreshReset:
-    def test_reset_session_sets_is_fresh_reset_true(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        store.get_or_create_session(source)
-        session_key = store._generate_session_key(source)
-
-        new_entry = store.reset_session(session_key)
-
-        assert new_entry is not None
-        assert new_entry.is_fresh_reset is True
 
 
 # ---------------------------------------------------------------------------

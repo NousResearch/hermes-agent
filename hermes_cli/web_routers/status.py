@@ -130,9 +130,11 @@ async def get_host_identity(request: Request):
     headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
     """
     _require_token(request)
-    # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
-    # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
-    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
+    # ``role`` is the host ROLE this process published (gateway/host_rendezvous.ROLE_SERVE, or
+    # ROLE_DESKTOP_SERVE for a Desktop-owned child), not the launch mode: `hermes serve` and
+    # `hermes dashboard` are one host role that differ in SPA.
+    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(),
+            "role": getattr(app.state, "host_role", None) or "serve",
             "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 
@@ -405,6 +407,9 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
         from gateway.readiness import _probe_state_db
         storage_check = await run_in_threadpool(_probe_state_db, get_hermes_home())
         components["storage"] = {"status": storage_check.get("status", "degraded")}
+        # The one reason enum consumers key off; same latch as readiness and the session lists.
+        if storage_check.get("detail") == "corrupt":
+            components["storage"]["reason"] = "corrupt"
     except Exception:
         components["storage"] = {"status": "degraded"}
     # ``disabled`` entries are platforms the multiplexer deliberately does not run for a served profile
@@ -528,7 +533,9 @@ async def get_status(profile: Optional[str] = None):
         # renders the profile list over a gated bind) so they survive the auth gate; the
         # per-gateway ``gateways[]`` carries host ports and stays gated below.
         status["profiles"] = topology["profiles"]
+        status["parked_profiles"] = topology.get("parked_profiles", [])
         status["gateway_mode"] = topology["gateway_mode"]
+        status["multiplex_standalone_reason"] = topology.get("multiplex_standalone_reason")
 
         # Host paths, gateway PID, internal health URL and per-gateway ports are deployment
         # recon a liveness probe never needs, and on a gated bind *any* unauthenticated caller
@@ -818,13 +825,17 @@ async def get_logs(
         if comp_prefixes is None:
             raise HTTPException(status_code=400, detail=f"Unknown component: {component}. "
                                 f"Available: {', '.join(sorted(COMPONENT_PREFIXES))}")
-    result = _read_tail(
-        log_path, min(lines, 500) if not search else 2000,
-        has_filters=bool(min_level or comp_prefixes or search),
-        min_level=min_level, component_prefixes=comp_prefixes)
-    # _read_tail doesn't support free-text search, so post-filter (case-insensitive
-    # substring) here and trim to the requested line count afterward.
-    if search:
-        needle = search.lower()
-        result = [l for l in result if needle in l.lower()][-min(lines, 500):]
+    def _load_logs():
+        result = _read_tail(
+            log_path, min(lines, 500) if not search else 2000,
+            has_filters=bool(min_level or comp_prefixes or search),
+            min_level=min_level, component_prefixes=comp_prefixes)
+        # _read_tail doesn't support free-text search, so post-filter (case-insensitive
+        # substring) here and trim to the requested line count afterward.
+        if search:
+            needle = search.lower()
+            result = [line for line in result if needle in line.lower()][-min(lines, 500):]
+        return result
+
+    result = await asyncio.to_thread(_load_logs)
     return {"file": file, "lines": result}

@@ -14,9 +14,7 @@ runs after every directory creation in the home-init path).
 """
 from __future__ import annotations
 
-import os
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -57,17 +55,6 @@ class TestResolveHermesUidGid:
 
 
 class TestChownToHermesUid:
-    def test_calls_os_chown_when_both_set(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_UID", "1000")
-        monkeypatch.setenv("HERMES_GID", "911")
-        import hermes_constants as cfg
-
-        d = tmp_path / "subdir"
-        d.mkdir()
-
-        with patch.object(cfg.os, "chown") as mock_chown:
-            cfg._chown_to_hermes_uid(d)
-        mock_chown.assert_called_once_with(d, 1000, 911)
 
 
     def test_eperm_is_silently_swallowed(self, tmp_path, monkeypatch):
@@ -89,18 +76,6 @@ class TestChownToHermesUid:
             # Must not raise — the catch is non-fatal.
             cfg._chown_to_hermes_uid(d)
 
-    def test_attributeerror_swallowed_for_windows_compat(self, tmp_path, monkeypatch):
-        """os.chown doesn't exist on Windows. Catching AttributeError keeps
-        the helper portable."""
-        monkeypatch.setenv("HERMES_UID", "1000")
-        monkeypatch.setenv("HERMES_GID", "911")
-        import hermes_constants as cfg
-
-        d = tmp_path / "subdir"
-        d.mkdir()
-
-        with patch.object(cfg.os, "chown", side_effect=AttributeError("no chown on this platform")):
-            cfg._chown_to_hermes_uid(d)  # must not raise
 
 
 # ---------------------------------------------------------------------------

@@ -2101,23 +2101,38 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_per_platform_streaming_does_not_override_global_disabled(monkeypatch, tmp_path):
+@pytest.mark.parametrize("path", ["turn_runner", "proxy"])
+async def test_per_platform_streaming_does_not_override_global_disabled(monkeypatch, tmp_path, path):
     """Regression for #53697: display.platforms.telegram.streaming=True must not
-    re-enable gateway streaming when streaming.enabled=False (global master switch)."""
+    re-enable gateway streaming when streaming.enabled=False (global master switch).
+
+    Covers both gate sites: TurnRunner.want_stream_deltas (normal agent path) and
+    GatewayTurnMixin._proxy_stream_consumer (proxy / native-streaming path)."""
+    config_data = {
+        "display": {
+            "platforms": {
+                "telegram": {"streaming": True},
+            },
+            "interim_assistant_messages": False,
+        },
+        "streaming": {"enabled": False},
+    }
+    if path == "proxy":
+        adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+        runner = _make_runner(adapter)
+        runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
+        gateway_run = importlib.import_module("gateway.run")
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config_data)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001", chat_type="dm")
+        assert runner._proxy_stream_consumer(source, None, None, lambda: True) is None
+        return
+
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         CommentaryAgent,
         session_id="sess-per-platform-streaming-global-off",
-        config_data={
-            "display": {
-                "platforms": {
-                    "telegram": {"streaming": True},
-                },
-                "interim_assistant_messages": False,
-            },
-            "streaming": {"enabled": False},
-        },
+        config_data=config_data,
         platform=Platform.TELEGRAM,
     )
 

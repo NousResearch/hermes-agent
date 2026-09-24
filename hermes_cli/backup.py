@@ -774,6 +774,28 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     return True, ""
 
 
+def _find_corrupt_members(zf: zipfile.ZipFile, members: List[str]) -> List[str]:
+    """Return ``"<member>: <error>"`` for every member whose data does not decompress or
+    fails its CRC, streaming each one in 1 MiB chunks so a multi-GB ``state.db`` is never
+    held in memory.
+
+    ``is_zipfile()``/``namelist()`` only read the central directory, so an archive with a
+    rotten member passes them and the damage surfaces as ``zlib.error``/``BadZipFile`` in
+    the middle of the restore, after earlier members already replaced the user's files
+    (#121258). Not ``zf.testzip()``: it lets ``zlib.error`` escape and names at most the
+    first bad member.
+    """
+    bad: list[str] = []
+    for member in members:
+        try:
+            with zf.open(member) as src:
+                while src.read(1 << 20):  # CRC is checked when the stream hits EOF
+                    pass
+        except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+            bad.append(f"{member}: {exc}")
+    return bad
+
+
 def _detect_prefix(zf: zipfile.ZipFile) -> str:
     """Detect if the zip has a common directory prefix wrapping all entries."""
     names = [n for n in zf.namelist() if not n.endswith("/")]
@@ -982,7 +1004,10 @@ def _import_members(
                             raise
                 restored += 1
                 restored_external += external
-            except (PermissionError, OSError, zipfile.BadZipFile, zlib.error) as exc:
+            except (PermissionError, OSError, zipfile.BadZipFile, zlib.error, EOFError) as exc:
+                # BadZipFile/zlib.error/EOFError: the pre-flight in run_import already refused
+                # archives that fail to decompress; this keeps a member that rots between the two
+                # passes (archive on failing media) from aborting the rest of the restore.
                 errors.append(f"{label}: {exc}")
 
         if restored % 500 == 0:
@@ -1016,6 +1041,14 @@ def run_import(args) -> Optional[int]:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
         if not args.force and not _confirm_import_overwrite(hermes_root):
             return
+        # Every member is decompressed once here and once again below: a damaged archive
+        # must be refused while the home is still untouched, not half-way through the restore.
+        print("\nChecking archive integrity ...")
+        corrupt = _find_corrupt_members(zf, members)
+        if corrupt:
+            _print_capped(f"Error: backup archive is damaged ({len(corrupt)} member(s) fail to "
+                          f"decompress or fail their CRC); nothing was restored:", corrupt, "  ")
+            return 1
         print(f"\nImporting {file_count} files ...")
         hermes_root.mkdir(parents=True, exist_ok=True)
         t0 = time.monotonic()

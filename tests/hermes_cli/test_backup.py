@@ -1,5 +1,6 @@
 """Tests for hermes backup and import commands."""
 
+import io
 import json
 import os
 import socket
@@ -553,37 +554,134 @@ class TestImport:
 
         assert (hermes_home / "config.yaml").read_text() == "model: test\n"
 
-    def test_import_skips_corrupt_deflate_member_and_continues(self, tmp_path, monkeypatch, capsys):
-        """One damaged member warns without rolling back earlier files or stopping later ones."""
+    @staticmethod
+    def _corrupt_member(zip_path: Path, name: str, *, stored: bool = False) -> None:
+        """Damage *name*'s data in place, leaving the central directory (and so
+        ``is_zipfile``/``namelist``) intact: a deflate member gets reserved block type 3
+        (``zlib.error``); a stored member gets one payload byte flipped (``Bad CRC-32``)."""
+        with zipfile.ZipFile(zip_path) as zf:
+            info = zf.getinfo(name)
+            data_offset = info.header_offset + 30 + len(info.filename) + len(info.extra)
+        with zip_path.open("r+b") as archive:
+            archive.seek(data_offset)
+            first_byte = archive.read(1)[0]
+            archive.seek(data_offset)
+            archive.write(bytes([first_byte ^ 0xFF if stored else first_byte | 0b110]))
+
+    def _home_for_corrupt_import(self, tmp_path, monkeypatch) -> Path:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: live\n")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        return hermes_home
 
+    @pytest.mark.parametrize("stored", [False, True], ids=["deflate-zlib.error", "stored-bad-crc"])
+    def test_import_refuses_damaged_archive_before_touching_home(self, tmp_path, monkeypatch, capsys, stored):
+        """#121258: a member that fails to decompress (or its CRC) must be found BEFORE the
+        first file is replaced -- not surface as a zlib.error traceback half-way through --
+        and the command must exit non-zero without any "restored" wording."""
+        hermes_home = self._home_for_corrupt_import(tmp_path, monkeypatch)
+        zip_path = tmp_path / "backup.zip"
+        compression = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
+        with zipfile.ZipFile(zip_path, "w", compression=compression) as zf:
+            zf.writestr("config.yaml", "model: restored\n")
+            zf.writestr("damaged.json", '{"will": "fail"}')
+            zf.writestr("sessions/after.json", '{"restored": true}')
+        self._corrupt_member(zip_path, "damaged.json", stored=stored)
+        assert zipfile.is_zipfile(zip_path)
+
+        from hermes_cli.backup import run_import
+        from hermes_cli.main import cmd_import
+
+        assert run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+        out = capsys.readouterr().out
+        assert "backup archive is damaged (1 member(s)" in out
+        assert "damaged.json:" in out
+        assert "Importing" not in out
+        assert "restored" not in out.replace("nothing was restored", "")
+        # The home is exactly as it was.
+        assert (hermes_home / "config.yaml").read_text() == "model: live\n"
+        assert sorted(p.name for p in hermes_home.iterdir()) == ["config.yaml"]
+        assert cmd_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+
+    def test_import_lists_every_damaged_member(self, tmp_path, monkeypatch, capsys):
+        """All bad members are reported in one run (stdlib ``testzip()`` stops at the first
+        and lets ``zlib.error`` escape); the list is capped like the other summaries."""
+        self._home_for_corrupt_import(tmp_path, monkeypatch)
+        zip_path = tmp_path / "backup.zip"
+        names = [f"skills/s{i}/SKILL.md" for i in range(12)]
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("config.yaml", "model: restored\n")
+            for name in names:
+                zf.writestr(name, f"# {name}\n" * 20)
+        for name in names:
+            self._corrupt_member(zip_path, name)
+
+        from hermes_cli.backup import run_import
+
+        assert run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+        out = capsys.readouterr().out
+        assert "backup archive is damaged (12 member(s)" in out
+        assert sum(1 for line in out.splitlines() if line.strip().startswith("skills/s")) == 10
+        assert "... and 2 more" in out
+
+    def test_find_corrupt_members_reports_truncated_stream(self):
+        """A member whose data ends early (``EOFError`` from ZipExtFile) is damage too."""
+        from hermes_cli.backup import _find_corrupt_members
+
+        class _Truncated:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n):
+                raise EOFError
+
+        class _FakeZip:
+            def open(self, member):
+                if member == "short.bin":
+                    return _Truncated()
+                return io.BytesIO(b"ok")
+
+        assert _find_corrupt_members(_FakeZip(), ["config.yaml", "short.bin"]) == ["short.bin: "]
+
+    def test_import_skips_member_that_rots_after_preflight_and_reports_incomplete(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A member that passes the integrity pass but fails while being written (media going
+        bad under the archive) warns, leaves the damaged target absent, restores the rest and
+        exits 1 -- rather than escaping as a traceback."""
+        hermes_home = self._home_for_corrupt_import(tmp_path, monkeypatch)
         zip_path = tmp_path / "backup.zip"
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("config.yaml", "model: restored\n")
             zf.writestr("damaged.json", '{"will": "fail"}')
             zf.writestr("sessions/after.json", '{"restored": true}')
 
-        with zipfile.ZipFile(zip_path) as zf:
-            info = zf.getinfo("damaged.json")
-            data_offset = info.header_offset + 30 + len(info.filename) + len(info.extra)
-        with zip_path.open("r+b") as archive:
-            archive.seek(data_offset)
-            first_byte = archive.read(1)
-            archive.seek(data_offset)
-            # DEFLATE block type 3 is reserved, so zlib rejects this member.
-            archive.write(bytes([first_byte[0] | 0b110]))
+        import hermes_cli.backup as backup_mod
 
-        from hermes_cli.backup import run_import
-        run_import(Namespace(zipfile=str(zip_path), force=True))
+        real_extract = backup_mod._extract_member_atomically
 
+        def flaky_extract(zf, member, target, new_file_mode=None):
+            if member == "damaged.json":
+                raise EOFError("Compressed file ended before the end-of-stream marker was reached")
+            return real_extract(zf, member, target, new_file_mode)
+
+        monkeypatch.setattr(backup_mod, "_extract_member_atomically", flaky_extract)
+
+        assert backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+
+        out = capsys.readouterr().out
         assert (hermes_home / "config.yaml").read_text() == "model: restored\n"
         assert not (hermes_home / "damaged.json").exists()
         assert not list(hermes_home.glob(".damaged.json.*.partial"))
         assert (hermes_home / "sessions" / "after.json").read_text() == '{"restored": true}'
-        assert "Warnings (1 files skipped):" in capsys.readouterr().out
+        assert "Warnings (1 files skipped):" in out
+        assert "Import incomplete" in out
+        assert "has been restored" not in out
 
     def test_skipped_member_reports_incomplete_and_exits_1(self, tmp_path, monkeypatch, capsys):
         """A member that could not be written is a partial restore: the CLI must not print
@@ -946,13 +1044,20 @@ class _ExplodingMember:
 
 
 def _break_member(monkeypatch, failing_member: str) -> None:
-    """Make ``ZipFile.open`` hand back a dying stream for one member only."""
+    """Make ``ZipFile.open`` hand back a dying stream for one member only.
+
+    The first open of that member (run_import's integrity pre-flight, which reads every
+    member before anything is written) is served for real; the restore's own open dies.
+    """
     real_open = zipfile.ZipFile.open
+    seen: list[str] = []
 
     def _patched(self, name, *args, **kwargs):
         filename = name.filename if isinstance(name, zipfile.ZipInfo) else name
         if filename == failing_member:
-            return _ExplodingMember()
+            seen.append(filename)
+            if len(seen) > 1:
+                return _ExplodingMember()
         return real_open(self, name, *args, **kwargs)
 
     monkeypatch.setattr(zipfile.ZipFile, "open", _patched)

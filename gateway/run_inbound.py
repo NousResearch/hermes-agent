@@ -256,9 +256,15 @@ class GatewayInboundMixin:
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
         """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never
-        running work or control traffic — recognized slash commands (incl. /pause off, the in-band
-        resume) and replies owned by in-flight work (pending update prompt, running session,
-        pending slash-confirm, dangerous-command approval) all pass through."""
+        running work or control traffic — an identity on the sentinel's ALLOWLIST (the operator in
+        single-user mode; see agent.estop.is_allowed), recognized slash commands (incl. /pause off,
+        the in-band resume) and replies owned by in-flight work (pending update prompt, running
+        session, pending slash-confirm, dangerous-command approval) all pass through."""
+        with suppress(Exception):
+            from agent.estop import is_allowed as _estop_is_allowed
+            # Identity first (user_id); the serving profile is the secondary key for a maintenance lane.
+            if _estop_is_allowed(getattr(source, "user_id", None), getattr(source, "profile", None)):
+                return True
         with suppress(Exception):
             _estop_cmd = event.get_command()
             if _estop_cmd:

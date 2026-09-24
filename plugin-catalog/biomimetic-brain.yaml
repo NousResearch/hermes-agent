@@ -1,0 +1,24 @@
+name: biomimetic-brain
+repo: https://github.com/ousiaresearch/biomimetic-brain
+sha: efbf72d0afc4dff0ab212542eed584114f88d70d
+description: Meters and a gate for a long-running agent — 25 subsystem state files (energy, fatigue,
+  circadian phase, motivation, novelty, attention, conflict, values, open questions), one folded
+  brain-state.json the rest of the agent reads, four maintenance passes that keep it honest, and a
+  read-only PROCEED / CAUTION / VETO decision gate whose refusals name the numbers behind them.
+  Provides the mind-kit skill, which seeds the files, produces the aggregate, schedules the passes and
+  teaches the gate. Disclosure — portable Agent Plugins v1 package; it registers no hooks, no tools and
+  no middleware, makes no network calls, and reads and writes state files only under the agent directory
+  you choose, where a subsystem that has stopped updating reports stale instead of asserting an old
+  number. No dependencies beyond the Python standard library (two shell scripts for the scheduled
+  passes).
+maintainer: ousiaresearch
+tier: community
+category: memory
+version: "1.1.0"
+docs_url: https://github.com/ousiaresearch/biomimetic-brain
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

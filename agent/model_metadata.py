@@ -1805,6 +1805,23 @@ def _codex_catalog_urls(base_url: str = "") -> Tuple[str, ...]:
 CODEX_MODELS_CATALOG_URLS = _codex_catalog_urls()
 
 
+def _codex_catalog_probe_allowed(access_token: str, base_url: str = "") -> bool:
+    """Whether a catalog probe may carry ``access_token`` to ``base_url``'s ``/models``.
+
+    The caller binds ``base_url`` to the credential's own route, so a custom gateway is asked with
+    its own key (opaque or JWT). chatgpt.com only accepts ChatGPT OAuth access tokens — JWTs — so a
+    non-JWT credential aimed there is a gateway key composed with the wrong host: refuse it
+    (defense in depth, mirroring ``_probe_codex_quota_restored``'s gate; #121486).
+    """
+    if not access_token:
+        return False
+    base = (base_url or "").strip() or CODEX_MODELS_CATALOG_ENDPOINT
+    if not base_url_host_matches(base, "chatgpt.com"):
+        return True
+    from hermes_cli.auth_constants import _decode_jwt_claims
+    return bool(_decode_jwt_claims(access_token))
+
+
 def fetch_codex_catalog_entries(get: Callable[[str], Any], base_url: str = "") -> Tuple[List[Any], Optional[int]]:
     """``(models, last_status)`` from the first catalog URL that answers HTTP 200 with a non-empty
     ``models`` list; ``get(url)`` is any client returning an object with ``status_code``/``json()``.
@@ -1833,11 +1850,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
     fingerprint (windows vary by entitlement); ``max_context_window`` lands in
     ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
     fresh provider confirmation, must not drive persistent writes."""
-    # Real Codex access tokens are JWTs; a gateway's API key is not one. Refusing to probe non-JWT
-    # credentials keeps the key off chatgpt.com — a service it does not belong to and cannot answer
-    # for (#121486), mirroring ``_probe_codex_quota_restored``'s gate — and skips a doomed request.
-    from hermes_cli.auth_constants import _decode_jwt_claims
-    if not access_token or not _decode_jwt_claims(access_token):
+    if not _codex_catalog_probe_allowed(access_token, base_url):
         return {}, False
     now = time.time()
     cache_key = _codex_oauth_token_fingerprint(access_token, base_url)

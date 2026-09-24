@@ -71,10 +71,27 @@ def _codex_base_url() -> str:
     return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
 
 
+def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
+    """Base URL the chat route sends a pooled Codex credential to — the same rule
+    ``runtime_provider._pool_entry_mode_and_url`` applies (``HERMES_CODEX_BASE_URL`` > ``model.base_url``
+    while the row still carries the canonical URL > the row's own URL). A pooled gateway key belongs to
+    that host only; composing it with the ambient default sends it to chatgpt.com (#121486)."""
+    base = _stripped(entry_base_url).rstrip("/")
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.runtime_provider import _pool_entry_mode_and_url
+        model_cfg = load_config_readonly().get("model")
+        return _pool_entry_mode_and_url(
+            "openai-codex", None, model_cfg if isinstance(model_cfg, dict) else {}, "", base)[1]
+    except Exception:
+        logger.debug("Codex pool route base resolution failed", exc_info=True)
+        return _stripped(os.getenv("HERMES_CODEX_BASE_URL")).rstrip("/") or base or DEFAULT_CODEX_BASE_URL
+
+
 def _codex_runtime_result(
-    api_key: str, *, source: str, last_refresh: Optional[str]) -> Dict[str, Any]:
+    api_key: str, *, source: str, last_refresh: Optional[str], base_url: Optional[str] = None) -> Dict[str, Any]:
     return {
-        "provider": "openai-codex", "base_url": _codex_base_url(), "api_key": api_key,
+        "provider": "openai-codex", "base_url": base_url or _codex_base_url(), "api_key": api_key,
         "source": source, "last_refresh": last_refresh, "auth_mode": "chatgpt"}
 
 
@@ -611,14 +628,17 @@ def resolve_codex_runtime_credentials(
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
-        pool_token = _pool_codex_access_token()
+        pool_token, pool_base = _pool_codex_credential()
         if pool_token and force_refresh and not read_only:
             # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
             from agent.credential_pool import load_pool
             refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
             pool_token = refreshed.runtime_api_key if refreshed is not None else ""
         if pool_token:
-            return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None)
+            # Report the host this row routes to, not the ambient default: a pooled gateway key
+            # paired with chatgpt.com leaks to every consumer of this result (#121486).
+            return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None,
+                                         base_url=_codex_pool_route_base_url(pool_base))
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
             # Before surfacing the persisted cooldown, ask the usage endpoint whether the quota
@@ -628,10 +648,11 @@ def resolve_codex_runtime_credentials(
             if not read_only and _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
                 clear_codex_pool_quota_cooldowns()
-                pool_token = _pool_codex_access_token()
+                pool_token, pool_base = _pool_codex_credential()
                 if pool_token:
                     return _codex_runtime_result(
-                        pool_token, source="credential_pool", last_refresh=None)
+                        pool_token, source="credential_pool", last_refresh=None,
+                        base_url=_codex_pool_route_base_url(pool_base))
             reset_at = pool_rate_limit.get("reset_at")
             in_future = isinstance(reset_at, (int, float)) and reset_at > time.time()
             raise _codex_quota_exhausted_error(int(reset_at - time.time()) if in_future else None)
@@ -895,6 +916,12 @@ def _pool_codex_access_token() -> str:
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143).
     """
+    return _pool_codex_credential()[0]
+
+
+def _pool_codex_credential() -> Tuple[str, str]:
+    """``(access_token, row base_url)`` of the entry ``_pool_codex_access_token`` picks, so the
+    caller routes the token to the host that row belongs to; ``("", "")`` when none is usable."""
     from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
@@ -905,10 +932,10 @@ def _pool_codex_access_token() -> str:
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
             in_cooldown = reset_at is not None and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
-                return token.strip()
+                return token.strip(), _stripped(entry.get("base_url"))
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
-    return ""
+    return "", ""
 
 
 def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:

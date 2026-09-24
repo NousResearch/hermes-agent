@@ -77,6 +77,21 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
+def _read_codex_credential() -> Tuple[Optional[str], Optional[str]]:
+    """``(token, base_url)`` from one resolution: the image request goes to the host the token's
+    credential routes to (pool row / ``model.base_url`` / profile override), never a default the
+    credential does not belong to (#121486)."""
+    try:
+        from agent.auxiliary_client import _resolve_codex_credential_and_base
+
+        token, base_url = _resolve_codex_credential_and_base()
+        token = token.strip() if isinstance(token, str) and token.strip() else None
+        return token, (base_url or None) if token else None
+    except Exception as exc:
+        logger.debug("Could not resolve Codex credential: %s", exc)
+        return None, None
+
+
 def _httpx_available() -> bool:
     try:
         import httpx  # noqa: F401
@@ -186,17 +201,20 @@ def _build_image_request(
 
 
 def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
-    ``imagegen_request_id`` (backend correlation id, for support tickets)."""
+    ``imagegen_request_id`` (backend correlation id, for support tickets).
+
+    ``base_url`` should come from the same resolution as ``token`` (``_read_codex_credential``)."""
     import httpx
     from agent.auxiliary_client import _codex_base_url_override
     from agent.codex_headers import codex_cloudflare_headers
 
     # Match the text auxiliary route, including profile-scoped overrides. Resolve
     # per request: a multiplexed process can serve different Codex gateways.
-    base_url = _codex_base_url_override() or _CODEX_BASE_URL
+    base_url = (base_url or "").strip().rstrip("/") or _codex_base_url_override() or _CODEX_BASE_URL
     headers = codex_cloudflare_headers(token, base_url=base_url)
     headers.update({
         "Authorization": f"Bearer {token}",
@@ -266,7 +284,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
-        token = _read_codex_access_token()
+        token, base_url = _read_codex_credential()
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():
@@ -283,7 +301,8 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
 
         try:
             payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
+                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None,
+                base_url=base_url)
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")

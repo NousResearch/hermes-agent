@@ -39,7 +39,7 @@ def test_codex_catalog_never_offers_chatgpt_rejected_pro_slugs(monkeypatch, tmp_
     # synthesis rule; none of what it adds may be -pro.
     templates = list(dict.fromkeys(t for _, ts in _FORWARD_COMPAT_TEMPLATE_MODELS for t in ts))
     monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api", lambda access_token: templates
+        "hermes_cli.codex_models._fetch_models_from_api", lambda access_token, **_kw: templates
     )
     live = get_codex_model_ids(access_token="codex-access-token")
     assert {synthetic for synthetic, _ in _FORWARD_COMPAT_TEMPLATE_MODELS} <= set(live)
@@ -135,7 +135,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token: [])
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token, **_kw: [])
 
     assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
     assert "openai/gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
@@ -145,7 +145,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
     monkeypatch.setattr(
         codex_models,
         "_fetch_models_from_api",
-        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"]),
+        lambda _token, **_kw: codex_models._finalize_codex_models(["gpt-6-astra"]),
     )
     entitled = get_codex_model_ids(access_token="entitled-token")
     assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
@@ -178,7 +178,7 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
     monkeypatch.setattr(
         "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.4", "gpt-5.5"],
+        lambda access_token=None, **_kw: ["gpt-5.4", "gpt-5.5"],
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",

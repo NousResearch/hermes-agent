@@ -55,7 +55,12 @@ def provider(monkeypatch):
 def codex_backend(monkeypatch):
     """Route the plugin's ``httpx.Client`` at a fake Codex images backend; returns the request log
     and lets a test swap the response via ``state["respond"]``."""
+    # Seed the auth.json token below the credential/base resolver so generate() exercises the real
+    # (token, base_url) binding; no pool present.
+    from agent import auxiliary_client
     monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+    monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
     state = {"requests": [], "respond": None}
 
     def _default(request):
@@ -181,7 +186,10 @@ class TestGenerate:
         assert request.url.host == "images.example.test"
 
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
+        from agent import auxiliary_client
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+        monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: None)
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "auth_required"

@@ -374,16 +374,20 @@ def _model_flow_openai_codex(config, current_model=""):
 
     # Prefer the credential pool (where `hermes auth` stores device_code tokens),
     # fall back to legacy provider state.
-    _codex_token = None
+    # Token and route base travel together (#121486): a pooled gateway key must never be sent to
+    # the chatgpt.com default by the catalog probe.
+    _codex_token = _codex_base = None
     with contextlib.suppress(Exception):
         _codex_status = get_codex_auth_status()
-        _codex_token = _codex_status.get("api_key") if _codex_status.get("logged_in") else None
+        if _codex_status.get("logged_in"):
+            _codex_token, _codex_base = _codex_status.get("api_key"), _codex_status.get("base_url")
     if not _codex_token:
         with contextlib.suppress(Exception):
             from hermes_cli.auth import resolve_codex_runtime_credentials
-            _codex_token = resolve_codex_runtime_credentials().get("api_key")
+            _creds = resolve_codex_runtime_credentials()
+            _codex_token, _codex_base = _creds.get("api_key"), _creds.get("base_url")
 
-    codex_models = get_codex_model_ids(access_token=_codex_token)
+    codex_models = get_codex_model_ids(access_token=_codex_token, base_url=_codex_base)
     selected = _prompt_model_selection(
         codex_models, current_model=current_model, confirm_provider="openai-codex",
         confirm_base_url=DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")

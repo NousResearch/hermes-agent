@@ -2110,6 +2110,39 @@ def _read_codex_access_token() -> Optional[str]:
         token = _pool_runtime_api_key(entry)
         if token:
             return token
+    return _read_codex_singleton_token()
+
+
+def _codex_pool_entry_base_url(entry: Any) -> str:
+    """Host the chat route sends this pooled Codex entry's key to (``model.base_url`` included)."""
+    row_base = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL)
+    try:
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+        return _codex_pool_route_base_url(row_base) or row_base
+    except Exception as exc:
+        logger.debug("Codex pool route base resolution failed: %s", exc)
+        return row_base
+
+
+def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
+    """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
+    it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
+    key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
+    token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
+    override = _codex_base_url_override()
+    pool_present, entry = _select_pool_entry("openai-codex")
+    if pool_present:
+        token = _pool_runtime_api_key(entry)
+        if token:
+            return token, override or _codex_pool_entry_base_url(entry) or _CODEX_AUX_BASE_URL
+    # A present pool whose selection gave no token: read auth.json directly — re-selecting could
+    # rotate to another pool row and pair its key with the default host.
+    token = _read_codex_singleton_token() if pool_present else _read_codex_access_token()
+    return token, override or _CODEX_AUX_BASE_URL
+
+
+def _read_codex_singleton_token() -> Optional[str]:
+    """The profile's auth.json Codex access token (expired JWTs skipped), else None."""
     try:
         from hermes_cli.auth import _read_codex_tokens
         access_token = _read_codex_tokens().get("tokens", {}).get("access_token")
@@ -2927,16 +2960,9 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    codex_token = _pool_runtime_api_key(entry) if pool_present else None
-    codex_override = _codex_base_url_override()
-    if codex_token:
-        base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = codex_override or _CODEX_AUX_BASE_URL
+    codex_token, base_url = _resolve_codex_credential_and_base()
+    if not codex_token:
+        return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token, base_url=base_url,
@@ -5000,11 +5026,10 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token = _read_codex_access_token()
+        codex_token, base_url = _resolve_codex_credential_and_base()
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
-        base_url = _codex_base_url_override() or _CODEX_AUX_BASE_URL
         raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
                                            default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)

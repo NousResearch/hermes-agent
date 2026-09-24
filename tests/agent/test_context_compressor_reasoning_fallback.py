@@ -10,6 +10,8 @@ both fields are empty (#11978).
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
 
 
@@ -79,3 +81,21 @@ def test_empty_content_without_reasoning_still_fails():
     with patch("agent.context_compressor.call_llm", return_value=mock_response):
         out = _compressor()._generate_summary(_turns())
     assert out is None
+
+
+def test_empty_content_reports_resolved_auxiliary_route():
+    """The failure identifies the provider/model that served compression."""
+    response = {"choices": [{"message": {"content": ""}}]}
+
+    def call_on_auxiliary_route(**kwargs):
+        kwargs["route_info"].update(
+            {"provider": "auxiliary-provider", "model": "auxiliary-model"}
+        )
+        return response
+
+    with patch("agent.context_compressor.call_llm", side_effect=call_on_auxiliary_route):
+        with pytest.raises(RuntimeError, match=(
+            r"Context compression LLM returned empty content "
+            r"\(provider=auxiliary-provider model=auxiliary-model\)"
+        )):
+            _compressor(model="main-model")._call_summary_llm("summarize", 0)

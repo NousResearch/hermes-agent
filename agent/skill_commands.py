@@ -162,20 +162,35 @@ def _resolve_skill_commands_project() -> Optional[str]:
     return str(root) if root is not None else None
 
 
-def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
-    """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
+SkillPayload = tuple[dict[str, Any], Path | None, str]
+SkillPayloadLoadResult = tuple[SkillPayload | None, str | None, bool]
+
+
+def _skill_payload_is_not_found(payload: dict[str, Any]) -> bool:
+    """Distinguish a missing skill from a failed load of an existing skill."""
+    if "available_skills" in payload:
+        return True
+    error = str(payload.get("error") or "")
+    return bool(re.fullmatch(r"Skill '.+' not found(?: in plugin '.+')?\.", error))
+
+
+def _load_skill_payload_result(
+    skill_identifier: str, task_id: str | None = None,
+) -> SkillPayloadLoadResult:
+    """Load a skill while preserving its failure reason for callers that report it."""
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
-        return None
+        return None, "Skill identifier is empty.", False
     try:
         from tools.skills_tool import _skills_dir, skill_view
         from agent.skill_utils import normalize_skill_lookup_name
         normalized = normalize_skill_lookup_name(raw_identifier)
         loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, str(exc) or type(exc).__name__, False
     if not loaded_skill.get("success"):
-        return None
+        error = str(loaded_skill.get("error") or "Skill failed to load.")
+        return None, error, _skill_payload_is_not_found(loaded_skill)
     skill_path = str(loaded_skill.get("path") or "")
     skill_dir = None
     # Prefer the absolute skill_dir from skill_view() (correct for external
@@ -187,7 +202,13 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
             skill_dir = _skills_dir() / Path(skill_path).parent
         except Exception:
             skill_dir = None
-    return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
+    return (loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)), None, False
+
+
+def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> SkillPayload | None:
+    """Compatibility helper for callers that need only the loaded payload."""
+    loaded, _error, _not_found = _load_skill_payload_result(skill_identifier, task_id=task_id)
+    return loaded
 
 
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
@@ -310,6 +331,7 @@ def _render_skill_block(
 def _scaffold_header(
     subject: str, loaded_names: list[str], *, lead_lines: list[str] | None = None,
     missing: list[str] | None = None, disabled: list[str] | None = None,
+    failed: list[tuple[str, str]] | None = None,
     extra_instruction: str = "", user_instruction: str = "",
 ) -> str:
     """Header for multi-skill messages (bundles and stacked invocations).
@@ -324,6 +346,8 @@ def _scaffold_header(
     ]
     if missing:
         lines.append(f"Skills missing (skipped): {', '.join(missing)}")
+    if failed:
+        lines.append("Skills failed to load (skipped): " + "; ".join(f"{name}: {error}" for name, error in failed))
     if disabled:
         lines.append(f"Skills disabled for this platform (skipped): {', '.join(disabled)}")
     if extra_instruction:
@@ -590,7 +614,9 @@ def _load_skill_blocks(
         seen.add(identifier)
         loaded = load(identifier)
         if not loaded:
-            missing.append(missing_label(identifier))
+            label = missing_label(identifier)
+            if label is not None:
+                missing.append(label)
             continue
         skill_name = loaded[2]
         if disabled_names and (skill_name in disabled_names or identifier in disabled_names):

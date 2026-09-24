@@ -142,20 +142,31 @@ def build_bundle_invocation_message(
     if not info:
         return None
     # Late import keeps skill_bundles cheap to import (no tools/* at import time).
-    from agent.skill_commands import _disabled_skill_names, _load_skill_blocks, _load_skill_payload, _scaffold_header
+    from agent.skill_commands import _disabled_skill_names, _load_skill_blocks, _load_skill_payload_result, _scaffold_header
     bundle_name = info["name"]
+    failed: list[tuple[str, str]] = []
+    failed_names: set[str] = set()
+
+    def _load_member(identifier: str):
+        loaded, error, not_found = _load_skill_payload_result(identifier, task_id=task_id)
+        if loaded is None and not not_found:
+            failed.append((identifier, error or "Skill failed to load."))
+            failed_names.add(identifier)
+        return loaded
+
     loaded_names, missing, disabled, skill_blocks = _load_skill_blocks(
         [(skill_id or "").strip() for skill_id in info["skills"]],
-        lambda identifier: _load_skill_payload(identifier, task_id=task_id),
+        _load_member,
         lambda _name: f'[Loaded as part of the "{bundle_name}" skill bundle.]',
         task_id,
+        missing_label=lambda identifier: None if identifier in failed_names else identifier,
         disabled_names=_disabled_skill_names(platform),
     )
     if not skill_blocks:
         return None
     header = _scaffold_header(
         f'"{bundle_name}" skill bundle', loaded_names, lead_lines=[f"Bundle: {bundle_name}"], missing=missing,
-        disabled=disabled, extra_instruction=info.get("instruction") or "", user_instruction=user_instruction,
+        disabled=disabled, failed=failed, extra_instruction=info.get("instruction") or "", user_instruction=user_instruction,
     )
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
 

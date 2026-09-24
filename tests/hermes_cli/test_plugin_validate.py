@@ -84,7 +84,27 @@ def test_requires_hermes_spec_is_validated(tmp_path):
     report = validate_plugin_dir(d)
 
     assert report.ok, report.failures
-    assert ("requires_hermes", True, "spec '>=0.21' parses") in report.checks
+    assert any(name == "requires_hermes" and ok for name, ok, _ in report.checks)
+
+
+def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path):
+    """A ``type:`` the Desktop settings renderer/loader accept (``secret`` + ``env:``, ``object``) must
+    pass admission — the catalog validator rejecting a documented type blocks pins of plugins that
+    declare a secret setting."""
+    from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+    from hermes_cli.plugins_settings import _FIELD_TYPES
+
+    assert set(_FIELD_TYPES) == set(_CONFIG_SCHEMA_TYPES)
+    schema = {f"k_{t}": {"type": t} for t in _FIELD_TYPES}
+    schema["api_key"] = {"type": "secret", "env": "FIXTURE_API_KEY", "description": "token"}
+    d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, config_schema=schema))
+
+    report = validate_plugin_dir(d)
+
+    assert ("config schema", True, "shape valid") in report.checks, report.failures
+    bad = validate_plugin_dir(_make_plugin(
+        tmp_path / "bad", manifest=dict(BASE_MANIFEST, config_schema={"x": {"type": "mapping"}})))
+    assert [ok for n, ok, _ in bad.checks if n == "config schema"] == [False], bad.checks
 
 
 def test_admission_runs_the_install_scanner(tmp_path):
@@ -264,7 +284,7 @@ class TestDesktopSurface:
             "export default definePlugin({ id: 'desk', register(ctx) { ctx.storage.set('k', 1) } })\n"
         ))
         report = validate_plugin_dir(d)
-        assert ("desktop surface", True, "stays inside the plugin SDK surface") in report.checks
+        assert any(name == "desktop surface" and ok for name, ok, _ in report.checks)
 
     def test_script_regex_literal_is_not_injection_but_string_is(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (

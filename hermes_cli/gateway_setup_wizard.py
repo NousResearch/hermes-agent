@@ -862,7 +862,7 @@ def _wizard_install_service(backend: str) -> None:
                 force=False, enable_on_startup=start_on_login
             )
         elif backend == "launchd":
-            _gw().launchd_install(force=False)
+            _gw().launchd_install(force=False, start_now=start_now)
         else:
             _gw()._gw_windows().install(force=False, start_now=start_now, start_on_login=start_on_login)
             return

@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+
 # Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
 # spawns; reaped on update for the same reason).
 _DASHBOARD_PATTERNS = tuple(
@@ -179,7 +181,7 @@ def _hermes_home_for_pid(pid: int) -> str | None:
         default_home = Path(env.get("HOME") or _pid_passwd_home(pid) or Path.home()) / ".hermes"
     root = profile_root_for_env_home(env_home, default_home)
     fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
-                                               "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or "--ssh-session-token-file" in argv
+                                               "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or is_desktop_ssh_backend_argv(argv)
     if profile is None and not fixed_identity:
         profile = get_active_profile(root)
     canon = normalize_profile_name(profile) if profile else "default"

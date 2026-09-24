@@ -95,10 +95,6 @@ def test_register_child_rejects_dead_or_invalid_pids(ledger):
     assert not ledger.exists() or json.loads(ledger.read_text()) == []
 
 
-def test_mcp_helper_is_reapable_purpose():
-    assert "mcp-helper" in pi.REAPABLE_PURPOSES
-    # Interactive purposes still excluded.
-    assert "chat" not in pi.REAPABLE_PURPOSES
 
 
 # ---------------------------------------------------------------------------

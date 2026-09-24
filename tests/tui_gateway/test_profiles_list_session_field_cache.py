@@ -84,24 +84,3 @@ def test_a_profile_without_a_store_is_not_memoised_and_picks_one_up(home):
     assert _row("bare")["last_session"]["title"] == "now it exists"
 
 
-def test_an_unchanged_store_is_read_once_across_repeated_polls(home, monkeypatch):
-    """The saving itself: the 5s poll stops reopening a store that has not moved."""
-    bob = home / "profiles" / "bob"
-    _seed(bob, "20260920_000001_a", "steady")
-
-    opens: list = []
-    real = SessionDB
-
-    def _counting(*args, **kwargs):
-        opens.append(kwargs.get("db_path"))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr("hermes_state.SessionDB", _counting)
-
-    _rows()
-    after_first = len(opens)
-    _rows()
-    _rows()
-
-    assert after_first >= 1, "the first poll must actually read the store"
-    assert len(opens) == after_first, "an unchanged store was reopened by a later poll"

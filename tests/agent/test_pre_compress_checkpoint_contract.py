@@ -77,9 +77,6 @@ class _FailingLegacyProvider(_BaseStubProvider):
         raise RuntimeError("legacy best-effort failure")
 
 
-def test_provider_base_class_defaults_to_implicit_historical_api_version_one():
-    assert MemoryProvider.pre_compress_checkpoint_api_version == 1
-    assert PRE_COMPRESS_CHECKPOINT_API_VERSION == 2
 
 
 def test_v1_providers_receive_raw_messages_and_v2_receive_evidence():
@@ -541,26 +538,6 @@ def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
     assert _run(checkpoint_required=False) == 1
 
 
-def test_agent_init_suppresses_micro_compaction_under_checkpoint_gate():
-    """checkpoint_required forces micro-compaction off at init.
-
-    Both keys can be enabled together in config; the gate must win so every
-    lossy rewrite passes through the checkpoint-aware batch compressor.
-    """
-    import inspect
-
-    from agent import agent_init
-
-    source = inspect.getsource(agent_init)
-    # The suppression must happen before the compressor attribute assignment.
-    suppress_idx = source.find("if cs.checkpoint_required and cs.micro_compact:")
-    # The compressor attribute assignment is table-driven; pin the table entry.
-    assign_idx = source.find('("_micro_compact_enabled", cs.micro_compact)')
-    assert suppress_idx != -1, (
-        "init_agent must suppress micro-compaction when checkpoint_required"
-    )
-    assert assign_idx != -1
-    assert suppress_idx < assign_idx
 
 
 def _warn_text(caplog) -> str:

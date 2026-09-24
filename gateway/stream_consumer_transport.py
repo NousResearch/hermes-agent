@@ -349,6 +349,10 @@ class StreamTransportMixin:
         self._last_edit_overflowed = False
         try:
             if self._message_id is None:
+                if not self._edit_supported and not finalize:
+                    # A failed send disabled edits: a preview sent now could never be updated and
+                    # would stay on screen truncated next to the final reply. Send only the final.
+                    return False
                 return await self._first_send(text, finalize=finalize)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final

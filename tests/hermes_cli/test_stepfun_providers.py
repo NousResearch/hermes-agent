@@ -88,6 +88,24 @@ class TestStepfunCatalogs:
         assert mapped == {pid: mdev for pid, _u, _k, _b, mdev in STEPFUN_IDS}
         assert len(set(mapped.values())) == 4
 
+    def test_every_id_discovers_models_from_its_own_live_catalog(self):
+        """The picker shows what the endpoint serves; a missing registration silently
+        falls back to the static list, which no longer matches the live catalog."""
+        from unittest.mock import patch
+
+        import hermes_cli.auth  # noqa: F401  (patch target must be imported)
+        from hermes_cli.models import provider_model_ids
+
+        for pid, base_url, _k, _b, _m in STEPFUN_IDS:
+            with patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "***", "base_url": base_url},
+            ), patch(
+                "hermes_cli.models.fetch_api_models",
+                return_value=["from-live-catalog"],
+            ):
+                assert provider_model_ids(pid) == ["from-live-catalog"], pid
+
     def test_default_model_is_step_5_preview_everywhere(self):
         """First entry of _PROVIDER_MODELS is the non-interactive default, so order is contract."""
         from hermes_cli.models import _PROVIDER_MODELS, get_default_model_for_provider

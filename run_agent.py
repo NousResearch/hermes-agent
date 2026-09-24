@@ -12,12 +12,21 @@ try:
 except ModuleNotFoundError:
     pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
 
+import sys
+
+# `hermes-agent` runs this module without hermes_cli.main, which repairs a `hermes update` killed
+# while git wrote the new tree; do it here, before importing anything else from the checkout.
+if "hermes_cli.main" not in sys.modules:
+    from hermes_cli import _early_recovery
+
+    if _early_recovery.restore_interrupted_pull():
+        _early_recovery.relaunch_after_restore()
+
 import json
 import logging
 logger = logging.getLogger(__name__)
 import os
 import re
-import sys
 import time
 import threading
 import uuid
@@ -289,7 +298,7 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
-        side_agent: bool = False,
+        side_agent: bool = False, memory_manager=None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -1557,8 +1566,9 @@ def main(
 
 
 if __name__ == "__main__":
-    import fire
-    fire.Fire(main)
+    from agent.legacy_cli import main as _legacy_cli_main
+
+    raise SystemExit(_legacy_cli_main(run=main))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

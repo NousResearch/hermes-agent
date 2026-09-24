@@ -1541,14 +1541,9 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
 
 def _print_multiplex_standalone_reason() -> None:
     """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
-    try:
-        from gateway.status import read_runtime_status
-        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
-    except Exception:
-        return
-    if reason:
-        print(f"⚠ Serving the default profile only: {reason}")
-        print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
+    from hermes_cli.gateway_multiplex_mode import recorded_standalone_warning_lines
+    for line in recorded_standalone_warning_lines():
+        print(line)
 
 
 def _print_served_ingress_urls(profile: str | None = None) -> None:
@@ -4702,7 +4697,7 @@ def _cmd_install(args):
             sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
-        launchd_install(force)
+        launchd_install(force, start_now=getattr(args, "start_now", None) is not False)
     elif backend == "windows":
         _gw_windows().install(
             force=force,
@@ -4766,6 +4761,9 @@ def _print_unfolded_gateway_note(owner) -> None:
 
 
 def _cmd_start(args):
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    if profile_lifecycle("start", args):
+        return
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
@@ -4798,13 +4796,14 @@ def _cmd_start(args):
 
 def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    if profile_lifecycle("stop", args):
+        return
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
     if not stop_all and not find_gateway_pids() and (
             _served_by_another_host_gateway() or named_profile_served_by_running_multiplexer()):
-        # A served profile owns no gateway to stop; "No gateway running for this profile" (exit 0) would
-        # contradict `gateway status` ("running via the host multiplexer") on the same profile.
-        # A `--force`-started separate gateway HAS a pid of its own and is stopped normally.
+        # The launch/default-profile lifecycle still names the whole host.
         owner = _served_by_another_host_gateway()
         print_error(
             f"The host gateway serves profile '{_current_profile_name()}' — there is no separate "
@@ -4909,6 +4908,9 @@ def _restart_all(system: bool) -> None:
 
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    if profile_lifecycle("restart", args):
+        return
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
@@ -5016,6 +5018,9 @@ def _status_host_kind() -> str:
 
 
 def _cmd_status(args):
+    from hermes_cli.gateway_profile_lifecycle import print_parked_status
+    if print_parked_status():
+        return
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)

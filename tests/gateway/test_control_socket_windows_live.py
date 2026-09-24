@@ -13,25 +13,55 @@ Proves, on windows-latest:
   3. ``collect_fleet_versions()`` prefers the socket (``source: socket``).
   4. After the server process is force-killed, the client returns None
      (FileNotFoundError on the pipe — no stale-file hazard on Windows) and
-     consumers fall back to the state-file/scan layer.
+     consumers fall back to the state-file layer, which classifies only a
+     live-verified gateway PID (#110420).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows named-pipe E2E"
-)
+pytestmark = pytest.mark.windows_only
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _wait_until(predicate, timeout: float = 15.0, interval: float = 0.05) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
+def _readline(stream, timeout: float = 60.0) -> str:
+    """``stream.readline()`` bounded by *timeout* (a hung child fails, not hangs)."""
+    got: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: got.put(stream.readline()), daemon=True).start()
+    try:
+        return got.get(timeout=timeout)
+    except queue.Empty:
+        return ""
+
+
+def _argv_visible(pid: int, marker: str) -> bool:
+    """True once the process table shows *pid* with *marker* in its argv."""
+    import psutil
+
+    try:
+        return marker in " ".join(psutil.Process(pid).cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 _CHILD_CODE = r"""
 import asyncio, os, sys
@@ -66,10 +96,10 @@ def live_server(tmp_path: Path):
         text=True,
         cwd=str(PROJECT_ROOT),
     )
-    line = proc.stdout.readline().strip()
+    line = _readline(proc.stdout).strip()
     if not line.startswith("SERVER_STARTED"):
         err = proc.stderr.read() if proc.poll() is not None else ""
-        proc.kill()
+        _kill_tree(proc)
         pytest.fail(f"pipe server child failed to start: {line!r} {err}")
     server_pid = int(line.split()[1])
     yield proc, home, server_pid
@@ -120,25 +150,25 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     assert fleet[0]["pid"] == server_pid
 
 
+@pytest.mark.spawns_gateway_lookalike
 def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     proc, home, server_pid = live_server
     from gateway.control_socket import identify_gateway
 
     assert identify_gateway(home, timeout=5.0) is not None
     _kill_tree(proc)
-    time.sleep(0.5)
 
-    assert identify_gateway(home, timeout=2.0) is None
+    # taskkill /T returns once the tree is signalled; the pipe disappears when
+    # the kernel tears the server's handles down.
+    assert _wait_until(lambda: identify_gateway(home, timeout=0.5) is None)
 
-    # Consumer falls back to the state file (live pid = this test process)
+    # Consumer falls back to the state file. That file is a claim, not an
+    # identity: its sha classifies a row only when live_gateway_pid_for_home
+    # verifies the PID as this home's gateway via its live command line
+    # (#110420). A real process wearing a `gateway run` argv stands in for
+    # a gateway that lost its pipe.
     import hermes_cli.update_receipt as ur
 
-    (home / "gateway_state.json").write_text(
-        json.dumps(
-            {"pid": os.getpid(), "code_sha": "OLD", "kind": "hermes-gateway"}
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(
         "hermes_cli.build_info.get_code_identity",
         lambda refresh=False: {"sha": "NEW", "version": "t"},
@@ -147,7 +177,41 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
     )
+
+    def _write_state(pid: int) -> None:
+        (home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": pid, "gateway_state": "running",
+                    "code_sha": "OLD", "kind": "hermes-gateway",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    standin = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)", "hermes", "gateway", "run"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert _wait_until(lambda: _argv_visible(standin.pid, "gateway")), "stand-in argv never visible"
+        _write_state(standin.pid)
+        fleet = ur.collect_fleet_versions()
+        assert len(fleet) == 1, fleet
+        assert "source" not in fleet[0]
+        assert fleet[0]["pid"] == standin.pid
+        assert fleet[0]["code_sha"] == "OLD"
+        assert fleet[0]["state"] == "stale"
+    finally:
+        _kill_tree(standin)
+
+    # A live NON-gateway writer (this pytest process) stays visible, but its
+    # self-reported sha must never classify the row.
+    _write_state(os.getpid())
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1, fleet
     assert "source" not in fleet[0]
-    assert fleet[0]["state"] == "stale"
+    assert fleet[0]["pid"] == os.getpid()
+    assert fleet[0]["code_sha"] is None
+    assert fleet[0]["state"] == "unknown"

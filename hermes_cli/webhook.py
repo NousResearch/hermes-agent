@@ -160,6 +160,8 @@ def _cmd_subscribe(args):
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
             return
         route["deliver_only"] = True
+    if getattr(args, "mirror_to_session", False):
+        route["mirror_to_session"] = True
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
@@ -189,6 +191,8 @@ def _cmd_subscribe(args):
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
+    if route.get("mirror_to_session"):
+        print("  Replies: each delivery is mirrored into the target chat's session")
     if route.get("cron_job"):
         print(f"  Mode: cron-job trigger — fires job '{route['cron_job']}' on each event")
     if route.get("prompt"):

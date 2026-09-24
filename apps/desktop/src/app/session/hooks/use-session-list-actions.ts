@@ -28,6 +28,7 @@ import {
   keepFailedProfileMeta,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  setCorruptSessionStores,
   setCronSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
@@ -293,6 +294,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           gatewayActivationEpoch() === activationEpoch
         ) {
           const recents = result.recents
+
+          setCorruptSessionStores(result.storage)
 
           // Drop rows the user just deleted/archived: a refresh can race an
           // in-flight mutation and the backend page still carries the doomed row.

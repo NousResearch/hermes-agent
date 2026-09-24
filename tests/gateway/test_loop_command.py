@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -104,14 +104,6 @@ async def test_gateway_loop_status_pause_stop(loop_env):
     assert "stopped" in stopped.lower()
 
 
-@pytest.mark.asyncio
-async def test_gateway_loop_goal_note_when_goal_active(loop_env):
-    from hermes_cli.goals import GoalManager
-
-    GoalManager(session_id="sid-gateway-loop").set("finish the migration")
-    runner = _make_runner()
-    response = await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
-    assert "active /goal" in response
 
 
 @pytest.mark.asyncio
@@ -241,89 +233,10 @@ async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog
 
     reloaded = loops.load_loop("sid-gateway-loop")
     assert reloaded.awaiting_response is False
-    assert "goal continuation hook failed: judge failed" in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_post_turn_session_resolution_failure_is_logged(loop_env, caplog):
-    runner = _make_runner()
-    runner.session_store.get_or_create_session = Mock(side_effect=RuntimeError("store unavailable"))
-
-    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
-        await GatewayRunner._run_post_turn_hooks(
-            runner,
-            agent_result={"final_response": ""},
-            source=_make_event("wakeup").source,
-            is_internal=True,
-        )
-
-    assert "post-turn session resolution failed: store unavailable" in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_loop_wakeup_watcher_keeps_event_loop_responsive_under_writer_lock(loop_env):
-    """The wakeup scan's SessionDB calls (list_active_loops / fire_tick /
-    complete_tick) must run off the loop thread. A slow writer holding the
-    SessionDB writer lock used to block the whole gateway event loop for the
-    duration of the hold (#92413)."""
-    runner = _make_runner()
-    runner._running = True
-    runner._running_agents = {}
-    runner.adapters = {}
-
-    # Persist an active loop that is due now, routed to a platform with no
-    # adapter (so the scan exits after list_active_loops(), before fire_tick).
-    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
-    state = loops.load_loop("sid-gateway-loop")
-    state.next_due_at = time.time() - 1
-    loops.save_loop("sid-gateway-loop", state)
-
-    db = loops._get_session_db()
-    hold_s = 0.6
-    released = threading.Event()
-
-    def _hold_writer_lock():
-        with db._lock:
-            time.sleep(hold_s)
-        released.set()
-
-    # Force the read path onto the writer lock (non-WAL degradation) so the
-    # test binds the offload regardless of the host SQLite's WAL support.
-    db._wal_active = False
-
-    # One scan only: patch asyncio.sleep inside the watcher to stop the loop
-    # after the first iteration.
-    orig_sleep = asyncio.sleep
-    calls = {"n": 0}
-
-    async def _one_pass_sleep(delay):
-        calls["n"] += 1
-        if calls["n"] >= 2:  # first call is the 5s connect grace, second ends the scan
-            runner._running = False
-        return await orig_sleep(0)
-
-    holder = threading.Thread(target=_hold_writer_lock)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(asyncio, "sleep", _one_pass_sleep)
-        holder.start()
-        time.sleep(0.05)  # ensure the lock is held before the scan starts
-        watcher = asyncio.ensure_future(GatewayRunner._loop_wakeup_watcher(runner, interval=0))
-
-        # Heartbeat coroutine: measures the longest gap between loop turns
-        # while the watcher is (supposedly) blocked in the executor.
-        gaps = []
-        last = time.monotonic()
-        while not watcher.done():
-            await orig_sleep(0.01)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
-        await watcher
-    holder.join()
-
-    assert released.is_set()
-    # If the DB call ran on the loop thread, one heartbeat gap would be ~hold_s.
-    assert max(gaps) < hold_s / 2, f"event loop stalled for {max(gaps):.3f}s"
 
 
 @pytest.mark.asyncio

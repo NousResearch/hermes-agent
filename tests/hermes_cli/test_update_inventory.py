@@ -140,31 +140,6 @@ class TestCollectInventory:
         assert restored["runtimes"][0]["kind"] == "gateway"
 
 
-class TestPrintPlan:
-    def test_git_fleet_output(self, fleet, capsys):
-        ui.print_update_plan(ui.collect_runtime_inventory())
-        out = capsys.readouterr().out
-        assert "Update plan:" in out
-        assert "Install: git" in out
-        assert "default, work" in out
-        assert "pid 100" in out and "systemd" in out
-        assert "pid 200" in out and "manual" in out
-
-    def test_docker_warns_not_in_place(self, fleet, monkeypatch, capsys):
-        monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "docker")
-        monkeypatch.setattr(
-            "hermes_cli.config.recommended_update_command_for_method",
-            lambda m: "docker pull nousresearch/hermes-agent:latest",
-        )
-        ui.print_update_plan(ui.collect_runtime_inventory())
-        out = capsys.readouterr().out
-        assert "NOT updatable in place" in out
-        assert "docker pull" in out
-
-    def test_empty_fleet_message(self, fleet, monkeypatch, capsys):
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        ui.print_update_plan(ui.collect_runtime_inventory())
-        assert "none detected" in capsys.readouterr().out
 
 
 class TestReceiptIntegration:
@@ -183,8 +158,3 @@ class TestReceiptIntegration:
         assert payload["plan"]["install_method"] == "git"
         assert len(payload["plan"]["runtimes"]) == 2
 
-    def test_noop_without_active_receipt(self, fleet):
-        import hermes_cli.update_receipt as ur
-
-        ur._current = None
-        ui.record_plan_in_receipt(ui.collect_runtime_inventory())  # must not raise

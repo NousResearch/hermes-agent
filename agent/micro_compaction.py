@@ -226,14 +226,20 @@ class MicroCompactionMixin:
         _started_at = time.monotonic()
         _tokens_before = estimate_messages_tokens_rough(messages)
         # The history this pass rewrites, and the store's watermark, before the slow summary call: the commit
-        # keeps what another surface or a concurrent write added instead of archiving it unseen.
-        _held, _start_watermark = list(messages), self._micro_start_watermark()
+        # keeps what another surface or a concurrent write added instead of archiving it unseen. A watermark
+        # the store could not answer for leaves the commit unbounded, so the pass does not run at all.
+        _held = list(messages)
+        _wm_status, _start_watermark = self._micro_start_watermark()
 
         def _telemetry(outcome: str, result: List[Dict[str, Any]], **extra: Any) -> None:
             self._emit_micro_compaction_telemetry(
                 outcome=outcome, messages_before=n_messages, messages_after=len(result),
                 tokens_before=_tokens_before, duration_ms=int((time.monotonic() - _started_at) * 1000), **extra,
             )
+
+        if _wm_status == "failed":  # an unanswerable watermark would commit an unbounded archive
+            _telemetry("watermark_unavailable", messages, tokens_after=_tokens_before)
+            return messages
 
         # Defrag rewrites summary text/marker in place (no splice, no cursor move) instead of
         # absorbing this turn.
@@ -347,16 +353,23 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _micro_start_watermark(self) -> Optional[int]:
-        """The store's active watermark before a pass's slow step, or None where the store has none."""
+    def _micro_start_watermark(self) -> "tuple[str, Optional[int]]":
+        """``(status, watermark)`` taken before a pass's slow step.
+
+        ``unsupported`` where the store has no watermark API: the commit keeps today's
+        archive-everything behaviour, as it always has. ``failed`` when the read itself raised —
+        that must NOT collapse into the same None, because None means "archive every active row",
+        which is the very loss this watermark exists to prevent. The pass is skipped instead.
+        """
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         watermark_of = getattr(session_db, "get_active_message_watermark", None)
         if not session_id or not callable(watermark_of):
-            return None
+            return "unsupported", None
         try:
-            return watermark_of(session_id)
-        except Exception:
-            return None
+            return "ok", watermark_of(session_id)
+        except Exception as exc:
+            logger.info("micro-compaction: watermark read failed, skipping this pass: %s", exc)
+            return "failed", None
 
     def _sync_micro_compact_to_db(
         self, compacted_messages: List[Dict[str, Any]], *, held: Optional[List[Dict[str, Any]]] = None,

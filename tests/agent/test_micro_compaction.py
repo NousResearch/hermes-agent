@@ -861,6 +861,36 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
         db.close()
 
 
+def test_micro_compaction_skips_the_pass_when_the_watermark_read_fails(tmp_path):
+    """A watermark the store could not answer for must not become an unbounded archive. None is the
+    store saying "I have no watermark API"; a raised read is not the same answer, and treating it as
+    one archives every active row — the loss the watermark was added to prevent."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="cli")
+    messages = _conversation(exchanges=8)
+    for msg in messages:
+        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"])
+        msg[_DB_PERSISTED_MARKER] = True
+    foreign = "[from Telegram] the vault code is 7741"
+    db.append_message("s", "user", foreign)
+
+    def _boom(_session_id):
+        raise RuntimeError("transient store failure")
+    db.get_active_message_watermark = _boom
+    cc = _compressor()
+    cc._session_db, cc._session_id = db, "s"
+
+    result = cc._micro_compact(messages)
+
+    assert _summary_markers(result) == []          # the pass did not run
+    live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
+    assert live[-1] == foreign                     # and nothing was archived
+    assert sum(foreign in content for content in live) == 1
+
+
 def test_micro_compaction_keeps_a_turn_another_surface_appended_after_load(tmp_path):
     """The micro-compaction commit rewrites the history this process holds. A turn another surface appended to
     the same session since then was archived with the rest (no watermark), as summarized away though the rolling

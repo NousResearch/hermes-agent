@@ -573,6 +573,31 @@ class TestReviewForkApiModeDowngrade:
 
 
 class TestErrorHandling:
+    def test_failed_turn_after_agent_message_surfaces_failure_reason(self, monkeypatch):
+        """A partial agentMessage must not mask a terminal app-server failure."""
+        def failed_after_message(self, user_input, **kwargs):
+            return TurnResult(
+                final_text="PARTIAL-B",
+                projected_messages=[{"role": "assistant", "content": "PARTIAL-B"}],
+                tool_iterations=0,
+                interrupted=False,
+                error="turn ended status=failed: FAIL-MARKER-88 stream disconnected",
+                turn_id="t",
+                thread_id="th",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", failed_after_message)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hi")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert result["error"] == "turn ended status=failed: FAIL-MARKER-88 stream disconnected"
+        assert result["final_response"] == "Error: turn ended status=failed: FAIL-MARKER-88 stream disconnected"
+
     def test_session_exception_returns_partial_with_error(self, monkeypatch):
         def boom_run_turn(self, user_input, **kwargs):
             raise RuntimeError("subprocess died")

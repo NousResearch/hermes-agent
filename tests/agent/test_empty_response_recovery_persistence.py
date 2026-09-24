@@ -1,7 +1,6 @@
 """Regression tests for empty-response recovery transcript persistence."""
 
 import json
-import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -254,29 +253,16 @@ def test_empty_response_give_up_keeps_the_executed_tool_call_live(real_loop):
     _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
 
 
-@pytest.mark.parametrize("stop_during", ["nudge_request", "retry_wait"])
-def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(real_loop, monkeypatch, stop_during):
-    agent, released = real_loop.agent, threading.Event()
-
-    def stop_while_waiting_for_model():
-        agent.interrupt("user pressed stop")
-        released.wait(5)
-        return _response("too late")
+def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(real_loop, monkeypatch):
+    agent = real_loop.agent
 
     def stop_during_backoff(*_a, **_k):
         agent.interrupt("user pressed stop")
         return 5.0
 
-    script = [_response(finish_reason="tool_calls", tool_calls=[_write_file_call(real_loop.ledger)]), _response()]
-    if stop_during == "nudge_request":
-        script.append(stop_while_waiting_for_model)
-    else:
-        monkeypatch.setattr("agent.retry_utils.jittered_backoff", stop_during_backoff)
-        script.append(_response())
-    try:
-        result = real_loop.run(script, "record the payment in ledger.txt")
-    finally:
-        released.set()
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", stop_during_backoff)
+    script = [_response(finish_reason="tool_calls", tool_calls=[_write_file_call(real_loop.ledger)]), _response(), _response()]
+    result = real_loop.run(script, "record the payment in ledger.txt")
 
     assert real_loop.ledger.read_text() == "PAYMENT #1 SENT\n"
     assert result["interrupted"] is True

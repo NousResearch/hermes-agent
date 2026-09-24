@@ -1965,6 +1965,24 @@ def _restarted_units_gone(scoped_units) -> bool:
     return True
 
 
+def _live_gateway_pids_from_fleet(fleet_rows: list) -> dict:
+    """Profile -> gateway PIDs alive after the restart phase, from the fleet snapshot.
+
+    Incarnation evidence for gateway reconciliation (``match_runtime_outcomes``'s
+    ``live_gateway_pids``): the plan identifies a gateway by the profile it SERVES while the restart
+    bookkeeping names the SERVICE, and a service can serve a profile its name does not encode — the
+    profile-scoped name matcher then never credits the planned runtime. A ``down`` row reports the
+    PRE-restart PID (nothing replaced it), so it is never a successor; rows without a usable
+    profile/PID are skipped.
+    """
+    live: dict = {}
+    for row in fleet_rows:
+        pid, profile = row.get("pid"), row.get("profile")
+        if profile and isinstance(pid, int) and row.get("state") != "down":
+            live.setdefault(str(profile), set()).add(pid)
+    return live
+
+
 def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):
     """Post-restart verification: legacy-unit warning, dashboard cleanup, stale serve
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
@@ -2050,6 +2068,12 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # #91277.
         if _pre_update_plan is not None and _pre_update_plan.runtimes:
             from hermes_cli.update_inventory import (match_runtime_outcomes, report_unaccounted_runtimes)
+            # Gateway incarnation evidence, from the post-restart fleet snapshot collected above: a
+            # service can serve a profile its own name does not encode (root-home launchd label +
+            # sticky active profile, hashed custom HERMES_HOME), so the bookkeeping's service names
+            # alone cannot credit the planned runtime. A profile the probe produced no row for simply
+            # has no evidence — that runtime stays on the name-matching path (and logs it).
+            _live_gateway_pids = _live_gateway_pids_from_fleet(_fleet_snapshot)
             _runtime_outcomes = match_runtime_outcomes(
                 _pre_update_plan,
                 restarted_services=restart.restarted_services,
@@ -2064,6 +2088,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     if _stale_serve_rows is not None
                     else None
                 ),
+                live_gateway_pids=_live_gateway_pids,
             )
             from dataclasses import asdict
             from hermes_cli.update_serve_obligations import defer_manual_serve

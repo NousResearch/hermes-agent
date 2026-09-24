@@ -46,9 +46,10 @@ KANBAN_SHOW_SCHEMA = _schema(
         "Read a task's full state — title, body, assignee, parent task "
         "handoffs, your prior attempts on this task if any, comments, "
         "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
-        "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "starting work, especially on retries. When you are the worker "
+        "assigned this task, the response includes a pre-formatted "
+        "``worker_context`` string suitable for inclusion verbatim in your "
+        "reasoning."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),

@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_workspace as kbw
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,22 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_dashboard_requests_do_not_force_database_reinitialization(client, monkeypatch):
+    init_calls = 0
+
+    def count_init(*args, **kwargs):
+        nonlocal init_calls
+        init_calls += 1
+
+    monkeypatch.setattr(kb, "init_db", count_init)
+
+    for _ in range(2):
+        response = client.get("/api/plugins/kanban/board")
+        assert response.status_code == 200
+
+    assert init_calls == 0
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------
@@ -138,6 +155,38 @@ def test_patch_board_sets_project_directory(client, tmp_path):
     assert kb.read_board_metadata("late-config")["default_workdir"] == str(
         project_dir.resolve()
     )
+
+
+def test_list_boards_caches_workspace_kind_probe(client, tmp_path, monkeypatch):
+    project_dir = tmp_path / "polled-project"
+    project_dir.mkdir()
+    kb.create_board("polled", default_workdir=str(project_dir))
+
+    real_toplevel = kbw._git_toplevel
+    calls = []
+
+    def counting_toplevel(path):
+        calls.append(path)
+        return real_toplevel(path)
+
+    monkeypatch.setattr(kbw, "_git_toplevel", counting_toplevel)
+
+    for _ in range(4):
+        response = client.get("/api/plugins/kanban/boards")
+        assert response.status_code == 200
+        board = next(
+            item for item in response.json()["boards"] if item["slug"] == "polled"
+        )
+        assert board["default_workspace_kind"] == "dir"
+
+    assert len(calls) == 1
+
+    # Turning the directory into a repo re-probes instead of serving the cached "dir".
+    subprocess.run(["git", "init", "-q", str(project_dir)], check=True)
+    response = client.get("/api/plugins/kanban/boards")
+    board = next(item for item in response.json()["boards"] if item["slug"] == "polled")
+    assert board["default_workspace_kind"] == "worktree"
+    assert len(calls) == 2
 
 
 def test_scheduled_tasks_have_their_own_column_not_todo(client):

@@ -308,7 +308,7 @@ def _existing_task(kb, conn, tid: str):
 
 
 def _ok(**fields: Any) -> str:
-    return json.dumps({"ok": True, **fields})
+    return json.dumps({"ok": True, **fields}, ensure_ascii=False)
 
 
 def _ok_landed(kb, conn, tid: str, default_status: str, **extra: Any) -> str:
@@ -622,7 +622,7 @@ def _handle_show(args: dict, **kw) -> str:
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
-        return json.dumps({
+        result = {
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
@@ -634,8 +634,15 @@ def _handle_show(args: dict, **kw) -> str:
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
-            # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+        }
+        # Same string build_worker_context hands the dispatcher at spawn time —
+        # only the worker owning this card needs it; for every other caller it
+        # duplicates the comments/body already in the payload (tens of KB).
+        from agent.delegation_context import owned_kanban_task
+
+        if owned_kanban_task() == tid:
+            result["worker_context"] = kb.build_worker_context(conn, tid)
+        return json.dumps(result, ensure_ascii=False)
 
 
 @_kanban_handler("kanban_list")
@@ -665,7 +672,7 @@ def _handle_list(args: dict, **kw) -> str:
             "count": len(tasks), "limit": limit, "truncated": truncated,
             "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                            if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),
-            "promoted": promoted})
+            "promoted": promoted}, ensure_ascii=False)
 
 
 @_kanban_handler("kanban_complete")
@@ -987,10 +994,8 @@ def _handle_attachments(args: dict, **kw) -> str:
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
         _existing_task(kb, conn, tid)
-        return json.dumps({
-            "ok": True, "task_id": tid,
-            "attachments": [
-                _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
+        return _ok(task_id=tid, attachments=[
+            _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)])
 
 
 def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:

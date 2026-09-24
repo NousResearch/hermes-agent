@@ -1195,3 +1195,50 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_show_only_includes_worker_context_for_own_task(monkeypatch, worker_env):
+    """worker_context duplicates the comments/body already in the payload (tens
+    of KB); only the dispatcher-owned worker for THIS card gets it (#86242)."""
+    from agent.delegation_context import non_dispatcher_owned_context
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    own = json.loads(kt._handle_show({"task_id": worker_env}))
+    assert "worker_context" in own
+
+    conn = kbc.connect()
+    try:
+        other_tid = kb.create_task(conn, title="other-task", assignee="peer")
+    finally:
+        conn.close()
+
+    foreign = json.loads(kt._handle_show({"task_id": other_tid}))
+    assert "worker_context" not in foreign
+
+    with non_dispatcher_owned_context():
+        nested = json.loads(kt._handle_show({"task_id": worker_env}))
+    assert "worker_context" not in nested
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    orchestrator = json.loads(kt._handle_show({"task_id": worker_env}))
+    assert "worker_context" not in orchestrator
+
+
+def test_kanban_tool_outputs_preserve_unicode(monkeypatch, worker_env):
+    """ensure_ascii escaping doubled the size of non-ASCII kanban output (#86242)."""
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    conn = kbc.connect()
+    try:
+        conn.execute("UPDATE tasks SET title = ?, body = ? WHERE id = ?", ("日本語の作業", "説明", worker_env))
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert "成功" in kt._ok(message="成功")
+    assert "日本語の作業" in kt._handle_show({})
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    assert "日本語の作業" in kt._handle_list({})

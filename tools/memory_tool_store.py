@@ -381,15 +381,15 @@ class MemoryStore:
         if act == "replace" and not content:
             return f"{pos}: content is required (use action='remove' to delete).", None
         if matched_entry is not None:
-            idx, ambiguous = _pinned_index(working, matched_entry), False
+            idx = _pinned_index(working, matched_entry)
             if idx is None:
                 return f"{pos}: {_stale_entry_message(matched_entry)}", None
         else:
             idx, ambiguous = _find_unique_match(working, old_text)
-        if ambiguous:
-            return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None
-        if idx is None:
-            return f"{pos}: no entry matched '{old_text}'.", None
+            if ambiguous:
+                return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None
+            if idx is None:
+                return f"{pos}: no entry matched '{old_text}'.", None
         previous_content = working[idx]
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None, previous_content
@@ -420,8 +420,6 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
-            replaced = {}  # op index -> full entry text its replace overwrote (#117952)
-            removed = {}
             matched = []  # per op, the entry a replace/remove selected (None for add)
             for i, op in enumerate(ops):
                 act = op.get("action")
@@ -432,10 +430,6 @@ class MemoryStore:
                 if msg:
                     return self._batch_failure(target, msg)
                 matched.append(previous_content)
-                if previous_content is not None:
-                    # 1-based op position, matching the "Operation N" error numbering the
-                    # model sees for failed ops in the same batch.
-                    (replaced if act == "replace" else removed)[i + 1] = previous_content
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
@@ -454,6 +448,12 @@ class MemoryStore:
                     f"entries in the same batch, then retry."))
             if not commit:
                 return {"success": True, "matched_entries": matched}
+            # op index -> full entry text its replace/remove selected (#117952), 1-based to
+            # match the "Operation N" error numbering the model sees for failed ops.
+            replaced, removed = {}, {}
+            for i, (op, previous_content) in enumerate(zip(ops, matched), 1):
+                if previous_content is not None:
+                    (replaced if op.get("action") == "replace" else removed)[i] = previous_content
             replaced_fields = {"replaced_entries": replaced} if replaced else {}
             if removed:
                 replaced_fields["removed_entries"] = removed

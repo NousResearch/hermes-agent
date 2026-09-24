@@ -159,8 +159,8 @@ _BG_DELETE_ACTIONS = ("replace", "remove")
 
 def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The replace/remove ops of a staged memory payload, single-op or batch shape."""
-    ops = payload.get("operations") or [] if payload.get("action") == "batch" else [payload]
-    return [op for op in ops if op.get("action") in _BG_DELETE_ACTIONS]
+    ops = (payload.get("operations") or []) if payload.get("action") == "batch" else [payload]
+    return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
 
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
@@ -175,13 +175,11 @@ def _background_delete_gate(store, action, operations, target="memory", content=
 
     if not is_unattended_review():
         return None
-    hit = action in _BG_DELETE_ACTIONS or any(
-        isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or []))
-    if not hit:
-        return None
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
                {"action": action, "target": target, "content": content, "old_text": old_text})
+    if not destructive_ops(payload):
+        return None
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:

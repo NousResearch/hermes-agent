@@ -11,7 +11,13 @@
 import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
 import { $openBotChat, $selectedBot, lastToastedPreview, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
-import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
+import {
+  canonicalChatIds,
+  isStaleCanonicalChatTile,
+  notifyBotOpenFailure,
+  openBotCanonicalChat,
+  prepareBotSource
+} from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { openGroupChat } from './group-chat-view'
@@ -168,19 +174,18 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
   }
 
   const canonical = bot?.canonical_session
-  const canonicalIds = [canonical?.id, canonical?.resolved_id].filter(Boolean).map(String)
+  const canonicalIds = canonicalChatIds(canonical?.id, canonical?.resolved_id)
 
   if (canonicalIds.length === 0) {
     return null
   }
 
-  const isStaleTile = (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
-    typeof tile.workspaceTabTitle === 'string' &&
-    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
-    !canonicalIds.includes(String(tile.storedSessionId))
-
   try {
-    const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
+    const focused = host.focusOpenWorkspaceSession(
+      botWorkspaceOwnerKey(bot),
+      tile => isStaleCanonicalChatTile(tile, canonicalIds),
+      canonicalIds
+    )
 
     return typeof focused === 'string' && focused
       ? { registryId: String(canonical!.id), storedSessionId: focused }

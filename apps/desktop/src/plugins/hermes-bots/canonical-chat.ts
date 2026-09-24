@@ -48,6 +48,26 @@ export const PROFILE_SESSION_LIST_LIMIT = 200
  *  recognize canonical-titled tabs without restating the literal. */
 export const CANONICAL_CHAT_TITLE = 'Bot Chat'
 
+export interface CanonicalChatTile {
+  storedSessionId: null | string | undefined
+  workspaceTabTitle?: null | string | undefined
+}
+
+/** Normalize the durable registry id and current resolved tip into the ids
+ * that may represent the canonical Bot Chat on screen. */
+export function canonicalChatIds(...ids: Array<null | string | undefined>): string[] {
+  return [...new Set(ids.map(id => String(id ?? '').trim()).filter(Boolean))]
+}
+
+/** A bots-workspace tile is stale only when it claims the canonical tab title
+ * but names neither the registry root nor the currently resolved tip. */
+export function isStaleCanonicalChatTile(tile: CanonicalChatTile, canonicalIds: readonly string[]): boolean {
+  return (
+    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
+    !canonicalIds.includes(String(tile.storedSessionId ?? '').trim())
+  )
+}
+
 /** A `session.list` row as the registry lookup reads it. CanonicalSession
  *  models the roster's `canonical_session` field, which carries no
  *  `message_count` — the listing row does. `readonly` because the count is
@@ -92,7 +112,25 @@ async function openStoredBotChat(
   const ownerKey = botWorkspaceOwnerKey(bot)
   const hasAuthoritativeCount = typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
-  const lineageIds = [summary.id, storedId].filter((id): id is string => Boolean(id))
+  const lineageIds = canonicalChatIds(summary.id, storedId)
+
+  // The title registry is authoritative; locally persisted Bot workspace
+  // tiles are not. A compression chain can leave an intermediate canonical
+  // tile (root → tip-1 → tip-2) whose id is neither durable root nor current
+  // tip. Reconcile it before opening, but always continue into openSession:
+  // that path owns resume/hydration even when it focused a surviving tile.
+  if (typeof host.focusOpenWorkspaceSession === 'function') {
+    try {
+      host.focusOpenWorkspaceSession(
+        ownerKey,
+        tile => isStaleCanonicalChatTile(tile, lineageIds),
+        lineageIds
+      )
+    } catch {
+      // Workspace reconciliation is an optional presentation affordance; an
+      // unavailable or older host must not prevent the authoritative open.
+    }
+  }
 
   // Current SDKs export the Bot-specific budget. The fallback preserves
   // compatibility with older hosts and isolated plugin test harnesses.

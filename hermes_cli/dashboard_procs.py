@@ -72,6 +72,20 @@ def _iter_process_table() -> list[tuple[int, str]]:
     return rows
 
 
+def _is_dashboard_serve_cmdline(cmd: str) -> bool:
+    """Canonical dashboard/serve matcher — never argv substrings (#121156).
+
+    ``herdr --session hermes server`` contains ``hermes serve`` as a substring
+    but its holder subcommand is not serve/dashboard. Token-parse via
+    ``_hermes_holder_subcommand`` so unrelated processes are never matched.
+    """
+    try:
+        from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+        return _hermes_holder_subcommand(cmd) in ("serve", "dashboard")
+    except Exception:
+        return False
+
+
 def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str]]:
     """``(pid, cmdline)`` of running ``dashboard``/``serve`` processes; empty on any scan error.
 
@@ -88,7 +102,7 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     skip = {os.getpid(), *(exclude_pids or ())}
     try:
         found = [(pid, cmd) for pid, cmd in _iter_process_table()
-                 if pid not in skip and any(p in cmd for p in _DASHBOARD_PATTERNS)]
+                 if pid not in skip and _is_dashboard_serve_cmdline(cmd)]
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
     # Spawn-ledger augmentation: substring patterns miss profiled launches (`hermes --profile p

@@ -3139,3 +3139,41 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+def test_completion_wake_budget_collapses_excess_to_one_summary(registry, monkeypatch):
+    """The completion enqueue seam caps wakes without losing completion count."""
+    monkeypatch.setattr(ProcessRegistry, "_completion_wake_config", staticmethod(lambda: 2))
+    for i in range(4):
+        session = _make_session(sid=f"proc_budget_{i}", task_id="session-budget")
+        session.session_key = "session-budget"
+        session.notify_on_complete = True
+        registry._running[session.id] = session
+        session.exited = True
+        session.exit_code = 0
+        registry._move_to_finished(session)
+    events = [registry.completion_queue.get_nowait() for _ in range(registry.completion_queue.qsize())]
+    assert [event["type"] for event in events].count("completion") == 2
+    summaries = [event for event in events if event["type"] == "completion_overflow"]
+    assert len(summaries) == 1
+    assert summaries[0]["count"] == 2
+    assert summaries[0]["message"] == "2 background jobs completed"
+
+
+def test_completion_wake_global_breaker_also_preserves_summary(registry, monkeypatch):
+    """The global breaker emits one aggregate instead of silently dropping wakes."""
+    import tools.process_registry as module
+    monkeypatch.setattr(module, "COMPLETION_WAKE_GLOBAL_MAX_PER_WINDOW", 1)
+    monkeypatch.setattr(module, "COMPLETION_WAKE_GLOBAL_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(ProcessRegistry, "_completion_wake_config", staticmethod(lambda: 0))
+    for i in range(3):
+        session = _make_session(sid=f"proc_global_{i}", task_id=f"session-{i}")
+        session.notify_on_complete = True
+        registry._running[session.id] = session
+        session.exited = True
+        session.exit_code = 0
+        registry._move_to_finished(session)
+    events = [registry.completion_queue.get_nowait() for _ in range(registry.completion_queue.qsize())]
+    assert [event["type"] for event in events].count("completion") == 1
+    summary = next(event for event in events if event["type"] == "completion_overflow")
+    assert summary["count"] == 2

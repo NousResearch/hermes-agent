@@ -590,10 +590,21 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
     return _s6_running()
 
 
+# Process-global record of an explicit -p/--profile routing for this
+# process (see _apply_profile_override). Module globals cannot serve: the
+# module executes twice, as __main__ and as hermes_cli.main.
+_EXPLICIT_PROFILE_ATTR = "_hermes_explicit_profile_name"
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
+
+    # Re-entrant import guard: with -p already stripped from sys.argv, an
+    # earlier explicit routing in this process must stand; never fall through
+    # to the sticky active_profile file.
+    if profile_name is None and getattr(sys, _EXPLICIT_PROFILE_ATTR, None):
+        return
 
     # HERMES_HOME already set with no explicit flag: trust it only when it
     # points at a specific profile dir ("profiles" as immediate parent). If it
@@ -642,6 +653,10 @@ def _apply_profile_override() -> None:
         print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
         return
     os.environ["HERMES_HOME"] = hermes_home
+    # Remember explicit -p resolutions process-wide (sys, not environ, so
+    # child processes never inherit it); see the re-entrant import guard above.
+    if consume > 0:
+        setattr(sys, _EXPLICIT_PROFILE_ATTR, profile_name)
     # Strip the flag from argv so argparse doesn't choke
     if consume > 0 and profile_index is not None:
         start = profile_index + 1  # +1 because argv is sys.argv[1:]

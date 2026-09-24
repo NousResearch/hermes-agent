@@ -6,12 +6,13 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 """
 
 import logging
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import os
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
 import subprocess
 import sys
+import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
@@ -473,6 +474,39 @@ def _log_only_write(text: str) -> None:
         else:
             log_file.write(text)
             log_file.flush()
+
+
+@contextmanager
+def _update_progress_heartbeat(message: str, *, interval_seconds: float = 30):
+    """Print a flushed elapsed-time line so a quiet step still counts as progress.
+
+    The Windows Desktop hand-off kills ``hermes update`` after 600s with nothing
+    on stdout/stderr and no growth in ``logs/update.log`` (exit 124). ``npm
+    --progress=false`` and a silent web ``npm ci`` emit neither for longer than
+    that on a slow disk, so a healthy install is cancelled and retried.
+    ``message`` must contain ``{elapsed}``.
+
+    ``print`` is the tick the pipe watchdog sees. When stdout is the update
+    wrapper, that write is already mirrored into ``update.log``. The
+    ``_log_only_write`` fallback covers a caller whose stdout was never wrapped.
+    """
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(interval_seconds):
+            line = message.format(elapsed=int(_time.monotonic() - start))
+            print(line, flush=True)
+            if getattr(_m().sys.stdout, "_log", None) is None:
+                _log_only_write(line if line.endswith("\n") else line + "\n")
+
+    start = _time.monotonic()
+    ticker = threading.Thread(target=_beat, daemon=True, name="update-heartbeat")
+    ticker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        ticker.join(timeout=2)
 
 
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):

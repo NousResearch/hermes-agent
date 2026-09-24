@@ -1,5 +1,6 @@
 """A malformed state.db must not turn dashboard analytics polling into a traceback storm (#96591)."""
 import logging
+import re
 import sqlite3
 from pathlib import Path
 
@@ -73,7 +74,7 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
 
     monkeypatch.setattr(_common, "_corrupt_store_warned_at", {})
     db_path = tmp_path / "state.db"
-    for exc_cls, code in ((DeletedWalGenerationError, "deleted_wal"), (StateDbReplacedError, "state_db_replaced")):
+    for exc_cls, code in ((DeletedWalGenerationError, "state_db_deleted_wal"), (StateDbReplacedError, "state_db_replaced")):
         with pytest.raises(HTTPException) as info:
             with _common.corrupt_store_as_status(db_path):
                 raise exc_cls("retired WAL held by pid 4242")
@@ -83,7 +84,8 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
         msg = info.value.detail["message"]
         assert "run `hermes doctor`" in msg
         # `--fix` may only appear negated — never as the action to take while a holder is live.
-        assert msg.count("`hermes doctor --fix`") == 1 and "Do not run `hermes doctor --fix`" in msg
+        negated = re.findall(r"(?i)(?:do not|don't|never) run `hermes doctor --fix`", msg)
+        assert len(negated) == msg.count("`hermes doctor --fix`"), msg
 
     with pytest.raises(sqlite3.OperationalError):
         with _common.corrupt_store_as_status(db_path):

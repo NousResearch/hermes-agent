@@ -285,6 +285,62 @@ def test_merged_restatement_is_not_anchored_twice():
     assert _job_copies(out) == 1
 
 
+def test_standalone_restatement_does_not_reuse_the_original_row_identity():
+    """A replay is a new durable row, not an old user row moved after the handoff.
+
+    Reusing the original timestamp makes the desktop transcript sort the new
+    replay before turns that preceded the compaction boundary (#121064).
+    """
+    original_timestamp = 1_700_000_000.0
+    original_row_id = 123
+    compressor = _make_compressor()
+    out = compressor._reappend_inflight_user_task(
+        [
+            {
+                "role": "assistant",
+                "content": f"{SUMMARY_PREFIX}\nsummary\n{_SUMMARY_END_MARKER}",
+            }
+        ],
+        {
+            "role": "user",
+            "content": JOB_SENTINEL,
+            "timestamp": original_timestamp,
+            "_row_id": original_row_id,
+        },
+    )
+
+    replay = out[-1]
+    assert _job_copies(out) == 1
+    assert "timestamp" not in replay
+    assert "_row_id" not in replay
+
+
+def test_merged_restatement_keeps_its_existing_carrier_identity():
+    """Alternation-safe carrier merges remain in-place updates."""
+    carrier_timestamp = 1_700_000_100.0
+    carrier = {
+        "role": "user",
+        "content": f"{SUMMARY_PREFIX}\nsummary\n{_SUMMARY_END_MARKER}",
+        "timestamp": carrier_timestamp,
+        "_row_id": 456,
+    }
+
+    out = _make_compressor()._reappend_inflight_user_task(
+        [carrier],
+        {
+            "role": "user",
+            "content": JOB_SENTINEL,
+            "timestamp": 1_700_000_000.0,
+            "_row_id": 123,
+        },
+    )
+
+    assert out == [carrier]
+    assert carrier["timestamp"] == carrier_timestamp
+    assert carrier["_row_id"] == 456
+    assert _job_copies(out) == 1
+
+
 def test_restatement_survives_repeated_compactions_without_stacking():
     """A task alive across three compactions is restated exactly once per
     output — one copy, one header, always after the summary."""

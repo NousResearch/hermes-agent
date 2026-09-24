@@ -4719,6 +4719,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             replay = {"role": "user", "content": task_text}
         else:
             replay = _fresh_compaction_message_copy(inflight)
+        # A standalone replay is a new durable row after the handoff.  It
+        # must receive a fresh database identity and timestamp rather than
+        # looking like the original user turn moved later in the transcript.
+        # The merged-carrier path below deliberately keeps the carrier's
+        # existing identity because it updates that row in place.
+        replay.pop("_row_id", None)
+        replay.pop("timestamp", None)
         replay.pop(_COMPACTION_TAIL_MARKER, None)
         if isinstance(replay.get("content"), str):
             # Plain text: rebuild from the header-stripped task text so a

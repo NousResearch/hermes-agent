@@ -870,7 +870,7 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "login", "update", "version",
+        "commands", "profile", "login", "update", "version", "group",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
@@ -1084,6 +1084,9 @@ class GatewayBusySessionMixin:
         from gateway.slash_access import policy_for_source as _policy_for_source
         if not canonical_cmd:
             return None
+        if canonical_cmd == "group":
+            from gateway.group_chat_policy import PRIVATE_ADMIN_REQUIRED, private_admin_receiver
+            return None if private_admin_receiver(self, source) is not None else PRIVATE_ADMIN_REQUIRED
         policy = _policy_for_source(self.config, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None

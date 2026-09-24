@@ -3,9 +3,27 @@ import asyncio
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
+from gateway.session_group_messaging_read import (
+    BINDING_FIELDS,
+    BINDING_METHODS,
+    _InventoryRead,
+    _MessagingRoomRead,
+    commit_native_binding,
+    prepare_native_binding,
+    validate_page,
+)
+from gateway.session_group_messaging_send import (
+    SEND_BINDING_FIELDS,
+    SEND_BINDING_METHODS,
+    _MessagingRoomSend,
+    commit_native_send_binding,
+    prepare_native_send_binding,
+)
 
 
 GROUP_METHODS = {
+    **BINDING_METHODS,
+    **SEND_BINDING_METHODS,
     'groups.capabilities': 'session:read',
     'groups.list': 'session:read',
     'groups.state': 'session:read',
@@ -22,6 +40,8 @@ GROUP_METHODS = {
     'groups.approve': 'session:approve',
 }
 _FIELDS = {
+    **BINDING_FIELDS,
+    **SEND_BINDING_FIELDS,
     'groups.capabilities': set(),
     'groups.list': {'limit', 'offset', 'include_disbanded'},
     'groups.state': {'room_id', 'include_disbanded'},
@@ -39,12 +59,36 @@ _FIELDS = {
                        'choice', 'request_id'},
     'profiles.list': {'include_sessions'},
 }
+_MESSAGING_ROOM_READ_FIELDS = {
+    'groups.state': {'room_id'},
+    'groups.log': {'room_id', 'since_seq', 'limit'},
+}
 
 
 async def dispatch_group_control(connection, method, params):
+    inventory = connection if isinstance(connection, _InventoryRead) else None
+    if inventory is not None:
+        if method != 'groups.list' or inventory.state_json is None:
+            raise RuntimeStoreError('permission_denied')
+        validate_page(params)
+        inventory.require_current()
+    room_read = connection if type(connection) is _MessagingRoomRead else None
+    if isinstance(connection, _MessagingRoomRead) and room_read is None:
+        raise RuntimeStoreError('permission_denied')
+    if room_read is not None:
+        if type(params) is not dict:
+            raise RuntimeStoreError('invalid_params')
+        room_read.require_current(method=method, room_id=params.get('room_id'))
+        if set(params) != _MESSAGING_ROOM_READ_FIELDS[method]:
+            raise RuntimeStoreError('invalid_params')
+    room_send = connection if type(connection) is _MessagingRoomSend else None
+    if isinstance(connection, _MessagingRoomSend) and room_send is None:
+        raise RuntimeStoreError('permission_denied')
+    if room_send is not None:
+        room_send.require_current(method=method, params=params)
     authority, actor = connection.authority, connection.actor
     capability = GROUP_METHODS.get(method, 'session:read')
-    if capability not in actor.capabilities:
+    if room_send is None and capability not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -60,28 +104,61 @@ async def dispatch_group_control(connection, method, params):
     if profile and not profile_matches_home(profile, home):
         raise RuntimeStoreError('profile_mismatch')
     supplied = {key: value for key, value in params.items() if key != 'profile'}
+    prepared = prepare_native_binding(connection, method, supplied) if method in BINDING_METHODS else None
+    prepared_send = (prepare_native_send_binding(connection, method, supplied)
+                     if method in SEND_BINDING_METHODS else None)
+    if room_read is not None:
+        from gateway.session_group_state import GroupStateOwner
+        state_owner = GroupStateOwner.capture(authority)
+    else:
+        state_owner = getattr(connection, '_group_state_owner', None)
 
     def invoke():
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
         with _profile_runtime_scope(home):
+            if prepared is not None:
+                return commit_native_binding(prepared)
+            if prepared_send is not None:
+                return commit_native_send_binding(prepared_send)
+            if inventory is not None:
+                inventory.require_current()
+            if room_read is not None:
+                room_read.require_current(method=method, room_id=supplied.get('room_id'))
+            if room_send is not None:
+                room_send.require_current(method=method, params=supplied)
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
-                return _group(authority, actor, home, method, supplied)
+                return _group(authority, actor, home, method, supplied,
+                              state_owner=state_owner, inventory=inventory,
+                              room_read=room_read, room_send=room_send)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
                 raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
             except (ValueError, TypeError) as exc:
                 raise RuntimeStoreError('invalid_params') from exc
-    return await asyncio.to_thread(invoke)
+    result = await asyncio.to_thread(invoke)
+    if inventory is not None:
+        return inventory.project(result)
+    if room_read is not None:
+        room_read.require_current(method=method, room_id=supplied.get('room_id'))
+    return result
 
 
-def _group(authority, actor, home, method, params):
+def _group(authority, actor, home, method, params, *, state_owner=None, inventory=None,
+           room_read=None, room_send=None):
+    if method == 'groups.state':
+        from gateway.session_group_state import read_group_state
+        if state_owner is None:
+            raise RuntimeStoreError('group_state_unavailable')
+        return read_group_state(
+            state_owner, authority, actor, params, delegated_read=room_read)
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
-    gateway_id = rooms.local_authority_gateway_id()
+    gateway_id = (rooms.local_authority_gateway_id()
+                  if inventory is None and room_read is None else None)
     service = getattr(authority, 'hosted_room_service', None)
     room_authorizer = getattr(service, 'authorize_room', None)
     if service is not None:
@@ -92,7 +169,9 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
-    if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
+    if (room_read is None and room_send is None
+            and getattr(authority, 'hosted_room_service', None) is not None
+            and 'room_id' in params):
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
         room_authorizer(actor.subject, params['room_id'], create=method == 'groups.create')
@@ -107,7 +186,7 @@ def _group(authority, actor, home, method, params):
             raise RuntimeStoreError('runtime_coordination_required')
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')
-        return _execution_control(service, method, params)
+        return _execution_control(service, method, params, room_send=room_send)
 
     def capabilities():
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
@@ -118,6 +197,7 @@ def _group(authority, actor, home, method, params):
 
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
+        owner = inventory.require_current()['owner'] if inventory is not None else actor.subject
         result = rooms.list_rooms(db_path, **params)
         next_offset = offset + limit if len(result) == limit else None
         if getattr(authority, 'hosted_room_service', None) is not None:
@@ -126,7 +206,7 @@ def _group(authority, actor, home, method, params):
                 if room_authorizer is None:
                     raise RuntimeStoreError('permission_denied')
                 try:
-                    room_authorizer(actor.subject, room['room_id'])
+                    room_authorizer(owner, room['room_id'])
                 except RuntimeStoreError as exc:
                     if exc.reason != 'permission_denied':
                         raise
@@ -186,14 +266,20 @@ def _group(authority, actor, home, method, params):
     return handlers[method]()
 
 
-def _execution_control(service, method, params):
+def _execution_control(service, method, params, *, room_send=None):
     def send():
         from gateway.hosted_rooms import user_event_id
         event = service.send(room_id=params.get('room_id'),
                              event_id=user_event_id(params.get('event_id')),
-                             payload=params.get('payload'))
+                             payload=params.get('payload'),
+                             **({'new_event_authorizer': room_send.authorize_new_event,
+                                 'new_event_commit_authorizer': room_send.authorize_new_commit,
+                                 'new_event_lifetime': room_send.new_event_lifetime}
+                                if room_send is not None else {}))
         return {'event': event, 'client_event_id': params.get('event_id'),
-                'accepted': True, 'driver_started': True}
+                'accepted': True,
+                'driver_started': (True if room_send is None
+                                   else not event.get('idempotent', False))}
 
     def attempt_control():
         if (type(params.get('execution_generation')) is not int

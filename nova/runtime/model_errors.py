@@ -67,7 +67,26 @@ _RULES: tuple[tuple[tuple[str, ...], str, str, str, str], ...] = (
         "operator",
     ),
     (
-        ("throttl", "too many requests", "rate exceeded", "429", "servicequota"),
+        # Above the throttling family: both arrive as a 429, but a per-day quota does not
+        # clear with a retry a minute later, and treating it as throttling spends every
+        # retry the task has on a wall that stays up until the quota resets.
+        ("perday", "per-day", "per day", "daily limit", "daily quota"),
+        "quota_exhausted",
+        "The provider's daily quota for this model is used up",
+        "Wait for the quota to reset (usually midnight in the provider's time zone), add "
+        "credits or a paid plan, or switch the deployment to another model.",
+        "account admin",
+    ),
+    (
+        ("overloaded", "high demand", "temporarily unavailable", "503", "529"),
+        "overloaded",
+        "The model provider is temporarily overloaded",
+        "Nothing to change — the retry will try again. If it persists, switch model or provider.",
+        "nobody",
+    ),
+    (
+        ("throttl", "too many requests", "rate exceeded", "429", "servicequota",
+         "resource_exhausted", "quota exceeded"),
         "throttled",
         "The provider is rate-limiting requests",
         "Retry later, or request a higher quota for this model.",

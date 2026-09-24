@@ -154,3 +154,27 @@ def test_outside_a_task_nothing_is_written(board, home, monkeypatch):
     plugin = installed(home)
     plugin.on_api_request_error(error={"message": BEDROCK_DENIED}, reason="auth", status_code=403)
     assert plugin.settle() is None
+
+
+def test_a_used_up_daily_quota_blocks_instead_of_spending_retries(board, home, monkeypatch):
+    """Found on a real OpenRouter run: 'free-models-per-day' came back as a plain 429."""
+    task_id = running_task(board, monkeypatch)
+    plugin = installed(home)
+    plugin.on_api_request_error(
+        error={"message": "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day"},
+        reason="rate_limit", status_code=429, retryable=True)
+    assert plugin.settle() == "blocked"
+    (blocked,) = events(board, task_id, "blocked")
+    assert "daily quota" in blocked["reason"]
+
+
+@pytest.mark.parametrize("text, category", [
+    ("Quota exceeded for metric: generate_content_free_tier_requests, limit: 250, GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quota_exhausted"),
+    ("Quota exceeded for metric: generate_content_free_tier_requests, GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "throttled"),
+    ("Upstream error from Nvidia: Service temporarily overloaded", "overloaded"),
+    ("This model is currently experiencing high demand. Please try again later.", "overloaded"),
+])
+def test_quota_walls_and_overloads_are_told_apart(text, category):
+    from nova.runtime.model_errors import classify_model_error
+
+    assert classify_model_error(text).category == category

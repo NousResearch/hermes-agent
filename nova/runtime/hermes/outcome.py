@@ -97,13 +97,13 @@ def on_post_api_request(**_: Any) -> None:
     _STATE["error"] = None
 
 
-def _outcome_text(error: Dict[str, Any]) -> tuple[str, str]:
-    """``(one line for the board, the provider's own words)``."""
+def _outcome_text(error: Dict[str, Any]) -> tuple[str, str, str]:
+    """``(category, one line for the board, the provider's own words)``."""
     explained = classify_model_error(error["message"])
     where = " ".join(part for part in (error["provider"], error["model"]) if part)
     status = f"HTTP {error['status_code']}, " if error.get("status_code") else ""
     evidence = f"{error['message']} ({status}{error['reason'] or 'unclassified'}{', ' + where if where else ''})"
-    return f"{explained.headline}. {explained.remedy}", evidence
+    return explained.category, f"{explained.headline}. {explained.remedy}", evidence
 
 
 def settle() -> Optional[str]:
@@ -130,8 +130,12 @@ def settle() -> Optional[str]:
                 return None
             if run_id is not None and getattr(task, "current_run_id", None) not in (None, run_id):
                 return None
-            summary, evidence = _outcome_text(error)
-            if _needs_a_person(error["reason"], error.get("status_code"), error.get("retryable")):
+            category, summary, evidence = _outcome_text(error)
+            # A used-up daily quota reaches the runtime as an ordinary rate limit; its words
+            # say otherwise, and no retry before the reset can succeed.
+            if category == "quota_exhausted" or _needs_a_person(
+                error["reason"], error.get("status_code"), error.get("retryable")
+            ):
                 kb.block_task(
                     connection, task_id,
                     reason=f"The AI model refused the request — {summary} Provider said: {evidence}",

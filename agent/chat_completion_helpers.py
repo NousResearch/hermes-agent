@@ -785,13 +785,18 @@ def should_use_direct_api_call(agent) -> bool:
     thread pools that wedge before the socket opens when the request is pushed onto
     yet another daemon worker. Running inline drops the deepest layer; interrupts
     still work because the inline path registers ``agent._active_request_abort``,
-    which ``interrupt()`` invokes cross-thread (#72227). Native/Codex/Bedrock/MoA
-    keep their workers: their cancellation and client ownership differ.
+    which ``interrupt()`` invokes cross-thread (#72227). Cron also inlines Codex
+    Responses (#69734): its dispatch builds the client via ``make_client``, so the
+    inline stale watchdog aborts it like a chat_completions call. Delegated children
+    and Native/Bedrock/MoA keep their workers: cancellation and client ownership differ.
     """
-    if getattr(agent, "api_mode", None) != "chat_completions" or getattr(agent, "provider", None) == "moa":
+    api_mode = getattr(agent, "api_mode", None)
+    if getattr(agent, "provider", None) == "moa":
         return False
     if getattr(agent, "platform", None) == "cron":
-        return True
+        return api_mode in {"chat_completions", "codex_responses"}
+    if api_mode != "chat_completions":
+        return False
     # Delegated child — via the execution ContextVar set by _run_single_child,
     # with the agent's platform stamp as a fallback for callers that bypass it.
     with contextlib.suppress(Exception):
@@ -953,7 +958,7 @@ class _InlineRequest:
             return newly_stale
 
     def make_client(self, reason: str, kind: str = "openai"):
-        # Only OpenAI-wire requests reach direct_api_call; ``kind`` exists
+        # Only OpenAI-wire / Codex requests reach direct_api_call; ``kind`` exists
         # for signature parity with the dispatch helper.
         client = self.agent._create_request_openai_client(reason=reason, api_kwargs=self.api_kwargs)
         with self.lock:

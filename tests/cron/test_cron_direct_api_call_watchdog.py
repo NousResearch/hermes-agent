@@ -87,6 +87,29 @@ def test_stalled_inline_call_is_aborted_and_raises_retryable_timeout():
 
 
 
+def test_stalled_inline_codex_call_is_bounded_by_stale_watchdog():
+    """#69734: cron Codex runs inline, bypassing the worker-only TTFB/idle
+    watchdogs — the inline stale watchdog must still abort a silent Codex stream."""
+    agent = _make_agent(stale_timeout=0.2)
+    agent.api_mode = "codex_responses"
+    aborted: list[str] = []
+    released = threading.Event()
+    agent._abort_request_openai_client.side_effect = lambda client, reason: (aborted.append(reason), released.set())
+
+    def _silent_codex_stream(api_kwargs, client=None, on_first_delta=None):
+        assert client is agent._create_request_openai_client.return_value
+        if not released.wait(timeout=5.0):
+            raise AssertionError("watchdog never aborted the stalled Codex stream")
+        raise ConnectionError("socket shut down")
+
+    agent._run_codex_stream = _silent_codex_stream
+    started = time.time()
+    with pytest.raises(TimeoutError):
+        direct_api_call(agent, {"model": "gpt-5-codex", "input": []})
+    assert aborted == ["stale_call_kill"]
+    assert time.time() - started < 4.0, "inline watchdog did not bound the Codex call"
+
+
 def test_watchdog_kill_feeds_the_cross_turn_stale_circuit_breaker():
     """Without a bump the #58962 breaker can never trip for cron sessions."""
     agent = _make_agent(stale_timeout=0.2)

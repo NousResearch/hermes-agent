@@ -476,7 +476,8 @@ _PROFILE_LOCKED_PREFIX = "[profile-locked] "
 def _profile_is_locked(src: str, source_profile: str) -> bool:
     """True when the active profile's cookie DB can't be opened (browser running). On Windows a
     running browser holds Cookies deny-all (PermissionError); this FAST probe fails closed BEFORE
-    the heavy snapshot so a locked profile never hangs the launch. Always False on POSIX."""
+    the heavy snapshot so a locked profile never hangs the launch. Other platforms must preserve
+    permission denials so callers do not mistake TCC or filesystem access controls for a lock."""
     db = _first_present(  # modern Network/ location first
         os.path.join(src, source_profile, rel)
         for rel in (os.path.join("Network", "Cookies"), "Cookies"))
@@ -485,8 +486,12 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
     try:
         with open(db, "rb"):
             return False
-    except OSError as e:  # other OSErrors are transient — don't declare locked; let the copy try
-        return isinstance(e, PermissionError)
+    except PermissionError:
+        if platform.system() == "Windows":
+            return True
+        raise
+    except OSError:  # other OSErrors are transient — don't declare locked; let the copy try
+        return False
 
 
 def _browser_setting(key: str):
@@ -642,6 +647,13 @@ def _locked_profile_error(browser: str) -> str:
     return _PROFILE_LOCKED_PREFIX + msg
 
 
+def _profile_permission_denied_error(browser: str, error: PermissionError) -> str:
+    """Explain macOS TCC denial without suggesting that the browser has a profile lock."""
+    return (
+        f"macOS denied Hermes access to the '{browser}' profile ({error}). Grant Full Disk Access "
+        "to the app or terminal running Hermes, then retry, or turn browser.use_real_profile off.")
+
+
 def _copy_profile_tree(src: str, dst: str, source_profile: str) -> None:
     """Fresh (or torn-and-rebuilding) copy of the ACTIVE profile dir into the copy's Default,
     minus caches AND the SQLite auth DBs (raw copytree of a Chrome-held file raises on Windows);
@@ -680,7 +692,13 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
     # hang the launch for minutes. Never trips on POSIX; there a running browser surfaces later as
     # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).
-    if _profile_is_locked(src, source_profile):
+    try:
+        profile_is_locked = _profile_is_locked(src, source_profile)
+    except PermissionError as e:
+        if platform.system() == "Darwin":
+            return None, _profile_permission_denied_error(browser, e)
+        return None, f"could not snapshot the '{browser}' profile: {e}"
+    if profile_is_locked:
         return None, _locked_profile_error(browser)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
@@ -711,6 +729,10 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             logger.debug("real-profile snapshot: could not write done marker: %s", e)
         # AFTER the marker write so the marker itself is covered; every pass, so old snapshots heal.
         _secure_snapshot(dst, contents=True)
+    except PermissionError as e:
+        if platform.system() == "Darwin":
+            return None, _profile_permission_denied_error(browser, e)
+        return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
     except OSError as e:
         return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
     return dst, None

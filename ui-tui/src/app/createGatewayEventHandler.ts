@@ -756,6 +756,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // users aren't surprised.  (Shares the memoized full-config read.)
     getFullConfigOnce()
       .then(cfg => {
+        // The slash handler is usable while this config RPC is pending. An
+        // explicit /resume claims the initial session choice synchronously by
+        // setting this status, before its own resume RPC can populate sid.
+        // Do not let the delayed startup default replace that user choice.
+        if (getUiState().sid || getUiState().status === 'resuming…') {
+          return
+        }
+
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
           patchUiState({ status: 'forging session…' })
           newSession()
@@ -765,6 +773,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+          if (getUiState().sid || getUiState().status === 'resuming…') {
+            return
+          }
+
           const target = r?.session_id
 
           if (target) {
@@ -781,6 +793,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         })
       })
       .catch(() => {
+        if (getUiState().sid || getUiState().status === 'resuming…') {
+          return
+        }
+
         patchUiState({ status: 'forging session…' })
         newSession()
         scheduleStartupPrompt()

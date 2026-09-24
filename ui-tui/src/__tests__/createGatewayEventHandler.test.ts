@@ -1107,6 +1107,34 @@ describe('createGatewayEventHandler', () => {
     expect(resumeById).not.toHaveBeenCalled()
   })
 
+  it('does not forge a startup session while an explicit resume is in flight', async () => {
+    const config = Promise.withResolvers<any>()
+    const resumed = Promise.withResolvers<void>()
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx([])
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById.mockImplementation(() => {
+      patchUiState({ status: 'resuming…' })
+
+      return resumed.promise.then(() => patchUiState({ sid: 'session-user-picked', status: 'ready' }))
+    })
+    ctx.gateway.rpc = vi.fn((method: string) =>
+      method === 'config.get' ? config.promise : Promise.resolve(null)
+    )
+
+    const onEvent = createGatewayEventHandler(ctx)
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+    ctx.session.resumeById('session-user-picked')
+    config.resolve({ config: { display: { tui_auto_resume_recent: false } } })
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('session-user-picked'))
+    resumed.resolve()
+    await vi.waitFor(() => expect(getUiState().sid).toBe('session-user-picked'))
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
   it('on gateway.ready after a crash, resumes the recovered session once and skips forge', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()

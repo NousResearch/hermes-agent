@@ -27,6 +27,7 @@ import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import unquote
 
 import pytest
 
@@ -496,7 +497,11 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
 
     adapter.send_multiple_images.assert_awaited_once()
     sent_paths = [p for p, _cap in adapter.send_multiple_images.await_args.kwargs["images"]]
-    assert str(img) in sent_paths[0]
+    # The delivery form is a percent-quoted file:// envelope that
+    # BasePlatformAdapter.send_multiple_images unquotes back into a path.
+    # A POSIX path quotes to itself, so a raw substring check only held
+    # there; a drive colon or backslash is quoted. Assert the round trip.
+    assert unquote(sent_paths[0].removeprefix("file://")) == str(img)
 
 
 

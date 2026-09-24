@@ -33,9 +33,14 @@ class TestExpandTilde:
 
     def test_tilde_expands_to_profile_home(self):
         """When get_subprocess_home returns a value, ~/path uses it."""
-        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
+        # Build the home in the host's own spelling: _expand_tilde joins with
+        # os.path.join, so a POSIX literal only pinned the separator.
+        home = os.path.join(os.sep + "opt", "data", "profiles", "coder", "home")
+        with patch("hermes_constants.get_subprocess_home", return_value=home):
             result = ft._expand_tilde("~/scratch/file.txt")
-        assert result == "/opt/data/profiles/coder/home/scratch/file.txt"
+        assert os.path.normpath(result) == os.path.normpath(
+            os.path.join(home, "scratch", "file.txt")
+        )
 
 
     def test_empty_path_unchanged(self):

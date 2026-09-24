@@ -662,7 +662,9 @@ class TestGitEnvIsolation:
         env = _git_env(
             store, str(work), index_file=store / "indexes" / "abc",
         )
-        assert env["GIT_INDEX_FILE"].endswith("indexes/abc")
+        # The guarantee is which file the index is pinned to, not the
+        # separator str(Path) spells it with on this host.
+        assert env["GIT_INDEX_FILE"] == str(store / "indexes" / "abc")
 
         # ~ in the work tree is expanded.
         tilde_work = fake_home / "work"

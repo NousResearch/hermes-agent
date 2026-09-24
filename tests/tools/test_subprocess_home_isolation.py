@@ -131,11 +131,11 @@ class TestGetSubprocessHome:
         monkeypatch.setenv("HERMES_HOME", str(base / "beta"))
         home_b = get_subprocess_home()
 
-        assert home_a is not None
-        assert home_b is not None
+        # Exact per-profile paths rather than endswith("alpha/home"), which
+        # pinned a POSIX separator.
+        assert home_a == str(base / "alpha" / "home")
+        assert home_b == str(base / "beta" / "home")
         assert home_a != home_b
-        assert home_a.endswith("alpha/home")
-        assert home_b.endswith("beta/home")
 
 
 

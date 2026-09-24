@@ -32,8 +32,15 @@ class TestResolveSafeCwd:
         itself is still a valid recovery target — don't skip it just because
         ``os.path.dirname('/') == '/'`` is the loop's exit condition."""
         sep = os.path.sep
+        # Spell the missing path with the host separator: the walk up is
+        # os.path.dirname, which keeps whatever separator it was handed, so a
+        # POSIX literal never reaches the "\" root on Windows.
+        missing = os.path.join(sep, "no", "such", "deep", "dir")
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
-        assert _resolve_safe_cwd("/no/such/deep/dir") == sep
+        # The usability check is isdir AND access(X_OK); stub both so the
+        # result does not depend on the host's permissions for the root.
+        monkeypatch.setattr(os, "access", lambda p, mode: p == sep)
+        assert _resolve_safe_cwd(missing) == sep
 
 
 def _make_fake_popen(captured: dict, fds: list):

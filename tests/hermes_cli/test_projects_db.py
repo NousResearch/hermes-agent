@@ -38,16 +38,20 @@ def test_discovery_policy_change_clears_only_discovered_rows(conn):
 
 
 
-def test_create_get_list(conn):
-    pid = pdb.create_project(conn, name="Hermes Agent", folders=["/tmp/hermes"])
+def test_create_get_list(conn, tmp_path):
+    # A host-spelled absolute path: create_project() normalises folders with
+    # os.path.abspath(), which turns "/tmp/hermes" into "<drive>:\tmp\hermes"
+    # on Windows, so the literal could never round-trip there.
+    folder = str(tmp_path / "hermes")
+    pid = pdb.create_project(conn, name="Hermes Agent", folders=[folder])
     proj = pdb.get_project(conn, pid)
 
     assert proj is not None
     assert proj.slug == "hermes-agent"
     assert proj.name == "Hermes Agent"
     # First folder becomes primary.
-    assert proj.primary_path == "/tmp/hermes"
-    assert [f.path for f in proj.folders] == ["/tmp/hermes"]
+    assert proj.primary_path == folder
+    assert [f.path for f in proj.folders] == [folder]
     assert proj.folders[0].is_primary is True
 
     # Lookup by slug too.
@@ -130,13 +134,16 @@ def test_per_profile_isolation(tmp_path):
     a = pdb.connect(db_path=tmp_path / "a" / "projects.db")
     b = pdb.connect(db_path=tmp_path / "b" / "projects.db")
     try:
-        pdb.create_project(a, name="Only In A", folders=["/a"])
-        pdb.record_discovered_repos(a, [("/a/scanned", "scanned")])
+        # Host-spelled absolute paths; see test_create_get_list.
+        project_root = str(tmp_path / "only_in_a")
+        scanned_root = str(tmp_path / "only_in_a" / "scanned")
+        pdb.create_project(a, name="Only In A", folders=[project_root])
+        pdb.record_discovered_repos(a, [(scanned_root, "scanned")])
 
         assert [p.slug for p in pdb.list_projects(a)] == ["only-in-a"]
         assert pdb.list_projects(b) == []
         assert [row["root"] for row in pdb.list_discovered_repos(a)] == [
-            "/a/scanned"
+            scanned_root
         ]
         assert pdb.list_discovered_repos(b) == []
     finally:

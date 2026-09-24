@@ -3,6 +3,7 @@ appended to final gateway replies."""
 
 from __future__ import annotations
 
+import os
 
 import pytest
 
@@ -60,17 +61,20 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
 
 
 def test_format_footer_skips_missing_context_length():
+    # An absolute path in the host's own spelling: _home_relative_cwd runs
+    # os.path.abspath, which drive-qualifies "/tmp/wd" on Windows.
+    cwd = os.path.abspath(os.path.join(os.sep, "tmp", "wd"))
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=500,
         context_length=None,
-        cwd="/tmp/wd",
+        cwd=cwd,
         fields=("model", "context_pct", "cwd"),
     )
     # context_pct dropped silently; no "?%" artifact
     assert "%" not in out
     assert "gpt-5.4" in out
-    assert "/tmp/wd" in out
+    assert cwd in out
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +255,13 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
         model="openai/gpt-5.4",
         context_tokens=50_247,
         context_length=1_000_000,
-        cwd="/var/data",
+        # Host spelling of an absolute path (abspath drive-qualifies "/var/data"
+        # on Windows).
+        cwd=os.path.abspath(os.path.join(os.sep, "var", "data")),
     )
     baseline = build_footer_line(**common)
     with_timing = build_footer_line(**common, turn_seconds=125.0)
-    assert baseline == "gpt-5.4 · 5% · /var/data"
+    assert baseline == "gpt-5.4 · 5% · " + common["cwd"]
     assert with_timing == baseline
 
 

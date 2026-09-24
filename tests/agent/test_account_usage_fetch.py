@@ -159,6 +159,51 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
     assert profile.calls == 0
 
 
+def test_fetch_account_usage_nano_gpt_scales_fraction_and_reads_balance(monkeypatch):
+    """NanoGPT: percentUsed is a 0–1 fraction; balance comes from POST check-balance."""
+    class _RoutingClient:
+        def __init__(self, sub, balance):
+            self._sub, self._balance = sub, balance
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            assert "subscription/usage" in url
+            return _Response(self._sub)
+
+        def post(self, url, headers=None, json=None):
+            assert "check-balance" in url
+            return _Response(self._balance)
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _RoutingClient(
+            {
+                "active": True,
+                "allowOverage": True,
+                "weeklyInputTokens": {"used": 56_058_595, "remaining": 3_941_405,
+                                      "percentUsed": 0.9343099166666666, "resetAt": 1_789_948_800_000},
+                "dailyImages": {"used": 0, "remaining": 100, "percentUsed": 0, "resetAt": 1_789_776_000_000},
+            },
+            {"usd_balance": "27.29969381"},
+        ),
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.provider == "nano-gpt"
+    assert len(snapshot.windows) == 2
+    assert snapshot.windows[0].label == "Weekly token limit"
+    assert snapshot.windows[0].used_percent > 90  # fraction scaled, NOT 0.93%
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_789_948_800, tz=timezone.utc)
+    assert "Balance: $27.30" in snapshot.details
+
+
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",

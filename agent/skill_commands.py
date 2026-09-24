@@ -234,7 +234,7 @@ def _supporting_files(loaded_skill: dict[str, Any], skill_dir: Path | None) -> l
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
             files = sorted((skill_dir / subdir).rglob("*"))
-            supporting += [str(f.relative_to(skill_dir)) for f in files if f.is_file() and not f.is_symlink()]
+            supporting += [f.relative_to(skill_dir).as_posix() for f in files if f.is_file() and not f.is_symlink()]
     return supporting
 
 
@@ -263,7 +263,7 @@ def _build_skill_message(
     supporting = _supporting_files(loaded_skill, skill_dir)
     if supporting and skill_dir:
         try:
-            skill_view_target = str(skill_dir.relative_to(_skills_dir()))
+            skill_view_target = skill_dir.relative_to(_skills_dir()).as_posix()
         except ValueError:
             skill_view_target = skill_dir.name  # external dir — use the skill name
         parts += ["", "[This skill has supporting files (paths relative to the skill directory above):]"]

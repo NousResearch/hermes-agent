@@ -425,6 +425,27 @@ class TestSkillView:
         # The caller gets the same helpful listing as a truly missing file.
         assert "references/api.md" in result["available_files"]["references"]
 
+    def test_available_files_listing_names_every_support_dir_file(self, tmp_path):
+        """The listing is what the caller is told to pick from, so a support file must appear
+        under its own directory. The group key is the first "/"-separated segment of the
+        skill-relative path: spelled natively, ``assets\\logo.png`` has no separator at all, so
+        a source-suffixed file fell through to "other" and one with any other suffix
+        (an image, a .csv) was left out of the listing entirely.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            (skill_dir / "references").mkdir()
+            (skill_dir / "references" / "api.md").write_text("# API Docs", encoding="utf-8")
+            (skill_dir / "assets").mkdir()
+            (skill_dir / "assets" / "logo.png").write_bytes(b"\x89PNG\r\n")
+
+            result = json.loads(skill_view("my-skill", file_path="nope.md"))
+
+        assert result["success"] is False
+        available = result["available_files"]
+        assert available["references"] == ["references/api.md"]
+        assert available["assets"] == ["assets/logo.png"]
+
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

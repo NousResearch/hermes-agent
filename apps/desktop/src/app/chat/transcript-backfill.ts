@@ -121,19 +121,68 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     return refreshedTail
   }
 
-  const first = refreshedTail[0]
-
-  const anchor = previous.findIndex(
-    message =>
-      (first.rowId !== undefined && message.rowId !== undefined && message.rowId === first.rowId) ||
-      message.id === first.id
+  // The first rendered message can be a page-local tool fold whose id is not
+  // durable. Anchor on the first shared persisted row anywhere in the page.
+  const refreshedRowIds = new Set(
+    refreshedTail.flatMap(message => (message.rowId === undefined ? [] : [message.rowId]))
   )
+
+  const anchor = previous.findIndex(message => message.rowId !== undefined && refreshedRowIds.has(message.rowId))
 
   if (anchor <= 0) {
     return refreshedTail
   }
 
   return [...previous.slice(0, anchor), ...refreshedTail]
+}
+
+const REFRESH_OVERLAP_PAGE_LIMIT = 4
+
+function sharesDurableRow(first: ChatMessage[], second: ChatMessage[]): boolean {
+  const rowIds = new Set(first.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
+
+  return second.some(message => message.rowId !== undefined && rowIds.has(message.rowId))
+}
+
+/**
+ * A refresh begins at the newest persisted row. A tool-heavy turn can fill
+ * that page entirely, putting its first durable row after the rendered
+ * transcript. Read a small, bounded number of older pages until one shares a
+ * durable row, so graftRefreshedTailOntoBackfill can retain the live prefix.
+ */
+export async function extendRefreshPageToOverlap(
+  refreshedTail: ChatMessage[],
+  previous: ChatMessage[],
+  readOlderPage: () => Promise<ChatMessage[]>
+): Promise<ChatMessage[]> {
+  if (!refreshedTail.length || !previous.length || sharesDurableRow(refreshedTail, previous)) {
+    return refreshedTail
+  }
+
+  let extended = refreshedTail
+
+  for (let page = 0; page < REFRESH_OVERLAP_PAGE_LIMIT; page += 1) {
+    let older: ChatMessage[]
+
+    try {
+      older = await readOlderPage()
+    } catch {
+      // A refresh failure must retain today's newest-page behavior.
+      return refreshedTail
+    }
+
+    if (!older.length) {
+      return refreshedTail
+    }
+
+    extended = [...older, ...extended]
+
+    if (sharesDurableRow(extended, previous)) {
+      return extended
+    }
+  }
+
+  return refreshedTail
 }
 
 export interface BackfillRequest {

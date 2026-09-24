@@ -528,6 +528,7 @@ import {
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
+import { createDebouncedCallback, watchPath } from './windows-safe-watcher'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -6712,37 +6713,33 @@ async function watchPreviewFile(rawUrl) {
   const filePath = await filePathFromPreviewUrl(rawUrl)
   const watchDir = path.dirname(filePath)
   const targetName = path.basename(filePath)
+  // fs.watchFile polls the path itself on Windows. Apart from avoiding the
+  // ReadDirectoryChangesW storm, this keeps unrelated directory churn from
+  // reloading the preview.
+  const watchTarget = process.platform === 'win32' ? filePath : watchDir
   const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
 
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
+  const notifier = createDebouncedCallback(() => {
+    if (!fileExists(filePath)) {
+      return
+    }
+
+    sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
+  }, PREVIEW_WATCH_DEBOUNCE_MS)
+
+  const watcher = watchPath(watchTarget, (_eventType, filename) => {
     const changedName = filename ? path.basename(String(filename)) : ''
 
     if (changedName && changedName !== targetName) {
       return
     }
 
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-
-      if (!fileExists(filePath)) {
-        return
-      }
-
-      sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+    notifier.invoke()
   })
 
   previewWatchers.set(id, {
     close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
+      notifier.cancel()
       watcher.close()
     }
   })
@@ -6792,25 +6789,17 @@ function watchDirectory(rawDir) {
   }
 
   const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
 
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
+  const notifier = createDebouncedCallback(
+    () => sendPreviewFileChanged({ id, path: watchDir, url: pathToFileURL(watchDir).toString() }),
+    PREVIEW_WATCH_DEBOUNCE_MS
+  )
 
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChanged({ id, path: watchDir, url: pathToFileURL(watchDir).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
+  const watcher = watchPath(watchDir, () => notifier.invoke())
 
   previewWatchers.set(id, {
     close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
+      notifier.cancel()
       watcher.close()
     }
   })

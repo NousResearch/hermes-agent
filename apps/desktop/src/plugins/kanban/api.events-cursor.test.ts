@@ -17,7 +17,7 @@ const BOARD = (latest_event_id: number) => ({
 })
 
 const storage = (slug = ''): PluginStorage => ({
-  get: (key, fallback) => (key === 'boardSlug' ? slug : fallback),
+  get: <T>(key: string, fallback: T) => (key === 'boardSlug' ? (slug as T) : fallback),
   remove: vi.fn(),
   set: vi.fn()
 })
@@ -89,7 +89,7 @@ describe('kanban event cursor', () => {
       throw new Error(`unexpected REST path: ${path}`)
     }
 
-    const socket = vi.fn(() => vi.fn())
+    const socket = vi.fn((_path: string) => vi.fn())
     const dispose = bindApi(rest, storage('ops'), socket)
 
     expect(socket).not.toHaveBeenCalled()

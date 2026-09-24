@@ -9,10 +9,20 @@ vi.mock('@/themes/context', () => ({
 
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { useKeybinds } from '@/app/hooks/use-keybinds'
-import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { terminalPaletteToggle } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useStatusbarItems } from '@/app/shell/hooks/use-statusbar-items'
-import { collapseTreePane, isPaneVisible, revealTreePane, setPaneCollapsed } from '@/components/pane-shell/tree/store'
+import { group, split } from '@/components/pane-shell/tree/model'
+import {
+  $layoutTree,
+  bindToolPaneCollapse,
+  collapseTreePane,
+  isPaneVisible,
+  revealTreePane,
+  setPaneCollapsed
+} from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 
 // Ctrl+`, the ⌘K row, and the statusbar pill reveal the terminal. That reveal
 // must make the on-screen xterm the keyboard target, and the claim has to
@@ -22,8 +32,42 @@ const wrapper = ({ children }: { children: ReactNode }) => createElement(MemoryR
 
 let unmountKeybinds: (() => void) | undefined
 
-beforeAll(async () => {
-  await import('@/app/contrib/controller')
+// The contrib controller owns this wiring in the app, but importing it pulls
+// the whole app graph (every pane, bundled plugin, HUD) into a hook: minutes of
+// cold transform under the parallel ui run, which blew the 30s hook timeout in
+// CI. Wire the terminal slice here through the same production functions and
+// the same palette row the controller registers.
+beforeAll(() => {
+  registry.registerMany([
+    {
+      area: 'panes',
+      data: { placement: 'main', uncloseable: true },
+      id: 'workspace',
+      render: () => null,
+      title: 'workspace'
+    },
+    {
+      area: 'panes',
+      data: { placement: 'bottom', lifecycleKeepAlive: true },
+      id: 'terminal',
+      render: () => null,
+      title: 'terminal'
+    },
+    terminalPaletteToggle
+  ])
+  $layoutTree.set(
+    split('column', [
+      group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+      group(['terminal'], { active: 'terminal', id: 'grp-terminal' })
+    ])
+  )
+  bindToolPaneCollapse(
+    'terminal',
+    $terminalTakeover,
+    () => setTerminalTakeover(false),
+    () => setTerminalTakeover(true),
+    $showsAdvancedChrome
+  )
 })
 
 beforeEach(() => {

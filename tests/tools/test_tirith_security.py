@@ -770,6 +770,155 @@ class TestEmojiVariationSelectorSuppression:
 # mkdtemp OSError → no_space (disk-full leak prevention)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Brace-group evidence-capture false-positive suppressor
+# ---------------------------------------------------------------------------
+
+_FP_BRACE_NESTED = {
+    "rule_id": "analysis_incomplete", "severity": "high",
+    "title": "Nested executable body could not be resolved",
+}
+_FP_BRACE_GAP = {
+    "rule_id": "analysis_incomplete", "severity": "high",
+    "title": "nested command analysis was incomplete",
+}
+_FP_BRACE_WRAPPER = {
+    "rule_id": "analysis_incomplete", "severity": "high",
+    "title": "could not resolve destructive command wrapper",
+}
+
+
+class TestBraceCaptureSuppressor:
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_disabled_head_curl_capture_allows_after_clean_rescan(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        command = "{ curl --disable --head https://example.test; } > /tmp/evidence 2>&1"
+        mock_run.side_effect = [
+            _mock_run(1, _json_stdout([_FP_BRACE_NESTED, _FP_BRACE_GAP], "nested")),
+            _mock_run(0, _json_stdout()),
+        ]
+
+        result = check_command_security(command)
+
+        assert result["action"] == "allow"
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[1].args[0][-1] == "curl --disable --head https://example.test"
+
+    @pytest.mark.parametrize("curl_args", [
+        "--cookie-jar /tmp/cookies",
+        "--cookie-jar=/tmp/cookies",
+        "-c /tmp/cookies",
+        "--dump-header /tmp/headers",
+        "--trace /tmp/trace",
+        "--trace-ascii /tmp/trace",
+        "--stderr /tmp/stderr",
+        "--hsts /tmp/hsts",
+        "--alt-svc /tmp/altsvc",
+        "--etag-save /tmp/etag",
+        "--libcurl /tmp/source.c",
+        "--ssl-keylog-file /tmp/keylog",
+    ])
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_curl_local_artifact_options_keep_block_without_rescan(self, mock_cfg, mock_run, curl_args):
+        mock_cfg.return_value = _CFG
+        mock_run.return_value = _mock_run(1, _json_stdout(
+            [_FP_BRACE_NESTED, _FP_BRACE_GAP], "nested"))
+        command = "{ curl --disable --head " + curl_args + " https://example.test; } > /tmp/evidence 2>&1"
+
+        assert check_command_security(command)["action"] == "block"
+        assert mock_run.call_count == 1
+
+    @pytest.mark.parametrize("curl_args", [
+        "--head https://example.test",
+        "-I https://example.test",
+        "--head --disable https://example.test",
+        "-I -q https://example.test",
+    ])
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_curl_without_first_disable_keeps_block_without_rescan(self, mock_cfg, mock_run, curl_args):
+        mock_cfg.return_value = _CFG
+        mock_run.return_value = _mock_run(1, _json_stdout(
+            [_FP_BRACE_NESTED, _FP_BRACE_GAP], "nested"))
+        command = "{ curl " + curl_args + "; } > /tmp/evidence 2>&1"
+
+        assert check_command_security(command)["action"] == "block"
+        assert mock_run.call_count == 1
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_destructive_capture_keeps_block_without_rescan(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        mock_run.return_value = _mock_run(1, _json_stdout(
+            [_FP_BRACE_NESTED, _FP_BRACE_GAP, _FP_BRACE_WRAPPER], "nested"))
+
+        assert check_command_security("{ date; rm -rf /tmp/x; } > /tmp/evidence 2>&1")["action"] == "block"
+        assert mock_run.call_count == 1
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_mixed_findings_keep_block_without_rescan(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        mock_run.return_value = _mock_run(1, _json_stdout([
+            _FP_BRACE_NESTED,
+            {"rule_id": "curl_pipe_shell", "severity": "high", "title": "Pipe to interpreter"},
+        ], "mixed"))
+
+        assert check_command_security("{ date; } > /tmp/evidence 2>&1")["action"] == "block"
+        assert mock_run.call_count == 1
+
+
+_REAL_TIRITH = "/home/brandonabyrd/.hermes/profiles/ops-infra/bin/tirith"
+
+
+@pytest.mark.skipif(not os.path.exists(_REAL_TIRITH), reason="live tirith binary not present")
+def test_live_disabled_head_curl_brace_capture_allows(monkeypatch):
+    monkeypatch.setenv("TIRITH_ENABLED", "true")
+    _tirith_mod._resolved_path = _REAL_TIRITH
+    command = "{ curl --disable --head https://example.test; } > /tmp/evidence 2>&1"
+
+    assert check_command_security(command)["action"] == "allow"
+
+
+@pytest.mark.skipif(not os.path.exists(_REAL_TIRITH), reason="live tirith binary not present")
+def test_live_original_readonly_brace_evidence_bundle_allows(monkeypatch):
+    monkeypatch.setenv("TIRITH_ENABLED", "true")
+    _tirith_mod._resolved_path = _REAL_TIRITH
+    command = ("{ date; echo '--- disk ---'; du -sh /var; ipmitool sensor; "
+               "find /tmp -maxdepth 1 -type f | grep evidence; } > /tmp/evidence 2>&1 | grep .")
+
+    assert check_command_security(command)["action"] == "allow"
+
+
+@pytest.mark.skipif(not os.path.exists(_REAL_TIRITH), reason="live tirith binary not present")
+@pytest.mark.parametrize("leaf", [
+    "date --set 2026-01-01",
+    "date --set=2026-01-01",
+    "date 010112342026",
+    "rg --pre /bin/true needle /tmp",
+    "rg --pre=/bin/true needle /tmp",
+    "rg --hostname-bin /bin/true needle /tmp",
+    "rg --hostname-bin=/bin/true needle /tmp",
+])
+def test_live_mutating_or_process_spawning_brace_leaves_block_without_rescan(monkeypatch, leaf):
+    """Rejected leaves must retain the original live Tirith block, not get a clean rescan."""
+    monkeypatch.setenv("TIRITH_ENABLED", "true")
+    _tirith_mod._resolved_path = _REAL_TIRITH
+    real_run, invocations = _tirith_mod.subprocess.run, []
+
+    def record_run(*args, **kwargs):
+        invocations.append(args[0][-1])
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(_tirith_mod.subprocess, "run", record_run)
+    command = "{ " + leaf + "; } > /tmp/evidence 2>&1"
+
+    assert check_command_security(command)["action"] == "block"
+    assert invocations == [command]
+
+
 class TestMkdtempOSErrorNoSpace:
     """When tempfile.mkdtemp raises OSError (e.g. disk full), _install_tirith
     must return (None, "no_space") instead of propagating the exception.

@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import platform
+import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -581,6 +583,16 @@ def check_command_security(command: str) -> dict:
     if action == "warn" and findings and all(_is_emoji_variation_selector_finding(f) for f in findings) \
             and _has_only_emoji_presentation_selectors(command):
         return _verdict("allow")
+    # Tirith 0.4.2 cannot resolve an otherwise literal brace group used only to
+    # capture a fixed evidence bundle. Rescan only a statically read-only body,
+    # and only downgrade after that rescan is clean; every unrecognised form or
+    # finding continues to block.
+    if action == "block" and _is_brace_capture_analysis_gap(findings):
+        if (rewritten := _rewrite_brace_capture_for_rescan(command)) is not None:
+            if (rescan := _rescan_tirith(tirith_path, timeout, rewritten)) is not None \
+                    and rescan[0] == "allow":
+                return _verdict("allow", "brace-group evidence capture downgraded after "
+                                         "read-only-leaf rescan")
     return _verdict(action, summary, findings)
 
 
@@ -612,3 +624,106 @@ def _has_only_emoji_presentation_selectors(command: str) -> bool:
         if not any(start <= base <= end for start, end in _EMOJI_PRESENTATION_BASE_RANGES):
             return False
     return saw_selector
+
+
+_FP_BRACE_CAPTURE = re.compile(
+    r"^\s*\{\s*(?P<body>[^{}]*?)\s*;\s*\}\s*"
+    r">\s*(?P<target>(?:/)?[A-Za-z0-9._/-]+)\s+2>&1"
+    r"(?:\s*\|\s*(?P<filter>[^{};]+))?\s*$", re.DOTALL)
+_FP_BRACE_NESTED_TITLE = "Nested executable body could not be resolved"
+_FP_BRACE_GAP_TITLE = "nested command analysis was incomplete"
+_FP_BRACE_WRAPPER_TITLE = "could not resolve destructive command wrapper"
+_FP_BRACE_SIMPLE_READONLY = frozenset({
+    "cat", "df", "du", "echo", "egrep", "fgrep", "grep", "head", "ls", "stat", "tail", "wc",
+})
+_FP_BRACE_FORBIDDEN_FIND = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir",
+                                      "-fprint", "-fprint0", "-fprintf", "-fls"})
+_FP_CURL_SAFE_HEAD_FLAGS = frozenset({
+    "-I", "--head", "-s", "--silent", "-S", "--show-error", "-v", "--verbose",
+    "-f", "--fail", "--fail-early", "--fail-with-body", "-L", "--location",
+    "-k", "--insecure", "--compressed", "--no-progress-meter", "-4", "--ipv4",
+    "-6", "--ipv6", "-g", "--globoff",
+})
+
+
+def _is_brace_capture_analysis_gap(findings: list) -> bool:
+    """Match only Tirith's all-HIGH brace-group analysis-incomplete finding sets."""
+    if not isinstance(findings, list) or len(findings) not in {2, 3}:
+        return False
+    titles = set()
+    for finding in findings:
+        if not isinstance(finding, dict) or finding.get("rule_id") != "analysis_incomplete" \
+                or str(finding.get("severity", "")).lower() != "high":
+            return False
+        titles.add(str(finding.get("title", "")))
+    generic_gap = {_FP_BRACE_NESTED_TITLE, _FP_BRACE_GAP_TITLE}
+    return titles == generic_gap if len(findings) == 2 else titles == generic_gap | {_FP_BRACE_WRAPPER_TITLE}
+
+
+def _brace_capture_leaf_is_readonly(argv: list[str]) -> bool:
+    """Return true only when a brace-capture leaf is statically observational."""
+    if not argv:
+        return False
+    head, args = argv[0], argv[1:]
+    if head == "date":
+        return not args
+    if head in _FP_BRACE_SIMPLE_READONLY:
+        return True
+    if head == "find":
+        return not any(arg in _FP_BRACE_FORBIDDEN_FIND for arg in args)
+    if head == "racadm":
+        return len(args) >= 2 and args[:2] == ["raid", "get"]
+    if head == "ipmitool":
+        return bool(args) and args[0] == "sensor" and "thresh" not in args
+    if head != "curl" or not args or args[0] not in {"-q", "--disable"}:
+        return False
+    curl_args, saw_url = args[1:], False
+    for arg in curl_args:
+        if arg in _FP_CURL_SAFE_HEAD_FLAGS:
+            continue
+        if arg.startswith(("http://", "https://")):
+            saw_url = True
+            continue
+        return False
+    return saw_url and ("-I" in curl_args or "--head" in curl_args)
+
+
+def _rewrite_brace_capture_for_rescan(command: str) -> str | None:
+    """Strip a proven-safe brace capture wrapper for an independent Tirith rescan."""
+    match = _FP_BRACE_CAPTURE.fullmatch(command)
+    if not match:
+        return None
+    body, filter_text = match.group("body").strip(), match.group("filter")
+    filter_text = filter_text.strip() if filter_text else ""
+    candidate = body if not filter_text else f"{body} | {filter_text}"
+    if (not candidate or any(char in candidate for char in "$`\\()<>")
+            or "&&" in candidate or "||" in candidate or "&" in candidate):
+        return None
+    try:
+        segments = [shlex.split(segment, posix=True) for segment in re.split(r"[;|\n]+", candidate)]
+    except ValueError:
+        return None
+    if not segments or any(not _brace_capture_leaf_is_readonly(argv) for argv in segments):
+        return None
+    return candidate
+
+
+def _rescan_tirith(tirith_path: str, timeout: int, command: str) -> tuple[str, list, str] | None:
+    """Return a completed rescan verdict, keeping the original block on any failure."""
+    try:
+        result = subprocess.run(
+            [tirith_path, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            stdin=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    action = _EXIT_ACTIONS.get(result.returncode)
+    if action is None:
+        return None
+    try:
+        data = json.loads(result.stdout) if result.stdout.strip() else {}
+        findings = data.get("findings", [])[:_MAX_FINDINGS]
+        summary = (data.get("summary", "") or "")[:_MAX_SUMMARY_LEN]
+    except (json.JSONDecodeError, AttributeError):
+        findings, summary = [], _NO_DETAILS_SUMMARY.get(action, "")
+    return action, findings, summary

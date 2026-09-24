@@ -468,7 +468,8 @@ import {
   listLocalCommits,
   parseCompare,
   rateLimitFromHeaders,
-  resolveBehindLocally
+  resolveBehindLocally,
+  resolveGitHubTip
 } from './update-api-check'
 import { updateCheckAgent } from './update-api-proxy'
 import { waitForUpdateClearance } from './update-gate'
@@ -3425,6 +3426,7 @@ function writeUpdateCheckCache(entry) {
 }
 
 // GitHub origins (official repo AND forks): tip SHA via the commits endpoint,
+// with one ls-remote fallback only when the API's shared-IP rate limit is spent,
 // then the compare endpoint only when the tips differ — it yields the exact
 // behind count plus the commit list the overlay renders, replacing both
 // `rev-list --count` and `git log HEAD..origin/<branch>`.
@@ -3432,7 +3434,12 @@ async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   let targetSha
 
   try {
-    targetSha = String(await fetchGitHubApi(branchTipApiUrl(slug, branch), 'application/vnd.github.sha')).trim()
+    targetSha = await resolveGitHubTip({
+      slug,
+      branch,
+      fetchTip: () => fetchGitHubApi(branchTipApiUrl(slug, branch), 'application/vnd.github.sha'),
+      runGit: args => runGit(args, { cwd: updateRoot })
+    })
   } catch (error) {
     return { error: 'fetch-failed', message: describeUpdateCheckFailure(error) }
   }

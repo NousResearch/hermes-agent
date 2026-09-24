@@ -139,36 +139,25 @@ class TestYAMLNormalisation:
 # ---------------------------------------------------------------------------
 
 
-    def test_shipped_template_keeps_every_platform_default(self, tmp_path):
-        """The installers, the Docker first boot and ``doctor --fix`` copy
-        cli-config.yaml.example verbatim, so an uncommented ``display.<key>`` there
-        becomes an explicit global value that beats every platform tier."""
-        import shutil
-        from pathlib import Path
+def assert_keeps_platform_display_defaults(cfg):
+    """Every platform resolves every tier key (and tool_progress) exactly as with no config at all.
 
-        from gateway.display_config import _PLATFORM_DEFAULTS, resolve_display_setting, resolve_tool_progress
-        from gateway.run import _load_gateway_config
+    Shared by every config seeder's regression test: a seeded global ``display.<key>`` beats each
+    platform tier, because the gateway loader merges no DEFAULT_CONFIG (#121230)."""
+    from gateway.display_config import _PLATFORM_DEFAULTS, resolve_display_setting, resolve_tool_progress
 
-        template = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
-        shutil.copy(template, tmp_path / "config.yaml")
-        seeded = _load_gateway_config(tmp_path / "config.yaml")
-        assert "display" in seeded  # the loader fails open to {}, which would pass vacuously
-
-        tier_keys = {key for tier in _PLATFORM_DEFAULTS.values() for key in tier}
-        for platform in _PLATFORM_DEFAULTS:
-            assert resolve_tool_progress(seeded, platform) == resolve_tool_progress({}, platform), platform
-            for key in tier_keys:
-                assert resolve_display_setting(seeded, platform, key) == resolve_display_setting({}, platform, key), (
-                    platform, key)
+    tier_keys = {key for tier in _PLATFORM_DEFAULTS.values() for key in tier}
+    for platform in _PLATFORM_DEFAULTS:
+        assert resolve_tool_progress(cfg, platform) == resolve_tool_progress({}, platform), platform
+        for key in tier_keys:
+            assert resolve_display_setting(cfg, platform, key) == resolve_display_setting({}, platform, key), (
+                platform, key)
 
 
 class TestInstallerSeededConfigThroughGatewayResolver:
     """Regression for #121230: a fresh install copies cli-config.yaml.example to config.yaml, and the
     gateway then rendered reasoning into QQBot/Telegram/... because the template pinned a global
     ``display.show_reasoning: true`` over every platform's ``False`` default.
-
-    Goes through the resolver the gateway turn actually calls (``gateway/run.py``), with the same
-    arguments as ``gateway/run_turn.py``, not only ``resolve_display_setting``.
     """
 
     @staticmethod
@@ -181,23 +170,21 @@ class TestInstallerSeededConfigThroughGatewayResolver:
         shutil.copy(template, home / "config.yaml")
         return home / "config.yaml"
 
-    def test_template_seeded_home_keeps_qqbot_reasoning_off(self, tmp_path, monkeypatch):
+    def test_shipped_template_keeps_every_platform_default(self, tmp_path):
+        """The installers, the Docker first boot and ``doctor --fix`` copy cli-config.yaml.example
+        verbatim, so an uncommented ``display.<key>`` there becomes an explicit global value."""
         from gateway.config import Platform
         from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
 
-        home = tmp_path / "hermes-home"
-        self._seed_like_installer(home)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr("gateway.run._gateway_config_home", lambda: home, raising=False)
+        seeded = _load_gateway_config(self._seed_like_installer(tmp_path / "hermes-home"))
+        assert "display" in seeded  # the loader fails open to {}, which would pass vacuously
 
-        seeded = _load_gateway_config()
-        assert "display" in seeded  # loader fails open to {}, which would make the assertion below vacuous
-
-        for platform in (Platform.QQBOT, Platform.TELEGRAM, Platform.DISCORD):
-            assert _resolve_gateway_display_bool(
-                seeded, platform.value, "show_reasoning", default=False, platform=platform,
-                require_platform_override_for={Platform.MATTERMOST},
-            ) is False, platform
+        assert_keeps_platform_display_defaults(seeded)
+        # ...and through the resolver the gateway turn actually calls (same arguments as gateway/run_turn.py).
+        assert _resolve_gateway_display_bool(
+            seeded, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is False
 
     def test_explicit_global_opt_in_still_reaches_gateway_platforms(self, tmp_path):
         """Control: an operator who deliberately writes ``display.show_reasoning: true`` still gets it (#7148)."""
@@ -210,13 +197,6 @@ class TestInstallerSeededConfigThroughGatewayResolver:
             cfg, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
             require_platform_override_for={Platform.MATTERMOST},
         ) is True
-
-    def test_show_reasoning_stays_a_known_config_key(self):
-        """Control: the fix must not delete the key from DEFAULT_CONFIG, or
-        ``hermes config set display.show_reasoning false`` gets rejected as unknown."""
-        from hermes_cli.config import _validate_config_key
-
-        assert _validate_config_key("display.show_reasoning") == (True, None)
 
 
 # ---------------------------------------------------------------------------

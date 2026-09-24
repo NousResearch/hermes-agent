@@ -1,4 +1,8 @@
-"""Running-process checkpoint persistence and PID-safe recovery."""
+"""Running-process checkpoint persistence and PID-safe recovery.
+
+Every Hermes process on a profile (gateway, CLI, TUI, cron, one-shots) checkpoints into the same
+file, so each entry names its writer: a process rewrites only its own entries, and recovery adopts
+only jobs whose writer is gone."""
 
 import json
 import logging
@@ -11,6 +15,19 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger("tools.process_registry")
 
 
+def _entry_key(entry: dict[str, Any]) -> tuple:
+    return entry.get("session_id"), entry.get("writer_pid"), entry.get("writer_started_at")
+
+
+def _written_by(entry: dict[str, Any], writer: dict[str, Any]) -> bool:
+    """True when ``entry`` was written by the process incarnation ``writer`` describes."""
+    from gateway.status import start_time_fingerprints_match
+
+    recorded, current = entry.get("writer_started_at"), writer["writer_started_at"]
+    return entry.get("writer_pid") == writer["writer_pid"] and (
+        recorded is None or current is None or start_time_fingerprints_match(recorded, current))
+
+
 class ProcessCheckpointMixin:
     def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
         """Subclass supplies the live PID decision. See ProcessRegistry."""
@@ -18,8 +35,14 @@ class ProcessCheckpointMixin:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
-        """Write running process metadata to the checkpoint file atomically."""
+    def _checkpoint_writer(self, pid: Optional[int] = None) -> dict[str, Any]:
+        """Identity of ``pid`` (default: this process) as stamped on its checkpoint entries."""
+        pid = pid or os.getpid()
+        return {"writer_pid": pid, "writer_started_at": self._safe_host_start_time(pid)}
+
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, consumed=frozenset()):
+        """Replace this process's entries in the checkpoint file atomically. Other writers'
+        entries stay (a dead writer's wait for recovery) unless recovery ``consumed`` them."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
         from tools.environments.sandbox_scope import hosted_scope
 
@@ -32,6 +55,7 @@ class ProcessCheckpointMixin:
         # the gateway it killed owns (update_cmd_force_stop): a managed worker's jobs are its owner's.
         owner_pid = os.getppid() if is_worker_process() else os.getpid()  # windows-footgun: ok — getppid exists on Windows
         try:
+            writer = self._checkpoint_writer()
             with self._lock:
                 entries = []
                 for s in self._running.values():
@@ -51,6 +75,7 @@ class ProcessCheckpointMixin:
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
                     entry["owner_pid"] = owner_pid
+                    entry.update(writer)
                     entries.append(entry)
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
@@ -59,28 +84,33 @@ class ProcessCheckpointMixin:
             from hermes_cli.active_sessions import _FileLock
             from utils import atomic_json_write
             path = _checkpoint_path()
-            # Every interpreter of the profile (owner, each managed worker) rewrites this file from
-            # its own table; a worker's output-log handoff is its only path to the next one, so a
-            # writer keeps the handoffs it does not track (read-merge-write under one file lock).
+            # Every process of the profile (gateway, CLI, TUI, cron, each managed worker) rewrites this
+            # file; rewriting it with only this process's jobs erased the others' crash-recovery
+            # entries, so a writer replaces only its own (read-merge-write under one file lock).
             with _FileLock(path.with_name(path.name + ".lock")):
-                entries.extend(self._foreign_handoffs(path, known))
+                entries.extend(self._foreign_entries(path, known, writer, consumed))
                 atomic_json_write(path, entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
-    def _foreign_handoffs(self, path, known) -> list[dict[str, Any]]:
-        """On-disk worker handoffs this registry never tracked whose log still decides an outcome:
-        the process is alive (same start time) or its recorded exit is waiting to be read."""
+    def _foreign_entries(self, path, known, writer, consumed) -> list[dict[str, Any]]:
+        """On-disk entries another process wrote and recovery has not consumed. A worker handoff
+        stays only while its log still decides an outcome: the process is alive (same start time)
+        or its recorded exit is waiting to be read."""
         from pathlib import Path
         from tools.process_registry_output_log import _exit_path, adoptable_log
         try:
             on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return []
+
+        def _decides(entry) -> bool:
+            log = adoptable_log(entry.get("output_log"))
+            return not log or (Path(log).exists() and (_exit_path(log).exists() or self._detached_host_fate(
+                entry.get("pid"), entry.get("host_start_time")) == "running"))
+
         return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
-                and (log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
-                and (_exit_path(log).exists() or self._detached_host_fate(
-                    entry.get("pid"), entry.get("host_start_time")) == "running")]
+                and not _written_by(entry, writer) and _entry_key(entry) not in consumed and _decides(entry)]
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
@@ -103,7 +133,15 @@ class ProcessCheckpointMixin:
             return 0
         recovered = 0
         unresolved_scope_entries: list[dict[str, Any]] = []
+        writer, consumed = self._checkpoint_writer(), set()
         for entry in entries:
+            # A live writer (CLI, TUI, cron worker) still owns its job; an entry carrying this
+            # process's own identity predates an in-place exec and is ours to adopt.
+            owner = entry.get("writer_pid")
+            if owner is not None and not _written_by(entry, writer) and self._is_host_pid_alive(owner) and _written_by(
+                    entry, self._checkpoint_writer(owner)):
+                continue
+            consumed.add(_entry_key(entry))
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
                 continue
@@ -171,5 +209,5 @@ class ProcessCheckpointMixin:
                     "notify_on_complete": session.notify_on_complete,
                     "parent_session_id": session.parent_session_id,
                 })
-        self._write_checkpoint(extra_entries=unresolved_scope_entries)
+        self._write_checkpoint(extra_entries=unresolved_scope_entries, consumed=consumed)
         return recovered

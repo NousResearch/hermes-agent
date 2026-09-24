@@ -185,6 +185,21 @@ class TestSendFinalization:
         client.chat_postMessage.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("trailing_whitespace", ("\n", "  ", "\t\n"))
+    async def test_final_send_ignores_trailing_whitespace_in_stream_frame(
+        self, trailing_whitespace
+    ):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, f"Hello world{trailing_whitespace}", metadata=META)
+
+        result = await adapter.send("D1", "Hello world", metadata=META)
+
+        assert result.success
+        assert result.message_id == "123.456"
+        client.chat_postMessage.assert_not_awaited()
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
     async def test_unrelated_send_passes_through(self):
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Streaming text here", metadata=META)

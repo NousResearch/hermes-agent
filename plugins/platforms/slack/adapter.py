@@ -2460,10 +2460,10 @@ class SlackAdapter(BasePlatformAdapter):
         return self._app is not None
 
     def _strip_stream_cursor(self, text: str) -> str:
-        """Strip the consumer's trailing cursor glyph from a frame."""
+        """Normalize trailing frame whitespace and strip a cursor glyph, if present."""
         stripped = text.rstrip()
         glyph = next((g for g in self._STREAM_CURSOR_GLYPHS if stripped.endswith(g)), None)
-        return stripped[: -len(glyph)].rstrip() if glyph else text
+        return stripped[: -len(glyph)].rstrip() if glyph else stripped
 
     async def send_draft(
         self, chat_id: str, draft_id: int, content: str, metadata: Optional[Dict[str, Any]] = None

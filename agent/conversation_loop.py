@@ -856,6 +856,11 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
+# Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
+_LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
+    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
+    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
+)
 # The dropped-tools variant interpolates tool names; matched by prefix.
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
@@ -868,7 +873,8 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "the stream timed out before it could be delivered. Do NOT retry the same tool call "
             "with the same large content. Instead, break the content into multiple smaller tool "
             "calls (e.g. use multiple patch calls or write smaller files). Each tool call's "
-            "arguments must be under ~8K tokens to avoid stream timeouts.]"
+            "arguments must be under ~8K tokens to avoid stream timeouts. The cut was a transport "
+            "interruption, not a capability change — your tools remain fully available.]"
         )
     return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
 

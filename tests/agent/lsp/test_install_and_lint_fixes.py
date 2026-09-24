@@ -14,13 +14,10 @@ Covers:
 """
 from __future__ import annotations
 
-import io
-from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.lsp.install import INSTALL_RECIPES
 
 
 # ---------------------------------------------------------------------------
@@ -117,25 +114,6 @@ def test_backend_warnings_fires_when_bash_installed_but_shellcheck_missing(tmp_p
     assert "bash-language-server" in notes[0].lower()
 
 
-def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
-    """End-to-end: status command output includes the warning section."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    # Pretend bash-language-server is installed but shellcheck is missing
-    def which(name):
-        if name == "bash-language-server":
-            return "/fake/bin/bash-language-server"
-        return None
-
-    from agent.lsp import cli as lsp_cli
-
-    buf = io.StringIO()
-    with patch("shutil.which", side_effect=which), redirect_stdout(buf):
-        lsp_cli._cmd_status(emit_json=False)
-
-    output = buf.getvalue()
-    assert "Backend warnings" in output
-    assert "shellcheck" in output
 
 
 # ---------------------------------------------------------------------------

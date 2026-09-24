@@ -1838,21 +1838,39 @@ class GatewayNotificationsMixin:
         """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
         registry restores only the launch profile's ``state.db`` at import; a secondary's rows would
         otherwise never be replayed after a restart."""
-        from gateway.run import _profile_runtime_scope
         from tools.async_delegation import restore_undelivered_completions
         from tools.process_registry import process_registry as _pr
+        self._each_secondary_ledger(profile_homes, lambda: restore_undelivered_completions(_pr.completion_queue),
+                                    "Restored")
+
+    def _sweep_orphaned_completion_ledgers(self) -> None:
+        """Offer completions whose owner process died while this gateway runs (#97202): the launch
+        ledger in the launch scope, each served secondary under its own. Startup replay only covers
+        owners that were already gone when the gateway started."""
+        from tools.async_delegation import sweep_orphaned_completions
+        from tools.process_registry import process_registry as _pr
+        sweep = lambda: sweep_orphaned_completions(_pr.completion_queue)  # noqa: E731
+        with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
+            if count := sweep():
+                logger.info("Re-offered %d orphaned async completion(s)", count)
+        self._each_secondary_ledger((getattr(self, "_served_profile_homes", None) or {}).items(), sweep,
+                                    "Re-offered orphaned")
+
+    def _each_secondary_ledger(self, profile_homes, fn, verb: str) -> None:
+        """Run ``fn`` (returns a completion count) once per SECONDARY profile, bound to that profile."""
+        from gateway.run import _profile_runtime_scope
         primary = getattr(self, "_primary_profile_name", None)
         for profile_name, profile_home in profile_homes:
             if profile_name == primary:
                 continue
             try:
                 with _profile_runtime_scope(Path(profile_home), {}):
-                    restored = restore_undelivered_completions(_pr.completion_queue)
+                    count = fn()
             except Exception:
-                logger.warning("Could not restore async completions for profile %r", profile_name, exc_info=True)
+                logger.warning("Could not replay async completions for profile %r", profile_name, exc_info=True)
                 continue
-            if restored:
-                logger.info("Restored %d undelivered async completion(s) for profile %r", restored, profile_name)
+            if count:
+                logger.info("%s %d undelivered async completion(s) for profile %r", verb, count, profile_name)
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.
@@ -1861,9 +1879,15 @@ class GatewayNotificationsMixin:
         consumer; both must progress without a later foreground turn.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
+        from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
         from tools.process_registry import process_registry as _pr
+        last_orphan_sweep = None
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
+                # Completions whose owner process died while this gateway runs (#97202).
+                if last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S:
+                    last_orphan_sweep = time.monotonic()
+                    await asyncio.to_thread(self._sweep_orphaned_completion_ledgers)
                 # Pattern events also need an idle consumer; foreground turns are optional.
                 await self._drain_watch_notifications(_pr.completion_queue)
                 # Process completions remain owned by their per-process watchers.

@@ -1,5 +1,4 @@
 from pathlib import Path
-from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -400,9 +399,19 @@ def test_prune_orphan_rescue_refs_leaves_unparseable_names_alone():
     assert delete_calls == []
 
 
-def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, capsys):
-    """Common ancestor still exists (e.g. upstream force-push) → no rescue
-    ref, no orphan messaging, behavior identical to before #87694."""
+def test_cmd_update_ordinary_divergence_also_leaves_a_rescue_ref(monkeypatch, tmp_path, capsys):
+    """Common ancestor still exists → rescue ref under the ``diverged-`` kind, no orphan messaging.
+
+    Divergence on the target branch has two causes the checkout cannot tell apart: an upstream
+    force-push, where nothing local is lost, and local commits on that branch, where the reset
+    discards all of them. This case used to write no ref at all, which is correct only for the
+    first cause.
+
+    The #87694 size concern is specific to the orphan shape: there ``pre_pull_sha`` is an
+    autostash orphan commit carrying a full working-tree snapshot, which can be multi-GB. Here it
+    is ordinary branch history whose objects the reflog pins anyway for its expiry window, so the
+    ref adds no meaningful footprint — and it expires under the same keep/age rules.
+    """
     _setup_update_mocks(monkeypatch, tmp_path)
 
     side_effect, recorded = _make_update_side_effect(
@@ -412,11 +421,17 @@ def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, 
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
-    assert update_ref_calls == []
+    update_ref_calls = [
+        c for c in recorded
+        if "update-ref" in " ".join(str(x) for x in c) and "-d" not in c
+    ]
+    assert len(update_ref_calls) == 1, "the discarded local history needs exactly one anchor"
+    ref_name = str(update_ref_calls[0][2])
+    assert ref_name.startswith("refs/hermes-update-backups/diverged-main-")
 
     out = capsys.readouterr().out
     assert "orphan divergence" not in out
+    assert "Local history has diverged" in out
     assert "Fast-forward not possible (history diverged), resetting to match remote" in out
 
 
@@ -499,33 +514,6 @@ def test_cmd_update_orphan_rescue_ref_persists_when_reset_fails(monkeypatch, tmp
 # and always go through the restore path.
 # ---------------------------------------------------------------------------
 
-def _setup_setting_test(monkeypatch, tmp_path, mode):
-    """Common wiring: real stash returns a ref, restore + discard are
-    recorded, and load_config reports the given non_interactive_local_changes
-    mode."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
-    restore_calls = []
-    discard_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-    monkeypatch.setattr(
-        hermes_main, "_discard_stashed_changes",
-        lambda *a, **kw: discard_calls.append(1) or True,
-    )
-    monkeypatch.setattr(
-        hermes_config, "load_config",
-        lambda *a, **kw: {"updates": {"non_interactive_local_changes": mode}},
-    )
-    side_effect, recorded = _make_update_side_effect()
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-    return restore_calls, discard_calls, recorded
 
 
 # ---------------------------------------------------------------------------
@@ -1182,7 +1170,7 @@ def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
     )
 
     assert restored is False
-    assert prompts == [("Restore local changes now? [y/N]", "n")]
+    assert [default for _prompt, default in prompts] == ["n"]
     assert "still preserved in git stash" in capsys.readouterr().out
 
 

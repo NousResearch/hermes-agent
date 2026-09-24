@@ -26,7 +26,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
 from agent import prompt_builder as _pb
-from agent.runtime_cwd import resolve_context_cwd
+from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
@@ -486,8 +486,9 @@ def _zone_bits(now: Any, tz: Any) -> List[str]:
     """IANA key, abbreviation (if different) and UTC offset — all constant for
     the day, so the byte-stable date line stays cacheable."""
     _iana = getattr(tz, "key", None)
-    _abbrev = now.strftime("%Z")
-    _offset = now.strftime("%z")  # '-0400' -> 'UTC-04:00'
+    from hermes_time import safe_strftime
+    _abbrev = safe_strftime(now, "%Z")
+    _offset = safe_strftime(now, "%z")  # '-0400' -> 'UTC-04:00'
     bits = [_iana] if _iana else []
     if _abbrev and _abbrev != _iana:
         bits.append(_abbrev)
@@ -500,12 +501,12 @@ def _timestamp_line(agent: Any) -> str:
     """Date-only so the prompt is byte-stable for the day; zone + offset so
     tools needn't guess EST vs EDT. Long-lived sessions get an "as of" line on
     rebuild days (the cache prefix is already invalidated at that boundary)."""
-    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now
+    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now, safe_strftime
     now = _hermes_now()
     _bits = _zone_bits(now, _hermes_tz())
     _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""
     _start = _session_start_like(agent, now)
-    timestamp_line = f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+    timestamp_line = f"Conversation started: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     # Second line (maintainer design, salvaging #96224's anchor): long-lived sessions — Bot Mode
     # forever-chats, messenger channels people never close — span many days and many compactions. A lone
     # birth date leads the model to believe it is still living in that old day. The prompt is rebuilt at
@@ -514,7 +515,7 @@ def _timestamp_line(agent: Any) -> str:
     # line costs no extra cache churn. Same-day sessions skip the second line entirely — nothing to correct,
     # and the single-line shape stays byte-identical for the day (prefix-cache safe).
     if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
-        timestamp_line += (f"\nToday's date (as of the last context rebuild): {now.strftime('%A, %B %d, %Y')} "
+        timestamp_line += (f"\nToday's date (as of the last context rebuild): {safe_strftime(now, '%A, %B %d, %Y')} "
                            "— trust this over the start date for what day it is now; query tools for exact time.")
     if getattr(agent, "_bot_chat_timeless_prompt", False):
         timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
@@ -603,6 +604,70 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
     ]
 
 
+def _workspace_pin_key() -> str:
+    """The directory the workspace probe inspects, which is also the prompt's ``Current working
+    directory``: a build with no cwd bound (launch dir) and a later one binding that same dir
+    (TUI ``/compress``) are one workspace, not two."""
+    try:
+        return str(resolve_context_cwd() or resolve_agent_cwd())
+    except OSError:  # deleted cwd
+        return ""
+
+
+def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
+    """The workspace snapshot inside ``prompt`` taken for ``key`` (its ``- Root:`` is ``key`` or an
+    ancestor); "" when the prompt has none; None when it has one for another root."""
+    from agent.coding_context import WORKSPACE_BLOCK_HEADER
+    head = f"\n\n{WORKSPACE_BLOCK_HEADER}\n- Root: "
+    start = prompt.find(head)
+    if start < 0:
+        return ""
+    cwd = Path(key).resolve()
+    while start >= 0:
+        block = prompt[start + 2:].split("\n\n", 1)[0]
+        root = Path(block.split("\n", 2)[1][len("- Root: "):]).resolve()
+        if root == cwd or root in cwd.parents:
+            return block
+        start = prompt.find(head, start + 2)
+    return None
+
+
+def _session_prompt(agent: Any) -> Optional[str]:
+    """Prompt bytes this session already sends: the cached copy, else its persisted row."""
+    cached = getattr(agent, "_cached_system_prompt", None)
+    if isinstance(cached, str) and cached:
+        return cached
+    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    if db is None or not isinstance(session_id, str) or not session_id:
+        return None
+    try:
+        row = db.get_session(session_id)
+    except Exception:
+        logger.debug("workspace snapshot: session row read failed (session=%s)", session_id, exc_info=True)
+        return None
+    prompt = row.get("system_prompt") if isinstance(row, dict) else None
+    return prompt if isinstance(prompt, str) and prompt else None
+
+
+def _seed_workspace_pin(agent: Any, key: str) -> None:
+    """Pin the snapshot the session's existing prompt already carries.  An agent that did not
+    build those bytes (resumed, or a fresh gateway/TUI agent whose first act is ``/compress``)
+    would otherwise re-probe git at its first rebuild and rewrite the prompt for any repo that
+    moved since session start.  Only a snapshot provably taken in this cwd is adopted."""
+    from agent.surface_switch import runtime_host_value
+    prompt = _session_prompt(agent)
+    if not prompt:
+        return
+    stored_cwd = runtime_host_value(prompt, "Current working directory")
+    if stored_cwd and stored_cwd != key:
+        return
+    block = _persisted_workspace_block(prompt, key)
+    # Only a real snapshot is adopted: a prompt without one (built on a surface without the
+    # coding posture, or with tools off) leaves the pin open so this build captures one.
+    if block:
+        agent._frozen_workspace_snapshot = (key, block)
+
+
 def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
     without tools or when probing fails (it must never block prompt build).
@@ -610,15 +675,18 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     The workspace block is a live git probe after project context, ahead of the whole
     volatile band; re-probing at the compaction rebuild re-emits different bytes for any
     repo that moved and defeats the keep-prompt fast path.  So the bytes are pinned per
-    session on the agent, keyed by the resolved cwd (a gateway serves many cwds), and
-    replayed on rebuilds; ``reset_session_state`` drops the pin at a session boundary.
+    session on the agent, keyed by the probed cwd (a gateway serves many cwds), seeded from
+    the session's existing prompt when this agent did not build it, and replayed on
+    rebuilds; ``reset_session_state`` drops the pin at a session boundary.
     """
     try:
         from agent.coding_context import coding_system_prompt_parts
         if not agent.valid_tool_names:
             return [], [], []
         cwd = resolve_context_cwd()
-        cwd_key = str(cwd) if cwd is not None else ""
+        cwd_key = _workspace_pin_key()
+        if getattr(agent, "_frozen_workspace_snapshot", None) is None:
+            _seed_workspace_pin(agent, cwd_key)
         pinned = getattr(agent, "_frozen_workspace_snapshot", None)
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
         replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None

@@ -305,6 +305,8 @@ class StreamFallbackMixin:
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Before a segment reset, send the unseen tail as a new message (and best-effort
         strip the stuck cursor from the partial)."""
+        if getattr(self, "_egress_declined", False):
+            return  # a new message is exactly the re-addressing the egress guard refused
         if not self._fallback_final_send:
             await self._try_strip_cursor()
         visible = self._fallback_prefix or self._visible_prefix()

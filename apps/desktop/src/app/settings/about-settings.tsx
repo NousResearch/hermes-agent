@@ -19,7 +19,9 @@ import {
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { UninstallSection } from './uninstall-section'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
@@ -51,6 +53,8 @@ interface AboutSettingsProps {
 }
 
 export function AboutSettings({ subpage }: AboutSettingsProps = {}) {
+  useSettingDeepLink('about', page => subpage === undefined || page === subpage)
+
   if (subpage === 'uninstall') {
     return (
       <SettingsContent>
@@ -243,6 +247,7 @@ function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean })
         <ListRow
           description={a.automaticUpdatesDesc}
           hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          id={settingElementId(SETTING_IDS.about.automaticUpdates)}
           title={a.automaticUpdates}
         />
 

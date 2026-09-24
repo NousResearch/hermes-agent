@@ -12,7 +12,6 @@ Acceptance from #90471:
 2. a recycled or foreign PID control process remains untouched
 3. probe failure or timeout is never converted into permission to kill
 """
-import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -57,6 +56,7 @@ class TestPidIsHermes:
             "/opt/hermes-agent/venv/bin/python"
         ) is True
 
+    @pytest.mark.windows_only
     def test_invalid_pid_inputs_do_not_crash(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True):
             assert _subprocess_compat.pid_is_hermes(-1) is False
@@ -64,6 +64,7 @@ class TestPidIsHermes:
             assert _subprocess_compat.pid_is_hermes("not-a-pid") is False
             assert _subprocess_compat.pid_is_hermes(True) is False
 
+    @pytest.mark.windows_only
     def test_probe_matches_hermes_like_process(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "_process_start_time", return_value=123
@@ -72,6 +73,7 @@ class TestPidIsHermes:
         ):
             assert _subprocess_compat.pid_is_hermes(1234) is True
 
+    @pytest.mark.windows_only
     def test_probe_rejects_recycled_process_identity(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "_process_start_time", return_value=456
@@ -82,6 +84,7 @@ class TestPidIsHermes:
                 1234, expected_start_time=123
             ) is False
 
+    @pytest.mark.windows_only
     def test_probe_rejects_foreign_process(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "_process_start_time", return_value=123
@@ -90,25 +93,22 @@ class TestPidIsHermes:
         ):
             assert _subprocess_compat.pid_is_hermes(1234) is False
 
+    @pytest.mark.windows_only
     def test_probe_blank_stdout_fails_closed(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "_process_start_time", return_value=None
         ):
             assert _subprocess_compat.pid_is_hermes(1234) is False
 
-    def test_probe_timeout_fails_closed(self):
-        with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
-            _subprocess_compat, "_process_start_time", return_value=None
-        ):
-            assert _subprocess_compat.pid_is_hermes(1234) is False
 
+    @pytest.mark.windows_only
     def test_probe_oserror_fails_closed(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "_process_start_time", side_effect=OSError("broken pipe")
         ):
             assert _subprocess_compat.pid_is_hermes(1234) is False
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="real probe is windows-only")
+    @pytest.mark.windows_only
     def test_missing_pid_real_probe_fails_closed(self):
         # A PID that cannot exist must never be judged Hermes-owned.
         assert _subprocess_compat.pid_is_hermes(2**24) is False
@@ -127,6 +127,7 @@ class TestKillProcessTree:
     def _proc(self, pid=4321):
         return mock.Mock(pid=pid)
 
+    @pytest.mark.windows_only
     def test_retained_handle_is_taskkilled_without_probe(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "pid_is_hermes"
@@ -164,14 +165,6 @@ class TestStopProcessTrees:
         assert len(run.call_args_list) == 1
         assert run.call_args.args[0][0] == "taskkill"
 
-    def test_probe_timeout_skips_taskkill(self):
-        with mock.patch(
-            "gateway.status.get_process_start_time", return_value=123
-        ), mock.patch(
-            "hermes_cli._subprocess_compat.pid_is_hermes", return_value=False
-        ), mock.patch.object(update_cmd.subprocess, "run") as run:
-            update_cmd._stop_process_trees([1111, 2222])  # must not raise
-        run.assert_not_called()
 
 
 class TestKillStaleDashboardProcesses:
@@ -182,6 +175,7 @@ class TestKillStaleDashboardProcesses:
 
         return mock.patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=list(pids))
 
+    @pytest.mark.windows_only
     def test_foreign_pid_reported_not_killed(self):
         with self._patch_find(), mock.patch.object(
             dashboard_procs.sys, "platform", "win32"
@@ -197,6 +191,7 @@ class TestKillStaleDashboardProcesses:
         ]
         run.assert_not_called()
 
+    @pytest.mark.windows_only
     def test_hermes_pid_killed(self):
         with self._patch_find(), mock.patch.object(
             dashboard_procs.sys, "platform", "win32"

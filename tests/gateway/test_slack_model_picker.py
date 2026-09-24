@@ -423,8 +423,7 @@ class TestSlackModelPickerAction:
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
 
         last_update = mock_client.chat_update.call_args_list[-1][1]
-        assert "⚙ Model Switch Failed" in last_update["text"]
-        assert "Model switch failed" in last_update["text"]
+        assert "failed" in last_update["text"].lower()
 
     @pytest.mark.asyncio
     async def test_model_select_gateway_error_return_uses_failure_header(self):

@@ -37,7 +37,7 @@ from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
-from hermes_cli.config import cfg_get
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
@@ -850,7 +850,9 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # reach the chain instead of dying at init with a misleading "No LLM provider configured" error. See
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
+    _refused_entries = []
     for _fb in _fallback_entries(fallback_model):
+        _fb_provider = str(_fb["provider"])
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
@@ -859,20 +861,46 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
             )
         except Exception as _fb_exc:
-            logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
+            logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
+            # A bare exception (``KeyError()``) stringifies empty; name its type instead.
+            _refused_entries.append((_fb_provider, str(_fb_exc) or type(_fb_exc).__name__))
             continue
-        if _fb_client is not None:
-            agent._fallback_activated = True
-            if str(_fb["provider"]).strip().lower() == "moa":
-                # The chokepoint handed back the preset's aggregator client, which only proves the
-                # preset resolves and its aggregator has credentials. A MoA entry means the preset
-                # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
-                from agent.moa_loop import bind_moa_runtime
-                bind_moa_runtime(agent, _fb["model"])
-                return None
-            agent.provider = _fb["provider"]
-            agent.model = _fb_model or _fb["model"]
-            return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+        if _fb_client is None:
+            # The router returns None when no credentials are usable for the entry — a skip
+            # that leaves no trace otherwise, hiding key-less fallback entries from the log.
+            logger.debug(
+                "Init-time fallback entry %s resolved no usable credentials", _fb_provider
+            )
+            _refused_entries.append((_fb_provider, "no usable credentials"))
+            continue
+        agent._fallback_activated = True
+        if _fb_provider.strip().lower() == "moa":
+            # The chokepoint handed back the preset's aggregator client, which only proves the
+            # preset resolves and its aggregator has credentials. A MoA entry means the preset
+            # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
+            from agent.moa_loop import bind_moa_runtime
+            bind_moa_runtime(agent, _fb["model"])
+            return None
+        agent.provider = _fb["provider"]
+        agent.model = _fb_model or _fb["model"]
+        return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+    # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
+    # so name it even when no fallback entries are configured.
+    _pool_exhausted = False
+    if _explicit and _explicit != "auto":
+        with suppress(Exception):
+            from agent.credential_pool import load_pool
+            _pool = load_pool(_explicit)
+            _pool_exhausted = _pool.has_credentials() and not _pool.has_available(model=agent.model)
+    if _refused_entries or _pool_exhausted:
+        # Neutral wording: the explicit-provider branch below raises the provider-specific
+        # missing-credentials message, not the generic "No LLM provider configured" one.
+        logger.warning(
+            "Init-time provider resolution failed: primary %r unresolvable (%s); fallback entries refused: %s",
+            agent.provider,
+            "credential pool exhausted" if _pool_exhausted else "no usable credentials",
+            "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
+        )
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         from agent.auxiliary_unavailable import missing_provider_credentials_message
@@ -1256,7 +1284,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     return kwargs
 
 
-def _init_memory(agent, _agent_cfg, skip_memory, platform):
+def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
     agent._memory_enabled = False
@@ -1297,7 +1325,12 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
-    if not skip_memory:
+    if memory_manager is not None and not skip_memory:
+        # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's
+        # already-initialized manager: providers keep their prefetch/retain state across turns instead
+        # of being re-initialized (#120116). No initialize_all — the providers are already bound.
+        agent._memory_manager = memory_manager
+    elif not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
@@ -1482,9 +1515,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     max_attempts = _parse_config_int(cfg.get("max_attempts", 3), 3)
     if max_attempts < 1:
         max_attempts = 3
-    # threshold_tokens: absolute cap (lower of ratio threshold and this); clamped to the
-    # window at apply-time.
-    threshold_tokens = cfg.get("threshold_tokens")
+    # threshold_tokens: absolute cap (lower of ratio threshold and this); clamped to the window at
+    # apply-time. Explicit null is the ratio-only opt-out and stays None.
+    threshold_tokens = cfg.get("threshold_tokens", cfg_get(DEFAULT_CONFIG, "compression", "threshold_tokens"))
     if threshold_tokens is not None:
         threshold_tokens = _positive_int(threshold_tokens)
     # Non-system head messages to protect (system prompt is always protected); 0 is a
@@ -2194,7 +2227,8 @@ def _emit_compression_summary(agent, cs):
             _pct = getattr(_cc, "threshold_percent", cs.threshold)
             _cap = getattr(_cc, "threshold_tokens_cap", None)
             # Name the cap only when it is what set the trigger; on small windows the ratio already sits below it.
-            _cap_binds = bool(_cap) and _cap > 0 and _cc.threshold_tokens == min(_cap, _cc.context_length)
+            _eff_cap = getattr(_cc, "_effective_threshold_cap", lambda _ctx: None)(_cc.context_length)
+            _cap_binds = _eff_cap is not None and _cc.threshold_tokens == _eff_cap
             _cap_note = f" (capped at {_cap:,} tokens)" if _cap_binds else ""
             print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
         else:
@@ -2300,6 +2334,7 @@ _GATEWAY_IDENTITY_PARAMS = (
 )
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
+    "tool_result_metadata_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "connection_callback", "tour_callback",
@@ -2344,7 +2379,8 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
-    side_agent: bool = False,
+    side_agent: bool = False, memory_manager=None,
+    tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     _install_safe_stdio()
 
@@ -2402,6 +2438,9 @@ def init_agent(
     # Every (provider, model) that rejected image content this session. build_api_request strips
     # images from requests to those models only, so history keeps them for any model that can see.
     agent._image_rejecting_models = set()
+    # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
+    # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
+    agent._fast_mode_unavailable_models = set()
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)
@@ -2423,7 +2462,7 @@ def init_agent(
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)
-    _init_memory(agent, _agent_cfg, skip_memory, platform)
+    _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(

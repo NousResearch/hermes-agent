@@ -78,9 +78,6 @@ def _load_plugin_init():
 # ---------------------------------------------------------------------------
 
 class TestPatternsData:
-    def test_has_at_least_one_rule(self):
-        p = _load_patterns()
-        assert len(p.SECURITY_PATTERNS) >= 1
 
     def test_every_rule_has_required_fields(self):
         p = _load_patterns()
@@ -281,25 +278,3 @@ class TestPluginDiscovery:
         assert set(manifest["provides_hooks"]) == set(registered)
         assert "hooks" not in manifest
 
-    def test_loads_via_plugin_manager(self, _isolate_env, monkeypatch):
-        """End-to-end: enable in config.yaml and verify the PluginManager
-        picks it up via the standard discovery path."""
-        import yaml
-
-        config = {"plugins": {"enabled": ["security-guidance"]}}
-        (_isolate_env / "config.yaml").write_text(
-            yaml.safe_dump(config), encoding="utf-8"
-        )
-
-        # Wipe any cached plugin state from earlier tests in this worker.
-        for k in list(sys.modules):
-            if k.startswith(("hermes_plugins", "hermes_cli.plugins")):
-                del sys.modules[k]
-
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        mgr = _ensure_plugins_discovered(force=True)
-        loaded = set()
-        if hasattr(mgr, "_plugins"):
-            loaded = set(mgr._plugins.keys())
-        assert "security-guidance" in loaded

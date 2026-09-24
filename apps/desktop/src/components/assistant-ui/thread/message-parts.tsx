@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -30,6 +31,7 @@ import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
+import { useForcedTextDirection } from '@/store/text-direction'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -119,6 +121,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
         <ClarifyTool {...props} />
       </>
     )
+  }
+
+  if (props.toolName === 'manage_catalog') {
+    return <CatalogInstallTool {...props} />
   }
 
   if (mcpTargets(props.toolName, props.args).length > 0) {
@@ -385,6 +391,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   // rendered without a ReasoningGroup wrapper (assistant-ui drops the group
   // when a ChainOfThought component is registered).
   const showReasoning = useStore($showReasoning)
+  const textDirection = useForcedTextDirection()
 
   if (!showReasoning) {
     return null
@@ -397,6 +404,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       isRunning={status.type === 'running' || messageRunning}
       scratchpad
       text={separateGluedReasoningBlocks(text.trimStart())}
+      textDirection={textDirection}
     />
   )
 }

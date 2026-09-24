@@ -1,4 +1,5 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
+import type { HermesSkin } from '@hermes/shared/skin'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
@@ -375,6 +376,8 @@ declare global {
        *  (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only fact the
        *  main process also stamps onto every backend it spawns. */
       guestOnboardingEnabled?: boolean
+      /** Sanitized local `display.skin`, available before any gateway connects. */
+      localSkin?: { profile: string; skin: HermesSkin } | null
       /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
        *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
       skipIntro?: boolean
@@ -386,6 +389,18 @@ declare global {
         onChanged: (callback: (status: { enabled: boolean; available: boolean }) => void) => () => void
       }
       setDisableF12?: (blocked: boolean) => void
+      setF12ShortcutActive?: (active: boolean) => void
+      onF12Shortcut?: (
+        callback: (input: {
+          alt?: boolean
+          code?: string
+          control?: boolean
+          key: string
+          meta?: boolean
+          repeat?: boolean
+          shift?: boolean
+        }) => void
+      ) => () => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       /** One-shot loopback callback listener for MCP OAuth against remote

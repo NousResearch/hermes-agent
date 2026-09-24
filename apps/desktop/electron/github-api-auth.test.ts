@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { beforeEach, test } from 'vitest'
 
 import {
-  describeGitHubCredentialSource,
   findGhCli,
   forgetGhCliToken,
   GH_CLI_TIMEOUT_MS,
@@ -166,9 +165,4 @@ test('gh rung: argv-only spawn, stdin closed, bounded, cached for the process, a
     null
   )
   assert.equal(logged.calls.length, 1)
-})
-
-test('the rejected-credential log line names the source, never the token', () => {
-  assert.match(describeGitHubCredentialSource('env'), /GITHUB_TOKEN \/ GH_TOKEN/)
-  assert.match(describeGitHubCredentialSource('gh-cli'), /gh auth token/)
 })

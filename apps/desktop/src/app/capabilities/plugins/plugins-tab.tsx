@@ -29,6 +29,7 @@ import {
   $agentPluginsError,
   $agentPluginsStatus,
   type AgentPluginRow,
+  type AgentPluginServerState,
   type AgentPluginUpdateOutcome,
   type GatewayRequest,
   isDesktopRelevantPlugin,
@@ -149,6 +150,16 @@ function installAgentHalfHere(record: PluginRecord, profile: null | string) {
   })
 }
 
+const SERVER_TONE = {
+  connected: 'success',
+  app_not_running: 'warn',
+  endpoint_unavailable: 'warn',
+  no_interactive_session: 'warn',
+  unknown: 'warn',
+  version_too_old: 'destructive',
+  missing_app: 'destructive'
+} as const satisfies Record<AgentPluginServerState, 'destructive' | 'success' | 'warn'>
+
 function KindBadge({ kind }: { kind: PackageKind }) {
   const { t } = useI18n()
   const p = t.skills.plugins
@@ -261,6 +272,7 @@ function PackageRow({
   // was cloned there) can be uninstalled here: bundled plugins are refused by
   // the backend and entrypoint (pip-installed) ones go with their package.
   const agentRemovable = agent?.source === 'user' || agent?.source === 'git'
+  const unavailableServers = agent?.servers?.filter(server => server.state !== 'connected') ?? []
   // A STANDALONE desktop plugin (a folder in <HERMES_HOME>/desktop-plugins with
   // no agent package behind it) is deleted by Electron. A unified package's
   // desktop half is not offered here: uninstalling the agent half prunes it.
@@ -288,6 +300,11 @@ function PackageRow({
               <KindBadge kind={pkg.kind} />
               <ProvenancePill pkg={pkg} />
               {agent?.portable && <Pill>{p.portableBadge}</Pill>}
+              {agent?.servers?.map(server => (
+                <Pill data-testid={`server-pill-${server.name}`} key={server.name} tone={SERVER_TONE[server.state]}>
+                  {server.name}: {p.serverStates[server.state]}
+                </Pill>
+              ))}
               {desktop?.status === 'error' && <Pill tone="primary">{d.failed}</Pill>}
             </div>
             {(desktop?.status === 'error' ? desktop.error : pkg.description) && (
@@ -299,6 +316,16 @@ function PackageRow({
               >
                 {desktop?.status === 'error' ? desktop.error : pkg.description}
               </div>
+            )}
+            {unavailableServers.map(server =>
+              server.sentence ? (
+                <div
+                  className="mt-0.5 text-[length:var(--conversation-caption-font-size)] break-words text-(--ui-text-secondary)"
+                  key={server.name}
+                >
+                  {server.sentence}
+                </div>
+              ) : null
             )}
           </div>
           {/* Fixed slot so the switch column stays straight whether or not

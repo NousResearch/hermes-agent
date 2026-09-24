@@ -13,7 +13,8 @@ from tui_gateway import server
 def _registry(events):
     return SimpleNamespace(
         drain_notifications=lambda **kw: [(e, format_process_notification(e)) for e in events],
-        completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False)
+        completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False,
+        completion_already_observed=lambda sid: False)
 
 
 def _event(sid, exit_code, command="cd /tmp && bash long-build.sh"):

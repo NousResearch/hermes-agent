@@ -7440,7 +7440,11 @@ def test_run_prompt_submit_requeues_foreign_completion(
         process_registry._completion_consumed.discard(event["session_id"])
 
 
-def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp_path):
+def test_run_prompt_submit_does_not_reannounce_a_completion_observed_by_poll(monkeypatch, tmp_path):
+    """The post-turn safety net must not turn a completion the agent already polled — exit code
+    and output tail in hand — into a second turn. That duplicate was the stale completion the
+    user saw right after their own report; a poll taken after the exit is an observed completion
+    (``completion_already_observed``), so the event is consumed here rather than spun up again."""
     import queue as _queue_mod
 
     from tools.process_registry import process_registry
@@ -7470,9 +7474,7 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
     try:
         server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
 
-        assert turns[0] == "session-a-turn"
-        assert len(turns) == 2
-        assert "proc_polled" in turns[1]
+        assert turns == ["session-a-turn"], "the polled completion must not start a second turn"
         assert isolated_queue.empty()
     finally:
         server._sessions.pop("sid_a", None)

@@ -715,7 +715,7 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
         )
 
         proc._completion_event.wait()
-        if process_registry.is_completion_consumed(proc_id):
+        if process_registry.completion_already_observed(proc_id):
             return
         evt = {"type": "completion", "session_id": proc_id, **process_registry._exit_snapshot(proc, "exited")}
         try:

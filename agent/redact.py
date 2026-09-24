@@ -217,14 +217,22 @@ _PREFIX_PATTERNS = [
 # ``token=``, ``KEYBOARD=``, ``PASSAGE=``) do not match — those are handled by the config/form/URL paths,
 # and a bare ``password=…`` in a form body must not be swallowed greedily by ``\S+``. See #77484.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
-_ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2")
+# The ``=`` separator is HORIZONTAL whitespace only (``[ \t]*``). An env assignment cannot
+# span a line break, and ``\s*`` let a bare word ENDING in a secret name on one line swallow
+# the following line's ``=``/``==`` as its "value": ``VERIFY: PASS`` + newline + ``== done``
+# was rewritten to ``VERIFY: PASS=*** done``, and a ``..._REVIEW_PASS`` verdict line followed
+# by a ``==`` rule lost its value to ``***``. The false positive joined two lines and
+# corrupted status lines, setext-style headings and the ``key=value`` report fields next to
+# them, for the model and the user alike. Same-line ``PASSWORD=x`` / ``API_KEY = sk-…`` still
+# redact exactly as before.
+_ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})[ \t]*=[ \t]*(['\"]?)(\S+)\2")
 # Lowercase env names: only underscore-boundary forms (``openai_key=``) — NOT
 # bare ``password=``/``token=``, which appear in prose, URLs, and form bodies.
 # The lookbehind anchors each attempt to the start of an identifier run; without
 # it re.sub retries the greedy prefix at every byte of a long opaque payload.
 # See #77484.
 _ENV_ASSIGN_LOWER_RE = re.compile(
-    rf"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
+    rf"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))[ \t]*=[ \t]*(['\"]?)(\S+)\2",
     re.IGNORECASE,
 )
 

@@ -1761,15 +1761,41 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return ProcessRegistry._config_seconds("oneshot_completion_wait_seconds", 600.0)
 
     def _drain_should_skip(self, session_id: str, *, skip_poll_observed: bool = True) -> bool:
-        """Skip a completion the CLI agent already has this turn — consumed via wait/log
-        or observed inline via poll(). Gateway/tui watchers check only
-        ``is_completion_consumed`` so a read-only poll never suppresses their turn.
+        """Skip a completion the agent already has this turn — consumed via wait/log
+        or observed inline via poll(). Every completion surface asks
+        ``completion_already_observed`` (this method) so the CLI, the gateway and the
+        TUI agree on which completions still need a turn.
 
         Skips when the agent has either truly consumed the output (wait/log → ``_completion_consumed``) or
-        observed the exit inline via poll() (``_poll_observed``). In both cases the CLI agent already has
-        the result this turn, so injecting a [SYSTEM: ...] completion would be a duplicate (#8228).
+        observed the exit inline via poll() (``_poll_observed``). In both cases the agent already has
+        the result this turn, so injecting a completion turn would be a duplicate (#8228).
         """
         return session_id in self._completion_consumed or (skip_poll_observed and session_id in self._poll_observed)
+
+    def completion_already_observed(self, session_id: str) -> bool:
+        """The one gate every surface that announces a completion must ask.
+
+        True when the agent already holds this completion's result: consumed via
+        ``wait``/``log``, or observed inline by a ``poll()`` taken *after* the process
+        exited. The gateway/TUI watchers used to gate on ``is_completion_consumed``
+        alone, which only covers wait/log — so a supervised process the agent had just
+        polled (exit code and output tail already in the turn) was announced a second
+        time as a fresh completion turn, landing next to the report the agent had just
+        written. A poll taken while the process is still *running* does not count: the
+        exit still has to be announced. ``_completion_consumed`` keeps its narrow
+        "the output was read away" meaning for callers that need it.
+        """
+        observed = self._drain_should_skip(session_id)
+        if observed:
+            # Observability: a suppressed completion is the one case worth logging, and
+            # which of the two signals suppressed it decides whether the agent has the
+            # result (consumed) or merely polled it inline.
+            logger.debug(
+                "notification.skipped_already_delivered session=%s reason=%s",
+                session_id,
+                "consumed_wait_or_log" if session_id in self._completion_consumed else "poll_observed",
+            )
+        return observed
 
     @staticmethod
     def _surface_child_process_notifications() -> bool:

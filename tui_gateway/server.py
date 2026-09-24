@@ -3374,6 +3374,7 @@ from . import (  # noqa: E402
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
     session_transports as _session_transports,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
+    methods_bots as _methods_bots,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
@@ -3392,7 +3393,7 @@ for _m in (
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
-    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
+    _methods_bot_relay, _methods_bots, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding):
     _m.register(sys.modules[__name__])

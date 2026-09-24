@@ -36,10 +36,13 @@ jobs:
       - name: Install ascii-guard
         uses: ./.github/actions/retry
         with:
-          command: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
+          command: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3 pydantic==2.13.4
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
+
+      - name: Extract bot catalog for marketplace pages
+        run: python3 website/scripts/extract-bots.py
 
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py

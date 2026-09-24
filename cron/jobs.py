@@ -31,6 +31,7 @@ from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -769,10 +770,36 @@ def _interval_schedule(minutes: int) -> Dict[str, Any]:
     return {"kind": "interval", "minutes": minutes, "display": f"every {minutes}m"}
 
 
-def parse_schedule(schedule: str) -> Dict[str, Any]:
-    """Parse a schedule string into ``{"kind": "once"|"interval"|"cron", ...}`` with ``run_at`` /
-    ``minutes`` / ``expr``. "30m" and "every 30m" are recurring intervals; "every monday 9am" and
-    "0 9 * * *" are cron; an ISO timestamp is once."""
+def _with_schedule_timezone(schedule: Dict[str, Any], timezone_name: Optional[str]) -> Dict[str, Any]:
+    if timezone_name is not None:
+        schedule["timezone"] = timezone_name
+    return schedule
+
+
+def _validated_schedule_timezone(timezone_name: Optional[str]) -> tuple[Optional[str], Any]:
+    name = (timezone_name or "").strip()
+    if not name:
+        return None, None
+    try:
+        return name, ZoneInfo(name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Invalid IANA timezone {name!r}") from exc
+
+
+def _schedule_timezone(schedule: Dict[str, Any]) -> Any:
+    name = schedule.get("timezone")
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        logger.warning("Cron schedule has invalid timezone %r; using the profile timezone", name)
+        return None
+
+
+def parse_schedule(schedule: str, *, timezone_name: Optional[str] = None) -> Dict[str, Any]:
+    """Parse a schedule string, optionally pinning its wall-clock timezone on this schedule only."""
+    timezone_name, schedule_timezone = _validated_schedule_timezone(timezone_name)
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
@@ -785,18 +812,18 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     # Reuse the same helper — the phrase shape is identical without the "every " prefix. See #51975.
     if cron_expr is not None:
         example = "every monday 9am" if is_every else "weekdays at 9am"
-        return _cron_schedule(
+        return _with_schedule_timezone(_cron_schedule(
             cron_expr, original,
-            f"Weekday/time schedules like '{example}' require the 'croniter' package.", "schedule")
+            f"Weekday/time schedules like '{example}' require the 'croniter' package.", "schedule"), timezone_name)
     if is_every:
-        return _interval_schedule(parse_duration(rest))
+        return _with_schedule_timezone(_interval_schedule(parse_duration(rest)), timezone_name)
 
     # Cron expression (5-6 fields). Letters are allowed so named months/weekdays (JAN-DEC, MON-FRI)
     # reach croniter, which supports them.
     parts = schedule.split()
     if len(parts) >= 5 and all(re.match(r'^[A-Za-z\d\*\-,/]+$', p) for p in parts[:5]):
-        return _cron_schedule(
-            schedule, schedule, "Cron expressions require 'croniter' package.", "cron expression")
+        return _with_schedule_timezone(_cron_schedule(
+            schedule, schedule, "Cron expressions require 'croniter' package.", "cron expression"), timezone_name)
 
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
@@ -810,12 +837,12 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             # never become due and recurring jobs fire at the wrong time. Using the configured zone makes
             # "20:07" mean 20:07 on the same clock the scheduler checks against (#51021).
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_hermes_now().tzinfo)
-            return {
+                dt = dt.replace(tzinfo=schedule_timezone or _hermes_now().tzinfo)
+            return _with_schedule_timezone({
                 "kind": "once",
                 "run_at": dt.isoformat(),
                 "display": f"once at {dt.strftime('%Y-%m-%d %H:%M')}"
-            }
+            }, timezone_name)
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
 
@@ -831,9 +858,12 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         now = _hermes_now()
         # Durations measure elapsed time, not wall-clock hours across a DST transition.
         run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
-        return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
+        return _with_schedule_timezone(
+            {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"},
+            timezone_name,
+        )
     with contextlib.suppress(ValueError):
-        return _interval_schedule(parse_duration(schedule))
+        return _with_schedule_timezone(_interval_schedule(parse_duration(schedule)), timezone_name)
 
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
@@ -1199,7 +1229,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         # the wall-clock hour stays correct every calendar day, including DST
         # boundaries (morning-routine 09:00 America/Toronto).
         # Fall back to the base's own zone only when nothing is configured.
-        zone = get_timezone() or base_time.tzinfo
+        zone = _schedule_timezone(schedule) or get_timezone() or base_time.tzinfo
         base_wall = base_time.astimezone(zone).replace(tzinfo=None)
         it = croniter(expr, base_wall)
         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
@@ -1754,6 +1784,7 @@ def create_job(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
+    timezone_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1769,7 +1800,7 @@ def create_job(
         raise ValueError("paused_reason must be a string.")
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
-    parsed_schedule = parse_schedule(schedule)
+    parsed_schedule = parse_schedule(schedule, timezone_name=timezone_name)
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
     # (#66824/#64520/#7142/#71987/#95706).
@@ -1959,6 +1990,22 @@ def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None
             updates["repeat"] = {"times": normalize_repeat_value(_rp), "completed": completed}
 
 
+def _preserve_schedule_timezone(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
+    """Keep a per-job timezone pin across ordinary schedule edits unless the caller explicitly edits it."""
+    if "schedule" not in updates:
+        return
+    old_timezone = (job.get("schedule") or {}).get("timezone")
+    schedule = updates["schedule"]
+    if isinstance(schedule, str):
+        updates["schedule"] = parse_schedule(schedule, timezone_name=old_timezone)
+        return
+    if isinstance(schedule, dict):
+        schedule = dict(schedule)
+        if "timezone" not in schedule and old_timezone is not None:
+            schedule["timezone"] = old_timezone
+        updates["schedule"] = schedule
+
+
 def _rederive_repeat_for_schedule_change(
     job: Dict[str, Any], updates: Dict[str, Any]
 ) -> None:
@@ -2030,6 +2077,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        _preserve_schedule_timezone(job, updates)
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
@@ -2927,7 +2975,7 @@ def _repair_timezone_shifted_cron(d: _DueJob) -> bool:
     it look due hours early. If the stored wall clock is still in the future, recompute so we fire
     at the intended local time. True when re-anchored (caller skips this tick). TRADE-OFF: a DST
     offset change meeting the same conditions SKIPS the pending occurrence; accepted as rare."""
-    now = d.scan.now
+    now = d.scan.now.astimezone(_schedule_timezone(d.schedule) or d.scan.now.tzinfo)
     if not (
         _instant_at_or_before(d.next_run_dt, now)
         and _timezone_offset_mismatch(d.raw_next_run_dt, now)
@@ -3150,7 +3198,11 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     if not next_run:
         return False
     raw_next_run_dt = datetime.fromisoformat(next_run)
-    d = _DueJob(job, scan, next_run, raw_next_run_dt, _ensure_aware(raw_next_run_dt))
+    schedule_zone = _schedule_timezone(job.get("schedule", {}))
+    next_run_dt = _ensure_aware(raw_next_run_dt)
+    if schedule_zone is not None:
+        next_run_dt = next_run_dt.astimezone(schedule_zone)
+    d = _DueJob(job, scan, next_run, raw_next_run_dt, next_run_dt)
     kind = d.kind
     recurring = kind in {"cron", "interval"}
     # Intentionally string-exact on raw stored values: trigger_job stamps the SAME isoformat string

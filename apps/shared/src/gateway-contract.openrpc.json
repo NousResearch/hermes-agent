@@ -241,6 +241,150 @@
       }
     },
     {
+      "name": "bots.catalog",
+      "summary": "Return the reviewed Bot Marketplace catalog and removal list resolved by this backend.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsCatalogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotsCatalogResult"
+        }
+      }
+    },
+    {
+      "name": "bots.install",
+      "summary": "Resolve a reviewed catalog name server-side and atomically publish one complete bot profile.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsInstallParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotsInstallResult"
+        }
+      }
+    },
+    {
+      "name": "bots.installed",
+      "summary": "List installed bot profiles from local immutable manifests without runtime readiness probes.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsInstalledParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotsInstalledResult"
+        }
+      }
+    },
+    {
+      "name": "bots.routines.activate",
+      "summary": "Explicitly activate one ready bot routine with confirmed schedule, IANA timezone, and destination.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsRoutineActivateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotRoutineResult"
+        }
+      }
+    },
+    {
+      "name": "bots.routines.list",
+      "summary": "List reviewed routine blueprints and their authoritative cron activation state.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsRoutinesListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotsRoutinesListResult"
+        }
+      }
+    },
+    {
+      "name": "bots.routines.pause",
+      "summary": "Pause an activated bot routine through the canonical cron API.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsRoutinePauseParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotRoutineResult"
+        }
+      }
+    },
+    {
+      "name": "bots.setup",
+      "summary": "Resume Finish setup by re-probing authoritative state; client readiness claims are not accepted.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotsStatusResult"
+        }
+      }
+    },
+    {
+      "name": "bots.status",
+      "summary": "Probe an installed bot profile's real runtime, declared dependencies, and first Bot Chat task proof.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BotsStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BotsStatusResult"
+        }
+      }
+    },
+    {
       "name": "browser.controller.detach",
       "summary": "Hard-detach only the controller owned by this authenticated transport.",
       "params": [
@@ -6610,6 +6754,232 @@
         "title": "BillingStepUpVerificationPayload",
         "type": "object"
       },
+      "BotCatalogCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "toolsets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Toolsets",
+            "type": "array"
+          }
+        },
+        "title": "BotCatalogCapabilities",
+        "type": "object"
+      },
+      "BotCatalogEntryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "maintainer": {
+            "title": "Maintainer",
+            "type": "string"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/BotTier"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/BotCatalogProfile"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/BotCatalogCapabilities"
+          },
+          "setup": {
+            "$ref": "#/components/schemas/BotCatalogSetup"
+          },
+          "routines": {
+            "items": {
+              "$ref": "#/components/schemas/BotCatalogRoutine"
+            },
+            "title": "Routines",
+            "type": "array"
+          },
+          "presentation": {
+            "$ref": "#/components/schemas/BotCatalogPresentation"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "maintainer",
+          "tier",
+          "category",
+          "title",
+          "summary",
+          "profile",
+          "capabilities",
+          "setup",
+          "presentation"
+        ],
+        "title": "BotCatalogEntryResult",
+        "type": "object"
+      },
+      "BotCatalogPresentation": {
+        "additionalProperties": false,
+        "properties": {
+          "emoji": {
+            "title": "Emoji",
+            "type": "string"
+          },
+          "color": {
+            "title": "Color",
+            "type": "string"
+          }
+        },
+        "required": [
+          "emoji",
+          "color"
+        ],
+        "title": "BotCatalogPresentation",
+        "type": "object"
+      },
+      "BotCatalogProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "suggested_name": {
+            "title": "Suggested Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "soul": {
+            "title": "Soul",
+            "type": "string"
+          },
+          "starter_prompt": {
+            "title": "Starter Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suggested_name",
+          "description",
+          "soul",
+          "starter_prompt"
+        ],
+        "title": "BotCatalogProfile",
+        "type": "object"
+      },
+      "BotCatalogRoutine": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prompt",
+          "schedule"
+        ],
+        "title": "BotCatalogRoutine",
+        "type": "object"
+      },
+      "BotCatalogSetup": {
+        "additionalProperties": false,
+        "properties": {
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/BotSetupRequirementResult"
+            },
+            "title": "Requirements",
+            "type": "array"
+          }
+        },
+        "title": "BotCatalogSetup",
+        "type": "object"
+      },
+      "BotCredentialPolicy": {
+        "enum": [
+          "none",
+          "copy_api_keys"
+        ],
+        "title": "BotCredentialPolicy",
+        "type": "string"
+      },
+      "BotFirstTaskReadiness": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/BotFirstTaskStatus"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "BotFirstTaskReadiness",
+        "type": "object"
+      },
+      "BotFirstTaskStatus": {
+        "enum": [
+          "pending",
+          "complete"
+        ],
+        "title": "BotFirstTaskStatus",
+        "type": "string"
+      },
       "BotRelayDeliverParams": {
         "additionalProperties": false,
         "description": "``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds).",
@@ -6824,6 +7194,714 @@
           "count"
         ],
         "title": "BotRelayRosterSyncResult",
+        "type": "object"
+      },
+      "BotRequirementKind": {
+        "enum": [
+          "toolset",
+          "command",
+          "connector",
+          "plugin"
+        ],
+        "title": "BotRequirementKind",
+        "type": "string"
+      },
+      "BotRequirementReadiness": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/BotRequirementKind"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BotRequirementStatus"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Action"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "required",
+          "purpose",
+          "status"
+        ],
+        "title": "BotRequirementReadiness",
+        "type": "object"
+      },
+      "BotRequirementStatus": {
+        "enum": [
+          "ready",
+          "needs_setup"
+        ],
+        "title": "BotRequirementStatus",
+        "type": "string"
+      },
+      "BotRoutineListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BotRoutineState"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job Id"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timezone"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Destination"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prompt",
+          "schedule",
+          "state"
+        ],
+        "title": "BotRoutineListItem",
+        "type": "object"
+      },
+      "BotRoutineResult": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BotRoutineState"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job Id"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Schedule"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timezone"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Destination"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "title": "BotRoutineResult",
+        "type": "object"
+      },
+      "BotRoutineState": {
+        "enum": [
+          "paused",
+          "active"
+        ],
+        "title": "BotRoutineState",
+        "type": "string"
+      },
+      "BotRuntimeReadiness": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Action"
+          },
+          "reused_sign_in": {
+            "default": false,
+            "title": "Reused Sign In",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "BotRuntimeReadiness",
+        "type": "object"
+      },
+      "BotSetupRequirementResult": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/BotRequirementKind"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "required",
+          "purpose"
+        ],
+        "title": "BotSetupRequirementResult",
+        "type": "object"
+      },
+      "BotSetupState": {
+        "enum": [
+          "ready",
+          "needs_setup"
+        ],
+        "title": "BotSetupState",
+        "type": "string"
+      },
+      "BotTier": {
+        "enum": [
+          "official",
+          "community"
+        ],
+        "title": "BotTier",
+        "type": "string"
+      },
+      "BotsCatalogParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotsCatalogParams",
+        "type": "object"
+      },
+      "BotsCatalogResult": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/BotCatalogEntryResult"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "$ref": "#/components/schemas/RemovedBotResult"
+            },
+            "title": "Removed",
+            "type": "array"
+          }
+        },
+        "title": "BotsCatalogResult",
+        "type": "object"
+      },
+      "BotsInstallParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "catalog_name": {
+            "title": "Catalog Name",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source_profile": {
+            "title": "Source Profile",
+            "type": "string"
+          },
+          "credentials": {
+            "$ref": "#/components/schemas/BotCredentialPolicy",
+            "default": "none"
+          }
+        },
+        "required": [
+          "catalog_name",
+          "name",
+          "source_profile"
+        ],
+        "title": "BotsInstallParams",
+        "type": "object"
+      },
+      "BotsInstallResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "committed": {
+            "title": "Committed",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "catalog_name": {
+            "title": "Catalog Name",
+            "type": "string"
+          },
+          "catalog_version": {
+            "title": "Catalog Version",
+            "type": "string"
+          },
+          "source_profile": {
+            "title": "Source Profile",
+            "type": "string"
+          },
+          "copied_credentials": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Copied Credentials",
+            "type": "array"
+          },
+          "oauth_setup_required": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Oauth Setup Required",
+            "type": "array"
+          },
+          "setup_state": {
+            "$ref": "#/components/schemas/BotSetupState"
+          },
+          "setup_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Setup Requirements",
+            "type": "array"
+          },
+          "post_publish_warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Post Publish Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "committed",
+          "name",
+          "path",
+          "catalog_name",
+          "catalog_version",
+          "source_profile",
+          "setup_state"
+        ],
+        "title": "BotsInstallResult",
+        "type": "object"
+      },
+      "BotsInstalledParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotsInstalledParams",
+        "type": "object"
+      },
+      "BotsInstalledResult": {
+        "additionalProperties": false,
+        "properties": {
+          "bots": {
+            "items": {
+              "$ref": "#/components/schemas/InstalledBotResult"
+            },
+            "title": "Bots",
+            "type": "array"
+          }
+        },
+        "title": "BotsInstalledResult",
+        "type": "object"
+      },
+      "BotsRoutineActivateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "routine_id": {
+            "title": "Routine Id",
+            "type": "string"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          }
+        },
+        "required": [
+          "routine_id",
+          "schedule",
+          "timezone",
+          "destination"
+        ],
+        "title": "BotsRoutineActivateParams",
+        "type": "object"
+      },
+      "BotsRoutinePauseParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "routine_id": {
+            "title": "Routine Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "routine_id"
+        ],
+        "title": "BotsRoutinePauseParams",
+        "type": "object"
+      },
+      "BotsRoutinesListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotsRoutinesListParams",
+        "type": "object"
+      },
+      "BotsRoutinesListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "routines": {
+            "items": {
+              "$ref": "#/components/schemas/BotRoutineListItem"
+            },
+            "title": "Routines",
+            "type": "array"
+          }
+        },
+        "title": "BotsRoutinesListResult",
+        "type": "object"
+      },
+      "BotsStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "BotsStatusParams",
+        "type": "object"
+      },
+      "BotsStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "catalog_name": {
+            "title": "Catalog Name",
+            "type": "string"
+          },
+          "setup_state": {
+            "$ref": "#/components/schemas/BotSetupState"
+          },
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/BotRequirementReadiness"
+            },
+            "title": "Requirements",
+            "type": "array"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/BotRuntimeReadiness"
+          },
+          "first_task": {
+            "$ref": "#/components/schemas/BotFirstTaskReadiness"
+          },
+          "starter_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Starter Prompt"
+          },
+          "can_start_first_task": {
+            "title": "Can Start First Task",
+            "type": "boolean"
+          },
+          "can_activate_routines": {
+            "title": "Can Activate Routines",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "catalog_name",
+          "setup_state",
+          "runtime",
+          "first_task",
+          "can_start_first_task",
+          "can_activate_routines"
+        ],
+        "title": "BotsStatusResult",
         "type": "object"
       },
       "BrowserAction": {
@@ -15736,6 +16814,62 @@
           "messages"
         ],
         "title": "InsightsGetResult",
+        "type": "object"
+      },
+      "InstalledBotPresentation": {
+        "additionalProperties": false,
+        "properties": {
+          "emoji": {
+            "title": "Emoji",
+            "type": "string"
+          },
+          "color": {
+            "title": "Color",
+            "type": "string"
+          }
+        },
+        "required": [
+          "emoji",
+          "color"
+        ],
+        "title": "InstalledBotPresentation",
+        "type": "object"
+      },
+      "InstalledBotResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "catalog_name": {
+            "title": "Catalog Name",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "setup_state": {
+            "$ref": "#/components/schemas/BotSetupState"
+          },
+          "presentation": {
+            "$ref": "#/components/schemas/InstalledBotPresentation"
+          }
+        },
+        "required": [
+          "profile",
+          "catalog_name",
+          "title",
+          "summary",
+          "setup_state",
+          "presentation"
+        ],
+        "title": "InstalledBotResult",
         "type": "object"
       },
       "InterruptStatus": {
@@ -25917,6 +27051,25 @@
         ],
         "title": "ReloadMcpStatus",
         "type": "string"
+      },
+      "RemovedBotResult": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "RemovedBotResult",
+        "type": "object"
       },
       "RepoDiscoveryPolicy": {
         "additionalProperties": false,

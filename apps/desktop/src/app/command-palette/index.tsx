@@ -1162,6 +1162,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           keywords: ['plugins', 'extensions', 'desktop plugins', 'agent plugins', 'catalog', 'addon', 'add-on'],
           label: `${capLabel}: ${t.skills.tabPlugins}`,
           run: go(`${CAPABILITIES_ROUTE}?tab=plugins`)
+        },
+        {
+          icon: Users,
+          id: 'cap-bots',
+          keywords: ['bots', 'agents', 'marketplace', 'add bot'],
+          label: `${capLabel}: ${t.skills.marketplace.tab}`,
+          run: go(`${CAPABILITIES_ROUTE}?tab=bots`)
         }
       ]
     })

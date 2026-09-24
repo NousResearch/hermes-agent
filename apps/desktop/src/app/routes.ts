@@ -14,6 +14,8 @@ export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SESSION_IMPORT_ROUTE = '/session-import'
 export const CAPABILITIES_ROUTE = '/capabilities'
+// Linked with `{ state: { capabilityScope } }` so Capabilities opens on that profile.
+export const MEMORY_PLUGINS_ROUTE = `${CAPABILITIES_ROUTE}?tab=plugins`
 export const MESSAGING_ROUTE = '/messaging'
 export const WEBHOOKS_ROUTE = '/webhooks'
 export const ARTIFACTS_ROUTE = '/artifacts'

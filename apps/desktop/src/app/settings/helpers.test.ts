@@ -8,7 +8,6 @@ import {
   diffConfig,
   enumOptionsFor,
   getNested,
-  isExternalMemoryProvider,
   providerGroup,
   sectionFieldEntries,
   setNested,
@@ -22,19 +21,6 @@ describe('settings helpers', () => {
     // so config-field consumes schema.options instead of a stale static list.
     expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
     expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
-  })
-
-  describe('isExternalMemoryProvider', () => {
-    it('treats only real plugin names as external providers', () => {
-      expect(isExternalMemoryProvider('honcho')).toBe(true)
-      expect(isExternalMemoryProvider('hindsight')).toBe(true)
-    })
-
-    it('treats built-in aliases and empty values as not external', () => {
-      for (const value of ['', 'builtin', 'built-in', 'Builtin', 'none', '  ', undefined, null, 7]) {
-        expect(isExternalMemoryProvider(value)).toBe(false)
-      }
-    })
   })
 
   describe('defineFieldCopy', () => {

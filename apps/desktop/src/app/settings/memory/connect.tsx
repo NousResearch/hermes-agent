@@ -1,162 +1,182 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { getMemoryProviderOAuthStatus, startMemoryProviderOAuth } from '@/hermes'
+import { getMemoryProviderOAuthStatus, type OwnerScope, startMemoryProviderOAuth } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { Check, ExternalLink, Loader2 } from '@/lib/icons'
-import { notifyError } from '@/store/notifications'
 import type { MemoryProviderOAuthStatus } from '@/types/hermes'
+
+import { ownerKey } from './owner'
 
 const POLL_MS = 1500
 const POLL_TIMEOUT_MS = 120_000
 
-// Small connect affordance rendered under the provider dropdown. Capability is
-// backend-driven: the status route 404s for providers without an oauth_flow
-// module, so non-OAuth providers render nothing.
-export function MemoryConnect({ profile, provider }: { profile?: string; provider: string }) {
-  const [capable, setCapable] = useState<'no' | 'unknown' | 'yes'>('unknown')
-  const [connected, setConnected] = useState(false)
-  const [auth, setAuth] = useState<MemoryProviderOAuthStatus['auth']>(null)
-  const [phase, setPhase] = useState<'error' | 'idle' | 'pending'>('idle')
-  const [detail, setDetail] = useState('')
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
-  const deadline = useRef(0)
+type Operation = 'start' | 'status'
 
-  const stop = useCallback(() => {
-    if (timer.current !== null) {
-      clearInterval(timer.current)
-      timer.current = null
+const oauthRequest = (operation: Operation, provider: string, owner: OwnerScope) =>
+  operation === 'start' ? startMemoryProviderOAuth(provider, owner) : getMemoryProviderOAuthStatus(provider, owner)
+
+type Busy = 'checking' | 'waiting'
+type Failure = 'checkFailed' | 'failed' | 'timeout'
+
+interface MemoryConnectProps {
+  owner: OwnerScope
+  provider: string
+  /** Fires once when a check or wait moves this owner's provider from not connected to connected. */
+  onConnected?: () => void
+}
+
+// One lifecycle per owner and provider, so a late response never lands on another view.
+export function MemoryConnect(props: MemoryConnectProps) {
+  return <MemoryConnectOwner key={`${ownerKey(props.owner)}:${props.provider}`} {...props} />
+}
+
+function MemoryConnectOwner({ owner, provider, onConnected }: MemoryConnectProps) {
+  const { t } = useI18n()
+  const c = t.memoryProviders.oauth
+  const [status, setStatus] = useState<MemoryProviderOAuthStatus | null>(null)
+  const [busy, setBusy] = useState<Busy | null>('checking')
+  const [error, setError] = useState<Failure | null>(null)
+  const run = useRef(0)
+
+  // Retires the running sequence. The wait ends, but the request and any browser authorization continue.
+  const retire = () => {
+    run.current++
+  }
+
+  const finish = (outcome: MemoryProviderOAuthStatus | Failure | null) => {
+    retire()
+    setBusy(null)
+
+    if (outcome && typeof outcome === 'object') {
+      setStatus(outcome)
+      setError(outcome.state === 'error' ? 'failed' : null)
+
+      // `status` is the last known state when this sequence began; the initial check has none to transition from.
+      if (outcome.connected && status?.connected === false) {
+        onConnected?.()
+      }
+    } else {
+      setError(outcome)
     }
-  }, [])
+  }
 
-  useEffect(() => {
-    let active = true
-    setCapable('unknown')
-    getMemoryProviderOAuthStatus(provider, profile)
-      .then(s => {
-        if (!active) {
-          return
-        }
-
-        setCapable('yes')
-        setConnected(s.connected)
-        setAuth(s.auth)
-      })
-      .catch(() => {
-        if (active) {
-          setCapable('no')
-        }
-      })
-
-    return () => {
-      active = false
-      stop()
-    }
-  }, [profile, provider, stop])
-
-  // An error message isn't sticky — it clears back to the steady state
-  // (Connect link, plus the connected badge if a credential is stored).
-  useEffect(() => {
-    if (phase !== 'error') {
-      return
-    }
-
-    const t = setTimeout(() => {
-      setPhase('idle')
-      setDetail('')
-    }, 6000)
-
-    return () => clearTimeout(t)
-  }, [phase])
-
-  const connect = useCallback(async () => {
-    setPhase('pending')
+  // A check reads status once. A wait starts (or resumes) the flow and polls until the backend leaves `pending`;
+  // a failed poll is retried, a failed start is not.
+  const begin = async (kind: Busy, resume = false) => {
+    const id = ++run.current
+    const live = () => id === run.current
+    setBusy(kind)
+    setError(null)
+    const deadline = setTimeout(() => live() && finish('timeout'), POLL_TIMEOUT_MS)
+    let operation: Operation = kind === 'waiting' && !resume ? 'start' : 'status'
 
     try {
-      await startMemoryProviderOAuth(provider, profile)
-    } catch (err) {
-      setPhase('error')
-      setDetail('Could not start the connection.')
-      notifyError(err, 'Failed to start connection')
-
-      return
-    }
-
-    deadline.current = Date.now() + POLL_TIMEOUT_MS
-    stop()
-    timer.current = setInterval(() => {
-      void (async () => {
+      while (live()) {
         try {
-          const next = await getMemoryProviderOAuthStatus(provider, profile)
+          const next = await oauthRequest(operation, provider, owner)
 
-          if (next.state === 'pending') {
-            if (Date.now() > deadline.current) {
-              stop()
-              setPhase('error')
-              setDetail('Timed out — try again.')
-            }
+          if (!live()) {
+            return
+          }
+
+          setStatus(next)
+          setError(null)
+
+          if (kind === 'checking' || next.supported === false || next.state !== 'pending') {
+            finish(next)
+
+            return
+          }
+        } catch {
+          if (!live()) {
+            return
+          }
+
+          if (kind === 'checking' || operation === 'start') {
+            finish(kind === 'checking' ? 'checkFailed' : 'failed')
 
             return
           }
 
-          stop()
-          setConnected(next.connected)
-          setAuth(next.auth)
-
-          if (next.state === 'error') {
-            setPhase('error')
-            setDetail(next.detail || 'Connection failed.')
-          } else {
-            setPhase('idle')
-          }
-        } catch {
-          // Transient poll failure — keep trying until the deadline.
+          setError('checkFailed')
         }
-      })()
-    }, POLL_MS)
-  }, [profile, provider, stop])
 
-  const cancel = useCallback(() => {
-    stop()
-    setPhase('idle')
-  }, [stop])
+        operation = 'status'
+        await new Promise(resolve => setTimeout(resolve, POLL_MS))
+      }
+    } finally {
+      clearTimeout(deadline)
+    }
+  }
 
-  if (capable !== 'yes') {
+  useEffect(() => {
+    void begin('checking')
+
+    return retire
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- provider and owner are fixed for this mount (keyed by MemoryConnect)
+  }, [])
+
+  if (status?.supported === false) {
     return null
   }
 
-  const connectLabel = connected ? (auth === 'apikey' ? 'Connect via OAuth' : 'Reconnect') : 'Connect'
+  const connected = status?.connected ?? false
+  const apiKey = status?.auth === 'apikey'
+
+  const spinner = (label: string) => (
+    <span className="inline-flex items-center gap-1.5 text-muted-foreground" role="status">
+      <Loader2 className="size-3 animate-spin" />
+      {label}
+    </span>
+  )
+
+  const action = (label: string, onClick: () => void, icon?: ReactNode) => (
+    <Button onClick={onClick} size="inline" type="button" variant="link">
+      {icon}
+      {label}
+    </Button>
+  )
+
+  const view =
+    busy ?? (status?.state === 'pending' ? 'consent' : !status || error === 'checkFailed' ? 'recheck' : 'connect')
+
+  const views: Record<typeof view, ReactNode> = {
+    checking: spinner(c.checking),
+    waiting: (
+      <>
+        {spinner(c.waiting)}
+        {action(c.stopWaiting, () => finish(null))}
+      </>
+    ),
+    consent: (
+      <>
+        <span className="text-muted-foreground">{c.waiting}</span>
+        {action(c.retryCheck, () => void begin('waiting', true))}
+      </>
+    ),
+    recheck: action(c.retryCheck, () => void begin('checking')),
+    connect: action(
+      connected ? (apiKey ? c.viaOAuth : c.reconnect) : c.connect,
+      () => void begin('waiting'),
+      <ExternalLink />
+    )
+  }
 
   return (
     <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-      {phase === 'idle' && connected && (
+      {connected && (
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <Check className="size-3" />
-          {auth === 'apikey' ? 'api key set' : 'oauth set'}
+          {apiKey ? c.apiKeySet : c.connected}
         </span>
       )}
-      {phase === 'pending' ? (
-        <>
-          <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />
-            Waiting for browser consent…
-          </span>
-          <Button className="h-auto p-0 text-xs" onClick={cancel} size="sm" type="button" variant="link">
-            Cancel
-          </Button>
-        </>
-      ) : (
-        <Button
-          className="h-auto gap-1 p-0 text-xs"
-          onClick={() => void connect()}
-          size="sm"
-          type="button"
-          variant="link"
-        >
-          <ExternalLink className="size-3" />
-          {connectLabel}
-        </Button>
+      {views[view]}
+      {error && (
+        <span className="text-destructive" role="alert">
+          {c[error]}
+        </span>
       )}
-      {phase === 'error' && detail && <span className="text-destructive">{detail}</span>}
     </span>
   )
 }

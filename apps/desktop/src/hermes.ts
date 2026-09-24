@@ -15,7 +15,7 @@ export {
   setApiRequestProfile,
   STARTUP_REQUEST_TIMEOUT_MS
 } from './api/client'
-export type { ProfileScope } from './api/client'
+export type { OwnerScope, ProfileScope } from './api/client'
 export * from './api/config'
 export * from './api/cron'
 export * from './api/local-models'

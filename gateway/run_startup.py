@@ -442,15 +442,20 @@ class GatewayStartupMixin:
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+            metadata = dict(row.get("metadata") or {})
+            if row.get("thread_id"):
+                metadata["thread_id"] = row["thread_id"]
             try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                result = await adapter.send(
+                    chat_id=row["chat_id"], content=content, metadata=metadata or None)
             except Exception as send_err:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
                 if result is not None and getattr(result, "success", False):
-                    await asyncio.to_thread(mark_delivered, row["obligation_id"])
+                    await asyncio.to_thread(
+                        mark_delivered, row["obligation_id"],
+                        str(getattr(result, "message_id", "") or "") or None)
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s (obligation %s, attempt %d)",

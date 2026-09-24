@@ -1052,6 +1052,16 @@ def _run_prompt_submit(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
             _emit("message.complete", sid, payload)
+            if status == "complete":
+                # Forward this completed exchange to the session's own messaging chat when
+                # display.platforms.<platform>.mirror_local_turns is on (Desktop/TUI/dashboard
+                # turns of gateway-owned sessions); no-op everywhere else. Never raises.
+                try:
+                    from tui_gateway.turn_mirror import mirror_turn
+
+                    mirror_turn(session, st.agent, text, raw, display_kind=display_kind, rid=str(rid))
+                except Exception:  # pragma: no cover - a mirror must never affect the turn
+                    logger.debug("turn mirror dispatch failed", exc_info=True)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
                 _after_complete_turn(sid, session, st, raw)

@@ -96,7 +96,7 @@ def _orphan(oid):
 
 
 class TestSchemaMigration:
-    def test_adds_adapter_profile_to_existing_ledger(self):
+    def test_adds_optional_delivery_columns_to_existing_ledger(self):
         conn = sqlite3.connect(dl._db_path())
         try:
             conn.execute(
@@ -123,13 +123,43 @@ class TestSchemaMigration:
         finally:
             conn.close()
 
-        assert "adapter_profile" in columns
+        assert {"adapter_profile", "metadata_json", "platform_message_id"} <= columns
 
 
 class TestStateMachine:
     def test_record_starts_pending(self):
         _record()
         assert _row("ob-1")["state"] == "pending"
+
+    def test_record_preserves_mirror_metadata_and_message_id(self):
+        assert dl.record_obligation(
+            obligation_id="mirror-1", session_key="agent:main:telegram:dm:1",
+            platform="telegram", chat_id="1", thread_id=None, content="mirror",
+            adapter_profile="ops", metadata={"notify": False},
+            preserve_existing=True,
+        ) is True
+        dl.mark_attempting("mirror-1")
+        dl.mark_delivered("mirror-1", "987")
+        with dl._connect() as conn:
+            row = conn.execute(
+                "SELECT state, metadata_json, platform_message_id FROM delivery_obligations "
+                "WHERE obligation_id='mirror-1'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "delivered"
+        assert row[1] == '{"notify":false}'
+        assert row[2] == "987"
+
+    def test_preserve_existing_deduplicates_same_obligation(self):
+        assert dl.record_obligation(
+            obligation_id="mirror-1", session_key="s", platform="telegram", chat_id="1",
+            thread_id=None, content="first", preserve_existing=True,
+        ) is True
+        assert dl.record_obligation(
+            obligation_id="mirror-1", session_key="s", platform="telegram", chat_id="1",
+            thread_id=None, content="second", preserve_existing=True,
+        ) is False
+        assert _row("mirror-1")["content"] == "first"
 
 
 class TestObligationId:
@@ -428,6 +458,22 @@ class TestGatewayRedeliverySweep:
         runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
             "agent:main:slack:channel:C1"
         )
+
+    @pytest.mark.asyncio
+    async def test_pending_redelivery_preserves_persisted_send_metadata(self):
+        dl.record_obligation(
+            obligation_id="ob-1", session_key="agent:main:slack:channel:C1", platform="slack",
+            chat_id="C1", thread_id="171.001", content="the final answer",
+            metadata={"notify": False}, preserve_existing=True,
+        )
+        _orphan("ob-1")
+        adapter = self._adapter()
+        runner = self._runner(adapter)
+
+        assert await runner._redeliver_pending_obligations() == 1
+        assert adapter.send.call_args.kwargs["metadata"] == {
+            "notify": False, "thread_id": "171.001"
+        }
 
     @pytest.mark.asyncio
     async def test_startup_redelivery_uses_persisted_transport_owner(self):

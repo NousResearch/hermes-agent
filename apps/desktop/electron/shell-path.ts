@@ -28,6 +28,12 @@ const PATH_START = '__HERMES_LOGIN_PATH_START__'
 const PATH_END = '__HERMES_LOGIN_PATH_END__'
 const PROBE_COMMAND = "printf '%s' \"" + PATH_START + '${PATH}' + PATH_END + '"'
 const ATTEMPT_TIMEOUT_MS = 5000
+const MACOS_HOMEBREW_PATH_ENTRIES = new Set([
+  '/opt/homebrew/bin',
+  '/opt/homebrew/sbin',
+  '/usr/local/bin',
+  '/usr/local/sbin'
+])
 
 function loginShellExecutable(env: any = process.env, platform = process.platform) {
   const shell = typeof env?.SHELL === 'string' ? env.SHELL.trim() : ''
@@ -61,10 +67,37 @@ function extractSentinelPath(stdout) {
   return text.slice(valueStart, end).trim() || null
 }
 
-// Login-shell entries first (Homebrew/version-manager dirs win), then any
-// current-only entries appended, duplicates and empties dropped.
-function mergeLoginShellPath(loginPath, currentPath, { delimiter = ':' }: any = {}) {
-  return appendUniquePathEntries([loginPath, currentPath], { delimiter })
+// Login-shell entries first, then any current-only entries appended, duplicates
+// and empties dropped. macOS's path_helper can move Homebrew directories below
+// /usr/bin in a login shell, so move only those entries immediately before it
+// without changing the relative order of user-managed entries.
+function mergeLoginShellPath(loginPath, currentPath, { delimiter = ':', platform = process.platform }: any = {}) {
+  const merged = appendUniquePathEntries([loginPath, currentPath], { delimiter })
+
+  if (platform !== 'darwin') {
+    return merged
+  }
+
+  const entries = merged.split(delimiter)
+  const systemBinIndex = entries.indexOf('/usr/bin')
+
+  if (systemBinIndex === -1) {
+    return merged
+  }
+
+  const beforeSystemBin = entries.slice(0, systemBinIndex)
+  const afterSystemBin = entries.slice(systemBinIndex)
+  const misplacedHomebrewEntries = afterSystemBin.filter(entry => MACOS_HOMEBREW_PATH_ENTRIES.has(entry))
+
+  if (!misplacedHomebrewEntries.length) {
+    return merged
+  }
+
+  return [
+    ...beforeSystemBin,
+    ...misplacedHomebrewEntries,
+    ...afterSystemBin.filter(entry => !MACOS_HOMEBREW_PATH_ENTRIES.has(entry))
+  ].join(delimiter)
 }
 
 function runProbe(shell, flags, execFileFn, timeoutMs): Promise<string | null> {
@@ -170,7 +203,7 @@ async function applyLoginShellPath({
 
   const key = pathEnvKey(env, platform)
   const delimiter = delimiterForPlatform(platform)
-  const merged = mergeLoginShellPath(loginPath, env?.[key] || '', { delimiter })
+  const merged = mergeLoginShellPath(loginPath, env?.[key] || '', { delimiter, platform })
 
   if (!merged || merged === env?.[key]) {
     return { applied: false, reason: 'unchanged', path: merged }

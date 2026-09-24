@@ -56,6 +56,29 @@ test('mergeLoginShellPath puts login entries first and appends current-only entr
   assert.equal(merged, '/opt/homebrew/bin:/Users/u/.local/bin:/usr/bin:/bin:/launcher/only')
 })
 
+test('mergeLoginShellPath keeps Apple Silicon and Intel Homebrew entries ahead of /usr/bin on macOS', () => {
+  const merged = mergeLoginShellPath(
+    '/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/u/.local/bin',
+    '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/launcher/only',
+    { delimiter: ':', platform: 'darwin' }
+  )
+
+  assert.equal(
+    merged,
+    '/usr/local/bin:/System/Cryptexes/App/usr/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/Users/u/.local/bin:/launcher/only'
+  )
+})
+
+test('mergeLoginShellPath preserves path_helper ordering outside macOS', () => {
+  const merged = mergeLoginShellPath(
+    '/usr/bin:/bin:/opt/homebrew/bin:/Users/u/.local/bin',
+    '/opt/homebrew/bin:/usr/bin:/launcher/only',
+    { delimiter: ':', platform: 'linux' }
+  )
+
+  assert.equal(merged, '/usr/bin:/bin:/opt/homebrew/bin:/Users/u/.local/bin:/launcher/only')
+})
+
 test('loginShellExecutable honors $SHELL and falls back per platform', () => {
   assert.equal(loginShellExecutable({ SHELL: '/usr/local/bin/fish' }, 'darwin'), '/usr/local/bin/fish')
   assert.equal(loginShellExecutable({}, 'darwin'), '/bin/zsh')

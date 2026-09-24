@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from agent.turn_finalizer import finalize_turn
 
 
@@ -83,6 +85,82 @@ class FakeAgent:
 
 
 
+
+
+@pytest.mark.parametrize("display_enabled", [False, True])
+@pytest.mark.parametrize("has_failure", [False, True])
+@pytest.mark.parametrize("interrupted", [False, True])
+@pytest.mark.parametrize("answer", ["The update needs another attempt.", ""])
+def test_mutation_diagnostics_respect_display_setting(
+    monkeypatch, caplog, tmp_path, display_enabled, has_failure, interrupted, answer
+):
+    import json
+    from functools import partial
+    from hermes_constants import get_hermes_home
+    from run_agent import AIAgent
+
+    monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
+    config = get_hermes_home() / "config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        f"display:\n  file_mutation_verifier: {str(display_enabled).lower()}\n"
+    )
+    agent = FakeAgent()
+    agent._turn_failed_file_mutations = {}
+    agent._turn_file_mutation_paths = set()
+    target = str(tmp_path / "guide.md")
+    AIAgent._record_file_mutation_result(
+        agent, "patch", {"mode": "replace", "path": target},
+        json.dumps({"error": "hunk 3 not found"}), is_error=True,
+    )
+    if not has_failure:
+        AIAgent._record_file_mutation_result(
+            agent, "write_file", {"path": target},
+            json.dumps({"bytes_written": 12}), is_error=False,
+        )
+    agent._file_mutation_verifier_enabled = partial(
+        AIAgent._file_mutation_verifier_enabled, agent
+    )
+    agent._format_file_mutation_failure_footer = AIAgent._format_file_mutation_failure_footer
+    agent._file_mutations_still_failed = AIAgent._file_mutations_still_failed
+    messages = [
+        {"role": "user", "content": "Update the guide."},
+        {"role": "assistant", "content": answer},
+    ]
+
+    with caplog.at_level("WARNING"):
+        result = finalize_turn(
+            agent,
+            final_response=answer,
+            api_call_count=1,
+            interrupted=interrupted,
+            failed=False,
+            messages=messages,
+            conversation_history=[],
+            effective_task_id="task",
+            turn_id="turn",
+            user_message="Update the guide.",
+            original_user_message="Update the guide.",
+            _should_review_memory=False,
+            _turn_exit_reason="interrupted" if interrupted else "text_response(final)",
+        )
+
+    warnings = [
+        record for record in caplog.records
+        if record.getMessage().startswith("Unresolved file mutation:")
+    ]
+    assert len(warnings) == int(has_failure)
+    if has_failure:
+        diagnostic = warnings[0].getMessage()
+        assert "sess-test" in diagnostic
+        assert "guide.md" in diagnostic
+        assert "patch" in diagnostic
+        assert "hunk 3 not found" in diagnostic
+    should_show_footer = has_failure and display_enabled and not interrupted and bool(answer)
+    assert ("File-mutation verifier:" in result["final_response"]) == should_show_footer
+    if not should_show_footer:
+        assert result["final_response"] == answer
+    assert agent.persisted_messages[-1]["content"] == answer
 
 
 def test_final_response_closes_tool_tail_before_persistence(monkeypatch):

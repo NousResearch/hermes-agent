@@ -16,7 +16,6 @@ import contextlib
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -25,21 +24,23 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
 import yaml
 
 from tests.e2e.core._pending_fixes import known_failure
-from tests.fakes.providers.catalog_fake import USAGE_IN, USAGE_OUT, CatalogFake, Recorded, bare_path
+from tests.fakes.providers.catalog_fake import USAGE_IN, USAGE_OUT, CatalogFake, Recorded
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+# Hard bound per child. A row that talks to its vendor host instead of the fake ends on its own:
+# the sentinel refuses the CONNECT at once and ``auto_recovery_cycles: 0`` (see ``write_home``)
+# stops the retry ladder (xai: 7 refused CONNECTs, rc 2 after ~18 s). No earlier wall-clock
+# "vendor CONNECT then silence" kill: healthy rows CONNECT their own vendor host during startup
+# (deepinfra's catalog fetch) and then do seconds of CPU-bound init before the first inference,
+# which a loaded CI runner stretches past any fixed grace (it killed a healthy deepinfra turn).
 TURN_TIMEOUT = 75.0
-# A child that CONNECTs to a provider's real host and then sends nothing to its loopback fake for
-# this long is talking to the vendor, not the fake: kill it and judge what it did. Healthy rows
-# (zai, deepinfra, router) CONNECT their vendor host at startup and reach the fake <1 s later.
-VENDOR_CONNECT_GRACE_S = 8.0
 SHARDS = 3
 FINAL = "CATALOG-TURN-COMPLETE"
 
@@ -214,42 +215,22 @@ def write_home(root: Path, model: dict[str, Any], extra_cfg: dict[str, Any] | No
     return home
 
 
-def _vendor_stall(watch: Iterable[CatalogFake], sentinel: CatalogFake, vendor_hosts: frozenset[str]) -> str:
-    """Why the child should be killed now, or "" — it CONNECTed to a provider's real host and
-    no watched fake has seen an inference request since, for ``VENDOR_CONNECT_GRACE_S``."""
-    hits = [r for r in list(sentinel.egress) if r.path in vendor_hosts]
-    if not hits:
-        return ""
-    since = hits[0].t
-    if any(r.method == "POST" and r.t >= since for f in watch for r in list(f.requests)):
-        return ""
-    if time.time() - since < VENDOR_CONNECT_GRACE_S:
-        return ""
-    return f"killed {VENDOR_CONNECT_GRACE_S}s after CONNECT {hits[0].path} with no inference at the fake"
-
-
-def run_hermes(home: Path, cwd: Path, env_extra: dict[str, str], *args: str, timeout: float = TURN_TIMEOUT,
-               sentinel: CatalogFake | None = None, watch: Iterable[CatalogFake] = (),
-               vendor_hosts: frozenset[str] = frozenset()) -> subprocess.CompletedProcess:
-    """Run the real CLI; a child that stalls on a vendor host (see :func:`_vendor_stall`) or
-    outlives ``timeout`` is killed (rc -9) and the reason lands in stderr."""
-    watch = tuple(watch)
+def run_hermes(home: Path, cwd: Path, env_extra: dict[str, str], *args: str,
+               timeout: float = TURN_TIMEOUT) -> subprocess.CompletedProcess:
+    """Run the real CLI; a child that outlives ``timeout`` is killed (rc -9, reason in stderr)."""
     with tempfile.TemporaryFile("w+", encoding="utf-8") as out, tempfile.TemporaryFile("w+", encoding="utf-8") as err:
         proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", *args], cwd=cwd,
                                 env=hermetic_env(home, env_extra), stdout=out, stderr=err, text=True,
                                 stdin=subprocess.DEVNULL)
-        deadline, why = time.monotonic() + timeout, ""
-        while proc.poll() is None:
-            why = (f"TIMEOUT after {timeout}s" if time.monotonic() > deadline else
-                   _vendor_stall(watch, sentinel, vendor_hosts) if sentinel is not None else "")
-            if why:
-                proc.kill()
-                break
-            time.sleep(0.2)
-        rc = proc.wait()
+        try:
+            rc, why = proc.wait(timeout=timeout), ""
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            rc, why = -9, f"\nTIMEOUT after {timeout}s"
         out.seek(0)
         err.seek(0)
-        return subprocess.CompletedProcess(proc.args, -9 if why else rc, out.read(), err.read() + (f"\n{why}" if why else ""))
+        return subprocess.CompletedProcess(proc.args, rc, out.read(), err.read() + why)
 
 
 def session_usage(home: Path) -> dict[str, Any] | None:
@@ -307,8 +288,7 @@ def drive_turn(row: Row, root: Path, catalog: list[Row]) -> TurnResult:
     started = time.monotonic()
     with CatalogFake(tool_args={"path": str(project / "canary.txt")}, final_text=FINAL, routes=row.routes()) as fake:
         home = write_home(root, {"provider": row.name, "base_url": fake.origin + row.base_path})
-        proc = run_hermes(home, project, {**keys, **fake.proxy_env()}, "-z", "Read canary.txt and report.",
-                          sentinel=fake, watch=[fake], vendor_hosts=frozenset(provider_hosts(catalog)))
+        proc = run_hermes(home, project, {**keys, **fake.proxy_env()}, "-z", "Read canary.txt and report.")
         requests = list(fake.requests)
         egress = fake.egress_hosts()
     return TurnResult(row=row, rc=proc.returncode, stdout=proc.stdout, stderr=proc.stderr, requests=requests,

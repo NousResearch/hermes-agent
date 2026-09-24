@@ -50,8 +50,7 @@ def _drive(primary: Row, fallback: Row, root: Path) -> dict:
         home = write_home(root, {"provider": primary.name, "base_url": dead.origin + primary.base_path}, {
             "fallback_providers": [{"provider": fallback.name, "model": "catalog-model-a",
                                     "base_url": alive.origin + fallback.base_path}]})
-        proc = run_hermes(home, project, {**keys, **dead.proxy_env()}, "-z", "Read canary.txt and report.",
-                          sentinel=dead, watch=[alive], vendor_hosts=frozenset({fallback.vendor_host()} - {""}))
+        proc = run_hermes(home, project, {**keys, **dead.proxy_env()}, "-z", "Read canary.txt and report.")
         dead_reqs, alive_reqs = dead.inference(), alive.inference()
         egress = dead.egress_hosts()
     pk, fk = keys[primary.key_env or ""], keys[fallback.key_env or ""]

@@ -21,8 +21,24 @@ jobs:
     # 96 cores clear the floor that the slowest single test file sets (about
     # 82s). A second slice divides work that is already at that floor, and
     # adds a second setup.
-    runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    #
+    # Fork consumers: these large runners are provisioned per repository, so a
+    # fork checkout falls back to whatever hardware it has and the unsliced
+    # suite no longer fits the 30-minute budget — the job dies with a timeout
+    # instead of a verdict. The runner label, worker count and job budget are
+    # therefore read from repository variables (Settings → Secrets and
+    # variables → Actions → Variables tab); unset variables keep this
+    # repository's exact current behavior. A fork that wants a real verdict
+    # sets, for example:
+    #
+    #     TESTS_RUNNER=ubuntu-latest        # any runner label it has
+    #     TESTS_WORKERS=8                   # ~one worker per core
+    #     TESTS_TIMEOUT_MINUTES=180         # sized to the smaller hardware
+    #
+    # Slicing does not need to come back for this: the single job simply sizes
+    # itself to the machine it lands on.
+    runs-on: ${{ vars.TESTS_RUNNER || 'ubuntu-latest-96-core' }}
+    timeout-minutes: ${{ fromJSON(vars.TESTS_TIMEOUT_MINUTES || '30') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -151,7 +167,11 @@ jobs:
           # across a 6x range. The suite has sufficient concurrency at this
           # size. The remaining time is the slowest files plus the setup.
           # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
+          #
+          # TESTS_WORKERS repository variable lets a fork size this to the
+          # hardware its own runners provide (see the comment at the top of
+          # this job); upstream keeps the measured 96.
+          HERMES_TEST_WORKERS: ${{ vars.TESTS_WORKERS || 96 }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

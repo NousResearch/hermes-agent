@@ -29,6 +29,11 @@ _NO_REPLAY = (0, 0, False, None)
 # that long after the change (seconds): output freezes about their sum plus one signal interval.
 _RESIZE_HOLD_MAX = 0.7
 _RESIZE_SETTLE = 0.03
+# How long before a width change was first seen a chrome paint may still have reached the
+# terminal after it narrowed (seconds; a paint the width moved under is always suspect): the
+# signal lands a few ms after the multiplexer re-wraps, and it reads our output promptly — in
+# tmux, paints that ended up to 4 ms before the signal were re-wrapped, never clipped (#95375).
+_RESIZE_PAINT_MARGIN = 0.01
 
 
 def _is_eio(exc: BaseException) -> bool:
@@ -292,26 +297,65 @@ class CLITerminalMixin:
         return rows, size.columns, _terminal_reflows() is not True
 
     @staticmethod
-    def _aim_erase_at_reflowed_chrome(app, columns: int) -> None:
+    def _painted_row_widths(renderer) -> list[int]:
+        """Cells each row of the renderer's last paint reaches: prompt_toolkit writes a row up to
+        its last cell that shows something (the blanks after it are erase-to-end-of-line)."""
+        screen = renderer._last_screen
+        if screen is None:
+            return []
+        has_style = renderer._style_string_has_style
+        return [1 + max((x for x, ch in screen.data_buffer[y].items() if ch.char != " " or has_style[ch.style]),
+                        default=0) for y in range(screen.height)]
+
+    def _note_chrome_paint(self, app, full: bool) -> None:
+        """Remember when each row of the chrome prompt_toolkit just drew was written, and how
+        wide — ``full``: the whole chrome was written anew (for ``_aim_erase_at_reflowed_chrome``).
+        A row only changes height when its width does, so only those changes are kept."""
+        renderer = app.renderer
+        size = renderer._last_size
+        try:  # the width moved while it rendered: the terminal may have got the rows clipped
+            suspect = size is None or app.output.get_size().columns != size.columns
+        except Exception:
+            suspect = True
+        now = time.monotonic()
+        previous = [] if full else getattr(self, "_chrome_paints", [])
+        paints = []
+        for y, width in enumerate(self._painted_row_widths(renderer)):
+            history = previous[y] if y < len(previous) else []
+            if not history or history[-1][1] != width:
+                history = [*history[-3:], (now, width, suspect)]
+            paints.append(history)
+        self._chrome_paints = paints
+        self._chrome_paints_screen = renderer._last_screen
+
+    def _aim_erase_at_reflowed_chrome(self, app, columns: int) -> None:
         """Point prompt_toolkit's erase at the top of its last paint as a reflowing terminal
         re-wrapped it to ``columns`` (#95375).
 
         ``renderer.erase()`` moves up ``_cursor_pos.y`` rows — right where rows stay in place,
         short of the top on a reflowing terminal, whose re-wrapped chrome rows would stay
-        above the new paint. prompt_toolkit writes a row up to its last cell that shows
-        something (the blanks after it are erase-to-end-of-line, which a reflow drops): that
-        width, re-wrapped, is the row's height now.
+        above the new paint. A row's width, re-wrapped, is its height now — if the terminal got
+        the row before it narrowed. prompt_toolkit writes rows with autowrap off, so one it got
+        after narrowing (painted just before the width change was seen, the signal still on its
+        way) was clipped to one row instead, and counting it as re-wrapped would erase
+        transcript rows above the chrome. Rows painted within ``_RESIZE_PAINT_MARGIN`` of the
+        width change, or unrecorded, count as one row: a stale chrome row left above the new
+        paint is benign, an erased transcript row is lost for good.
         """
         renderer = app.renderer
         screen, cursor = renderer._last_screen, renderer._cursor_pos
         if screen is None or columns <= 0:
             return
-        has_style = renderer._style_string_has_style
+        paints = getattr(self, "_chrome_paints", []) if getattr(self, "_chrome_paints_screen", None) is screen else []
+        cutoff = (getattr(self, "_resize_seen_at", None) or time.monotonic()) - _RESIZE_PAINT_MARGIN
         rows = cursor.x // columns
         for y in range(cursor.y):
-            row = screen.data_buffer[y]
-            last = max((x for x, ch in row.items() if ch.char != " " or has_style[ch.style]), default=0)
-            rows += -(-(last + 1) // columns)
+            history = paints[y] if y < len(paints) else []
+            settled = [i for i, (at, _width, suspect) in enumerate(history) if at < cutoff and not suspect]
+            if settled:  # re-wrapped as it was then, or as a later, narrower paint reached it
+                rows += -(-min(width for _at, width, _suspect in history[settled[-1]:]) // columns)
+            else:
+                rows += 1
         renderer._cursor_pos = cursor._replace(y=rows)
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
@@ -450,6 +494,7 @@ class CLITerminalMixin:
                 if pending or width is None or width != getattr(self, "_last_resize_width", None):
                     if not pending:
                         self._resize_recovery_pending = True
+                        self._resize_seen_at = now
                         # A hold its last recovery could not release keeps its start: the
                         # next recovery is due at once.
                         if getattr(self, "_resize_hold_since", None) is None:
@@ -496,11 +541,14 @@ class CLITerminalMixin:
 
         def _redraw_unless_resizing(render_as_done: bool = False) -> None:
             if render_as_done or not self._output_waits_for_resize(app):
+                renderer = app.renderer
                 floor = _chrome_floor()
                 if floor:  # what CPR would tell prompt_toolkit: the rows down to the bottom
-                    renderer = app.renderer
                     renderer._min_available_height = max(renderer._min_available_height, floor)
+                before = renderer._last_screen, renderer._last_size
                 original_redraw(render_as_done=render_as_done)
+                # prompt_toolkit repaints every row when it has no previous paint or a new size
+                self._note_chrome_paint(app, before[0] is None or renderer._last_size != before[1])
 
         app._redraw = _redraw_unless_resizing
         _set_paint_gate(app, lambda: self._output_waits_for_resize(app))

@@ -4,7 +4,9 @@ tmux's scrollback + screen exactly once, with no stray blank or prompt rows.
 A real ``hermes chat --cli`` runs in a private tmux server against the scripted fake provider.
 One session goes through a resize storm while a reply streams, a shrink while idle, and a
 two-step shrink while the next reply streams; ``capture-pane -J`` then joins tmux's re-wrapped
-rows back into lines. Mocked-renderer unit tests cannot see this: what lands in scrollback is
+rows back into lines. Reply lines are 146 columns, so each one wraps at every width here, and
+the two-step shrink lands as a line is committed — when the chrome may reach tmux before or
+after it narrows. Mocked-renderer unit tests cannot see this: what lands in scrollback is
 decided by how the terminal re-wraps the rows prompt_toolkit already wrote.
 """
 
@@ -32,7 +34,7 @@ WORDS = {1: 60, 2: 260, 3: 130}
 
 def _reply(turn: int) -> str:
     words = [f"t{turn}w{i:03d}" for i in range(WORDS[turn])]
-    return "\n".join(" ".join(words[j:j + 13]) for j in range(0, len(words), 13))
+    return "\n".join(" ".join(words[j:j + 21]) for j in range(0, len(words), 21))
 
 
 def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Path) -> None:
@@ -89,7 +91,7 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
             resize(80)  # idle shrink
             time.sleep(1.5)
             ask(3)
-            wait_for("t3w020")
+            wait_for("t3w020")  # the end of the first line: its commit repaints the chrome
             resize(70)  # two-step shrink mid-stream
             time.sleep(0.8)
             resize(60)
@@ -98,7 +100,13 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
         finally:
             tmux("kill-server")
 
-    words = Counter(re.findall(r"\bt\dw\d{3}\b", final))
+    # A streaming-preview row painted as tmux narrowed may have been re-wrapped or clipped: it is
+    # left rather than erased (a stale chrome row is benign, an erased transcript row is lost) —
+    # at most one per mid-stream recovery: the drag's and each step's (#95375).
+    lines = final.split("\n")
+    stale_preview = [line for line in lines if line.lstrip().startswith("\u2026")]
+    assert len(stale_preview) <= 3, final
+    words = Counter(re.findall(r"\bt\dw\d{3}\b", "\n".join(ln for ln in lines if ln not in stale_preview)))
     expected = {f"t{t}w{i:03d}" for t, n in WORDS.items() for i in range(n)}
     assert sorted(w for w in expected if words[w] != 1) == [], final
     assert [final.count(f"zq{t}q") for t in WORDS] == [1, 1, 1], final

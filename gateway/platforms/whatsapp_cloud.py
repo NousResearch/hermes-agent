@@ -5,8 +5,7 @@ formatting behavior via ``WhatsAppBehaviorMixin``.
 Required env: WHATSAPP_CLOUD_PHONE_NUMBER_ID, WHATSAPP_CLOUD_ACCESS_TOKEN. Optional:
 WHATSAPP_CLOUD_APP_ID, _APP_SECRET (HMAC key for X-Hub-Signature-256), _WABA_ID,
 _VERIFY_TOKEN (hub.verify_token), _WEBHOOK_HOST (unset → dual-stack all interfaces),
-_WEBHOOK_PORT (8090), _WEBHOOK_PATH (/whatsapp/webhook), _API_VERSION (v20.0),
-_SEND_READ_RECEIPTS (default true; false also disables the typing indicator)."""
+_WEBHOOK_PORT (8090), _WEBHOOK_PATH (/whatsapp/webhook), _API_VERSION (v20.0)."""
 
 from __future__ import annotations
 
@@ -49,6 +48,7 @@ from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +202,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_CLOUD_GROUP_ALLOW_FROM",), _get_wsecret)
         self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(raw_groups))
         self._mention_patterns = self._compile_mention_patterns()
-        rr = extra.get("send_read_receipts", _get_wsecret("WHATSAPP_CLOUD_SEND_READ_RECEIPTS", default="true"))
-        self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
+        self._send_read_receipts = is_truthy_value(extra.get("send_read_receipts", True), default=True)
         # Webhook dedup state (in-memory, FIFO-evicted) and counters.
         self._seen_wamids: "OrderedDict[str, bool]" = OrderedDict()
         self._duplicate_count = self._accepted_count = self._rejected_signature_count = 0
@@ -380,9 +379,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     # ------------------------------------------------------------------ typing indicator + read receipts
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Mark the latest inbound message read AND show a typing indicator. Meta couples
-        both into one POST; the indicator auto-dismisses on reply or after 25s. Best-effort:
-        every error is swallowed so the main reply path is never blocked."""
+        """Send the combined read-receipt + typing-indicator request for the latest
+        inbound message. No-op when read receipts are disabled. Meta couples both
+        into one POST; the indicator auto-dismisses on reply or after 25s.
+        Best-effort: every error is swallowed so the main reply path is never blocked."""
         if not self._send_read_receipts:
             # Meta exposes the typing indicator only as part of the mark-as-read
             # request, so opting out of read receipts also disables the indicator.

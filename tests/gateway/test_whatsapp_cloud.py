@@ -1401,32 +1401,10 @@ class TestSendTypingReadReceiptOptOut:
 
         adapter._http_client.post.assert_not_called()
 
-    def test_env_false_maps_to_extra_false(self, monkeypatch):
-        monkeypatch.setenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "1234567890")
-        monkeypatch.setenv("WHATSAPP_CLOUD_ACCESS_TOKEN", "test-token")
-        monkeypatch.setenv("WHATSAPP_CLOUD_SEND_READ_RECEIPTS", "false")
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
-
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        assert config.platforms[Platform.WHATSAPP_CLOUD].extra["send_read_receipts"] is False
-
-    @pytest.mark.asyncio
-    async def test_env_false_disables_post(self, monkeypatch):
-        monkeypatch.setenv("WHATSAPP_CLOUD_SEND_READ_RECEIPTS", "false")
-        adapter = _make_config_adapter()
-        assert adapter._send_read_receipts is False
-        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.LATEST"
-        adapter._http_client = _fake_http()
-
-        await adapter.send_typing("15551234567")
-
-        adapter._http_client.post.assert_not_called()
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("raw", "enabled"),
-        [("false", False), ("0", False), ("no", False), ("true", True)],
+        [("false", False), ("0", False), ("no", False), ("off", False), ("true", True)],
     )
     async def test_string_values_parse(self, raw, enabled):
         adapter = _make_config_adapter(send_read_receipts=raw)
@@ -1446,6 +1424,64 @@ class TestSendTypingReadReceiptOptOut:
         await adapter.send_typing("15551234567")  # no wamid cached, must not raise
 
         adapter._http_client.post.assert_not_called()
+
+
+def _load_cloud_with_yaml(yaml_body, monkeypatch, tmp_path):
+    """Real config path: tmp config.yaml + only the two credential env vars."""
+    from unittest.mock import patch
+
+    (tmp_path / "config.yaml").write_text(yaml_body)
+    monkeypatch.setenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "1234567890")
+    monkeypatch.setenv("WHATSAPP_CLOUD_ACCESS_TOKEN", "test-token")
+    monkeypatch.delenv("WHATSAPP_CLOUD_SEND_READ_RECEIPTS", raising=False)
+    with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+        from gateway.config import load_gateway_config
+        return load_gateway_config()
+
+
+class TestSendReadReceiptsYamlLoading:
+    """YAML is the only surface: `whatsapp_cloud.send_read_receipts` (default true)."""
+
+    def test_yaml_false_survives_cred_env(self, monkeypatch, tmp_path):
+        from gateway.config import Platform
+
+        config = _load_cloud_with_yaml(
+            "whatsapp_cloud:\n  send_read_receipts: false\n", monkeypatch, tmp_path
+        )
+        assert config.platforms[Platform.WHATSAPP_CLOUD].extra["send_read_receipts"] is False
+
+    @pytest.mark.asyncio
+    async def test_yaml_false_disables_post_end_to_end(self, monkeypatch, tmp_path):
+        from gateway.config import Platform
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        config = _load_cloud_with_yaml(
+            "whatsapp_cloud:\n  send_read_receipts: false\n", monkeypatch, tmp_path
+        )
+        adapter = WhatsAppCloudAdapter(config.platforms[Platform.WHATSAPP_CLOUD])
+        assert adapter._send_read_receipts is False
+        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.LATEST"
+        adapter._http_client = _fake_http()
+
+        await adapter.send_typing("15551234567")
+
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("yaml_body", ["", "whatsapp_cloud:\n  send_read_receipts: true\n"])
+    async def test_absent_or_true_stays_enabled(self, monkeypatch, tmp_path, yaml_body):
+        from gateway.config import Platform
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        config = _load_cloud_with_yaml(yaml_body, monkeypatch, tmp_path)
+        adapter = WhatsAppCloudAdapter(config.platforms[Platform.WHATSAPP_CLOUD])
+        assert adapter._send_read_receipts is True
+        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.LATEST"
+        adapter._http_client = _fake_http()
+
+        await adapter.send_typing("15551234567")
+
+        adapter._http_client.post.assert_called_once()
 
 
 

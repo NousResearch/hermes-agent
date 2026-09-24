@@ -2172,8 +2172,51 @@ class TestTruncateToolCallArgsJson:
         return _truncate_tool_call_args_json
 
 
+    def test_snip_marker_is_not_prose_mimicable(self):
+        """The marker must NOT look like text a model could have typed itself:
+        '...[truncated]' read as the model's own prior wording was reproduced in
+        a fresh outbound send (2026-09-14 Google Chat incident)."""
+        shrink = self._helper()
+        import json as _json
+        shrunk = shrink(_json.dumps({"content": "x" * 1000}))
+        assert "...[truncated]" not in shrunk
+        # Upstream #83714 marker (non-prose, counted) supersedes the old ⟪ctx-snipped⟫ marker;
+        # same carried-fix intent: the marker must not look like model-typed prose. (Leaf must
+        # exceed the break-even of head_chars + marker length or the shrink is deliberately a no-op.)
+        assert _COMPRESSION_MARKER_PREFIX in shrunk
+
+    def test_outbound_tool_args_are_exempt_from_snipping(self):
+        """send_message-style argument text IS the message; snipping it in history
+        lets a later send reproduce the cut (2026-09-14 incident)."""
+        import json as _json
+        from agent.context_compressor import _OUTBOUND_ARG_EXEMPT_TOOLS
+        assert "send_message" in _OUTBOUND_ARG_EXEMPT_TOOLS
+        long_text = "Hej! Detta ar ett langt meddelande. " * 30  # > 200 chars leaf, args > 500 total
+        msgs = [{
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "mcp__google_chat__send_message",
+                                          "arguments": _json.dumps({"space": "spaces/X", "text": long_text})}},
+                {"id": "c2", "function": {"name": "browser_exec",
+                                          "arguments": _json.dumps({"code": "y" * 600})}},
+            ],
+        }]
+        from agent.context_compressor import ContextCompressor
+        changed = ContextCompressor._truncate_tool_call_args_at(msgs, 0)
+        assert changed is False  # browser_exec is exempt (DIVERSE-15): code runs verbatim as Python
+        tcs = msgs[0]["tool_calls"]
+        assert _json.loads(tcs[0]["function"]["arguments"])["text"] == long_text  # outbound untouched
+        assert _json.loads(tcs[1]["function"]["arguments"])["code"] == "y" * 600  # exempt: unchanged
 
 
+    def test_write_side_tool_membership_pinned(self):
+        """DIVERSE-15 LOW finding: pin the FULL exempt membership so a refactor
+        dropping one of the write-side tools cannot pass the suite silently."""
+        from agent.context_compressor import _OUTBOUND_ARG_EXEMPT_TOOLS
+        for tool in ("terminal", "write_file", "patch", "execute_code",
+                     "browser_exec", "send_message", "send_draft",
+                     "create_draft", "update_draft"):
+            assert tool in _OUTBOUND_ARG_EXEMPT_TOOLS, tool
 
     def test_non_string_leaves_preserved(self):
         import json as _json
@@ -2197,7 +2240,11 @@ class TestTruncateToolCallArgsJson:
 
     def test_pass3_emits_valid_json_for_downstream_provider(self):
         """End-to-end: Pass 3 must never produce the exact failure payload
-        that caused the 400 loop (unterminated string, missing brace)."""
+        that caused the 400 loop (unterminated string, missing brace).
+
+        Carried fix 2026-09-22 (DIVERSE-15): write_file args are NEVER shrunk —
+        a marker in a dispatched write hollows the target file. The shrink-JSON
+        validity contract is exercised via a non-exempt tool instead."""
         import json as _json
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
@@ -2212,7 +2259,7 @@ class TestTruncateToolCallArgsJson:
             "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
             "content": huge_content,
         })
-        assert len(args_payload) > 500  # triggers the Pass-3 shrink
+        assert len(args_payload) > 500  # would trigger the Pass-3 shrink if not exempt
         messages = [
             {"role": "user", "content": "please write two files"},
             {"role": "assistant", "content": None, "tool_calls": [
@@ -2226,8 +2273,15 @@ class TestTruncateToolCallArgsJson:
         ]
         result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
         shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
-        # Must parse — otherwise downstream provider returns 400
-        parsed = _json.loads(shrunk)
+        # write_file is exempt (DIVERSE-15): args unchanged, no marker
+        assert shrunk == args_payload
+        assert _COMPRESSION_MARKER_PREFIX not in shrunk
+
+        # Non-exempt tool: shrink still applies and must emit valid JSON
+        messages[1]["tool_calls"][0]["function"]["name"] = "some_unknown_tool_xyz"
+        result2, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        shrunk2 = result2[1]["tool_calls"][0]["function"]["arguments"]
+        parsed = _json.loads(shrunk2)  # Must parse — otherwise downstream provider returns 400
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].startswith(huge_content[:200])
         assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)

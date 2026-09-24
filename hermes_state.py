@@ -489,6 +489,11 @@ class SessionDB(
     _WRITE_RETRY_SLOW_MIN_S, _WRITE_RETRY_SLOW_MAX_S = 0.250, 1.000
     # PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Hold-time observability: a write txn holding the lock this long starves sibling processes'
+    # lease heartbeats (their patience budget is 20s). Warn so the culprit FUNCTION is named in
+    # the log instead of only the downstream 'database is locked' victims (2026-09-14 storm:
+    # 10 timeouts, zero culprit rows).
+    _SLOW_TXN_HOLD_WARN_S = 5.0
     # Bounded FTS ``'merge'`` (ms of lock each) instead of ``'optimize'`` (9-18s per index on a 10GB
     # DB, longer than a writer's patience); up to _COMMANDS_PER_PASS per index, stopping on no-progress.
     _FTS_MERGE_EVERY_N_WRITES, _FTS_MERGE_MAX_PAGES_PER_INDEX, _FTS_MERGE_COMMANDS_PER_PASS = 1000, 500, 4
@@ -996,17 +1001,38 @@ class SessionDB(
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
+                    _txn_t0 = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         fn_started = True
                         result = fn(self._conn)
                         self._conn.commit()
                     except BaseException:
+                        # d1 (skeptic deleg_01d53160): a rollback releases the lock too, and a
+                        # rollback storm (failures after a long fn) starves siblings exactly
+                        # like a slow commit — measure BOTH paths, not only the success one.
+                        _txn_hold_s = time.monotonic() - _txn_t0
                         try:
                             self._conn.rollback()
                         except Exception:
                             pass
+                        if _txn_hold_s > self._SLOW_TXN_HOLD_WARN_S:
+                            logger.warning(
+                                "state.db write txn held the lock %.1fs before ROLLBACK "
+                                "(>%ss budget) via %s — siblings' lease heartbeats are "
+                                "starved by holds like this",
+                                _txn_hold_s, self._SLOW_TXN_HOLD_WARN_S,
+                                getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                            )
                         raise
+                    _txn_hold_s = time.monotonic() - _txn_t0
+                if _txn_hold_s > self._SLOW_TXN_HOLD_WARN_S:
+                    logger.warning(
+                        "state.db write txn held the lock %.1fs (>%ss budget) via %s — "
+                        "siblings' lease heartbeats are starved by holds like this",
+                        _txn_hold_s, self._SLOW_TXN_HOLD_WARN_S,
+                        getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -1418,6 +1444,49 @@ class SessionDB(
     def _foreign_state_db_holders(self) -> List[Tuple[int, str]]:
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
         return _foreign_state_db_holders(self.db_path)
+
+    def _log_write_lock_holders(self, patience_s: float, fn) -> None:
+        """Log WHO plausibly holds the state.db write lock once patience is exhausted.
+
+        Runs only on the exhausted-patience path (rare and pathological), so a
+        best-effort open-file scan is affordable. Cross-references foreign DB
+        holders against live turn leases so the operator can map a blocking pid
+        to its session instead of staring at a bare 'database is locked'.
+        """
+        try:
+            holders = self._foreign_state_db_holders()
+            holder_pids = {pid for pid, _path in holders if pid and pid > 0}
+            try:
+                leases = self._read_all(
+                    "SELECT conversation_id, holder, expires_at "
+                    "FROM session_turn_leases ORDER BY expires_at"
+                )
+            except Exception:
+                leases = []
+            lease_refs = []
+            for row in leases:
+                holder = str(row["holder"] or "")
+                pid = None
+                if holder.startswith("pid="):
+                    pid_str = holder.split(":", 1)[0][4:]
+                    if pid_str.isdigit():
+                        pid = int(pid_str)
+                if pid in holder_pids:
+                    lease_refs.append(
+                        f"{row['conversation_id']}->{holder[:60]}"
+                        f"(exp {float(row['expires_at']):.0f})"
+                    )
+            if holders or lease_refs:
+                logger.warning(
+                    "state.db write lock contended for >%.0fs while running %s; "
+                    "foreign holders: %s; matching turn leases: %s",
+                    patience_s,
+                    getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                    sorted(holders)[:8] or "none",
+                    lease_refs[:8] or "none",
+                )
+        except Exception:
+            logger.debug("write-lock holder scan failed", exc_info=True)
 
     def _quarantine_reason(self) -> Optional[str]:
         """Why this handle must not checkpoint or run in-file repair, or None. A corrupted image has

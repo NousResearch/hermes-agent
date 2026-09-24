@@ -221,6 +221,23 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if target_error is not None:
         return json.dumps(target_error)
     if operations:
+        if isinstance(operations, str):
+            # Local hardening (state.db, 48h): callers send a JSON-encoded list
+            # in the string slot. Unwrap instead of rejecting -- the model can't
+            # see the difference and just resubmits the same shape.
+            try:
+                operations = json.loads(operations)
+            except (ValueError, TypeError):
+                # Observed shape: '[{"replace", "content": ...' -- action VALUE
+                # present, action KEY missing. Repairable, so repair; a valid
+                # ops string can never contain this (it'd be invalid JSON).
+                import re
+                repaired = re.sub(r'\{\s*"(replace|remove|add)"\s*,',
+                                  r'{"action": "\1",', operations)
+                try:
+                    operations = json.loads(repaired)
+                except (ValueError, TypeError):
+                    pass
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         denied = _background_delete_gate(store, action, operations, target)
@@ -308,7 +325,8 @@ MEMORY_SCHEMA = {
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
         "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "{action, content?, old_text?}). OPERATIONS FORMAT — every item MUST be an object "
+        "with an explicit 'action' field ('add'/'replace'/'remove'). The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "

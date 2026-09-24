@@ -30,7 +30,70 @@ def _scan_memory_content(content: str) -> Optional[str]:
 
 
 def _error(message: str, **extra) -> Dict[str, Any]:
+    if "current_entries" in extra:
+        extra["current_entries"] = _previews(extra["current_entries"])  # bounded, never a full-store echo
     return {"success": False, "error": message, **extra}
+
+
+# --- Local hardening (carried): bounded failure payloads + nearest-entry guidance ---
+# state.db forensics (48h): failure payloads echoing the FULL store blow the turn
+# budget, and 12/23 no-match failures were >=95% similar (stale-snapshot old_text).
+ENTRY_PREVIEW_CHARS = 120
+PREVIEW_LIST_BUDGET = 2400
+
+
+def _entry_preview(entry: str, cap: int = ENTRY_PREVIEW_CHARS) -> str:
+    if len(entry) <= cap:
+        return entry
+    return f"{entry[:cap]} ...[{len(entry)} chars total]"
+
+
+def _previews(entries: List[str]) -> List[str]:
+    previews = [_entry_preview(e) for e in entries]
+    total = sum(len(p) + 3 for p in previews)
+    if total <= PREVIEW_LIST_BUDGET or not previews:
+        return previews
+    kept, used = [], 0
+    for p in previews:
+        if used + len(p) + 3 > PREVIEW_LIST_BUDGET:
+            break
+        kept.append(p)
+        used += len(p) + 3
+    kept.append(f"[+{len(previews) - len(kept)} more entries -- full text in your memory block in the system prompt]")
+    return kept
+
+
+def _nearest_entry_hint(entries: List[str], old_text: str) -> Optional[str]:
+    """Closest existing entry to a non-matching *old_text*, for the observed
+    retry loop where the model resubmits the same stale substring. None when
+    nothing is similar enough to be a useful hint."""
+    if not entries:
+        return None
+    import difflib
+    best = max(entries, key=lambda e: difflib.SequenceMatcher(None, old_text, e).ratio())
+    ratio = difflib.SequenceMatcher(None, old_text, best).ratio()
+    if ratio < 0.4:
+        return None
+    return f"Nearest existing entry ({ratio:.0%} similar): {_entry_preview(best)}"
+
+
+def _retry_old_text(entries: List[str], old_text: str) -> Optional[str]:
+    """A short, word-aligned prefix of the entry nearest to a non-matching
+    *old_text*, verified to uniquely match that one entry -- copy-able verbatim
+    into a retry's ``old_text``. None when nothing is similar (ratio < 0.4)."""
+    if not entries:
+        return None
+    import difflib
+    best = max(entries, key=lambda e: difflib.SequenceMatcher(None, old_text, e).ratio())
+    if difflib.SequenceMatcher(None, old_text, best).ratio() < 0.4:
+        return None
+    words = best.split()
+    for n in range(min(4, len(words)), len(words) + 1):
+        cand = " ".join(words[:n])
+        idx, ambiguous = _find_unique_match(entries, cand)
+        if idx is not None and not ambiguous and entries[idx] is best:
+            return cand
+    return best  # whole entry: unique after load-time dedup
 
 
 def _drift_error(path: Path, bak_path: str) -> Dict[str, Any]:
@@ -328,9 +391,16 @@ class MemoryStore:
             return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
                           matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
         if idx is None:
-            return self._consolidation_failure(_error(
-                f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
-                f"of the entry you want to {verb}.", current_entries=entries))
+            hint = _nearest_entry_hint(entries, old_text)
+            retry = _retry_old_text(entries, old_text)
+            msg = (f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
+                   f"of the entry you want to {verb}.")
+            if hint:
+                msg += f" {hint}"
+            if retry:
+                msg += " Use retry_old_text verbatim as your next old_text."
+            extra = ({"retry_old_text": retry} if retry else {})
+            return self._consolidation_failure(_error(msg, current_entries=entries, **extra))
         return idx
 
     def resolve_entry(self, target: str, old_text: str, verb: str) -> Dict[str, Any]:

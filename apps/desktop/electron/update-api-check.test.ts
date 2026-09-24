@@ -18,10 +18,13 @@ import {
   cacheIsFresh,
   describeUpdateCheckFailure,
   githubRepoSlug,
+  latestReleaseApiUrl,
   listLocalCommits,
   parseCompare,
+  parseReleaseTagName,
   rateLimitFromHeaders,
   resolveBehindLocally,
+  RELEASE_TAG_TTL_MS,
   UPDATE_CHECK_FAILURE_TTL_MS,
   UPDATE_CHECK_TTL_MS
 } from './update-api-check'
@@ -189,4 +192,45 @@ test('listLocalCommits renders the local gap newest-first in the parseCompare sh
   // A failed log renders as "no listed commits", never a fabricated list.
   const failed = fakeGit({ log: { code: 128 } })
   assert.deepEqual(await listLocalCommits(failed.runGit, '/repo', SHA_A, SHA_B), [])
+})
+
+
+test('latest-release anchor: URL builder + tag-name parsing accept only version-shaped releases', () => {
+  assert.equal(latestReleaseApiUrl('NousResearch/hermes-agent'), 'https://api.github.com/repos/NousResearch/hermes-agent/releases/latest')
+
+  assert.equal(parseReleaseTagName({ tag_name: 'v2026.9.21' }), 'v2026.9.21')
+  assert.equal(parseReleaseTagName({ tag_name: 'v0.21.4' }), 'v0.21.4')
+  assert.equal(parseReleaseTagName({ tag_name: 'refs/tags/v2026.9.21' }), 'v2026.9.21')
+  // Oddly named tags (nightly-builds, sha-tags) must never anchor a check.
+  assert.equal(parseReleaseTagName({ tag_name: 'nightly-2026' }), null)
+  assert.equal(parseReleaseTagName({ tag_name: '' }), null)
+  assert.equal(parseReleaseTagName({}), null)
+  assert.equal(parseReleaseTagName(null), null)
+  assert.equal(parseReleaseTagName('v2026.9.21'), null)
+})
+
+test('release-anchored cache stays fresh only while the anchor lookup is within its TTL', () => {
+  const cached = { fetchedAt: 0, currentSha: SHA_A, branch: 'main', status: { behind: 0 } }
+
+  // Branch mode (default): the release-anchor fields never gate freshness.
+  assert.equal(cacheIsFresh(cached, { branch: 'main', currentSha: SHA_A, now: 1, releaseAnchor: 'branch' }), true)
+  assert.equal(cacheIsFresh(cached, { branch: 'main', currentSha: SHA_A, now: 1 }), true)
+
+  // Release mode: a recent anchor lookup keeps the 24h status cache valid...
+  const anchored = { ...cached, releaseTagFetchedAt: 0 }
+  assert.equal(
+    cacheIsFresh(anchored, { branch: 'main', currentSha: SHA_A, now: RELEASE_TAG_TTL_MS - 1, releaseAnchor: 'release' }),
+    true
+  )
+  // ...but once the anchor ages out, a new release may exist — re-check.
+  assert.equal(
+    cacheIsFresh(anchored, { branch: 'main', currentSha: SHA_A, now: RELEASE_TAG_TTL_MS, releaseAnchor: 'release' }),
+    false
+  )
+  // Legacy caches without anchor state get one fresh anchor resolution first
+  // (epoch-0 anchor reads as ancient under a realistic clock).
+  assert.equal(
+    cacheIsFresh(cached, { branch: 'main', currentSha: SHA_A, now: UPDATE_CHECK_TTL_MS - 1, releaseAnchor: 'release' }),
+    false
+  )
 })

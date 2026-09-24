@@ -599,6 +599,26 @@ class SessionCompressionMixin:
             ).rowcount > 0
         return bool(self._execute_write(_do))
 
+    def get_session_turn_lease_owner(self, session_id: str) -> Optional[Tuple[str, float]]:
+        """Read-only ``(holder, expires_at)`` of the conversation-root turn lease; None if absent.
+
+        Reads never take the write lock (WAL), so a contended lease refresh can verify
+        ownership without racing the very lock it failed to acquire (#turn-lease-fix). The
+        walk and the row read are deliberately NOT one transaction: a stale snapshot can only
+        over-report ownership, and over-reporting is safe — the write-side fence
+        (``_check_transcript_write_guards``) still refuses mutations once the holder changed.
+        """
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?",
+                (conversation_id,)).fetchone()
+            if row is None:
+                return None
+            return (str(row["holder"]), float(row["expires_at"]))
+
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""
         if not session_id or not holder:

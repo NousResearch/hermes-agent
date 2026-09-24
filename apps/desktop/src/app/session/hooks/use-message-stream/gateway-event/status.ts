@@ -105,6 +105,37 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       } else {
         announceDeferredCompress()
       }
+    } else if (sessionId && payload?.kind === 'warn') {
+      // Agent-side warn statuses ride the same status.update rail as the
+      // phases above: the compressor's context-lockout warning (#101889
+      // companion), summary-fallback notices, liveness warnings. The Ink
+      // TUI paints them as activity lines, but the desktop had no branch
+      // and dropped them silently — a session that could no longer
+      // compress kept slowing with the warning only in agent.log.
+      // Persistent transcript line (a toast is too easy to miss for a
+      // warning that stays actionable), deduped by stable id so a warn
+      // that repeats every turn collapses into one line.
+      const text = coerceGatewayText(payload?.text).trim()
+
+      if (text) {
+        const id = `status-warn:${text.slice(0, 120)}`
+
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          messages: state.messages.some(m => m.id === id)
+            ? state.messages
+            : [
+                ...state.messages,
+                {
+                  id,
+                  role: 'system',
+                  parts: [textPart(text, occurredAt)],
+                  timestamp: occurredAt
+                }
+              ]
+        }))
+      }
     } else if (sessionId && payload?.kind === 'process') {
       // The gateway's notification poller announces background process
       // completions / watch matches here — re-sync the status stack.

@@ -27,9 +27,9 @@ jobs:
       # login shell (#111949). The ubuntu image ships no zsh and the tests
       # skip without it, so install it here or those legs never run on CI.
       #
-      # The desktop live tests that launch a real Electron process
-      # (electron/pool-retirement-live.test.ts) skip without a display, so
-      # give the runner a virtual one the same way the Playwright lane does.
+      # The desktop portal-session live test drives real Electron windows
+      # (electron/portal-session-live.test.ts) and skips without a display,
+      # so give the runner a virtual one the same way the Playwright lane does.
       - name: Install zsh and a virtual display for Electron
         if: runner.os == 'Linux'
         run: |

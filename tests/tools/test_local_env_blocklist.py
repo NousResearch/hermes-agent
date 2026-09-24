@@ -1665,13 +1665,16 @@ class TestHermesBinDirOnPath:
         from tools.environments import local as local_mod
         local_mod._HERMES_BIN_DIR = local_mod._SENTINEL
 
-    def test_resolves_via_which(self, monkeypatch):
+    def test_resolves_via_which(self, monkeypatch, tmp_path):
         from tools.environments import local as local_mod
         self._reset_cache()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "hermes").write_text(f"#!{sys.executable}\n")
+        (bin_dir / "hermes").chmod(0o755)
         monkeypatch.setattr(local_mod.shutil, "which",
-                            lambda name: "/opt/hermes/bin/hermes" if name == "hermes" else None)
-        monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/hermes/bin")
-        assert local_mod._resolve_hermes_bin_dir() == "/opt/hermes/bin"
+                            lambda name: str(bin_dir / "hermes") if name == "hermes" else None)
+        assert local_mod._resolve_hermes_bin_dir() == str(bin_dir)
 
 
     def test_make_run_env_injects_hermes_bin_dir(self):
@@ -1692,6 +1695,95 @@ class TestHermesBinDirOnPath:
         entries = result["PATH"].split(os.pathsep)
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries
+
+    def test_resolver_skips_install_root_entrypoint(self, monkeypatch, tmp_path):
+        """Regression: never resolve to the install root's bare Python entrypoint.
+
+        An SSH-launched backend gets a minimal PATH, so ``which hermes`` finds nothing and
+        the resolver fell through to ``sys.argv[0]``'s dir -- the install root. Its ``hermes``
+        carries ``#!/usr/bin/env python3``, which on macOS runs under the system 3.9 and
+        cannot parse this codebase's PEP 604 annotations. Prepending that dir SHADOWED the
+        working ``~/.local/bin`` shim, so bare ``hermes`` broke for every terminal/cron child.
+        """
+        from tools.environments import local as local_mod
+        self._reset_cache()
+
+        root = tmp_path / "install"
+        root.mkdir()
+        (root / "hermes").write_text("#!/usr/bin/env python3\n")
+        (root / "hermes").chmod(0o755)
+        venv_bin = root / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "hermes").write_text(f"#!{sys.executable}\n")
+        (venv_bin / "hermes").chmod(0o755)
+
+        # The broken shape: minimal PATH, argv0 = <root>/hermes, venv interpreter in venv/bin.
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(local_mod.sys, "argv", [str(root / "hermes"), "gateway", "run"])
+        monkeypatch.setattr(local_mod.sys, "executable", str(venv_bin / "python"))
+
+        assert local_mod._resolve_hermes_bin_dir() == str(venv_bin)
+
+        # End state: the install root is absent from the child PATH and the launchable dir is
+        # first, so a bare `hermes` resolves the real console-script.
+        entries = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin").split(os.pathsep)
+        assert str(root) not in entries
+        assert entries[0] == str(venv_bin)
+
+    def test_which_finding_entrypoint_does_not_win(self, monkeypatch, tmp_path):
+        """A ``which`` hit on the broken entrypoint must not be trusted blindly.
+
+        This is the state after a backend update that dropped the fix: the install root is
+        still on the running process's PATH, so ``shutil.which("hermes")`` SUCCEEDS and
+        returns the bare entrypoint. Branching on that hit alone re-breaks bare `hermes`
+        for every child, so the hit is gated on ``_launchable_hermes`` too.
+        """
+        from tools.environments import local as local_mod
+        self._reset_cache()
+
+        root = tmp_path / "install"
+        root.mkdir()
+        (root / "hermes").write_text("#!/usr/bin/env python3\n")
+        (root / "hermes").chmod(0o755)
+        venv_bin = root / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "hermes").write_text(f"#!{sys.executable}\n")
+        (venv_bin / "hermes").chmod(0o755)
+
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: str(root / "hermes"))
+        monkeypatch.setattr(local_mod.sys, "executable", str(venv_bin / "python"))
+
+        assert local_mod._resolve_hermes_bin_dir() == str(venv_bin)
+
+    def test_which_finding_real_console_script_still_wins(self, monkeypatch, tmp_path):
+        """A genuine console-script hit on PATH keeps precedence (no behavior change)."""
+        from tools.environments import local as local_mod
+        self._reset_cache()
+
+        real = tmp_path / "realbin"
+        real.mkdir()
+        (real / "hermes").write_text(f"#!{sys.executable}\n")
+        (real / "hermes").chmod(0o755)
+
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: str(real / "hermes"))
+        assert local_mod._resolve_hermes_bin_dir() == str(real)
+
+    def test_launchable_hermes_rejects_entrypoint_shebang(self, tmp_path):
+        """Only a `hermes` that runs as a command qualifies."""
+        from tools.environments import local as local_mod
+
+        assert local_mod._launchable_hermes(str(tmp_path)) is False  # nothing there
+
+        entrypoint = tmp_path / "hermes"
+        entrypoint.write_text("#!/usr/bin/env python3\n")
+        entrypoint.chmod(0o755)
+        assert local_mod._launchable_hermes(str(tmp_path)) is False
+
+        entrypoint.write_text(f"#!{sys.executable}\n")  # real console-script
+        assert local_mod._launchable_hermes(str(tmp_path)) is True
+
+        entrypoint.chmod(0o644)  # not executable
+        assert local_mod._launchable_hermes(str(tmp_path)) is False
 
 
 class TestHermesInternalDynamicSecrets:

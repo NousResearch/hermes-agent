@@ -585,11 +585,48 @@ _SENTINEL = object()
 _HERMES_BIN_DIR: "str | None | object" = _SENTINEL
 
 
+def _launchable_hermes(directory: str) -> bool:
+    """True when *directory* holds a ``hermes`` that RUNS as a command.
+
+    The install root also contains a file named ``hermes``, but it is the checked-in Python
+    ENTRYPOINT, meant to be passed as an argument to the venv interpreter
+    (``"$HERMES_BIN" "$HERMES_ENTRYPOINT"``). Executed on its own it runs under whatever
+    ``python3`` PATH resolves to -- on macOS usually 3.9, which cannot parse this codebase's
+    PEP 604 annotations. Prepending that directory to a child's PATH therefore SHADOWS the
+    working ``~/.local/bin/hermes`` shim and breaks bare ``hermes`` for every terminal/cron
+    child.
+
+    A directory qualifies only when its ``hermes`` is executable AND is not that bare
+    entrypoint: the venv console-script (a shebang naming the venv interpreter) and the
+    installer's bash shim both pass; the install-root entrypoint (``#!/usr/bin/env python3``)
+    does not.
+    """
+    shim = "hermes.exe" if _IS_WINDOWS else "hermes"
+    candidate = os.path.join(directory, shim)
+    if not os.path.isfile(candidate):
+        return False
+    if not os.access(candidate, os.X_OK):
+        return False
+    if _IS_WINDOWS:
+        return True
+    try:
+        with open(candidate, "rb") as fh:
+            first_line = fh.readline(512).decode("utf-8", "replace").strip()
+    except OSError:
+        return False
+    # A bare `env python3` shebang resolves through PATH to the system interpreter -- the
+    # broken case. Any other shebang (absolute venv path, /usr/bin/env bash) is safe.
+    return first_line != "#!/usr/bin/env python3"
+
+
 def _resolve_hermes_bin_dir() -> str | None:
-    """Directory holding the ``hermes`` console-script, or None (cached). A gateway
+    """Directory holding a ``hermes`` that runs as a command, or None (cached). A gateway
     launched by systemd/cron/a desktop launcher lacks the install dir on PATH and bare
-    ``hermes`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
-    hermes executable; ``sys.executable``'s dir if it holds the shim."""
+    ``hermes`` exits 127. Every candidate -- ``which``, ``sys.executable``'s dir (the venv
+    console-script, present in every venv install), absolute ``sys.argv[0]``'s dir -- must
+    hold a LAUNCHABLE hermes (see :func:`_launchable_hermes`): a directory whose ``hermes``
+    is only the bare Python entrypoint is skipped, since executing it runs under whatever
+    ``python3`` PATH resolves to and prepending it would shadow a working shim."""
     global _HERMES_BIN_DIR
     if _HERMES_BIN_DIR is not _SENTINEL:
         return _HERMES_BIN_DIR  # type: ignore[return-value]
@@ -597,14 +634,18 @@ def _resolve_hermes_bin_dir() -> str | None:
     argv0 = sys.argv[0] if sys.argv else ""
     base = os.path.basename(argv0).lower()
     exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
-    shim = "hermes.exe" if _IS_WINDOWS else "hermes"
-    if which:
+    candidate = None
+    # `which` is authoritative only when it found a hermes that RUNS. An install root on
+    # PATH makes it return the bare Python entrypoint, which would break bare `hermes` for
+    # every child -- prefer a launchable dir instead of trusting the hit blindly.
+    if which and _launchable_hermes(os.path.dirname(which)):
         candidate = os.path.dirname(which)
+    elif exe_dir and _launchable_hermes(exe_dir):
+        # Preferred fallback: the venv console-script, which runs under the venv interpreter.
+        candidate = exe_dir
     elif (os.path.isabs(argv0) and (base == "hermes" or base.startswith("hermes."))
-            and os.path.isfile(argv0)):
+            and _launchable_hermes(os.path.dirname(argv0))):
         candidate = os.path.dirname(argv0)
-    else:
-        candidate = exe_dir if exe_dir and os.path.isfile(os.path.join(exe_dir, shim)) else None
     _HERMES_BIN_DIR = candidate if candidate and os.path.isdir(candidate) else None
     return _HERMES_BIN_DIR
 

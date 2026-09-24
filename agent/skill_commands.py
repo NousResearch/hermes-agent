@@ -26,6 +26,7 @@ _publish_lock = threading.Lock()
 # applied by hermes_cli/commands_platforms.py, not here.
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_SKILL_ALIAS_NAME = re.compile(r"^[\w-]+(?::[\w-]+)+$")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
 # model-facing message embedding the full skill body; memory providers storing
@@ -388,6 +389,39 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
                          "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
 
 
+def _apply_command_aliases(commands: Dict[str, Dict[str, Any]]) -> None:
+    """Project configured skill aliases onto the native command map.
+
+    Aliases are intentionally resolved after scanning: every consumer (CLI,
+    TUI, desktop, and gateway) already reads this map, so aliases retain the
+    normal skill scaffold and cannot drift into a surface-specific redirect.
+    """
+    aliases = (_load_skills_config().get("command_aliases") or [])
+    if not isinstance(aliases, list):
+        return
+    for item in aliases:
+        if not isinstance(item, dict):
+            continue
+        alias = str(item.get("name") or "").strip().lower().lstrip("/")
+        target = str(item.get("skill") or "").strip().lower().lstrip("/")
+        alias_key, target_key = f"/{alias}", f"/{target}"
+        if not _SKILL_ALIAS_NAME.fullmatch(alias):
+            logger.warning("Ignoring invalid skill command alias %r; aliases require a namespace separator.", alias)
+            continue
+        if alias_key in commands or skill_command_collision_note(alias) is not None:
+            owner = (commands.get(alias_key) or {}).get("name") or "a core command"
+            logger.warning("Ignoring skill command alias %s for %s; it is already claimed by %s.",
+                           alias_key, target_key, owner)
+            continue
+        target_info = commands.get(target_key)
+        if target_info is None:
+            logger.warning("Ignoring skill command alias %s; target %s is unavailable.", alias_key, target_key)
+            continue
+        commands[alias_key] = {**target_info, "alias_for": target_key}
+        if item.get("hide_default") is True:
+            commands.pop(target_key, None)
+
+
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Scan skill dirs and return {"/skill-name": {name, description, skill_md_path, skill_dir}}.
     Builds a local map and publishes once at the end: writing straight into the
@@ -424,6 +458,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     _scan_skill_md(skill_md, disabled, seen_names, commands)
                 except Exception:
                     continue
+        _apply_command_aliases(commands)
     except Exception:
         pass
     # Publish map + tags as ONE step: a reader landing between bare assignments

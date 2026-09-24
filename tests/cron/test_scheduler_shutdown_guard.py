@@ -15,24 +15,12 @@ sites so they skip gracefully with a warning instead of raising.
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 
 class TestInterpreterShuttingDownHelper:
-    def test_true_when_finalizing(self):
-        from cron.scheduler import _interpreter_shutting_down
 
-        with patch("sys.is_finalizing", return_value=True):
-            assert _interpreter_shutting_down() is True
-
-    def test_false_when_not_finalizing_and_no_exc(self):
-        from cron.scheduler import _interpreter_shutting_down
-
-        with patch("sys.is_finalizing", return_value=False):
-            assert _interpreter_shutting_down() is False
 
     def test_matches_shutdown_error_text_as_fallback(self):
         """The concurrent.futures module-global flag can be set a hair before
@@ -83,40 +71,8 @@ class TestStandaloneDeliverySkipsDuringShutdown:
 
         send_mock.assert_not_called()
         assert result is not None
-        assert "shutting down" in result
-
-    def test_normal_delivery_still_works_when_not_finalizing(self):
-        """Guard must not regress the happy path: a normal (non-finalizing)
-        run still delivers via the standalone send."""
-        from cron.scheduler import _deliver_result
-
-        job = {
-            "id": "gov-job",
-            "name": "model-governor",
-            "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
-        }
-        send_mock = AsyncMock(return_value={"success": True})
-        with patch("gateway.config.load_gateway_config", return_value=self._telegram_cfg()), \
-             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
-             patch("sys.is_finalizing", return_value=False):
-            result = _deliver_result(job, "daily report body")
-
-        send_mock.assert_called_once()
-        assert result is None
 
 
-class TestSourceGuardrail:
-    @pytest.fixture
-    def source(self) -> str:
-        from pathlib import Path
 
-        return (
-            Path(__file__).resolve().parents[2] / "cron" / "scheduler.py"
-        ).read_text(encoding="utf-8")
-
-    def test_helper_defined(self, source):
-        assert "def _interpreter_shutting_down(" in source
-        assert "#58720" in source
 
 

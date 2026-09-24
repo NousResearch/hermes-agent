@@ -1,5 +1,5 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { filePathFromMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
+import { mediaTagValues } from '@/lib/chat-messages/parts'
+import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -13,17 +13,68 @@ export interface ArtifactRecord {
   href: string
   label: string
   sessionId: string
+  profile?: string
   sessionTitle: string
   timestamp: number
+}
+
+export interface ArtifactLoadFailure {
+  error: unknown
+  session: SessionInfo
+}
+
+export interface ArtifactLoadResult {
+  artifacts: ArtifactRecord[]
+  failures: ArtifactLoadFailure[]
 }
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
-const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
+const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
+const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
-const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
-const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
+
+const FILE_EXT_RE =
+  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|xlsx?|docx?|pptx?|html|zip|tar|gz|avi|flac|m4a|mkv|mp3|ogg|opus|wav|webm|mp4|mov)(?:\?.*)?$/i
+
+const MAX_UNIX_SECONDS = 10_000_000_000
+
+const ARTIFACT_PRODUCER_TOOL_RE =
+  /(?:^|_)(?:creat(?:e|ion)|download|export|generat(?:e|ion)|render|save|speech|tts|write)(?:_|$)/i
+
+const STRONG_TOOL_ARTIFACT_KEY_RE =
+  /^(?:artifact_(?:file|image|path|url)|files?_(?:created|modified|written)|generated_(?:file|image|path|url)|media_tag|output_(?:file|path|url)|result_(?:file|path|url)|saved_to|screenshot_path)$/i
+
+const PRODUCER_TOOL_ARTIFACT_KEY_RE =
+  /^(?:artifact(?:s|_(?:file|image|path|url))?|attachment(?:s|_(?:file|image|path|url))?|download(?:s|_(?:file|path|url))?|(?:audio|image|video)(?:_(?:file|path|url))?|file_path|local_path|media(?:_(?:file|path|url))?|path)$/i
+
+const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
+
+// A pushValue callback plus whether the value is an explicit delivery the
+// author asserted as an artifact (a raw `MEDIA:` tag), as opposed to a path
+// scraped heuristically out of prose or a tool payload.
+type PushValue = (value: string, explicit?: boolean) => void
+
+function looksLikeArtifact(value: string, explicit = false): boolean {
+  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
+    return true
+  }
+
+  if (!looksLikePathOrUrl(value)) {
+    return false
+  }
+
+  // An explicitly delivered file is an artifact by definition even when its
+  // extension is unknown — it should be listed as an opaque `file` entry
+  // rather than silently vanish. Extensionless bare paths scraped from prose
+  // stay excluded.
+  if (explicit) {
+    return true
+  }
+
+  return IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value)
+}
 
 function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
@@ -31,6 +82,31 @@ function artifactSessionTitle(session: SessionInfo): string {
 
 function normalizeValue(value: string): string {
   return value.trim().replace(/[),.;]+$/, '')
+}
+
+// Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
+// classification so the Artifacts page keeps the path, not the href.
+function decodeMediaHrefValue(value: string): string {
+  return mediaPathFromMarkdownHref(value) ?? value
+}
+
+function unquoteMediaValue(value: string): string {
+  let trimmed = value.trim()
+  const quote = trimmed[0]
+
+  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+    return trimmed.slice(1, -1)
+  }
+
+  trimmed = trimmed.replace(/[`"'*_]{1,3}$/, '')
+
+  return trimmed
+}
+
+function collectMediaValues(text: string, pushValue: PushValue): void {
+  for (const value of mediaTagValues(text)) {
+    pushValue(unquoteMediaValue(value), true)
+  }
 }
 
 function parseMaybeJson(value: string): unknown {
@@ -45,29 +121,55 @@ function parseMaybeJson(value: string): unknown {
   }
 }
 
+function untrustedToolPayload(value: string): null | string {
+  const trimmed = value.trim()
+  const openTag = trimmed.match(/^<untrusted_tool_result\b[^>]*>\s*/)
+
+  if (!openTag) {
+    return null
+  }
+
+  const closeIndex = trimmed.lastIndexOf('</untrusted_tool_result>')
+
+  if (closeIndex <= openTag[0].length) {
+    return null
+  }
+
+  const wrapped = trimmed.slice(openTag[0].length, closeIndex).trim()
+  const payloadStart = wrapped.indexOf('\n\n')
+
+  return (payloadStart === -1 ? wrapped : wrapped.slice(payloadStart + 2)).trim()
+}
+
+function parseToolPayloads(text: string): unknown[] {
+  const payloads: unknown[] = []
+
+  for (const candidate of [text, untrustedToolPayload(text)]) {
+    if (!candidate) {
+      continue
+    }
+
+    const parsed = parseMaybeJson(candidate)
+
+    if (parsed !== null) {
+      payloads.push(parsed)
+    }
+  }
+
+  return payloads
+}
+
+function isWindowsPath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')
+}
+
 function looksLikePathOrUrl(value: string): boolean {
   return (
     value.startsWith('http://') ||
     value.startsWith('https://') ||
-    value.startsWith('file://') ||
     value.startsWith('data:image/') ||
-    value.startsWith('/') ||
-    value.startsWith('./') ||
-    value.startsWith('../') ||
-    value.startsWith('~/')
+    isArtifactFilePath(value)
   )
-}
-
-function looksLikeArtifact(value: string): boolean {
-  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
-    return true
-  }
-
-  if (looksLikePathOrUrl(value) && (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value))) {
-    return true
-  }
-
-  return value.startsWith('/') && value.includes('.')
 }
 
 function artifactKind(value: string): ArtifactKind {
@@ -75,13 +177,7 @@ function artifactKind(value: string): ArtifactKind {
     return 'image'
   }
 
-  if (
-    value.startsWith('/') ||
-    value.startsWith('./') ||
-    value.startsWith('../') ||
-    value.startsWith('~/') ||
-    value.startsWith('file://')
-  ) {
+  if (isArtifactFilePath(value)) {
     return 'file'
   }
 
@@ -93,23 +189,21 @@ function artifactHref(value: string): string {
     return value
   }
 
-  if (value.startsWith('file://') || value.startsWith('/')) {
+  if (value.startsWith('file://') || value.startsWith('/') || isWindowsPath(value)) {
     return mediaExternalUrl(value)
   }
 
   return value
 }
 
-export async function artifactImageSrc(value: string, href = artifactHref(value)): Promise<string> {
-  if (/^(?:https?|data):/i.test(value)) {
-    return href
-  }
-
-  if (typeof window !== 'undefined' && window.hermesDesktop && isRemoteGateway()) {
-    return readDesktopFileDataUrl(filePathFromMediaPath(value))
-  }
-
-  return href
+export async function artifactImageSrc(value: string): Promise<string> {
+  // Delegate the whole local/remote ladder to the shared media resolver:
+  // inline (http/data) stays as-is, remote gateway goes through the
+  // authenticated fs bridge, local desktop through the Electron
+  // readFileDataUrl, and bare non-path link values fall through untouched.
+  // Reimplementing that ladder here would drift from resolveMediaDisplaySrc
+  // and regress one of its legs (#83380).
+  return resolveMediaDisplaySrc(value)
 }
 
 function artifactLabel(value: string): string {
@@ -123,6 +217,25 @@ function artifactLabel(value: string): string {
 
     return parts.pop() || value
   }
+}
+
+function normalizeArtifactTimestamp(timestamp: null | number | undefined): null | number {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0) {
+    return null
+  }
+
+  // Persisted session timestamps use Unix seconds. Values above the maximum
+  // plausible Unix-seconds range are already milliseconds and stay unchanged.
+  return timestamp < MAX_UNIX_SECONDS ? timestamp * 1000 : timestamp
+}
+
+function artifactTimestamp(message: SessionMessage, session: SessionInfo): number {
+  return (
+    normalizeArtifactTimestamp(message.timestamp) ??
+    normalizeArtifactTimestamp(session.last_active) ??
+    normalizeArtifactTimestamp(session.started_at) ??
+    Date.now()
+  )
 }
 
 function messageText(message: SessionMessage): string {
@@ -167,7 +280,9 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
+function collectArtifactsFromText(text: string, pushValue: PushValue): void {
+  collectMediaValues(text, pushValue)
+
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
     pushValue(match[2] || '')
   }
@@ -179,7 +294,7 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
       continue
     }
 
-    const value = match[2] || ''
+    const value = decodeMediaHrefValue(match[2] || '')
 
     if (looksLikeArtifact(value)) {
       pushValue(value)
@@ -197,46 +312,91 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
   for (const match of text.matchAll(PATH_RE)) {
     pushValue(match[2] || '')
   }
+
+  for (const match of text.matchAll(WINDOWS_PATH_RE)) {
+    pushValue(match[2] || '')
+  }
 }
 
-function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value: string) => void): void {
-  const text = messageText(message)
+function toolName(message: SessionMessage): string {
+  return (message.tool_name || message.name || '').trim().toLowerCase()
+}
 
-  if (text) {
-    collectArtifactsFromText(text, pushValue)
+function isArtifactProducerTool(name: string): boolean {
+  // `bfl_flux3_*` tools were removed from the core toolset, but sessions
+  // recorded while they existed still carry their tool messages — keep
+  // matching so those artifacts stay visible in history.
+  return ARTIFACT_PRODUCER_TOOL_RE.test(name) || name.startsWith('bfl_flux3_')
+}
+
+function explicitToolArtifactKey(keyPath: string, producerTool: boolean): boolean {
+  return keyPath
+    .split('.')
+    .filter(segment => segment && !/^\d+$/.test(segment))
+    .some(
+      segment =>
+        STRONG_TOOL_ARTIFACT_KEY_RE.test(segment) || (producerTool && PRODUCER_TOOL_ARTIFACT_KEY_RE.test(segment))
+    )
+}
+
+function structuredToolPayload(message: SessionMessage): null | unknown {
+  const content = message.content
+
+  if (!content || typeof content !== 'object') {
+    return null
   }
 
-  if (message.role !== 'tool' && !Array.isArray(message.tool_calls)) {
+  if (!Array.isArray(content) && (content as Record<string, unknown>)._multimodal === true) {
+    return (content as Record<string, unknown>).meta || null
+  }
+
+  return content
+}
+
+function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushValue): void {
+  const text = messageText(message)
+
+  if (message.role === 'assistant' && text) {
+    collectArtifactsFromText(text, pushValue)
+
     return
   }
 
-  if (Array.isArray(message.tool_calls)) {
-    for (const call of message.tool_calls) {
-      collectStringValues(call, 'tool_call', (value, keyPath) => {
-        const normalized = normalizeValue(value)
+  if (message.role !== 'tool') {
+    return
+  }
 
-        if (!normalized) {
-          return
-        }
+  const name = toolName(message)
+  const producerTool = isArtifactProducerTool(name)
 
-        if (KEY_HINT_RE.test(keyPath) && (looksLikePathOrUrl(normalized) || FILE_EXT_RE.test(normalized))) {
-          pushValue(normalized)
-        }
-      })
+  if (text && producerTool) {
+    collectMediaValues(text, pushValue)
+  }
+
+  if (name === 'browser_vision' && text) {
+    for (const match of text.matchAll(SCREENSHOT_PATH_RE)) {
+      pushValue(match[1] || '')
     }
   }
 
-  const parsed = parseMaybeJson(text)
+  const payloads = parseToolPayloads(text)
+  const structured = structuredToolPayload(message)
 
-  if (parsed !== null) {
+  if (structured) {
+    payloads.push(structured)
+  }
+
+  for (const parsed of payloads) {
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
-      const normalized = normalizeValue(value)
-
-      if (!normalized) {
+      if (!explicitToolArtifactKey(keyPath, producerTool)) {
         return
       }
 
-      if ((KEY_HINT_RE.test(keyPath) || looksLikePathOrUrl(normalized)) && looksLikeArtifact(normalized)) {
+      collectMediaValues(value, pushValue)
+
+      const normalized = normalizeValue(decodeMediaHrefValue(value))
+
+      if (normalized && looksLikeArtifact(normalized)) {
         pushValue(normalized)
       }
     })
@@ -252,10 +412,10 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
-    collectArtifactsFromMessage(message, candidate => {
-      const value = normalizeValue(candidate)
+    collectArtifactsFromMessage(message, (candidate, explicit = false) => {
+      const value = normalizeValue(decodeMediaHrefValue(candidate))
 
-      if (!value || !looksLikeArtifact(value)) {
+      if (!value || !looksLikeArtifact(value, explicit)) {
         return
       }
 
@@ -272,11 +432,34 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         href: artifactHref(value),
         label: artifactLabel(value),
         sessionId: session.id,
+        profile: session.profile,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp: artifactTimestamp(message, session)
       })
     })
   }
 
   return Array.from(found.values())
+}
+
+export async function loadArtifactsForSessions(
+  sessions: SessionInfo[],
+  loadMessages: (session: SessionInfo) => Promise<SessionMessage[]>
+): Promise<ArtifactLoadResult> {
+  const artifacts: ArtifactRecord[] = []
+  const failures: ArtifactLoadFailure[] = []
+
+  // Keep only one transcript resident at a time. Recent sessions can each be
+  // tens of megabytes, so loading the whole page concurrently can exhaust both
+  // the Desktop renderer and a remote dashboard backend.
+  for (const session of sessions) {
+    try {
+      const messages = await loadMessages(session)
+      artifacts.push(...collectArtifactsForSession(session, messages))
+    } catch (error) {
+      failures.push({ error, session })
+    }
+  }
+
+  return { artifacts, failures }
 }

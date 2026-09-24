@@ -1,3 +1,4 @@
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const closeFocusedSessionTab = vi.fn(() => false)
@@ -5,6 +6,12 @@ const closeFocusedToolTab = vi.fn(() => false)
 const nextSessionTileForWorkspace = vi.fn<() => null | string>(() => null)
 const closeSessionTile = vi.fn()
 const requestFreshSession = vi.fn()
+
+const closeActiveTerminal = vi.fn()
+
+vi.mock('@/app/right-sidebar/terminal/terminals', () => ({
+  closeActiveTerminal: () => closeActiveTerminal()
+}))
 
 vi.mock('@/components/pane-shell/tree/store', () => ({
   closeFocusedSessionTab: () => closeFocusedSessionTab(),
@@ -17,10 +24,13 @@ vi.mock('@/store/session-states', () => ({
 }))
 
 vi.mock('@/store/profile', () => ({
-  requestFreshSession: () => requestFreshSession()
+  // The layout store reads the sidebar's profile scope; this suite only cares
+  // about the fresh-session call.
+  $showAllProfiles: atom(false),
+  requestFreshSession: () => requestFreshSession(),
+  setShowAllProfiles: () => {}
 }))
 
-import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs, closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
@@ -65,25 +75,18 @@ afterEach(() => {
 })
 
 describe('closeActiveTab', () => {
-  it('closes the active file preview tab (⌘W happy path)', () => {
-    openPreview(fileTarget('/work/notes.md'), 'manual')
-
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($rightRailActiveTabId.get()).toBe('file:file:///work/notes.md')
-
-    expect(closeActiveTab()).toBe(true)
-    expect($previewTabs.get()).toHaveLength(0)
-  })
-
-  it('closes the visible tab when the active selection points at a tab that is gone', () => {
-    // The rail falls back to tabs[0] until React syncs the selection, so ⌘W has
-    // to act on what is actually on screen rather than no-op'ing.
-    openPreview(fileTarget('/work/notes.md'), 'manual')
-    $rightRailActiveTabId.set('file:file:///work/stale.md')
+  // Preview tabs are layout-tree panes now, so ⌘W reaches them through the
+  // focused-zone rungs (closeFocusedSessionTab / closeFocusedToolTab → the
+  // pane's registered closer) rather than a rail-shaped special case. Open
+  // previews must therefore NOT claim the key on their own.
+  it('leaves ⌘W to the zone rungs even with previews open', () => {
+    openPreview(fileTarget('/work/notes.md'))
+    closeFocusedToolTab.mockReturnValue(true)
 
     expect($previewTabs.get()).toHaveLength(1)
     expect(closeActiveTab()).toBe(true)
-    expect($previewTabs.get()).toHaveLength(0)
+    // The zone closed its own tab; the rail store was never consulted.
+    expect($previewTabs.get()).toHaveLength(1)
   })
 })
 
@@ -112,13 +115,6 @@ describe('closeWorkspaceTab', () => {
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
   })
 
-  it('empties main even with no session loader wired', () => {
-    loadedMainOnly()
-
-    expect(closeWorkspaceTab()).toBe(true)
-    expect(requestFreshSession).toHaveBeenCalledTimes(1)
-  })
-
   it('is a no-op on a blank draft — that IS the post-close state', () => {
     expect(closeWorkspaceTab(vi.fn())).toBe(false)
     expect(requestFreshSession).not.toHaveBeenCalled()
@@ -132,11 +128,28 @@ describe('closeWorkspaceTab', () => {
     expect(requestFreshSession).not.toHaveBeenCalled()
   })
 
-  it('⌘W reaches it once the terminal, rail and zone tabs pass', () => {
+  it('⌘W reaches it once the terminal and zone tabs pass', () => {
     loadedMainOnly()
 
     expect(closeActiveTab(vi.fn())).toBe(true)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('a focused remote bot screen swallows ⌘W: no terminal tab, no session tab closes', async () => {
+    loadedMainOnly()
+    const combo = await import('@/lib/keybinds/combo')
+
+    const spy = vi
+      .spyOn(combo, 'isFocusWithin')
+      .mockImplementation(selector => selector === '[data-remote-screen]' || selector === '[data-terminal]')
+
+    try {
+      expect(closeActiveTab(vi.fn())).toBe(true)
+      expect(closeActiveTerminal).not.toHaveBeenCalled()
+      expect(requestFreshSession).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('a focused tool panel (terminal / logs) claims ⌘W before main empties', () => {

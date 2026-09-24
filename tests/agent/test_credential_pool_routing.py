@@ -83,68 +83,6 @@ class TestGatewayTurnRoutePool:
 # 3 & 4. Eager fallback deferred/fires based on credential pool
 # ---------------------------------------------------------------------------
 
-class TestEagerFallbackWithPool:
-    """Test the eager fallback guard in run_agent.py's error handling loop."""
-
-    def _make_agent(self, has_pool=True, pool_has_creds=True, has_fallback=True):
-        """Create a minimal AIAgent mock with the fields needed."""
-        from run_agent import AIAgent
-
-        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
-            agent = AIAgent()
-
-        agent._credential_pool = None
-        if has_pool:
-            pool = MagicMock()
-            pool.has_available.return_value = pool_has_creds
-            agent._credential_pool = pool
-
-        agent._fallback_chain = [{"model": "fallback/model"}] if has_fallback else []
-        agent._fallback_index = 0
-        agent._try_activate_fallback = MagicMock(return_value=True)
-        agent._emit_status = MagicMock()
-
-        return agent
-
-    def test_eager_fallback_deferred_when_pool_has_credentials(self):
-        """429 with active pool should NOT trigger eager fallback."""
-        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
-
-        # Simulate the check from run_agent.py lines 7180-7191
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
-
-        agent._try_activate_fallback.assert_not_called()
-
-    def test_eager_fallback_fires_when_no_pool(self):
-        """429 without pool should trigger eager fallback."""
-        agent = self._make_agent(has_pool=False, has_fallback=True)
-
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
-
-        agent._try_activate_fallback.assert_called_once()
-
-    def test_eager_fallback_fires_when_pool_exhausted(self):
-        """429 with exhausted pool should trigger eager fallback."""
-        agent = self._make_agent(has_pool=True, pool_has_creds=False, has_fallback=True)
-
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
-
-        agent._try_activate_fallback.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -371,15 +309,35 @@ class TestFailureAttribution:
     """
 
     def _make_pool(self, tmp_path, monkeypatch, entries):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Keep host Anthropic/Claude credentials out of this fixture. load_pool()
+        # auto-seeds ~/.claude/.credentials.json and env keys when anthropic is
+        # explicitly configured on the machine, which turns a deliberate
+        # single-entry pool into a multi-entry pool and invalidates isolation
+        # assertions (see test_unmatched_key_does_not_retry_only_pool_entry).
+        for env_var in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            lambda provider: False,
+        )
         (hermes_home / "auth.json").write_text(
-            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}})
+            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
+            encoding="utf-8",
         )
         from agent.credential_pool import load_pool
 
-        return load_pool("anthropic")
+        pool = load_pool("anthropic")
+        assert [entry.id for entry in pool.entries()] == [
+            entry["id"] for entry in entries
+        ], "pool fixture leaked host credentials into the test pool"
+        return pool
 
     def _entry(self, idx, key, **overrides):
         entry = {

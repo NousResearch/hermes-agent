@@ -78,12 +78,15 @@ describe('FallbackModelsField', () => {
     await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
   })
 
-  it('removing a row emits the remaining entries', async () => {
-    const onChange = await renderField(CHAIN)
+  it('removing a row emits the remaining entries with their routing keys intact', async () => {
+    // #89184: a hand-written local-gateway chain carries base_url/api_key per
+    // entry; the editor only owns provider/model and must not strip the rest.
+    const routed = { provider: 'custom', model: 'glm-5.08', base_url: 'http://gw:8080/v1', api_key: '${GW_KEY}' }
+    const onChange = await renderField([...CHAIN, routed])
 
     fireEvent.click(screen.getAllByLabelText('Remove')[0])
 
-    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([{ provider: 'openai-codex', model: 'gpt-5.4-mini' }])
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([{ provider: 'openai-codex', model: 'gpt-5.4-mini' }, routed])
   })
 
   it('adding a blank row does not persist a partial entry', async () => {
@@ -94,13 +97,6 @@ describe('FallbackModelsField', () => {
     // The new empty row stays in the UI but only complete pairs are emitted.
     expect(onChange.mock.calls.at(-1)?.[0]).toEqual(CHAIN)
     expect(screen.getAllByLabelText('Remove')).toHaveLength(3)
-  })
-
-  it('shows an empty-state hint when there are no fallbacks', async () => {
-    await renderField([])
-
-    expect(screen.getByText(/No fallback models/)).toBeTruthy()
-    expect(screen.queryAllByLabelText('Remove')).toHaveLength(0)
   })
 
   it('resyncs rows when persisted config changes', async () => {

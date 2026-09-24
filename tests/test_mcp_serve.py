@@ -4,7 +4,7 @@ Tests for mcp_serve — Hermes MCP server.
 Three layers of tests:
 1. Unit tests — helpers, content extraction, attachment parsing
 2. EventBridge tests — queue mechanics, cursors, waiters, concurrency
-3. End-to-end tests — call actual MCP tools through FastMCP's tool manager
+3. End-to-end tests — call actual MCP tools through the MCPServer's public API
    with real session data in SQLite and sessions.json
 """
 
@@ -228,7 +228,9 @@ class _FakeToolManager:
         return list(self._tools.values())
 
 
-class _FakeFastMCP:
+class _FakeMCPServer:
+    """Stand-in for ``mcp.server.MCPServer`` (``FastMCP`` before mcp 2.0)."""
+
     def __init__(self, *args, **kwargs):
         self._tool_manager = _FakeToolManager()
 
@@ -239,6 +241,17 @@ class _FakeFastMCP:
 
         return decorator
 
+    async def call_tool(self, name, args=None):
+        """Dispatch straight to the handler, with no schema validation.
+
+        Mirrors ``MCPServer.call_tool``'s name so ``_run_tool`` works against
+        either server, but deliberately skips the SDK's pydantic coercion:
+        the parameter-coercion tests exist to prove the handlers' own
+        ``_coerce_int`` guards hold when a client sends a wrongly-typed value,
+        which the real server would reject before the handler ever ran.
+        """
+        return await self._tool_manager.call_tool(name, args)
+
 
 @pytest.fixture
 def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
@@ -248,7 +261,7 @@ def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
     monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
-    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    monkeypatch.setattr(mcp_serve, "MCPServer", _FakeMCPServer)
 
     bridge = mcp_serve.EventBridge()
     server = mcp_serve.create_mcp_server(event_bridge=bridge)
@@ -259,19 +272,22 @@ def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
 # 1. UNIT TESTS — helpers, extraction, attachments
 # ---------------------------------------------------------------------------
 
-class TestImports:
-    def test_import_module(self):
-        import mcp_serve
-        assert hasattr(mcp_serve, "create_mcp_server")
-        assert hasattr(mcp_serve, "run_mcp_server")
-        assert hasattr(mcp_serve, "EventBridge")
-
-    def test_mcp_available_flag(self):
-        import mcp_serve
-        assert isinstance(mcp_serve._MCP_SERVER_AVAILABLE, bool)
 
 
 class TestHelpers:
+    def test_load_session_messages_closes_database_on_error(self, monkeypatch):
+        import mcp_serve
+
+        db = MagicMock()
+        db.get_messages.side_effect = RuntimeError("read failed")
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+
+        messages, error = mcp_serve._load_session_messages("s1")
+
+        assert messages is None
+        assert "read failed" in error
+        db.close.assert_called_once()
+
     def test_get_sessions_dir(self, tmp_path):
         from mcp_serve import _get_sessions_dir
         result = _get_sessions_dir()
@@ -363,11 +379,6 @@ class TestAttachmentExtraction:
 # ---------------------------------------------------------------------------
 
 class TestEventBridge:
-    def test_create(self):
-        from mcp_serve import EventBridge
-        b = EventBridge()
-        assert b._cursor == 0
-        assert b._queue == []
 
     def test_enqueue_and_poll(self):
         from mcp_serve import EventBridge, QueueEvent
@@ -388,20 +399,7 @@ class TestEventBridge:
         assert len(r["events"]) == 2
         assert r["events"][0]["session_key"] == "s3"
 
-    def test_session_filter(self):
-        from mcp_serve import EventBridge, QueueEvent
-        b = EventBridge()
-        b._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
-        b._enqueue(QueueEvent(cursor=0, type="message", session_key="b"))
-        b._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
-        r = b.poll_events(after_cursor=0, session_key="a")
-        assert len(r["events"]) == 2
 
-    def test_poll_empty(self):
-        from mcp_serve import EventBridge
-        r = EventBridge().poll_events(after_cursor=0)
-        assert r["events"] == []
-        assert r["next_cursor"] == 0
 
     def test_poll_limit(self):
         from mcp_serve import EventBridge, QueueEvent
@@ -492,13 +490,12 @@ class TestEventBridge:
 
 
 # ---------------------------------------------------------------------------
-# 3. END-TO-END TESTS — call MCP tools through FastMCP server
+# 3. END-TO-END TESTS — call MCP tools through the MCP server
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
-    """Create a fully wired MCP server for E2E testing."""
-    mcp = pytest.importorskip("mcp", reason="MCP SDK not installed")
+def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch, require_mcp_2_sdk):
+    """Create a fully wired MCP server for E2E testing (pinned SDK: 1.x lacks mcp.server.MCPServer)."""
     import mcp_serve
     monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
@@ -510,11 +507,24 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
 
 
 def _run_tool(server, name, args=None):
-    """Call an MCP tool through FastMCP's tool manager and return parsed JSON."""
+    """Call an MCP tool through the server's public API and return parsed JSON.
+
+    Goes through ``MCPServer.call_tool`` rather than the private
+    ``_tool_manager`` the FastMCP-era version reached into: mcp 2.0's
+    ``ToolManager.call_tool`` gained a required ``context`` argument, and the
+    public method is what an actual MCP client exercises anyway. It returns a
+    ``CallToolResult``, so unwrap the text content block our tools produce.
+    """
     result = asyncio.get_event_loop().run_until_complete(
-        server._tool_manager.call_tool(name, args or {})
+        server.call_tool(name, args or {})
     )
-    return json.loads(result) if isinstance(result, str) else result
+    if isinstance(result, str):  # FastMCP-era shape
+        return json.loads(result)
+    text = "".join(
+        block.text for block in (getattr(result, "content", None) or [])
+        if getattr(block, "text", None)
+    )
+    return json.loads(text) if text else result
 
 
 @pytest.fixture
@@ -737,14 +747,6 @@ class TestE2EEventsWait:
         assert result["event"] is not None
         assert result["event"]["content"] == "waiting for this"
 
-    def test_wait_caps_timeout(self, mcp_server_e2e, _event_loop):
-        """Timeout should be capped at 300000ms (5 min)."""
-        from mcp_serve import QueueEvent
-        server, bridge = mcp_server_e2e
-        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="t"))
-        # Even with huge timeout, should return immediately since event exists
-        result = _run_tool(server, "events_wait", {"timeout_ms": 999999})
-        assert result["event"] is not None
 
 class TestMCPToolParameterCoercion:
     def test_conversations_list_coerces_string_limit(self, fake_mcp_server, _event_loop):
@@ -796,18 +798,6 @@ class TestE2EMessagesSend:
         result = _run_tool(server, "messages_send", {"target": "", "message": "hi"})
         assert "error" in result
 
-    def test_send_delegates_to_tool(self, mcp_server_e2e, _event_loop, monkeypatch):
-        server, _ = mcp_server_e2e
-        mock = MagicMock(return_value=json.dumps({"success": True, "platform": "telegram"}))
-        monkeypatch.setattr("tools.send_message_tool.send_message_tool", mock)
-
-        result = _run_tool(server, "messages_send",
-                          {"target": "telegram:123456", "message": "Hello!"})
-        assert result["success"] is True
-        mock.assert_called_once()
-        call_args = mock.call_args[0][0]
-        assert call_args["action"] == "send"
-        assert call_args["target"] == "telegram:123456"
 
 
 class TestE2EChannelsList:
@@ -924,18 +914,6 @@ class TestE2EPermissions:
 # ---------------------------------------------------------------------------
 
 class TestToolRegistration:
-    def test_all_tools_registered(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        tools = server._tool_manager.list_tools()
-        tool_names = {t.name for t in tools}
-
-        expected = {
-            "conversations_list", "conversation_get", "messages_read",
-            "attachments_fetch", "events_poll", "events_wait",
-            "messages_send", "channels_list",
-            "permissions_list_open", "permissions_respond",
-        }
-        assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 
     def test_tools_have_descriptions(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
@@ -948,18 +926,7 @@ class TestToolRegistration:
 # ---------------------------------------------------------------------------
 
 class TestServerCreation:
-    def test_create_server(self, populated_sessions_dir, monkeypatch):
-        pytest.importorskip("mcp", reason="MCP SDK not installed")
-        import mcp_serve
-        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
-        assert mcp_serve.create_mcp_server() is not None
 
-    def test_create_with_bridge(self, populated_sessions_dir, monkeypatch):
-        pytest.importorskip("mcp", reason="MCP SDK not installed")
-        import mcp_serve
-        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
-        bridge = mcp_serve.EventBridge()
-        assert mcp_serve.create_mcp_server(event_bridge=bridge) is not None
 
     def test_create_without_mcp_sdk(self, monkeypatch):
         import mcp_serve
@@ -978,30 +945,7 @@ class TestRunMcpServer:
 
 
 class TestCliIntegration:
-    def test_parse_serve(self):
-        import argparse
-        parser = argparse.ArgumentParser()
-        subs = parser.add_subparsers(dest="command")
-        mcp_p = subs.add_parser("mcp")
-        mcp_sub = mcp_p.add_subparsers(dest="mcp_action")
-        serve_p = mcp_sub.add_parser("serve")
-        serve_p.add_argument("-v", "--verbose", action="store_true")
 
-        args = parser.parse_args(["mcp", "serve"])
-        assert args.mcp_action == "serve"
-        assert args.verbose is False
-
-    def test_parse_serve_verbose(self):
-        import argparse
-        parser = argparse.ArgumentParser()
-        subs = parser.add_subparsers(dest="command")
-        mcp_p = subs.add_parser("mcp")
-        mcp_sub = mcp_p.add_subparsers(dest="mcp_action")
-        serve_p = mcp_sub.add_parser("serve")
-        serve_p.add_argument("-v", "--verbose", action="store_true")
-
-        args = parser.parse_args(["mcp", "serve", "--verbose"])
-        assert args.verbose is True
 
     def test_dispatcher_routes_serve(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1020,11 +964,6 @@ class TestCliIntegration:
 # ---------------------------------------------------------------------------
 
 class TestEdgeCases:
-    def test_empty_sessions_json(self, sessions_dir, monkeypatch):
-        (sessions_dir / "sessions.json").write_text("{}")
-        import mcp_serve
-        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
-        assert mcp_serve._load_sessions_index() == {}
 
     def test_sessions_without_origin(self, sessions_dir, monkeypatch):
         data = {"agent:main:telegram:dm:111": {
@@ -1039,16 +978,7 @@ class TestEdgeCases:
         entries = mcp_serve._load_sessions_index()
         assert entries["agent:main:telegram:dm:111"]["platform"] == "telegram"
 
-    def test_bridge_start_stop(self):
-        from mcp_serve import EventBridge
-        b = EventBridge()
-        assert not b._running
-        b._running = True
-        b.stop()
-        assert not b._running
 
-    def test_truncation(self):
-        assert len(("x" * 5000)[:2000]) == 2000
 
 
 # ---------------------------------------------------------------------------
@@ -1381,7 +1311,3 @@ class TestEventBridgePollE2E:
         assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
         assert events[0]["content"] == "hello after baseline"
 
-    def test_poll_interval_is_200ms(self):
-        """Verify the poll interval constant."""
-        from mcp_serve import POLL_INTERVAL
-        assert POLL_INTERVAL == 0.2

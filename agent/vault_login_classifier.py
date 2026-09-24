@@ -281,7 +281,8 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
 })()"""
 
 
-def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str = "") -> str:
+def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str = "",
+                  expected_top_level_origin: Optional[str] = None) -> str:
     """Build a JS expression that fills the selected controls and reports only a count. The
     returned expression never echoes the values back.
 
@@ -296,8 +297,25 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
+    top_level_check = ""
+    if expected_top_level_origin is not None:
+        top_level_check = """
+  let topLevelOrigin;
+  try {
+    if (window.top === window) topLevelOrigin = window.location.origin;
+    else {
+      const ancestors = window.location.ancestorOrigins;
+      if (!ancestors || !ancestors.length) return JSON.stringify({ refused: "top_level_origin_changed", found: null });
+      topLevelOrigin = ancestors[ancestors.length - 1];
+    }
+  } catch (_) { return JSON.stringify({ refused: "top_level_origin_changed", found: null }); }
+  if (!topLevelOrigin || topLevelOrigin === "null" || topLevelOrigin !== __EXPECTED_TOP_LEVEL_ORIGIN__) {
+    return JSON.stringify({ refused: "top_level_origin_changed", found: topLevelOrigin || null });
+  }
+""".replace("__EXPECTED_TOP_LEVEL_ORIGIN__", json.dumps(expected_top_level_origin))
     return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+            .replace("__TOP_LEVEL_CHECK__", top_level_check))
 
 
 _FILL_JS_TEMPLATE = """(() => {
@@ -305,6 +323,7 @@ _FILL_JS_TEMPLATE = """(() => {
   if (window.location.origin !== expectedOrigin) {
     return JSON.stringify({ refused: "origin_changed", found: window.location.origin });
   }
+__TOP_LEVEL_CHECK__
   const fills = __FILLS__;
   const nonce = __NONCE__;
   let filled = 0;

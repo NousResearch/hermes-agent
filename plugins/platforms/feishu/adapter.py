@@ -4426,9 +4426,19 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Feishu counts as connected once app_id is configured."""
+    """Connected once app_id + app_secret resolve (the profile's env, then ``extra``).
+
+    ``hermes gateway setup`` hands every plugin platform a synthetic ``PlatformConfig(enabled=True)``
+    with an empty ``extra``, so an install whose credentials live in ``.env`` — the shape the Feishu
+    wizard itself writes — must resolve through the env rung, or the picker reports "not configured"
+    while the adapter is connected. Both halves are required: ``connect()`` rejects a missing secret,
+    so a half-configured install must not read as ready.
+    """
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("app_id"))
+    return all(
+        str(_shared_extra_or_secret(extra, key, env, "") or "").strip()
+        for key, env in (("app_id", "FEISHU_APP_ID"), ("app_secret", "FEISHU_APP_SECRET"))
+    )
 
 
 

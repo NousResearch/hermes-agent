@@ -5,6 +5,7 @@ AIAgent first: ``run_codex_app_server_turn`` drives one ``codex app-server`` sub
 from __future__ import annotations
 
 import contextvars
+import functools
 import json
 import logging
 import os
@@ -260,6 +261,20 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 # Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
 # so UI names match recorded names). webSearch is codex's built-in tool: no projector entry, still gets a bubble.
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
+# Text-delta notifications → the agent stream hook each one feeds. Single source for both the display
+# handlers and the liveness set below, so a new delta method can't stream without refreshing activity (#118410).
+_CODEX_TEXT_DELTA_METHODS = (
+    ("item/agentMessage/delta", "_fire_stream_delta"),
+    ("item/reasoning/delta", "_fire_reasoning_delta"),
+    ("item/reasoning/summaryDelta", "_fire_reasoning_delta"),
+    ("item/reasoning/textDelta", "_fire_reasoning_delta"),
+    ("item/reasoning/summaryTextDelta", "_fire_reasoning_delta"),
+)
+# Notifications that prove the turn is alive: every text delta plus tool output streams (no UI handler).
+_CODEX_PROGRESS_DELTA_METHODS = frozenset(m for m, _ in _CODEX_TEXT_DELTA_METHODS) | {
+    "item/commandExecution/outputDelta", "item/fileChange/outputDelta",
+}
+_CODEX_PROGRESS_ITEM_TYPES = _CODEX_TOOL_ITEM_TYPES | {"agentMessage", "reasoning"}
 # Internal MCP server wrapping Hermes' native tools: its inner dispatch has no tool_progress_callback, so the
 # codex-level mcpToolCall IS the display event and the mcp.hermes-tools.* prefix is stripped (users see Hermes tools).
 _STATIC_TOOL_NAMES = {"commandExecution": "exec_command", "fileChange": "apply_patch", "webSearch": "web_search"}
@@ -267,6 +282,12 @@ _STABLE_ID_PREFIXES = {"commandExecution": "exec", "fileChange": "apply_patch"}
 _MCP_LIKE_ITEM_TYPES = {"mcpToolCall", "dynamicToolCall"}
 # Item types whose preview is the first 120 chars of one string field.
 _PREVIEW_FIELDS = {"commandExecution": "command", "webSearch": "query"}
+
+
+def _delta_text(params: dict) -> str:
+    """Non-empty text carried by an app-server delta notification, else ""."""
+    text = params.get("delta") or params.get("text")
+    return text if isinstance(text, str) else ""
 
 
 def _item_changes(item: dict) -> list[dict]:
@@ -389,11 +410,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                  args=(_stable_call_id(item, name), name, args, result))
 
     def _fire_delta(params: dict, attr: str) -> None:
-        text = params.get("delta") or params.get("text") or ""
+        text = _delta_text(params)
         # Single-writer guard (#65991): a superseded stream must not pollute the turn's accumulated text
         # (which also feeds the interim-visible-text de-dup comparison), even when a caller reaches this
         # directly (the tool-suppressed content path) rather than through _fire_stream_delta.
-        if isinstance(text, str) and text:
+        if text:
             agent_cb(attr, f"{attr} raised", args=(text,))
 
     def _fire_agent_message_completed(item: dict) -> None:
@@ -418,18 +439,10 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         elif completed and item_type == "agentMessage":
             _fire_agent_message_completed(item)
     handlers: dict[str, Callable[[dict], None]] = {
-        "item/agentMessage/delta": lambda p: _fire_delta(p, "_fire_stream_delta"),
-        "item/reasoning/delta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
-        "item/reasoning/summaryDelta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
-        "item/reasoning/textDelta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
-        "item/reasoning/summaryTextDelta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
-        "item/started": lambda p: _on_item(p, completed=False), "item/completed": lambda p: _on_item(p, completed=True),
+        method: functools.partial(_fire_delta, attr=attr) for method, attr in _CODEX_TEXT_DELTA_METHODS
     }
-    progress_deltas = {
-        "item/agentMessage/delta", "item/reasoning/delta", "item/reasoning/summaryDelta",
-        "item/reasoning/textDelta", "item/reasoning/summaryTextDelta",
-        "item/commandExecution/outputDelta", "item/fileChange/outputDelta",
-    }
+    handlers["item/started"] = lambda p: _on_item(p, completed=False)
+    handlers["item/completed"] = lambda p: _on_item(p, completed=True)
 
     def on_event(note: dict) -> None:
         if not isinstance(note, dict):
@@ -440,12 +453,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         # The session has already filtered foreign thread/turn notifications. Count
         # progress even without UI callbacks (or when commentary is hidden), but
         # never let empty deltas or transport keepalives mask a stalled turn.
-        delta = params.get("delta") or params.get("text")
         item = params.get("item")
-        is_delta = method in progress_deltas and isinstance(delta, str) and bool(delta)
+        is_delta = method in _CODEX_PROGRESS_DELTA_METHODS and bool(_delta_text(params))
         is_item = (
             method in {"item/started", "item/completed"} and isinstance(item, dict)
-            and item.get("type") in _CODEX_TOOL_ITEM_TYPES | {"agentMessage", "reasoning"}
+            and item.get("type") in _CODEX_PROGRESS_ITEM_TYPES
         )
         if is_delta or is_item:
             agent_cb("_touch_activity", "_touch_activity raised", args=(f"codex app-server: {method}",))

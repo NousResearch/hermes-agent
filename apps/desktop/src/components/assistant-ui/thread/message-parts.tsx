@@ -27,6 +27,7 @@ import { useI18n } from '@/i18n'
 import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
+import { isCardTool } from '@/lib/tool-render-class'
 import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -75,6 +76,8 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+  const showReasoning = useStore($showReasoning)
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
     return null
@@ -137,6 +140,13 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
 
   if (toolLabels(props.args).length > 0) {
     return <ConnectorExecution {...props} />
+  }
+
+  // Answer-only: process chrome (reads, searches, commands) stays off the
+  // transcript. Cards, approvals, and failed calls the user must act on remain.
+  // reasoning_effort is not a display switch.
+  if (!showReasoning && !props.isError && !isCardTool(props.toolName)) {
+    return null
   }
 
   return <ToolFallback {...props} />

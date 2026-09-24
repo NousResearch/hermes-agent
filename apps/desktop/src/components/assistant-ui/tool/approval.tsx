@@ -35,6 +35,7 @@ import {
   sessionApprovalRequests,
   sessionApprovalStackSize
 } from '@/store/prompts'
+import { $showReasoning } from '@/store/reasoning-disclosure'
 import { setToolDisclosureOpen } from '@/store/tool-view'
 
 import { isApprovalActivity } from './approval-activity'
@@ -78,6 +79,7 @@ export const PendingApprovalStack: FC = () => {
 function ApprovalActivity({ floating, visible }: { floating: boolean; visible: boolean }) {
   const { t } = useI18n()
   const reduced = useReducedMotion()
+  const showReasoning = useStore($showReasoning)
 
   const summary = useAuiState(state => {
     if (!visible) {
@@ -117,6 +119,12 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
       )
       .join('\n')
   })
+
+  // The pending approval stays. The run summary beside it is process chrome
+  // and follows the same display flag as reasoning blocks.
+  if (!showReasoning) {
+    return null
+  }
 
   return (
     <AnimatePresence initial={false}>

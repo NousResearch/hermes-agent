@@ -188,6 +188,22 @@ def _todo_state_from_history(history) -> dict | None:
         return None
 
 
+def _tool_result_needs_user(result: object) -> bool:
+    """A failed call the user still has to see. Display policy must not swallow it."""
+    if not isinstance(result, str) or not result:
+        return False
+    try:
+        data = json.loads(result)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("success") is False or data.get("ok") is False:
+        return True
+    error = data.get("error")
+    return isinstance(error, str) and bool(error.strip())
+
+
 def _tool_labels(name: str, args: dict) -> list[dict] | None:
     from agent.display import tool_labels_for_call
 
@@ -250,7 +266,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         # A preview prepared for an earlier call whose completion never fired (failed
         # flush) must not attach to a provider that reuses the same call id.
         session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
-    if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
+    if (_process_tool_chrome_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
         if (labels := _tool_labels(name, args)) is not None:
@@ -316,8 +332,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
-            or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
+    if (_process_tool_chrome_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
+            or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)
+            or _tool_result_needs_user(result)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.
@@ -339,11 +356,15 @@ def _progress_output_risk(sid, name, preview, kw):
 
 
 def _progress_reasoning(sid, name, preview, kw):
+    if not _session_show_reasoning(sid):
+        return
     _emit("reasoning.available", sid, {"text": str(preview), **({"verbose": True} if _session_verbose(sid) else {})})
 
 
 def _progress_moa_reference(sid, name, preview, kw):
-    # MoA reference-model output, rendered as a labelled block before the aggregator's response.
+    # Reference-model output lands in the reasoning disclosure. Answer-only drops it.
+    if not _session_show_reasoning(sid):
+        return
     # `name` is the slot label, `preview` the text.
     ref_payload: dict[str, object] = {"label": str(name), "text": str(preview or "")}
     for key, out in (("moa_index", "index"), ("moa_count", "count")):
@@ -355,10 +376,7 @@ def _progress_moa_reference(sid, name, preview, kw):
 def _progress_moa_progress(sid, name, preview, kw):
     # Drives the status-bar `MOA: 2/3 refs done`; both counters required for deterministic rendering.
     refs_done, refs_total = kw.get("moa_refs_done"), kw.get("moa_refs_total")
-    # Per-reference completion — drives the status-bar progress indicator (`MOA: 2/3 refs done`) requested
-    # in issue #59546. Only emitted when both counters are present so the client can render
-    # deterministically.
-    if refs_done is None or refs_total is None:
+    if not _session_show_reasoning(sid) or refs_done is None or refs_total is None:
         return
     _emit("moa.progress", sid, {"label": str(name or ""), "refs_done": int(refs_done), "refs_total": int(refs_total)})
 
@@ -366,7 +384,7 @@ def _progress_moa_progress(sid, name, preview, kw):
 def _progress_moa_phase(sid, name, preview, kw):
     # Currently only phase="aggregator" fires, once fan-out completes.
     phase = kw.get("moa_phase")
-    if not phase:
+    if not phase or not _session_show_reasoning(sid):
         return
     phase_payload: dict[str, object] = {"phase": str(phase)}
     for key, out in (("moa_refs_done", "refs_done"), ("moa_refs_total", "refs_total")):

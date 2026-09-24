@@ -417,6 +417,7 @@ import {
   type SecretStoragePolicy,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
+import { selectPathsDialogProperties } from './select-paths-dialog'
 import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
 import {
   buildInstanceWindowUrl,
@@ -17514,11 +17515,7 @@ ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unkn
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
-  const properties = options?.directories ? ['openDirectory'] : ['openFile']
-
-  if (options?.multiple !== false) {
-    properties.push('multiSelections')
-  }
+  const properties = selectPathsDialogProperties(options || {})
 
   let resolvedDefaultPath
 

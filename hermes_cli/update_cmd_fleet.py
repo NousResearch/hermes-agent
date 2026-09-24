@@ -2078,7 +2078,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
 
-    with _best_effort('Update receipt finalize failed: %s'):
+    with _best_effort('Update receipt finalize failed: %s', logging.WARNING):
         from hermes_cli.update_receipt import finalize_update_receipt
         _receipt_path = finalize_update_receipt(
             "partial" if restart.incomplete or not update_complete else "success",

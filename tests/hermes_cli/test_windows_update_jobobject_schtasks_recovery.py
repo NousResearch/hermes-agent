@@ -76,11 +76,24 @@ def _install_ready_then_recover(monkeypatch, schtasks_calls: list, *, after_run_
     monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
 
 
+def _install_managed_task_action(monkeypatch) -> None:
+    """Give legacy recovery tests a registered action that passes the real predicate."""
+    managed_xml = r'''<Task><Actions><Exec><Command>wscript.exe</Command><Arguments>//B //Nologo "C:\Hermes\gateway-service\Hermes_Gateway.vbs"</Arguments></Exec></Actions></Task>'''
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda *_a, **_kw: _TASK)
+    monkeypatch.setattr(gateway_windows, "_query_scheduled_task_xml", lambda _task: managed_xml)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_scheduled_task_template",
+        lambda _task, _home=None: managed_xml,
+    )
+
+
 class TestRelaunchSchtasksRecovery:
     def test_empty_liveness_plus_registered_task_recovers_via_run(
         self, monkeypatch
     ):
         _install_windows_resume_stubs(monkeypatch)
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         _install_ready_then_recover(monkeypatch, schtasks_calls, after_run_pids=[4242])
@@ -94,6 +107,7 @@ class TestRelaunchSchtasksRecovery:
         assert token["resume_needed"] is False
 
     def test_verify_path_recovers_without_raising(self, monkeypatch):
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         monkeypatch.setattr(gateway_windows, "get_task_name", lambda *_a, **_kw: _TASK)
         monkeypatch.setattr(
@@ -132,6 +146,7 @@ class TestRelaunchSchtasksRecovery:
 
     def test_first_liveness_ready_never_touches_schtasks(self, monkeypatch):
         _install_windows_resume_stubs(monkeypatch)
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         monkeypatch.setattr(
@@ -153,6 +168,7 @@ class TestRelaunchSchtasksRecovery:
 
     def test_schtasks_run_nonzero_stays_on_original_failure(self, monkeypatch):
         _install_windows_resume_stubs(monkeypatch)
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
 
@@ -176,6 +192,7 @@ class TestRelaunchSchtasksRecovery:
 
     def test_second_liveness_still_empty_raises(self, monkeypatch):
         _install_windows_resume_stubs(monkeypatch)
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         _install_ready_then_recover(monkeypatch, schtasks_calls, after_run_pids=[])
@@ -231,6 +248,7 @@ class TestColdStartSchtasksRecovery:
         self, monkeypatch
     ):
         self._install_cold_start_stubs(monkeypatch)
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
         schtasks_calls: list[list[str]] = []
         _install_ready_then_recover(monkeypatch, schtasks_calls, after_run_pids=[4242])
@@ -338,6 +356,7 @@ class TestAttestedProfileSchtasksRecovery:
         consumed: list[tuple[str, Path | None]] = []
         runs: list[Path | None] = []
 
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: homes[name])
         monkeypatch.setattr(gateway_windows, "_live_gateway_pids", lambda *, home: [])
         monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda *, home: 9001)
@@ -401,6 +420,7 @@ class TestTargetedRecoveryContract:
         beta_home = Path("/homes/beta")
         calls: list[tuple[str, Path | None]] = []
 
+        _install_managed_task_action(monkeypatch)
         def query(*, home=None):
             calls.append(("query", home))
             if isinstance(registered, Exception):
@@ -437,6 +457,7 @@ class TestTargetedRecoveryContract:
         order: list[str] = []
 
         _install_windows_resume_stubs(monkeypatch)
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: beta_home)
         monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda *a, **kw: order.append("refresh"))
         monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda *, home=None: "registered")
@@ -502,6 +523,7 @@ class TestPlannedManualProfileRecovery:
         ]
 
         _install_windows_resume_stubs(monkeypatch)
+        _install_managed_task_action(monkeypatch)
         monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
         monkeypatch.setattr(hm, "_venv_launcher_ancestors", lambda _pids: [])
         monkeypatch.setattr(hm, "_wait_for_windows_update_gateway_exit", lambda _pids, timeout: set())
@@ -909,4 +931,105 @@ class TestRegisteredTaskRecoveryFollowups:
         )
 
         assert update_cmd_windows._recover_windows_gateway_via_schtasks(gateway_windows) == [777]
+        assert runs == []
+
+
+class TestScheduledTaskActionOwnershipRecovery:
+    """Recovery may run only the target profile's managed task Action."""
+
+    @staticmethod
+    def _managed_template(monkeypatch, home: Path) -> str:
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_task_name", lambda *_a, **_kw: _TASK)
+        return gateway_windows._scheduled_task_template(_TASK, home)
+
+    def test_custom_same_name_task_action_fails_closed_without_run(self, monkeypatch, tmp_path):
+        home = tmp_path / "target"
+        template = self._managed_template(monkeypatch, home)
+        arguments_start = template.index("<Arguments>")
+        arguments_end = template.index("</Arguments>", arguments_start) + len("</Arguments>")
+        custom_xml = (
+            template[:arguments_start]
+            + '<Arguments>//B //Nologo "C:\\Custom\\custom.vbs"</Arguments>'
+            + template[arguments_end:]
+        )
+        runs: list[Path | None] = []
+
+        assert not gateway_windows._task_action_is_hermes_managed(
+            custom_xml, template, task_name=_TASK
+        )
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [])
+        monkeypatch.setattr(gateway_windows, "_query_scheduled_task_xml", lambda _task: custom_xml)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_run_scheduled_task_once",
+            lambda *, home=None: runs.append(home) or (0, "", ""),
+        )
+
+        assert update_cmd_windows._recover_windows_gateway_via_schtasks(
+            gateway_windows, home=home
+        ) == []
+        assert runs == []
+
+    def test_unreadable_task_xml_fails_closed_without_run(self, monkeypatch):
+        runs: list[object] = []
+
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [])
+        monkeypatch.setattr(gateway_windows, "_query_scheduled_task_xml", lambda _task: None)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_run_scheduled_task_once",
+            lambda **_kw: runs.append(True) or (0, "", ""),
+        )
+
+        assert update_cmd_windows._recover_windows_gateway_via_schtasks(gateway_windows) == []
+        assert runs == []
+
+    def test_managed_target_task_runs_once_and_recovers(self, monkeypatch, tmp_path):
+        home = tmp_path / "target"
+        template = self._managed_template(monkeypatch, home)
+        runs: list[Path | None] = []
+
+        assert gateway_windows._task_action_is_hermes_managed(
+            template, template, task_name=_TASK
+        )
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
+        monkeypatch.setattr(
+            gateway_windows,
+            "_wait_for_gateway_ready",
+            lambda **_kw: [4242] if runs else [],
+        )
+        monkeypatch.setattr(gateway_windows, "_query_scheduled_task_xml", lambda _task: template)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_run_scheduled_task_once",
+            lambda *, home=None: runs.append(home) or (0, "", ""),
+        )
+
+        assert update_cmd_windows._recover_windows_gateway_via_schtasks(
+            gateway_windows, home=home
+        ) == [4242]
+        assert runs == [home]
+
+    def test_recovery_race_skips_action_query_and_run(self, monkeypatch):
+        query_calls: list[str] = []
+        runs: list[object] = []
+
+        monkeypatch.setattr(gateway_windows, "_task_registration_state", lambda **_kw: "registered")
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [777])
+        monkeypatch.setattr(
+            gateway_windows,
+            "_query_scheduled_task_xml",
+            lambda task: query_calls.append(task) or pytest.fail("must not query task Action"),
+        )
+        monkeypatch.setattr(
+            gateway_windows,
+            "_run_scheduled_task_once",
+            lambda **_kw: runs.append(True) or pytest.fail("must not run task"),
+        )
+
+        assert update_cmd_windows._recover_windows_gateway_via_schtasks(gateway_windows) == [777]
+        assert query_calls == []
         assert runs == []

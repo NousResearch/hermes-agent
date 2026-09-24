@@ -1287,6 +1287,18 @@ def _recover_windows_gateway_via_schtasks(
     if ready:
         return ready
     try:
+        task_name = gateway_windows.get_task_name(home) if home is not None else gateway_windows.get_task_name()
+        registered_xml = gateway_windows._query_scheduled_task_xml(task_name)
+        template_xml = gateway_windows._scheduled_task_template(task_name, home)
+        if registered_xml is None or not gateway_windows._task_action_is_hermes_managed(
+            registered_xml, template_xml, task_name=task_name
+        ):
+            print("  ⚠ Windows gateway Scheduled Task Action could not be verified as Hermes-managed")
+            return []
+    except Exception:
+        print("  ⚠ Windows gateway Scheduled Task Action could not be verified as Hermes-managed")
+        return []
+    try:
         code, _out, _err = (
             gateway_windows._run_scheduled_task_once(home=home)
             if home is not None

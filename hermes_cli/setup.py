@@ -463,14 +463,19 @@ def setup_agent_settings(config: dict):
 
     # ── Tool Progress Display ──
     _info("", *_TOOL_PROGRESS_HELP)
-    current_mode = cfg_get(config, "display", "tool_progress", default="all")
-    mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
+    # Unset = each platform keeps its own default (CLI all, Telegram/Slack off). Enter on an unset key must keep
+    # that: a global display.tool_progress beats every platform tier (#121230).
+    current_mode = cfg_get(config, "display", "tool_progress")
+    mode = prompt("Tool progress mode" if current_mode else "Tool progress mode (Enter keeps per-platform defaults)",
+                  current_mode)
+    if not mode and not current_mode:
+        print_info("Keeping each platform's default tool progress")
+    elif mode.lower() in {"off", "new", "all", "verbose", "log"}:
         config.setdefault("display", {})["tool_progress"] = mode.lower()
         save_config(config)
         print_success(f"Tool progress set to: {mode.lower()}")
     else:
-        print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
+        print_warning(f"Unknown mode '{mode}', keeping '{current_mode or 'per-platform defaults'}'")
 
     # ── Context Compression ──
     print_header("Context Compression")

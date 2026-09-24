@@ -534,6 +534,13 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             # only when the pool row still carries the canonical URL).
             if base_url in ("", default_url):
                 base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+        elif provider == "xai":
+            # Env-seeded pool entries retain xAI's canonical endpoint.  As with
+            # other registry API-key providers, a matching model.provider may
+            # route that credential through the user's relay instead.
+            registry_url = PROVIDER_REGISTRY[provider].inference_base_url.rstrip("/")
+            if not base_url or base_url.rstrip("/") == registry_url:
+                base_url = _config_base_url_for_provider(model_cfg, provider) or base_url or registry_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL

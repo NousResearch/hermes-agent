@@ -30,6 +30,42 @@ def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
         rp.resolve_runtime_provider()
 
 
+def test_xai_pool_honors_configured_relay_base_url(monkeypatch):
+    """#121347: an env-seeded xAI pool row must not bypass model.base_url."""
+    entry = SimpleNamespace(
+        runtime_api_key="sk-xai-relay-test", access_token="",
+        base_url="https://api.x.ai/v1", source="XAI_API_KEY",
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(
+        has_credentials=lambda: True, select=lambda **_kwargs: entry,
+    ))
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "xai", "base_url": "http://127.0.0.1:8765/v1", "default": "grok-4",
+    })
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["base_url"] == "http://127.0.0.1:8765/v1"
+    assert resolved["api_key"] == "sk-xai-relay-test"
+
+
+def test_xai_pool_without_configured_base_url_keeps_default_endpoint(monkeypatch):
+    """#121347: the relay override must not change xAI's normal pool route."""
+    entry = SimpleNamespace(
+        runtime_api_key="sk-xai-default-test", access_token="",
+        base_url="https://api.x.ai/v1", source="XAI_API_KEY",
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(
+        has_credentials=lambda: True, select=lambda **_kwargs: entry,
+    ))
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "xai", "default": "grok-4"})
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["base_url"] == "https://api.x.ai/v1"
+    assert resolved["api_key"] == "sk-xai-default-test"
+
+
 def test_noauth_lmstudio_still_resolves(monkeypatch):
     """The fail-closed key guard preserves LM Studio's no-auth contract."""
     monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))

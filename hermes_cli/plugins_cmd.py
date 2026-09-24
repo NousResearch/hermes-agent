@@ -597,15 +597,21 @@ def _git_resolve_commit(repo: Path, git_exe: str, revision: str) -> str:
 
 def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url: str = "") -> None:
     """Fetch and detach at one immutable commit, then verify the resulting HEAD."""
+    fetch_timeout = _network_git_timeout_seconds()
     for verb, args, failure_prefix in (
         ("fetch", ("fetch", "--depth", "1", "origin", revision), f"Git commit '{revision}' could not be fetched:\n"),
         ("checkout", ("checkout", "--detach", revision), f"Git checkout of commit '{revision}' failed:\n"),
     ):
         try:
             _git_or_raise(git_exe, repo, *args, failure_prefix=failure_prefix, source_url=source_url,
+                          timeout=fetch_timeout if verb == "fetch" else 60,
                           auth_url=source_url if verb == "fetch" else "")
         except subprocess.TimeoutExpired as exc:
-            raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after 60 seconds.") from exc
+            if verb == "fetch":
+                raise PluginOperationError(
+                    f"Git fetch of commit '{revision}' timed out after {fetch_timeout} seconds. "
+                    f"Set HERMES_GIT_TIMEOUT_SECONDS (seconds, minimum 30) for slow connections, then retry.") from exc
+            raise PluginOperationError(f"Git checkout of commit '{revision}' timed out after 60 seconds.") from exc
     actual = _git_head_revision(repo, git_exe)
     if actual != _git_resolve_commit(repo, git_exe, revision):
         raise PluginOperationError(
@@ -667,12 +673,16 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
     if not git_exe:
         raise PluginOperationError("git is not installed or not in PATH.")
     clone_args = ["clone", "--depth", "1", *(["--no-checkout"] if revision else []), git_url, str(tmp_clone)]
+    clone_timeout = _network_git_timeout_seconds()
     try:
-        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url)
+        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url,
+                                 timeout=clone_timeout)
     except FileNotFoundError as e:
         raise PluginOperationError("git is not installed or not in PATH.") from e
     except subprocess.TimeoutExpired as e:
-        raise PluginOperationError("Git clone timed out after 60 seconds.") from e
+        raise PluginOperationError(
+            f"Git clone timed out after {clone_timeout} seconds. "
+            f"Set HERMES_GIT_TIMEOUT_SECONDS (seconds, minimum 30) for slow connections, then retry.") from e
     if result.returncode != 0:
         raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
@@ -2223,6 +2233,24 @@ def _clear_plugin_bytecode(target: Path) -> int:
     return removed
 
 
+def _network_git_timeout_seconds() -> int:
+    """Budget for plugin git verbs that touch the network (clone, fetch, pull).
+
+    Defaults to 300s to match ``hermes update``'s own network git budget
+    (``update_cmd.NETWORK_GIT_TIMEOUT_SECONDS``): a home that can self-update
+    should be able to install plugins. Override with ``HERMES_GIT_TIMEOUT_SECONDS``
+    (an integer >= 30); anything unparseable or below the floor falls back to
+    the default. Local-only verbs (rev-parse, checkout, stash, diff) keep their
+    short hard-coded budgets so nothing can hang on a stuck local filesystem.
+    """
+    try:
+        raw = os.environ.get("HERMES_GIT_TIMEOUT_SECONDS", "").strip()
+        value = int(raw)
+        return value if value >= 30 else 300
+    except (ValueError, TypeError):
+        return 300
+
+
 def _run_plugin_git(
     git_exe: str, target: Path, *args: str, timeout: int = 60, auth_url: str = "",
 ) -> subprocess.CompletedProcess:
@@ -2308,7 +2336,9 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         if err:
             return False, err
         origin = _run_plugin_git(git_exe, target, "remote", "get-url", "origin", timeout=15)
-        result = _run_plugin_git(git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip())
+        pull_timeout = _network_git_timeout_seconds()
+        result = _run_plugin_git(git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip(),
+                                 timeout=pull_timeout)
         if result.returncode != 0:
             err = _safe_git_error(result) or "git pull failed."
             if not stash_sha:
@@ -2337,7 +2367,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."
     except subprocess.TimeoutExpired:
-        return False, "Git operation timed out after 60 seconds."
+        return False, f"Git operation timed out after {_network_git_timeout_seconds()} seconds."
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:

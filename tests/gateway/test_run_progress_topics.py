@@ -148,7 +148,7 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
 
 
 class UnsupportedEditProgressCaptureAdapter(MetadataEditProgressCaptureAdapter):
-    """Model the API server, where an HTTP/SSE response owns final delivery."""
+    """Chat adapter whose message edits fail (e.g. edit unsupported or rejected)."""
 
     async def edit_message(
         self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
@@ -1438,23 +1438,19 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_transformed_api_stream_keeps_final_for_single_sse_delivery(monkeypatch, tmp_path):
-    """An API-server edit is unsupported, so the SSE owner must retain the final response.
-
-    Marking this response as already sent suppresses that one authoritative final delivery and
-    drops plugin-transformed content for the desktop client.
-    """
+async def test_transformed_final_is_not_marked_sent_when_edit_fails(monkeypatch, tmp_path):
+    """#119323: when the in-place edit carrying a transformed final fails on a chat platform,
+    the response must not be marked already_sent, or the transformed text is never delivered."""
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         TransformedStreamAgent,
-        session_id="sess-transformed-api-stream",
+        session_id="sess-transformed-edit-fails",
         config_data={
             "display": {"tool_progress": "off", "interim_assistant_messages": False},
             "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
         },
-        platform=Platform.API_SERVER,
-        chat_id="desktop-session",
+        platform=Platform.TELEGRAM,
         chat_type="dm",
         thread_id=None,
         adapter_cls=UnsupportedEditProgressCaptureAdapter,

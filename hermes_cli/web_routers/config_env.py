@@ -299,8 +299,7 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
         def _save():
-            current = load_env().get(body.key)
-            if is_redacted_credential_preview(body.value, current):
+            if is_redacted_credential_preview(body.value):
                 raise ValueError(REDACTED_CREDENTIAL_WRITE_DETAIL)
             return save_provider_env_credential(body.key, body.value)
 
@@ -627,14 +626,9 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     env_var = custom_endpoint_key_env(endpoint_id)
     submitted_key = body.api_key.strip() if body.api_key is not None else None
     if submitted_key:
-        display_preview = _api_key_display(existing)[1]
-        existing_key_env = str(existing.get("key_env") or "").strip()
-        stored_secret = load_env().get(existing_key_env) if existing_key_env else None
-        if (
-            submitted_key == display_preview
-            or re.fullmatch(r"\$\{[^}]+\}", submitted_key)
-            or is_redacted_credential_preview(submitted_key, stored_secret)
-        ):
+        # ``${KEY_ENV}`` is the GET display for key_env entries; the helper covers the
+        # sentinel and legacy masks. Either one is display-only, current or stale.
+        if re.fullmatch(r"\$\{[^}]+\}", submitted_key) or is_redacted_credential_preview(submitted_key):
             raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var

@@ -199,11 +199,6 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
-def _messaging_env_value(key: str, env_on_disk: dict[str, str], *, scoped: bool) -> str:
-    """Resolve the credential source shared by Messaging GET and write preflight."""
-    return env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
-
-
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None,
@@ -233,7 +228,9 @@ def _messaging_platform_payload(
         runtime_platform = {}
 
     def env_value(key: str) -> str:
-        return _messaging_env_value(key, env_on_disk, scoped=scoped)
+        # Profile-scoped: judge only the profile's own .env — the dashboard process's
+        # os.environ carries the ROOT install's .env and would report root credentials as the profile's.
+        return env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
 
     env_vars = [
         {
@@ -877,12 +874,10 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             raise HTTPException(status_code=400, detail=f"{key} is not configurable for {entry['name']}")
 
     def _apply():
-        with _profile_scope(target_profile) as scoped_dir:
-            env_on_disk = load_env()
+        with _profile_scope(target_profile):
             updates: dict[str, str] = {}
 
-            # Validate the whole request against the same credential snapshot the GET
-            # response uses before clearing or replacing anything.
+            # Validate the whole request before clearing or replacing anything.
             for key in body.clear_env:
                 _check_allowed(key)
             for key, value in body.env.items():
@@ -890,8 +885,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                 trimmed = value.strip()
                 if not trimmed:
                     continue
-                current = _messaging_env_value(key, env_on_disk, scoped=scoped_dir is not None)
-                if is_redacted_credential_preview(trimmed, current):
+                if is_redacted_credential_preview(trimmed):
                     raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
                 _validate_messaging_env_value(platform_id, key, trimmed)
                 updates[key] = trimmed

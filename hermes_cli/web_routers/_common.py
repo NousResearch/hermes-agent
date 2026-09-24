@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import sqlite3
 import time
 from typing import Any, Callable, Dict, Optional
@@ -131,16 +132,18 @@ def redacted_credential_preview(value: Any) -> Optional[str]:
     return f"«redacted:{redact_key(str(value))}»"
 
 
-def is_redacted_credential_preview(submitted: Any, current: Any = None) -> bool:
-    """Recognize current and stale dashboard previews without guessing from key shape."""
+# Legacy bare masks (pre-sentinel pages, older Desktop builds) are recognised by the
+# producer shape of ``agent.redact.mask_secret`` — never by equality to the current
+# secret, which would authorise a stale preview after a rotation (#121002).
+_LEGACY_MASK_RE = re.compile(r".{4}\.\.\..{4}")
+
+
+def is_redacted_credential_preview(submitted: Any) -> bool:
+    """Recognize current, stale and legacy dashboard previews by shape alone."""
     value = str(submitted or "")
     if value == "«redacted-secret»" or (value.startswith("«redacted:") and value.endswith("»")):
         return True
-    if current:
-        # Compatibility with a page opened before the non-reusable sentinel contract.
-        from hermes_cli.config import redact_key
-        return value == redact_key(str(current))
-    return False
+    return value == "***" or _LEGACY_MASK_RE.fullmatch(value) is not None
 
 
 # Corrupt-store reporting for polled read endpoints. The dashboard polls analytics every few

@@ -799,7 +799,8 @@ class PluginContext:
         ``check_fn`` is a PASSIVE "deps importable?" probe that must never install (status displays call
         it freely); an ACTIVE installer goes in ``ensure_deps_fn`` (called from ``create_adapter()`` when
         ``check_fn`` is False). Extra kwargs (``setup_fn``, ``emoji``, ``allowed_users_env``,
-        ``platform_hint``, ``ensure_deps_fn``) forward to ``PlatformEntry``; unknown keys raise TypeError."""
+        ``platform_hint``, ``ensure_deps_fn``, ``standalone_media``) forward to ``PlatformEntry``;
+        unknown keys raise TypeError."""
         from gateway.platform_registry import platform_registry, PlatformEntry
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
         entry = PlatformEntry(

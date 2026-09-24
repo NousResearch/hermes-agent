@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -226,6 +227,65 @@ def fsync_directory(path: Union[str, Path]) -> None:
         os.close(fd)
 
 
+def _make_writable_no_follow(candidate: Union[str, Path]) -> None:
+    """Make one filesystem entry writable without intentionally following links."""
+    try:
+        before = os.lstat(candidate)
+    except OSError:
+        return
+    if stat.S_ISLNK(before.st_mode):
+        return
+
+    # POSIX can bind the permission change to the opened inode, closing the
+    # lstat/chmod symlink-swap window as well as refusing an existing link.
+    if os.name == "posix" and hasattr(os, "O_NOFOLLOW") and hasattr(os, "fchmod"):
+        flags = (
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        if stat.S_ISDIR(before.st_mode):
+            flags |= getattr(os, "O_DIRECTORY", 0)
+        try:
+            fd = os.open(candidate, flags)
+        except OSError:
+            return
+        try:
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                return
+            os.fchmod(fd, opened.st_mode | stat.S_IWUSR | stat.S_IXUSR)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+        return
+
+    if os.name != "nt":
+        return
+
+    # Windows needs path-based chmod to clear FILE_ATTRIBUTE_READONLY.
+    # Re-check immediately before it so a link is never intentionally
+    # followed on platforms without chmod(follow_symlinks=False).
+    try:
+        current = os.lstat(candidate)
+        if stat.S_ISLNK(current.st_mode):
+            return
+        os.chmod(candidate, current.st_mode | stat.S_IWUSR | stat.S_IXUSR)
+    except OSError:
+        pass
+
+
+def unlink_readonly(path: Union[str, Path]) -> None:
+    """Unlink one entry, recovering read-only permissions without following links."""
+    try:
+        os.unlink(path)
+    except PermissionError:
+        for candidate in (os.path.dirname(path), path):
+            if candidate:
+                _make_writable_no_follow(candidate)
+        os.unlink(path)
+
+
 def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> None:
     """``shutil.rmtree`` that can also delete read-only trees.
 
@@ -245,14 +305,13 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
             raise exc
         for candidate in (os.path.dirname(fpath), fpath):
             if candidate:
-                with suppress(OSError):
-                    os.chmod(candidate, os.stat(candidate).st_mode | stat.S_IWUSR | stat.S_IXUSR)
+                _make_writable_no_follow(candidate)
         func(fpath)
 
     try:
-        try:
+        if sys.version_info >= (3, 12):
             shutil.rmtree(path, onexc=_on_error)
-        except TypeError:  # ``onexc`` is 3.12+; 3.11 only knows ``onerror``
+        else:
             shutil.rmtree(path, onerror=_on_error)
     except OSError:
         # ``ignore_errors`` still gets the read-only recovery; it only swallows

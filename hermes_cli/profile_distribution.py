@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
-from utils import rmtree_readonly
+from utils import rmtree_readonly, unlink_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -50,7 +50,7 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     "browser_screenshots", "checkpoints", "sandboxes",
     "backups", "cache",
     # Infrastructure
-    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
+    "hermes-agent", ".git", ".worktrees", "profiles", "bin", "node_modules",
     # User customization namespace
     "local",
 })
@@ -350,7 +350,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
         rel_parts = PurePosixPath(rel).parts
-        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE:
+        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE or ".git" in rel_parts:
             continue
         if ".." in rel_parts or PurePosixPath(rel).is_absolute():
             continue
@@ -362,10 +362,10 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
 def _remove_existing(path: Path) -> None:
     """Remove one destination entry without following a destination symlink."""
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        rmtree_readonly(path)
     elif os.path.lexists(path):
         # Covers files, dangling/any symlinks, fifos and sockets alike.
-        path.unlink()
+        unlink_readonly(path)
 
 
 def _replace_entry(src: Path, dest: Path) -> None:
@@ -373,7 +373,7 @@ def _replace_entry(src: Path, dest: Path) -> None:
     file<->directory transitions cannot raise or leave stale content behind."""
     _remove_existing(dest)
     if src.is_dir():
-        shutil.copytree(src, dest)
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
     else:
         shutil.copy2(src, dest)
 
@@ -414,6 +414,8 @@ def _merge_dir(src: Path, dest: Path) -> None:
     (``skills/<category>``) is merged, not replaced, so sibling roots the user
     added under the same category survive."""
     for child in src.iterdir():
+        if child.name == ".git":
+            continue
         if _is_container(child):
             _merge_dir(child, _real_dir(dest, (child.name,)))
         else:

@@ -278,7 +278,11 @@ distribution_owned:
   - cron/digest.json
 ```
 
-When omitted, the defaults above apply — which is what most distributions want.
+For compatibility with distributions created before this field existed, omitting
+`distribution_owned` makes every repository entry distribution-owned except the
+[hard-excluded paths](#whats-not-in-a-distribution-ever). Declare the defaults above
+explicitly when that narrower behavior is desired. Git metadata (`.git` at any depth)
+is always excluded and is never installed as profile content.
 
 ---
 

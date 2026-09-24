@@ -163,6 +163,36 @@ def test_non_positive_stale_after_days_falls_back_to_default(curator_env, monkey
     assert c.get_stale_after_days() == c.DEFAULT_STALE_AFTER_DAYS
 
 
+@pytest.mark.parametrize("bad_hours", [0, -3])
+def test_non_positive_interval_hours_falls_back_to_default(curator_env, monkeypatch, bad_hours):
+    """``curator.interval_hours: 0`` (or negative) made should_run_now() true on every idle tick,
+    re-running the review pass each time; it must fall back to the default interval instead."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"interval_hours": bad_hours})
+    now = datetime.now(timezone.utc)
+    c.save_state({"last_run_at": (now - timedelta(minutes=1)).isoformat()})
+
+    assert c.get_interval_hours() == c.DEFAULT_INTERVAL_HOURS
+    assert c.should_run_now(now=now) is False
+
+
+def test_bad_bounded_value_warns_once_per_distinct_value(curator_env, monkeypatch, caplog):
+    """The dashboard status endpoint polls these getters, so a bad value logs once, not per poll;
+    a different bad value (the user edited config again) logs again."""
+    c = curator_env["curator"]
+    cfg = {"archive_after_days": 0}
+    monkeypatch.setattr(c, "_load_config", lambda: cfg)
+    with caplog.at_level("WARNING", logger=c.logger.name):
+        for _ in range(3):
+            c.get_archive_after_days()
+        cfg["archive_after_days"] = -1
+        c.get_archive_after_days()
+        c.get_archive_after_days()
+    msgs = [r.getMessage() for r in caplog.records if "archive_after_days" in r.getMessage()]
+    assert len(msgs) == 2, msgs
+    assert "got 0" in msgs[0] and "got -1" in msgs[1]
+
+
 def test_pinned_skill_is_never_touched(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]

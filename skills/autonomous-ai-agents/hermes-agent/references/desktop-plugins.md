@@ -78,7 +78,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 - `host.onEvent(type, fn)` — live gateway events (`'*'` for all). Returns a
   disposer.
 - `host.notify({ kind, message })`, `host.navigate(path)`, `host.logs(...)`,
-  `host.status()`, `haptic('tap')`.
+  `host.status()`, `host.revealPane(scopedId)` for contributed panes,
+  `host.revealDesktopPane(name)` for the five core panes, and `haptic('tap')`.
+  Use either reveal action only from an explicit user action; feature-detect
+  `host.revealDesktopPane` when supporting older Desktop builds.
 - `ctx.register({ id, area, order?, render?, data? })` — contribute UI.
   Key areas: `'statusBar.right'`/`'statusBar.left'` (chips),
   `'panes'` (layout zones — set `title` and

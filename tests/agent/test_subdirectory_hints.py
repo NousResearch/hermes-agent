@@ -1,5 +1,6 @@
 """Tests for progressive subdirectory hint discovery."""
 
+import os
 import time
 
 import pytest
@@ -410,3 +411,47 @@ class TestSymlinkedHintTargets:
         assert result is not None and "Shared in-tree instructions" in result
         result = tracker.check_tool_call("read_file", {"path": str(plain / "f.py")})
         assert result is not None and "Legit subdirectory rules" in result
+
+
+class TestNativeSeparatorPathsInCommands:
+    """Commands carry native separators on Windows; hint discovery must still find the directory.
+
+    POSIX lexing treats every backslash as an escape, so ``backend\\src\\main.py`` arrived from
+    ``shlex.split`` as ``backendsrcmain.py`` and resolved to nothing, and a token like
+    ``backend\\src`` carries neither "/" nor "." so the path-like filter dropped it outright.
+    Written with ``os.sep`` so each case is the real fault on Windows and a regression guard on
+    POSIX. See #78293.
+    """
+
+    def test_native_separator_file_path_loads_its_directory_hint(self, project):
+        command = f"python backend{os.sep}src{os.sep}main.py"
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": command})
+        assert result is not None and "Backend-specific instructions" in result
+
+    def test_native_separator_directory_without_a_dot_loads_its_hint(self, project):
+        """The path-like filter keyed on "/" only, so a dotless native path was dropped."""
+        command = f"pytest backend{os.sep}src"
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": command})
+        assert result is not None and "Backend-specific instructions" in result
+
+    def test_native_separator_nav_target_loads_its_hint(self, project):
+        """``_nav_targets`` lexes separately, so it needed the same treatment."""
+        command = f"cd deep{os.sep}nested{os.sep}path"
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": command})
+        assert result is not None and "Cursor rules for nested path" in result
+
+    def test_quoted_navigation_target_still_has_its_quotes_stripped(self, project):
+        """Control for the Windows lexing change: ``posix=False`` keeps the quotes, so one
+        layer is stripped back off — a quoted plain name must still navigate."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": 'cd "backend"'})
+        assert result is not None and "Backend-specific instructions" in result
+
+    @pytest.mark.parametrize("command", ["echo cd backend", "cd 'backend;'", "ls -la", "cd -"])
+    def test_non_navigation_commands_still_inject_nothing(self, project, command):
+        """The widened filter must not turn prose or flags into directory candidates."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker.check_tool_call("terminal", {"command": command}) is None

@@ -874,7 +874,7 @@ def _update_root_pool_rows(
             store["credential_pool"] = pool
         existing = pool.get(provider)
         existing_list = existing if isinstance(existing, list) else []
-        incoming_by_id = {p.get("id"): p for p in payloads if isinstance(p, dict) and p.get("id")}
+        incoming_by_id = auth_mod._entry_ids(payloads)
         cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         bases = token_bases or {}
         merged: List[Dict[str, Any]] = []
@@ -1130,16 +1130,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             )
             if written is None:
                 return
-            rows = {row.get("id"): row for row in written if isinstance(row, dict) and row.get("id")}
-            pairs = {row_id: auth_mod._credential_token_pair(row) for row_id, row in rows.items()}
-            self._persisted_token_pairs = {row_id: pair for row_id, pair in pairs.items() if any(pair)}
+            rows = auth_mod._entry_ids(written)
+            self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
             for index, entry in enumerate(self._entries):
                 row = rows.get(entry.id)
-                if row is None or not any(pairs[entry.id]):
+                pair = self._persisted_token_pairs.get(entry.id, (None, None))
+                if row is None or not any(pair):
                     continue
                 # Adopt only rows the store overrode with a peer's newer pair; re-hydrating an
                 # unchanged row would drop in-memory-only runtime fields to_dict() omits.
-                if pairs[entry.id] != (entry.access_token, entry.refresh_token):
+                if pair != (entry.access_token, entry.refresh_token):
                     # Reference-only rows are intentionally secret-free on disk; never dehydrate
                     # their live in-memory credential while adopting a concurrent generation.
                     self._entries[index] = PooledCredential.from_dict(self.provider, row)
@@ -1288,12 +1288,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             )
             if not isinstance(persisted, dict):
                 return entry
+            # Same base policy as _persist/load_pool: a token-less disk row is a known
+            # (blank) generation, recorded before the no-token-material bail-out below.
+            self._persisted_token_pairs[entry.id] = auth_mod._credential_token_pair(persisted)
             stored = PooledCredential.from_dict(self.provider, persisted)
             # No token material at all is never a "rotation" (anthropic borrowed rows, a plugin row a
             # peer blanked mid-write): adopting it would replace a usable credential with nothing.
             if not is_xai and not (stored.access_token or "").strip() and not (stored.refresh_token or "").strip():
                 return entry
-            self._persisted_token_pairs[entry.id] = auth_mod._credential_token_pair(persisted)
             if stored.access_token != entry.access_token or stored.refresh_token != entry.refresh_token:
                 logger.debug(
                     "Pool entry %s: adopting %s OAuth tokens rotated by another pool instance",
@@ -3066,10 +3068,7 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= _normalize_pool_priorities(provider, entries)
 
     pool = CredentialPool(provider, entries)
-    pool._persisted_token_pairs = {
-        payload["id"]: auth_mod._credential_token_pair(payload)
-        for payload in raw_entries if isinstance(payload, dict) and payload.get("id")
-    }
+    pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
     if changed:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this

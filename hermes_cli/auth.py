@@ -913,6 +913,15 @@ def _credential_token_pair(row: Any) -> Tuple[Any, Any]:
     return row.get("access_token"), row.get("refresh_token")
 
 
+def _token_pairs_by_id(rows: Iterable[Any]) -> Dict[str, Tuple[Any, Any]]:
+    """Token-generation base per row id, INCLUDING ``(None, None)`` for token-less rows.
+
+    A blank base is a known generation ("no pair when we last looked"), so a peer that
+    later lands a pair on that row is kept by ``_merge_pool_row_generation`` on every
+    flush alike; dropping blank bases would make the first and later flushes disagree."""
+    return {row_id: _credential_token_pair(row) for row_id, row in _entry_ids(rows).items()}
+
+
 def _merge_pool_row_generation(
     entry: Dict[str, Any],
     disk_entry: Optional[Dict[str, Any]],
@@ -937,21 +946,19 @@ def _merge_pool_row_generation(
         return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
 
     merged = dict(entry)
-    for field in _POOL_TOKEN_GENERATION_FIELDS:
-        if field in disk_entry:
-            merged[field] = disk_entry[field]
-        else:
-            merged.pop(field, None)
-    if not status_cleared and entry.get("last_status") == STATUS_DEAD:
-        for field in _POOL_STATUS_FIELDS:
+
+    def _take_from_disk(fields: Iterable[str]) -> None:
+        # Absent-on-disk fields are popped, not set to None: a None would make the
+        # UPDATE-only root merge see a changed row and force a spurious save.
+        for field in fields:
             if field in disk_entry:
                 merged[field] = disk_entry[field]
             else:
                 merged.pop(field, None)
-        if "failure_reason" in disk_entry:
-            merged["failure_reason"] = disk_entry["failure_reason"]
-        else:
-            merged.pop("failure_reason", None)
+
+    _take_from_disk(_POOL_TOKEN_GENERATION_FIELDS)
+    if not status_cleared and entry.get("last_status") == STATUS_DEAD:
+        _take_from_disk((*_POOL_STATUS_FIELDS, "failure_reason"))
     return _merge_disk_cooldown_state(merged, merge_disk, provider_id)
 
 

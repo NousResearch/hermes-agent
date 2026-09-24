@@ -1,15 +1,17 @@
 from unittest.mock import patch
 
+import pytest
+
 from tools.computer_use import cua_backend
 
+pytestmark = pytest.mark.linux_only
 
 _VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
 def _child_env(base_env, native_wayland):
     config = {"computer_use": {"native_wayland": native_wayland}}
-    with patch("hermes_cli.config.load_config", return_value=config), \
-         patch.object(cua_backend.sys, "platform", "linux"):
+    with patch("hermes_cli.config.load_config", return_value=config):
         return cua_backend.cua_driver_child_env(base_env)
 
 

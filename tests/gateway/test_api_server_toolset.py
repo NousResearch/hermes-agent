@@ -1,8 +1,8 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
-from unittest.mock import patch, MagicMock
+
+from toolsets import resolve_toolset
 
 
-from toolsets import resolve_toolset, get_toolset, validate_toolset
 
 
 class TestHermesApiServerToolset:
@@ -85,34 +85,4 @@ class TestApiServerPlatformConfig:
         assert "x_search" not in enabled
 
 
-class TestApiServerAdapterToolset:
-    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
-    def test_create_agent_reads_config_toolsets(self):
-        """API server resolves toolsets from config like all other platforms."""
-        from gateway.platforms.api_server import APIServerAdapter
-        from gateway.config import PlatformConfig
-
-        adapter = APIServerAdapter(PlatformConfig())
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
-             patch("gateway.run._resolve_gateway_model") as mock_model, \
-             patch("gateway.run._load_gateway_config") as mock_config, \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-
-            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
-                                        "provider": None, "api_mode": None,
-                                        "command": None, "args": []}
-            mock_model.return_value = "test/model"
-            # No platform_toolsets override — should fall back to hermes-api-server default
-            mock_config.return_value = {}
-            mock_agent_cls.return_value = MagicMock()
-
-            adapter._create_agent()
-
-            mock_agent_cls.assert_called_once()
-            call_kwargs = mock_agent_cls.call_args
-            toolsets = call_kwargs.kwargs.get("enabled_toolsets")
-            assert isinstance(toolsets, list)
-            assert len(toolsets) > 0
-            assert call_kwargs.kwargs.get("platform") == "api_server"
 

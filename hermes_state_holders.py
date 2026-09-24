@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Tuple
 
+from hermes_state_errors import is_sqlite_lock_error
+
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
 except ImportError:  # pragma: no cover - stripped/scaffold installs only
@@ -52,6 +54,18 @@ def _read_proc_argv(pid: int) -> Optional[List[str]]:
         return argv or None
     except OSError:
         return None
+
+
+def describe_holder_pid(pid: int) -> str:
+    """``PID 123 (hermes gateway run)`` for operator-facing holder lists; /proc argv first, psutil elsewhere."""
+    argv = _read_proc_argv(pid)
+    if argv is None and psutil is not None:
+        try:
+            argv = psutil.Process(pid).cmdline() or None
+        except Exception:
+            argv = None
+    who = " ".join(" ".join([os.path.basename(argv[0]), *argv[1:]]).split())[:80] if argv else "command line unavailable"
+    return f"PID {pid} ({who})"
 
 
 def _looks_like_python_executable(program: str) -> bool:
@@ -131,6 +145,116 @@ def canonical_sqlite_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
 
+_HOME_FLAGS = ("--hermes-home",)
+_PROFILE_FLAGS = ("--profile", "-p")
+_STATE_DB_NAMES = ("state.db", "state.db-wal", "state.db-shm")
+
+
+def _norm_path(value: str) -> str:
+    return os.path.normcase(os.path.normpath(value))
+
+
+def _argv_flag_value(argv: Sequence[str], flags: Sequence[str]) -> Optional[str]:
+    """Last ``--flag X`` / ``--flag=X`` value, token-exact (``--profile timothy`` is not ``tim``)."""
+    value: Optional[str] = None
+    index, count = 0, len(argv)
+    while index < count:
+        token = argv[index]
+        if isinstance(token, str):
+            if token in flags and index + 1 < count and isinstance(argv[index + 1], str):
+                value = argv[index + 1]
+                index += 2
+                continue
+            for flag in flags:
+                if token.startswith(flag + "="):
+                    value = token[len(flag) + 1:]
+                    break
+        index += 1
+    return value
+
+
+def _argv_env_home(argv: Sequence[str]) -> Optional[str]:
+    """``HERMES_HOME=<path>`` env-style assignment on the argv (``env HERMES_HOME=… hermes …``)."""
+    for token in reversed(list(argv)):
+        if isinstance(token, str) and token.startswith("HERMES_HOME="):
+            return token[len("HERMES_HOME="):]
+    return None
+
+
+def _store_install_layout(this_home: str) -> Tuple[Optional[str], Optional[str]]:
+    """``(<install root>, <our profile name>)`` for the home holding the store, else ``(None, None)``.
+
+    Derived with the canonical ``named_profile_home`` predicate, never a ``basename == "profiles"``
+    string test: an arbitrary ``<X>/profiles/<n>/`` tree is not a Hermes install, and promoting
+    ``<X>`` to "ours" swallows an unrelated instance living under it — the literal two-instance
+    shape of #92401. The root store (``~/.hermes/state.db``) is its own root with no profile name,
+    so ANY named-profile selection contradicts it.
+    """
+    try:
+        from hermes_constants import named_profile_home
+
+        profile_home = named_profile_home(this_home)
+        if profile_home is not None:
+            return os.path.abspath(str(profile_home.parent.parent)), profile_home.name
+        if os.path.basename(this_home) == ".hermes":
+            return os.path.abspath(this_home), None
+    except Exception:  # constants import/resolution must never break a holder scan
+        logger.debug("Could not classify the install layout of %s", this_home, exc_info=True)
+    return None, None
+
+
+def _names_other_profile(normalized: str, install_root: Optional[str], our_profile: Optional[str]) -> bool:
+    """True when the token is under ``<install root>/profiles/<name>`` for a name that is not ours."""
+    if install_root is None:
+        return False
+    prefix = _norm_path(os.path.join(install_root, "profiles")) + os.sep
+    if not normalized.startswith(prefix):
+        return False
+    name = normalized[len(prefix):].split(os.sep, 1)[0]
+    return bool(name) and name != (os.path.normcase(our_profile) if our_profile else None)
+
+
+def _argv_home_selection(
+    argv: Sequence[str], this_home: str, install_root: Optional[str], our_profile: Optional[str]
+) -> Optional[str]:
+    """``"ours"``/``"other"``/``None`` from the process's OWN profile/home selection.
+
+    Under one process per host the shared binary path proves nothing about which home a process
+    serves; its ``--hermes-home``/``HERMES_HOME=``/``--profile``/``-p`` selection does. Same
+    token-exact parsers ``gateway/run.py::_argv_contradicts_home`` uses.
+    """
+    home_value = _argv_flag_value(argv, _HOME_FLAGS) or _argv_env_home(argv)
+    if home_value:
+        return "ours" if _norm_path(home_value) == _norm_path(this_home) else "other"
+    profile_value = _argv_flag_value(argv, _PROFILE_FLAGS)
+    if profile_value:
+        if our_profile is not None:
+            return "ours" if profile_value == our_profile else "other"
+        # Root/custom home: any explicit named profile selects a different home.
+        return "ours" if (install_root is not None and profile_value == "default") else "other"
+    return None
+
+
+def _argv_path_tokens(argv: Sequence[str]) -> List[Tuple[int, str]]:
+    """``(argv index, normalized absolute path)`` for every path-bearing token."""
+    tokens: List[Tuple[int, str]] = []
+    for index, token in enumerate(argv):
+        if not isinstance(token, str):
+            continue
+        if token.startswith("/"):
+            path_token = token
+        elif token.startswith("-") and "=" in token:
+            # ``--db=/abs/path``-style options carry a path value; anchor on
+            # the text after '=' so normpath does not prepend the option.
+            value = token.split("=", 1)[1]
+            path_token = value if value.startswith("/") else None
+        else:
+            path_token = None
+        if path_token is not None:
+            tokens.append((index, _norm_path(path_token)))
+    return tokens
+
+
 def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     """Return whether argv proves the process belongs to a DIFFERENT instance.
 
@@ -144,43 +268,56 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     this instance's stale-FTS rebuild forever despite lsof proving zero open
     handles).  Ambiguous argv without absolute-path tokens returns False and
     keeps the fail-closed suspicion.
+
+    Evidence is ranked, because one host now runs ONE process for every profile:
+
+    1. A token naming our state.db or a sidecar exactly — definitive, ours.
+    2. The process's own ``--hermes-home``/``HERMES_HOME=``/``--profile``/``-p``
+       selection — that is what decides which home a multiplexer serves.
+    3. Path tokens. A token under ``<install root>/profiles/<other>`` is another
+       profile's store even though it sits under our root; a token that names only
+       the SHARED install root is NEUTRAL (it is the same binary for every profile,
+       so it can neither prove nor disprove a hold); ``argv[0]`` locates the INSTALL,
+       not the home, so it is not other-home evidence for a store whose home is not
+       part of an install layout (a custom ``HERMES_HOME`` is served BY the binary
+       under ``~/.hermes`` — dismissing on it admits maintenance under a live writer).
     """
     db_path_str = os.path.abspath(os.fspath(db_path))
     this_home = os.path.dirname(db_path_str)
-    ours = {
+    install_root, our_profile = _store_install_layout(this_home)
+    sidecars = {
         os.path.normcase(candidate)
-        for candidate in (
-            db_path_str,
-            db_path_str + "-wal",
-            db_path_str + "-shm",
-            this_home,
-        )
+        for candidate in (db_path_str, db_path_str + "-wal", db_path_str + "-shm")
     }
-    other_home_seen = False
-    for token in argv:
-        if not isinstance(token, str):
+    this_home_norm = os.path.normcase(this_home)
+    root_norm = os.path.normcase(install_root) if install_root else None
+    path_tokens = _argv_path_tokens(argv)
+
+    if any(normalized in sidecars for _, normalized in path_tokens):
+        return False
+    selection = _argv_home_selection(argv, this_home, install_root, our_profile)
+    if selection == "ours":
+        return False
+    # A store whose home is not itself part of an install layout cannot be identified from the
+    # install location, so argv[0] alone never dismisses a holder of it.
+    argv0_locates_home = install_root is not None
+    other_home_seen = selection == "other"
+    for index, normalized in path_tokens:
+        if _names_other_profile(normalized, install_root, our_profile):
+            other_home_seen = True
             continue
-        if token.startswith("/"):
-            path_token = token
-        elif token.startswith("-") and "=" in token:
-            # ``--db=/abs/path``-style options carry a path value; anchor on
-            # the text after '=' so normpath does not prepend the option.
-            value = token.split("=", 1)[1]
-            path_token = value if value.startswith("/") else None
-        else:
-            path_token = None
-        if path_token is not None:
-            normalized = os.path.normcase(os.path.normpath(path_token))
-            if normalized in ours or normalized.startswith(this_home + os.sep):
-                return False
-            if "/.hermes" in normalized or normalized.endswith("/.hermes"):
-                other_home_seen = True
-            elif os.path.basename(normalized) in (
-                "state.db",
-                "state.db-wal",
-                "state.db-shm",
-            ):
-                other_home_seen = True
+        if normalized == this_home_norm or normalized.startswith(this_home_norm + os.sep):
+            return False
+        if root_norm is not None and (
+            normalized == root_norm or normalized.startswith(root_norm + os.sep)
+        ):
+            continue  # shared install root: neutral, every served profile lives under it
+        if index == 0 and not argv0_locates_home:
+            continue
+        if "/.hermes" in normalized or normalized.endswith("/.hermes"):
+            other_home_seen = True
+        elif os.path.basename(normalized) in _STATE_DB_NAMES:
+            other_home_seen = True
     return other_home_seen
 
 
@@ -323,6 +460,61 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     return holders
 
 
+def in_process_state_db_holders(
+    db_path: Path, *, exclude=None
+) -> List[Tuple[int, str]]:
+    """Return holders of ``db_path`` inside THIS process, other than *exclude*.
+
+    :func:`foreign_state_db_holders` skips ``os.getpid()`` by design, so it answers a
+    cross-PROCESS question only. Consumers that read "no holders" as "the store is quiet"
+    (auto-VACUUM admission) need this arm too: a VACUUM plus its TRUNCATE checkpoint retires
+    the generation a sibling SessionDB in this very process still holds.
+    """
+    from hermes_state_registry import other_generations_for_path
+
+    return [
+        (os.getpid(), description)
+        for description in other_generations_for_path(db_path, exclude=exclude)
+    ]
+
+
+def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str] = "--force") -> Optional[str]:
+    """Operator-facing refusal for structural maintenance (VACUUM, index rebuild, bulk delete) while another
+    process holds ``db_path`` or a WAL sidecar; ``None`` when the store is provably quiet.
+
+    Running ``hermes sessions optimize-storage`` underneath a fleet of live gateways put every agent into
+    the retired-WAL refusal until all writers were stopped (#110054). Same fail-closed scan doctor and
+    repair use: an incomplete scan refuses too, it never reads as an all-clear.
+    """
+    holders = foreign_state_db_holders(db_path)
+    if not holders:
+        return None
+    from hermes_constants import profile_cli_selector
+    from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
+
+    by_pid: dict[int, Set[str]] = {}
+    unknown: List[str] = []
+    for pid, target in holders:
+        if pid <= 0 or target.startswith("uninspectable"):
+            unknown.append(target)
+        else:
+            by_pid.setdefault(pid, set()).add(Path(target.removesuffix(" (deleted)")).name)
+    lines = [f"Refusing `hermes sessions {command}`: another process is using {db_path}."]
+    lines += [f"  {describe_holder_pid(pid)}: {', '.join(sorted(by_pid[pid]))}" for pid in sorted(by_pid)]
+    if unknown:
+        lines.append(f"  cannot prove the database is quiet (holder scan incomplete: {unknown[0][:120]})")
+    profile_arg = profile_cli_selector()
+    lines += [
+        "Rewriting the database under a live writer is how every agent ends up refusing turns with the "
+        "retired state.db-wal error. Nothing is lost.",
+        f"Stop them first (`hermes {profile_arg}gateway stop`, quit the Desktop app, pause cron), then re-run.",
+    ]
+    if force_hint:
+        lines.append(f"Override with {force_hint} if you accept the risk.")
+    lines.append(f"Recovery guide: {STORAGE_RECOVERY_DOCS_URL}")
+    return "\n".join(lines)
+
+
 def live_writer_holds_db(
     db_path: Path,
     *,
@@ -346,8 +538,7 @@ def live_writer_holds_db(
         probe.execute("ROLLBACK")
         return False
     except sqlite3.OperationalError as exc:
-        lowered = str(exc).lower()
-        return "locked" in lowered or "busy" in lowered
+        return is_sqlite_lock_error(exc)
     except sqlite3.DatabaseError:
         # Malformed/unreadable with no holder on the scan: nobody else has it open, so repair may run.
         return False

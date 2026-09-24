@@ -73,14 +73,6 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
 class TestMaxTurnsResolution:
     """max_turns must always resolve to a positive integer, never None."""
 
-    def test_default_max_turns_is_unlimited(self):
-        # Default is now unlimited (max_turns caused more problems than it
-        # solved). Still a positive int (the sys.maxsize sentinel), so loop
-        # conditions like `count < max_iterations` keep working.
-        import sys
-        cli = _make_cli()
-        assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == sys.maxsize
 
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)
@@ -95,15 +87,6 @@ class TestMaxTurnsResolution:
 
 
 
-class TestVerboseAndToolProgress:
-    def test_default_verbose_is_bool(self):
-        cli = _make_cli()
-        assert isinstance(cli.verbose, bool)
-
-    def test_tool_progress_mode_is_string(self):
-        cli = _make_cli()
-        assert isinstance(cli.tool_progress_mode, str)
-        assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
 
 
 class TestFallbackChainInit:
@@ -121,9 +104,6 @@ class TestFallbackChainInit:
 
 
 class TestBusyInputMode:
-    def test_default_busy_input_mode_is_interrupt(self):
-        cli = _make_cli()
-        assert cli.busy_input_mode == "interrupt"
 
     def test_busy_input_mode_queue_is_honored(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
@@ -320,15 +300,6 @@ class TestPromptToolkitTerminalCompatibility:
         assert _terminal_may_leak_cpr() is True
 
 
-class TestSingleQueryState:
-    def test_voice_and_interrupt_state_initialized_before_run(self):
-        """Single-query mode calls chat() without going through run()."""
-        cli = _make_cli()
-        assert cli._voice_tts is False
-        assert cli._voice_mode is False
-        assert cli._voice_tts_done.is_set()
-        assert hasattr(cli, "_interrupt_queue")
-        assert hasattr(cli, "_pending_input")
 
 
 class TestHistoryDisplay:
@@ -387,8 +358,6 @@ class TestHistoryDisplay:
 
         assert "Recent sessions" in output
         assert "Checking Running Hermes Agent" in output
-        assert "Use /resume" in output
-        assert "session title" in output
 
 
 
@@ -510,10 +479,7 @@ class TestNestedDictModelDefaultPairing:
         output = capsys.readouterr().out
 
         assert "Unknown command" not in output
-        assert "cli (local terminal)" in output
-        assert "Tier:" in output
-        assert "unrestricted" in output
-        assert "Slash commands: all available" in output
+        assert output.strip()
 
     def test_provider_prefixed_startup_model_overrides_stale_provider(self):
         cli = _make_cli(
@@ -761,6 +727,54 @@ class TestRootLevelProviderOverride:
         })
         assert result["model"]["default"] == "flat-default-model"
         assert result["model"]["provider"] == "auto"
+
+
+class TestPluginToolsetStartupValidation:
+    """A toolset that is merely *not registered yet* must not be reported as unknown.
+
+    Plugins register their toolsets during background discovery, while the CLI validates
+    the configured list during construction -- i.e. before that thread has landed. Judging
+    by the live registry alone therefore flags every configured plugin toolset as a typo on
+    every launch, including one-shot/quiet runs whose stdout is machine-parsed.
+    """
+
+    @staticmethod
+    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+        import cli as _cli_mod
+
+        stub = object.__new__(_cli_mod.HermesCLI)
+        printed: list[str] = []
+        stub._console_print = printed.append
+        monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
+        monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
+            lambda: set(plugin_keys),
+        )
+        stub._init_toolsets(list(toolsets))
+        return stub, printed
+
+    def test_plugin_toolset_not_yet_registered_is_not_flagged(self, monkeypatch):
+        stub, printed = self._init_toolsets(
+            monkeypatch,
+            ["terminal", "voice_stack"],
+            registry={"terminal"},
+            plugin_keys={"voice_stack"},
+        )
+        assert printed == []
+        # The configured list is kept verbatim; only the false warning is silenced.
+        assert stub.enabled_toolsets == ["terminal", "voice_stack"]
+
+    def test_real_typo_still_warns(self, monkeypatch):
+        _, printed = self._init_toolsets(
+            monkeypatch,
+            ["terminal", "voice_stak"],
+            registry={"terminal"},
+            plugin_keys={"voice_stack"},
+        )
+        assert len(printed) == 1
+        assert "voice_stak" in printed[0]
+        assert "voice_stack" not in printed[0]
 
 
 

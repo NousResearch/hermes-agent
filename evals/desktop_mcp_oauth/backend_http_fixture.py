@@ -309,7 +309,7 @@ def main():
         from tools.mcp_oauth import suppress_interactive_oauth
         with suppress_interactive_oauth():
             tools = _probe_single_server("positive", _get_mcp_servers()["positive"])
-        return 0 if any(name == "fixture_ping" for name, _ in tools) else 1
+        return 0 if any(name == "fixture_ping" for name, *_ in tools) else 1
     output.parent.mkdir(parents=True, exist_ok=True)
     if not args.isolated_worker:
         with tempfile.TemporaryDirectory(prefix="hermes-oauth-http-") as temp:

@@ -124,7 +124,7 @@ def _session_owner_scope(task_id: str):
     home_token = set_hermes_home_override(owner_home)
     try:
         hydrate_profile_secret_sources(Path(owner_home))
-        secret_token = set_secret_scope(build_profile_secret_scope(Path(owner_home)))
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(owner_home)), profile_home=owner_home)
         try:
             yield
         finally:
@@ -160,6 +160,11 @@ def _cleanup_inactive_browser_sessions():
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
     for task_id in sessions_to_cleanup:
+        with _session_owner_scope(task_id):
+            if _human_holds_shared_browser(task_id):
+                # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
+                _update_session_activity(task_id)
+                continue
         elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
@@ -184,6 +189,15 @@ def _cleanup_inactive_browser_sessions():
                 _forget_session_tracking(task_id, activity=False)
 
 
+def _human_holds_shared_browser(task_id: str) -> bool:
+    """Lease check for the janitor, under the owner's profile scope (the lease is per profile)."""
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id)
+    if not session_info:
+        return False
+    return _session.human_holds_shared_browser(session_info)
+
+
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:
     """Record this hermes PID in ``<socket_dir>/<session>.owner_pid`` so the orphan
     reaper can tell live-owner daemons from crashed-owner ones. Best-effort: an
@@ -194,6 +208,13 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
             f.write(str(os.getpid()))
     except OSError as exc:
         _bt.logger.debug("Could not write owner_pid file for %s: %s", session_name, exc)
+
+
+def _argv_token_is_path(token: str, path: str) -> bool:
+    """True when ``token`` (or its ``--flag=VALUE`` value) names exactly ``path``."""
+    want = os.path.normpath(path).lower()
+    candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+    return bool(candidate) and os.path.normpath(candidate).lower() == want
 
 
 def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
@@ -218,7 +239,8 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     try:
         proc = psutil.Process(daemon_pid)
         name = (proc.name() or "").lower()
-        cmdline = " ".join(proc.cmdline() or []).lower()
+        argv = list(proc.cmdline() or [])
+        cmdline = " ".join(argv).lower()
     except psutil.NoSuchProcess:
         return False  # vanished between the liveness check and now
     except (psutil.AccessDenied, OSError) as exc:
@@ -227,9 +249,10 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     if "agent-browser" not in name and "agent-browser" not in cmdline:
         return refuse("not an agent-browser process (name=%r)", name)
 
-    socket_dir_l = socket_dir.lower()
-    socket_base_l = os.path.basename(socket_dir).lower()
-    bound = socket_dir_l in cmdline or (socket_base_l and socket_base_l in cmdline)
+    # Binding must be the FULL socket-dir path as an argv token (bare or `--flag=path`),
+    # never a substring: the dir basename is predictable (`agent-browser-<session>`), so a
+    # recycled PID running e.g. `grep agent-browser-h_x ...` would pass a basename check.
+    bound = any(_argv_token_is_path(tok, socket_dir) for tok in argv)
     if not bound:
         try:
             env_dir = (proc.environ() or {}).get("AGENT_BROWSER_SOCKET_DIR", "")

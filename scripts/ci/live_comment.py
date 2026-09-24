@@ -58,6 +58,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -451,7 +452,7 @@ def fetch_all_review_statuses(
     Artifacts that don't exist yet or fail to parse are silently skipped.
     """
     all_statuses: list[dict] = []
-    temp_base = Path("/tmp/review-status-artifacts")
+    temp_base = Path(tempfile.gettempdir()) / "review-status-artifacts"
 
     try:
         artifacts = _list_artifacts(token, repo, run_id)

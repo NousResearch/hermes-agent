@@ -181,7 +181,7 @@ def _ensure_uv_path(
     *, repair_observer: Callable[[RuntimeRepairResult], None] | None = None) -> Optional[str]:
     """Resolve the managed uv path, installing it if necessary (plain ``str``/``None``)."""
     existing = resolve_uv()
-    if existing:
+    if existing and _uv_runs(existing):
         return existing
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +201,16 @@ def _ensure_uv_path(
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
     return result
+
+
+def _uv_runs(uv_bin: str) -> bool:
+    """``uv --version`` exits 0. A pre-fix installer could salvage a relocated Chocolatey/Scoop shim into
+    ``$HERMES_HOME/bin``: it is a file with the executable bit that never runs, so is_file()+X_OK
+    alone would keep handing it out forever instead of reinstalling."""
+    try:
+        return subprocess.run([uv_bin, "--version"], capture_output=True, check=False).returncode == 0
+    except OSError:
+        return False
 
 
 def _uv_version(uv_bin: str) -> str:

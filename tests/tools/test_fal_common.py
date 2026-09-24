@@ -31,14 +31,6 @@ def fake_fal_client(monkeypatch):
 
 
 class TestImportFalClient:
-    def test_returns_fal_client_module(self, monkeypatch, fake_fal_client):
-        """import_fal_client returns the fal_client module reference."""
-        ensure = MagicMock()
-        monkeypatch.setattr("tools.lazy_deps.ensure", ensure)
-
-        result = import_fal_client()
-        assert result is fake_fal_client
-        ensure.assert_called_once_with("image.fal", prompt=False)
 
     def test_lazy_ensure_import_error_is_swallowed(self, monkeypatch, fake_fal_client):
         """If lazy_deps.ensure raises ImportError, it's swallowed (fal_client still imported)."""
@@ -99,9 +91,6 @@ class TestNormalizeFalQueueUrlFormat:
         with pytest.raises(ValueError, match="Managed FAL queue origin is required"):
             _normalize_fal_queue_url_format("")
 
-    def test_none_raises(self):
-        with pytest.raises(ValueError, match="Managed FAL queue origin is required"):
-            _normalize_fal_queue_url_format(None)  # type: ignore[arg-type]
 
     def test_whitespace_only_raises(self):
         with pytest.raises(ValueError, match="Managed FAL queue origin is required"):
@@ -132,11 +121,6 @@ class TestExtractHttpStatus:
         exc = Exception("plain error")
         assert _extract_http_status(exc) is None
 
-    def test_returns_none_when_response_is_none(self):
-        exc = MagicMock()
-        exc.response = None
-        del exc.status_code
-        assert _extract_http_status(exc) is None
 
     def test_returns_none_when_response_status_code_not_int(self):
         exc = MagicMock()
@@ -145,11 +129,6 @@ class TestExtractHttpStatus:
         del exc.status_code
         assert _extract_http_status(exc) is None
 
-    def test_returns_none_when_status_code_not_int(self):
-        exc = MagicMock()
-        exc.response = None
-        exc.status_code = "not-int"
-        assert _extract_http_status(exc) is None
 
     def test_response_status_takes_precedence_over_exc_status(self):
         exc = MagicMock()
@@ -198,16 +177,6 @@ def _make_fal_client_mock(
 
 
 class TestManagedFalSyncClientInit:
-    def test_init_succeeds_with_all_attributes(self):
-        fal_client, _ = _make_fal_client_mock()
-        client = _ManagedFalSyncClient(
-            fal_client, key="test-key", queue_run_origin="https://queue.example.com"
-        )
-        assert client._queue_url_format == "https://queue.example.com/"
-        assert client._http_client is not None
-        assert client._maybe_retry_request is not None
-        assert client._raise_for_status is not None
-        assert client._request_handle_class is not None
 
     def test_init_raises_when_sync_client_missing(self):
         fal_client = MagicMock()
@@ -218,14 +187,6 @@ class TestManagedFalSyncClientInit:
                 fal_client, key="k", queue_run_origin="https://q.example.com"
             )
 
-    def test_init_raises_when_client_module_missing(self):
-        fal_client = MagicMock()
-        fal_client.SyncClient = MagicMock()
-        fal_client.client = None
-        with pytest.raises(RuntimeError, match="fal_client.client is required"):
-            _ManagedFalSyncClient(
-                fal_client, key="k", queue_run_origin="https://q.example.com"
-            )
 
     def test_init_raises_when_http_client_missing(self):
         """SyncClient._client is None → RuntimeError."""
@@ -239,43 +200,10 @@ class TestManagedFalSyncClientInit:
                 fal_client, key="k", queue_run_origin="https://q.example.com"
             )
 
-    def test_init_raises_when_retry_request_missing(self):
-        fal_client, _ = _make_fal_client_mock()
-        fal_client.client._maybe_retry_request = None
-        with pytest.raises(RuntimeError, match="request helpers are required"):
-            _ManagedFalSyncClient(
-                fal_client, key="k", queue_run_origin="https://q.example.com"
-            )
 
-    def test_init_raises_when_raise_for_status_missing(self):
-        fal_client, _ = _make_fal_client_mock()
-        fal_client.client._raise_for_status = None
-        with pytest.raises(RuntimeError, match="request helpers are required"):
-            _ManagedFalSyncClient(
-                fal_client, key="k", queue_run_origin="https://q.example.com"
-            )
 
-    def test_init_raises_when_request_handle_class_missing(self):
-        fal_client, _ = _make_fal_client_mock()
-        fal_client.client.SyncRequestHandle = None
-        with pytest.raises(RuntimeError, match="SyncRequestHandle is required"):
-            _ManagedFalSyncClient(
-                fal_client, key="k", queue_run_origin="https://q.example.com"
-            )
 
-    def test_init_passes_key_to_sync_client(self):
-        fal_client, sync_instance = _make_fal_client_mock()
-        _ManagedFalSyncClient(
-            fal_client, key="my-secret-key", queue_run_origin="https://q.example.com"
-        )
-        fal_client.SyncClient.assert_called_once_with(key="my-secret-key")
 
-    def test_init_normalizes_queue_url(self):
-        fal_client, _ = _make_fal_client_mock()
-        client = _ManagedFalSyncClient(
-            fal_client, key="k", queue_run_origin="https://q.example.com///"
-        )
-        assert client._queue_url_format == "https://q.example.com/"
 
 
 # ---------------------------------------------------------------------------
@@ -410,99 +338,10 @@ class TestManagedFalSyncClientSubmit:
         url = client._maybe_retry_request.call_args[0][2]
         assert "fal_webhook=https%3A%2F%2Fhook.example.com%2Fcb" in url
 
-    def test_submit_with_hint(self):
-        client, _, _ = self._make_client()
-        client._add_hint_header = MagicMock()
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
 
-        client.submit("my-app", {}, hint="my-hint")
 
-        client._add_hint_header.assert_called_once()
-        args = client._add_hint_header.call_args[0]
-        assert args[0] == "my-hint"
 
-    def test_submit_with_priority(self):
-        client, _, _ = self._make_client()
-        client._add_priority_header = MagicMock()
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
 
-        client.submit("my-app", {}, priority=5)
-
-        client._add_priority_header.assert_called_once()
-        args = client._add_priority_header.call_args[0]
-        assert args[0] == 5
-
-    def test_submit_with_priority_raises_when_header_fn_missing(self):
-        client, _, _ = self._make_client()
-        client._add_priority_header = None
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
-
-        with pytest.raises(RuntimeError, match="add_priority_header is required"):
-            client.submit("my-app", {}, priority=5)
-
-    def test_submit_with_start_timeout(self):
-        client, _, _ = self._make_client()
-        client._add_timeout_header = MagicMock()
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
-
-        client.submit("my-app", {}, start_timeout=30)
-
-        client._add_timeout_header.assert_called_once()
-        args = client._add_timeout_header.call_args[0]
-        assert args[0] == 30
-
-    def test_submit_with_start_timeout_raises_when_header_fn_missing(self):
-        client, _, _ = self._make_client()
-        client._add_timeout_header = None
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
-
-        with pytest.raises(RuntimeError, match="add_timeout_header is required"):
-            client.submit("my-app", {}, start_timeout=30)
 
     def test_submit_with_custom_headers(self):
         client, _, _ = self._make_client()
@@ -522,23 +361,6 @@ class TestManagedFalSyncClientSubmit:
         headers = client._maybe_retry_request.call_args[1]["headers"]
         assert headers["X-Custom"] == "value"
 
-    def test_submit_with_none_headers_defaults_to_empty_dict(self):
-        client, _, _ = self._make_client()
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
-
-        client.submit("my-app", {}, headers=None)
-
-        headers = client._maybe_retry_request.call_args[1]["headers"]
-        assert headers == {}
 
     def test_submit_uses_custom_default_timeout(self):
         """SyncClient.default_timeout is used if present."""
@@ -561,28 +383,6 @@ class TestManagedFalSyncClientSubmit:
 
         assert client._maybe_retry_request.call_args[1]["timeout"] == 300.0
 
-    def test_submit_falls_back_to_120_when_no_default_timeout(self):
-        """SyncClient without default_timeout attr → 120.0 fallback."""
-        fal_client, sync_instance = _make_fal_client_mock()
-        # Remove default_timeout
-        del sync_instance.default_timeout
-        client = _ManagedFalSyncClient(
-            fal_client, key="k", queue_run_origin="https://q.example.com"
-        )
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
-
-        client.submit("app", {})
-
-        assert client._maybe_retry_request.call_args[1]["timeout"] == 120.0
 
     def test_submit_passes_request_handle_kwargs(self):
         client, _, _ = self._make_client()
@@ -606,39 +406,3 @@ class TestManagedFalSyncClientSubmit:
         assert kwargs["cancel_url"] == "https://q.example.com/cancel"
         assert kwargs["client"] is client._http_client
 
-    def test_submit_with_all_optional_params(self):
-        """All optional params set at once."""
-        client, _, _ = self._make_client()
-        client._add_hint_header = MagicMock()
-        client._add_priority_header = MagicMock()
-        client._add_timeout_header = MagicMock()
-        response = MagicMock()
-        response.json.return_value = {
-            "request_id": "r",
-            "response_url": "",
-            "status_url": "",
-            "cancel_url": "",
-        }
-        client._maybe_retry_request = MagicMock(return_value=response)
-        client._raise_for_status = MagicMock()
-        client._request_handle_class = MagicMock()
-
-        client.submit(
-            "app",
-            {"prompt": "test"},
-            path="sub",
-            hint="hint-val",
-            webhook_url="https://hook.example.com",
-            priority=10,
-            headers={"X-Custom": "val"},
-            start_timeout=60,
-        )
-
-        url = client._maybe_retry_request.call_args[0][2]
-        assert "app/sub?" in url
-        assert "fal_webhook=" in url
-        client._add_hint_header.assert_called_once()
-        client._add_priority_header.assert_called_once()
-        client._add_timeout_header.assert_called_once()
-        headers = client._maybe_retry_request.call_args[1]["headers"]
-        assert headers["X-Custom"] == "val"

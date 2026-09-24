@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useMemo, useState } from 'react'
+import { useContext, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -30,11 +30,37 @@ import {
   resetBinding
 } from '@/store/keybinds'
 
-import { SettingsContent } from './primitives'
+import { HudModifierSettings } from './hud-modifier-settings'
+import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { ScreenshotSettings } from './screenshot-settings'
 
-export function KeybindSettings() {
+interface KeybindSettingsProps {
+  subpage?: string
+}
+
+export function KeybindSettings({ subpage }: KeybindSettingsProps = {}) {
+  if (subpage === 'hud-gesture') {
+    return (
+      <SettingsContent>
+        <HudModifierSettings />
+      </SettingsContent>
+    )
+  }
+
+  if (subpage === 'screen-capture') {
+    return (
+      <SettingsContent>
+        <ScreenshotSettings />
+      </SettingsContent>
+    )
+  }
+
+  return <ShortcutSettings includeScreenshot={subpage === undefined} />
+}
+
+function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean }) {
   const { t } = useI18n()
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const bindings = useStore($bindings)
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
@@ -100,7 +126,7 @@ export function KeybindSettings() {
     <SettingsContent>
       <div className="flex items-center justify-between gap-3 pb-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-foreground">{k.title}</h2>
+          {!hasBreadcrumb && <h2 className="text-sm font-semibold text-foreground">{k.title}</h2>}
           <p className="mt-0.5 text-[0.72rem] text-muted-foreground">
             {k.subtitle(openCombo ? formatCombo(openCombo) : '')}
           </p>
@@ -115,9 +141,10 @@ export function KeybindSettings() {
         </button>
       </div>
 
-      {(!isSearching || t.settings.screenshot.enabledTitle.toLowerCase().includes(query.toLowerCase())) && (
-        <ScreenshotSettings />
-      )}
+      {includeScreenshot &&
+        (!isSearching || t.settings.screenshot.enabledTitle.toLowerCase().includes(query.toLowerCase())) && (
+          <ScreenshotSettings />
+        )}
 
       <div className="pb-3">
         <SearchField

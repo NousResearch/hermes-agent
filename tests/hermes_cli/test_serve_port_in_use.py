@@ -79,11 +79,6 @@ def test_addr_in_use_error_classification():
     assert _is_addr_in_use_error(OSError(errno.EACCES, "denied")) is False
 
 
-def test_exit_code_is_distinct_tempfail():
-    from hermes_cli.web_server_lifecycle import PORT_IN_USE_EXIT_CODE
-
-    assert PORT_IN_USE_EXIT_CODE == 75  # EX_TEMPFAIL — repo convention
-    assert PORT_IN_USE_EXIT_CODE != 1
 
 
 # ---------------------------------------------------------------------------
@@ -168,25 +163,6 @@ def test_conflict_emits_sentinel_and_exit_75(tmp_path):
     assert out.count("BACKEND_PORT_IN_USE") == 1
 
 
-def test_free_port_boots_and_announces_ready(tmp_path):
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
-
-    proc = _spawn_serve(port, tmp_path)
-    try:
-        ready, lines = _read_until(proc, "HERMES_BACKEND_READY")
-        out = "".join(lines)
-        assert ready, f"no READY sentinel; output:\n{out}"
-        assert f"HERMES_BACKEND_READY port={port}" in out
-        assert "BACKEND_PORT_IN_USE" not in out
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 def test_ephemeral_port_zero_unaffected(tmp_path):

@@ -469,7 +469,7 @@ def _env_temp_dir(env: Any) -> str:
     for candidate in (temp_dir, tempfile.gettempdir()):
         if isinstance(candidate, str) and candidate.startswith("/"):
             return candidate.rstrip("/") or "/"
-    return "/tmp"
+    return tempfile.gettempdir()
 
 
 def _format_interrupted_output(stdout_text: str) -> str:
@@ -709,8 +709,14 @@ def execute_code(
             "(process-identity probe wedged); the code was not run. Retry the call."
         )
     if _probe.value:
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        from cron.lifecycle_guard import (
+            HOST_INTERPRETER_KILL_REJECTION,
+            contains_gateway_lifecycle_command,
+            contains_host_interpreter_kill,
+        )
         if contains_gateway_lifecycle_command(code):
+            if contains_host_interpreter_kill(code):
+                return tool_error(HOST_INTERPRETER_KILL_REJECTION)
             return tool_error(
                 "Blocked: cannot restart or stop the gateway from inside the "
                 "gateway process. The gateway would kill this script before "

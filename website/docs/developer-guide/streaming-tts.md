@@ -49,6 +49,7 @@ tts:
   provider: gemini
   streaming:
     provider: gemini      # or "auto"
+    min_len: 20           # shortest first sentence (chars) spoken on its own; CJK setups use ~6
   gemini:
     model: gemini-2.5-flash-preview-tts
     voice: Kore
@@ -61,7 +62,7 @@ tts:
 | elevenlabs  | chunked HTTP (`pcm_24000`)            | yes         | `ELEVENLABS_API_KEY` / `tts.elevenlabs` |
 | openai      | chunked HTTP (`with_streaming_response`, `pcm`) | yes | `tts.openai.api_key` → env → managed gateway |
 | gemini      | SSE (`streamGenerateContent?alt=sse`) | yes         | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
-| xai         | WebSocket (`wss://api.x.ai/v1/tts`)   | yes         | xAI OAuth or `XAI_API_KEY` |
+| xai         | WebSocket (`wss://api.x.ai/v1/tts`)   | yes         | `XAI_API_KEY` preferred, else xAI OAuth (the subscription bearer 403s on metered TTS) |
 | edge, piper, kitten, neutts, mistral, minimax, deepinfra, … | — | no (per-sentence sync fallback) | as usual |
 
 All credential lookups go through `resolve_provider_secret()`

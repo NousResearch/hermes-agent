@@ -11,7 +11,8 @@ from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from agent import runtime_cwd as _runtime_cwd
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -85,6 +86,31 @@ def _pgroup_alive(pgid: Optional[int]) -> bool:
         return False
 
 
+class LiveEndpointUnavailable(ConnectionError):
+    """A declared runtime file did not provide a usable live endpoint."""
+
+
+def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
+    from agent.redact import register_vault_redaction_value
+    from hermes_platform import declaration
+    from hermes_platform.host import facts
+    from hermes_platform.resolver.app import AppResolver
+    from tools.mcp_liveness import liveness_for
+
+    live = liveness_for(server_name)
+    if live.kind != "server_json":
+        return None
+    decl = declaration.lookup(server_name)
+    definition = decl.app_for(facts.os_family()) if decl is not None else None
+    endpoint = AppResolver(live.app_definition(definition)).endpoint() if definition is not None else None
+    if endpoint is None:
+        raise LiveEndpointUnavailable(f"MCP server '{server_name}' has no usable live endpoint")
+    if endpoint.token:
+        register_vault_redaction_value(endpoint.token)
+    headers = {"Authorization": f"Bearer {endpoint.token}"} if endpoint.token else {}
+    return endpoint.url, headers
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -130,7 +156,20 @@ class MCPServerTransportMixin:
                 if isinstance(exc, asyncio.TimeoutError) or not should_fallback(exc):
                     raise
                 logger.info(log_fmt, self.name, exc, *log_extra)
-                return await call(fallback)
+                try:
+                    return await call(fallback)
+                except Exception as fallback_exc:
+                    # #113359: the server ANSWERED ``initialize`` (200, valid result) but named a version the
+                    # SDK's handshake refuses (e.g. 2026-07-28 echoed to a 2025-11-25 offer), and it has no
+                    # ``server/discover`` either. The wire handshake succeeded, so complete it ourselves.
+                    if (isinstance(fallback_exc, asyncio.TimeoutError) or primary != "initialize"
+                            or not _handshake_answered_with_unsupported_version(exc)):
+                        raise
+                    logger.info("MCP server '%s': server/discover also failed (%s) — completing the handshake "
+                                "at %s, the version this client offered", self.name, fallback_exc,
+                                _core.LATEST_HANDSHAKE_VERSION)
+                    return await asyncio.wait_for(self._complete_handshake_at_offered_version(session),
+                                                  timeout=connect_timeout)
         mode = str((self._config or {}).get("protocol", "auto")).lower().strip()
         if mode in ("stateless", "modern", "2026-07-28"):
             return await attempt("discover", "initialize", lambda exc: True,
@@ -145,6 +184,28 @@ class MCPServerTransportMixin:
         return await attempt(
             "initialize", "discover", lambda exc: _handshake_rejected_as_modern(exc) and hasattr(session, "discover"),
             "MCP server '%s': legacy handshake rejected (%s) — retrying via server/discover (2026-07-28 stateless server)")
+
+    async def _complete_handshake_at_offered_version(self, session):
+        """Re-run the legacy ``initialize`` exchange the SDK already proved works against this server and
+        adopt its result pinned to the version WE offered (#113359). ``ClientSession.initialize()`` raises
+        on a ``protocolVersion`` outside its handshake set even though the server answered 200, and a
+        stateless server that echoes 2026-07-28 to every offer has no ``server/discover`` — so this is the
+        only way to reach ``notifications/initialized`` and ``tools/list``. Pinning to the offered version
+        keeps later requests legacy-shaped (envelope and MCP-Protocol-Version header), the form the
+        handshake itself just proved the server accepts. The returned result keeps the server's own
+        version for logging/diagnostics."""
+        import mcp.types as types  # late: keeps the SDK import lazy
+        offered = _core.LATEST_HANDSHAKE_VERSION
+        build_caps = getattr(session, "_build_capabilities", None)
+        capabilities = build_caps(offered) if callable(build_caps) else types.ClientCapabilities()
+        client_info = getattr(session, "_client_info", None) or types.Implementation(name="hermes-agent", version="0")
+        result = await session.send_request(
+            types.InitializeRequest(params=types.InitializeRequestParams(
+                protocolVersion=offered, capabilities=capabilities, clientInfo=client_info)),
+            types.InitializeResult)
+        session.adopt(result.model_copy(update={"protocol_version": offered}))
+        await session.send_notification(types.InitializedNotification())
+        return result
 
     async def _serve_session(self, session, connect_timeout: float,
                              label: str = "", mark_lifecycle: bool = False) -> str:
@@ -258,8 +319,15 @@ class MCPServerTransportMixin:
         command, safe_env = _config._resolve_stdio_command(command, _config._build_safe_env(config.get("env")))
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
+        # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
+        # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
+        # paths against the daemon's launch dir, not the session workspace. Explicit config always
+        # wins; an existing session/TERMINAL_CWD anchor becomes the default; else native (None).
+        stdio_cwd = config.get("cwd")
+        if stdio_cwd is None:
+            stdio_cwd = _runtime_cwd.resolve_context_cwd() or None
         server_params = _core.StdioServerParameters(
-            command=command, args=args, env=safe_env or None, cwd=config.get("cwd"),
+            command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;
@@ -297,7 +365,8 @@ class MCPServerTransportMixin:
     # ------------------------------------------------------------------- HTTP
 
     async def _preflight_content_type(self, url: str, *, headers: Optional[dict] = None,
-                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0) -> None:
+                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0,
+                                      strict_redirect_headers: bool = False) -> None:
         """Probe *url* before the SDK connects: a plain web page would make the SDK sit out the full
         ``connect_timeout`` before an opaque ``CancelledError``; this raises NonMcpEndpointError within
         ``timeout``. Allow-list based: only a 2xx with a definite non-MCP content type is rejected, and
@@ -316,9 +385,15 @@ class MCPServerTransportMixin:
         probe_headers = dict(headers) if headers else {}
         # Same route as the SDK client: TLS on an explicit transport (which also turns off httpx's own
         # env proxy auto-detection) plus the repo's proxy mounts, so the probe and the handshake agree.
+        # Same redirect boundary as the transport client too: httpx strips Authorization on a
+        # cross-origin hop natively, but forwards every other configured header verbatim — under
+        # strict_redirect_headers those must not leave the configured origin on the probe either.
         probe_transport = _httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
+        _build_client = _make_redirect_header_stripper(
+            _httpx, _httpx.URL(url), strict=strict_redirect_headers,
+            configured_header_names={key.lower() for key in probe_headers})
         try:
-            async with _httpx.AsyncClient(
+            async with _build_client(
                     follow_redirects=True, timeout=_httpx.Timeout(timeout), transport=probe_transport,
                     **_present(mounts=_mcp_proxy_mounts(_httpx, url, ssl_verify, client_cert, self.name))) as client:
                 resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
@@ -427,21 +502,21 @@ class MCPServerTransportMixin:
         # Explicit AsyncClient matching the SDK's create_mcp_http_client defaults; MUST come from the
         # SDK's httpx (httpx2 on mcp >= 2.0) since the SDK sends its own Requests through it.
         httpx = _core.sdk_httpx()
-        _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
-            httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+        _build_client = _make_redirect_header_stripper(
+            httpx, httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
         # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs
         # inert — and suppresses httpx's own proxy auto-detection, hence the explicit mounts=.
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection)]},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
-            async with httpx.AsyncClient(**client_kwargs) as http_client:
+            async with _build_client(**client_kwargs) as http_client:
                 async with _core.streamable_http_client(url, http_client=http_client) as streams:
                     yield streams
         return _owned_client_streams()
@@ -455,6 +530,12 @@ class MCPServerTransportMixin:
                               "Upgrade the mcp package to get HTTP support.")
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        live = _live_endpoint(self.name)
+        if live is not None:
+            url, live_headers = live
+            headers.update(live_headers)
+        logger.debug("MCP server '%s': connecting to %s", self.name, url)
+        self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — capture their names BEFORE client-generated headers are merged in.
         configured_header_names = {key.lower() for key in headers}
@@ -478,6 +559,9 @@ class MCPServerTransportMixin:
         try:
             return await self._serve_transport(transport, label, float(connect_timeout))
         except Exception as exc:
+            # The SDK folds a non-2xx it cannot parse into ``-32603 Server returned an error response``;
+            # the recorder hook kept the status/URL/body the server actually sent (#114350, #113359).
+            http_detail = _describe_http_failure(exc, self._http_rejection)
             # SSE-only servers (or their load balancers) reject the Streamable HTTP chunked
             # ``initialize`` POST — with a 400-family status or an opaque SDK INTERNAL_ERROR —
             # previously a permanent failure with 0 active tools unless the user set
@@ -488,12 +572,15 @@ class MCPServerTransportMixin:
             # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
             # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
             if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
+                if http_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
+                    raise ConnectionError(f"MCP server '{self.name}': Streamable HTTP connect failed "
+                                          f"({http_detail})") from exc
                 raise
             logger.warning(
                 "MCP server '%s': Streamable HTTP rejected the initial connect (%s) — retrying "
                 "over SSE. If this connects, set `transport: sse` for this server in config.yaml "
                 "to skip the failed attempt on future startups.",
-                self.name, _unwrap_exception_group(exc))
+                self.name, http_detail)
             try:
                 self._sse_fallback = True
                 return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
@@ -503,7 +590,7 @@ class MCPServerTransportMixin:
                 self._sse_fallback = False
                 raise ConnectionError(
                     f"MCP server '{self.name}': both Streamable HTTP and SSE transports failed "
-                    f"(Streamable HTTP: {_unwrap_exception_group(exc)}; SSE: "
+                    f"(Streamable HTTP: {http_detail}; SSE: "
                     f"{_unwrap_exception_group(sse_exc)}). Check the URL points at an MCP "
                     "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 

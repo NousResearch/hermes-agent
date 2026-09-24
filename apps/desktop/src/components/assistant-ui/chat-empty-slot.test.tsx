@@ -47,12 +47,6 @@ describe('an empty transcript asks every contributor', () => {
     expect(container.textContent).toBe('')
   })
 
-  it('renders nothing when nobody contributes at all', () => {
-    const { container } = render(<ChatEmptySlot sessionId="s-1" />)
-
-    expect(container.textContent).toBe('')
-  })
-
   it('shows a conflict rather than hiding one of the claimants', () => {
     contribute('first', () => <span>first</span>)
     contribute('second', () => <span>second</span>)

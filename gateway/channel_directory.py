@@ -1,6 +1,6 @@
 """Channel directory -- cached map of reachable channels/contacts per platform.
 
-Built on gateway startup, refreshed every 5 min, saved to ~/.hermes/channel_directory.json.
+Built on gateway startup, refreshed every 5 min, saved to ``<HERMES_HOME>/channel_directory.json``.
 send_message reads it for action="list" and to resolve friendly channel names to IDs.
 """
 

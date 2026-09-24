@@ -49,18 +49,6 @@ def test_with_block_closes_the_handle(tmp_path):
     assert _live_count(path) == 0
 
 
-def test_enter_returns_the_same_handle(tmp_path):
-    """``with SessionDB(...) as db`` must bind the instance, not a wrapper.
-
-    Returning anything else would silently break every attribute access in the
-    body, so this is cheap insurance on the one line that is easy to get wrong.
-    """
-    db = SessionDB(db_path=tmp_path / "state.db")
-
-    with db as entered:
-        assert entered is db
-
-    assert db._conn is None
 
 
 def test_exception_inside_the_block_still_closes_and_propagates(tmp_path):

@@ -136,6 +136,8 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
             "connected": False,
             "disabled": False,
             "status": "configured",
+            "source": "config",
+            "plugin": None,
         }
     ]
     assert "error" not in str(payload)

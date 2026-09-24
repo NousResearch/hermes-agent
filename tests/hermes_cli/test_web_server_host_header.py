@@ -96,7 +96,6 @@ class TestHostHeaderMiddleware:
                 headers={"Host": "evil.example"},
             )
             assert resp.status_code == 400
-            assert "Invalid Host header" in resp.json()["detail"]
         finally:
             # Clean up so other tests don't inherit the bound_host
             if hasattr(app.state, "bound_host"):

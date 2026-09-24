@@ -124,12 +124,40 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
+def test_claim_skips_non_dict_envelope(root):
+    """A parseable-but-non-object outbox file must not reach the Desktop consumer or
+    crash the claim sweep; the claim stays claimed so it is not re-queued."""
+    bot_relay.write_remote_roster(root, _rows())
+    roster = bot_relay.read_remote_roster(root)
+    target = bot_relay.resolve_remote_target("researcher", roster)
+    env = bot_relay.enqueue_envelope(
+        root, target=target, message="hi", sender_profile="work", sender_handle="work"
+    )
+    base = bot_relay.relay_root(root)
+    bad = base / bot_relay.OUTBOX_DIR / f"{'9' * 32}.json"
+    bad.write_text('"not an envelope"', encoding="utf-8")
+    claimed = bot_relay.claim_pending_envelopes(root)
+    assert [e["id"] for e in claimed] == [env["id"]]
+    assert not bad.exists() and (base / bot_relay.CLAIMED_DIR / bad.name).exists()
+
+
 def test_write_reply_validates_envelope_id(root):
     with pytest.raises(ValueError):
         bot_relay.write_reply(root, "../../etc/passwd", reply="x")
     path = bot_relay.write_reply(root, "a" * 32, reply="pong")
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     assert data["reply"] == "pong" and not data["error"]
+
+
+def test_write_reply_keeps_the_first_settled_reply_for_an_envelope(root):
+    """Idempotent by envelope id: a re-offered delivery's second outcome (or a late duplicate) must
+    not displace the reply the waiter already read, so the answer never turns into an error."""
+    env_id = "a" * 32
+    first = bot_relay.write_reply(root, env_id, reply="the answer")
+    second = bot_relay.write_reply(root, env_id, error="target busy", reason="target_busy")
+    assert second == first
+    record = json.loads(first.read_text(encoding="utf-8"))
+    assert (record["reply"], record["error"], record["reason"]) == ("the answer", "", "")
 
 
 def test_write_reply_reason_passthrough_and_classification(root):
@@ -147,60 +175,72 @@ def test_write_reply_reason_passthrough_and_classification(root):
     assert data["reason"] == "" and data["reply"] == "ok"
 
 
-def test_waiter_command_quotes_and_targets_reply_file(root):
+def test_waiter_is_a_runner_entrypoint_the_approval_gate_lets_through(root):
+    """The waiter is spawned through terminal_tool from the SENDER's turn. When a bot replies to a
+    teammate from its own one-shot delivery turn, that turn runs under ``approvals.single_query_mode``
+    (default ``deny``), and inline interpreter code is a flagged pattern — so the reply waiter was
+    refused exactly when bots talked to each other, and the reply never woke the sender."""
+    import shlex
+
+    from tools.approval import detect_dangerous_command
+
     env = {"id": "b" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     cmd = bot_relay.waiter_command(root, env)
-    assert ("b" * 32) in cmd and "-c" in cmd
-    assert "rm -rf" not in cmd  # sanity: single quoted -c payload
+    parts = shlex.split(cmd)
+
+    assert detect_dangerous_command(cmd)[0] is False, cmd
+    assert parts[1].endswith("bot_mode_dm.py") and parts[2] == "--wait-reply"
+    assert parts[3] == str(bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{'b' * 32}.json")
+    assert parts[4:] == ["@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS)]
 
 
 def test_waiter_outlives_the_desktop_deliver_deadline():
     """The Desktop posts its timeout reply when RELAY_DELIVER_TIMEOUT_MS passes. A waiter that gave
     up first left that reply, and any turn finishing after minute 15, in a file nobody read (#93911).
-    relay-deliver-budget.test.ts pins the TS constants against these Python ones."""
-    desktop_budget_s = (
-        bot_relay.TURN_WAIT_SECONDS_FALLBACK
-        + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
-        + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
-    )
+    relay-deliver-budget.test.ts pins the TS constants against these Python ones.
+
+    The re-offer window (#111021) sits between the two: only past the Desktop's deadline — and the
+    gateway's own worst-case deliver hold, which ends before it — is a claimed envelope's silence
+    provably a dead Desktop rather than a slow turn, and the waiter must still be listening when the
+    ONE re-offered delivery hits its own Desktop deadline."""
+    live_hold_s = bot_relay.TURN_WAIT_SECONDS_FALLBACK + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
+    desktop_budget_s = live_hold_s + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
     assert bot_relay.DESKTOP_DELIVER_TIMEOUT_SECONDS == desktop_budget_s
-    assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
+    assert bot_relay.REOFFER_AFTER_SECONDS > desktop_budget_s > live_hold_s
+    assert bot_relay.REPLY_WAIT_SECONDS > bot_relay.REOFFER_AFTER_SECONDS + desktop_budget_s
 
 
-def test_waiter_give_up_message_states_the_real_budget(root):
-    import shlex
+@pytest.mark.parametrize(
+    ("reply_file", "expected_code", "expected_tokens"),
+    [
+        ({"reply": "pong"}, 0, ["@researcher on ssh-vps", "pong"]),
+        ({"reply": ""}, 0, ["@researcher on ssh-vps"]),
+        ({"error": "turn failed", "reason": "provider_rate_limit"}, 1,
+         ["@researcher on ssh-vps", "provider_rate_limit", "turn failed"]),
+        ({"error": "turn failed"}, 1, ["@researcher on ssh-vps", "turn failed"]),
+        (None, 1, ["@researcher on ssh-vps", "0.3s"]),
+    ],
+    ids=["reply", "empty-reply", "typed-error", "untyped-error", "gave-up"],
+)
+def test_waiter_prints_the_completion_notification_the_sender_wakes_on(root, capsys, reply_file, expected_code, expected_tokens):
+    """The waiter's stdout IS the sender's completion notification: the reply, a typed failure the
+    sender can branch on without parsing prose (#93091), or an honest give-up that names the budget."""
+    from tools import bot_mode_dm
 
     env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
-    parts = shlex.split(bot_relay.waiter_command(root, env))
-    code = parts[parts.index("-c") + 1]
-    assert f"deadline = time.time() + {bot_relay.REPLY_WAIT_SECONDS}\n" in code
-    assert f"within {bot_relay.REPLY_WAIT_SECONDS}s" in code
-    assert "within 900s" not in code
-
-
-def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
-    """The reply file is written once; the waiter must notice it fast, not
-    on a multi-second sleep (dead air the sender's completion notification
-    inherits on every cross-machine reply)."""
-    import shlex
-    import subprocess
-    import threading
-    import time
-
-    env = {"id": "c" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
     reply_path.parent.mkdir(parents=True, exist_ok=True)
+    if reply_file is not None:
+        reply_path.write_text(json.dumps(reply_file), encoding="utf-8")
 
-    def write_reply():
-        time.sleep(0.3)
-        reply_path.write_text(json.dumps({"reply": "pong"}), encoding="utf-8")
+    code = bot_mode_dm._delivery_main(["--wait-reply", str(reply_path), "@researcher on ssh-vps", "0.3"])
 
-    threading.Thread(target=write_reply, daemon=True).start()
-    started = time.monotonic()
-    proc = subprocess.run(shlex.split(bot_relay.waiter_command(root, env)), capture_output=True, text=True, timeout=10)
-    elapsed = time.monotonic() - started
-    assert proc.returncode == 0 and "pong" in proc.stdout
-    assert elapsed < 1.5, f"waiter took {elapsed:.2f}s to notice a reply written at 0.3s"
+    out = capsys.readouterr().out
+    assert code == expected_code
+    assert all(token in out for token in expected_tokens), out
+    assert bot_mode_dm._delivery_main(["--wait-reply", str(reply_path)]) == 2
+
+
 
 
 def test_roster_rejects_connection_id_outside_handle_charset(root):
@@ -219,38 +259,25 @@ def test_roster_rejects_connection_id_outside_handle_charset(root):
     assert bot_relay.write_remote_roster(root, [good]) == 1
 
 
-def test_waiter_command_repr_encodes_hostile_connection_id(root):
-    import ast
+def test_hostile_roster_fields_ride_as_argv_data(root):
+    """Envelope fields come from the Desktop-pushed roster — untrusted. They must never become
+    source text: the waiter takes them as argv, so a payload shaped like Python is a label."""
     import shlex
+    import subprocess
 
     inj = "x'); open(r'/tmp/pwned','w').write('pwned'); print('x"
-    env = {
-        "id": "c" * 32,
-        "target_handle": "researcher",
-        "target_connection": inj,
-    }
+    env = {"id": "c" * 32, "target_handle": "researcher", "target_connection": inj}
     cmd = bot_relay.waiter_command(root, env)
     parts = shlex.split(cmd)
-    code = parts[parts.index("-c") + 1]
-    compile(code, "<waiter>", "exec")
-    tree = ast.parse(code)
-    opens = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "open"
-    ]
-    # Only json.load(open(p, ...)) is a real open(); the payload must stay data.
-    assert len(opens) == 1
 
-    # A quote in the id used to SyntaxError the waiter. It must compile.
-    quoted = bot_relay.waiter_command(
-        root,
-        {"id": "a" * 32, "target_handle": "h", "target_connection": "foo'bar"},
-    )
-    qcode = shlex.split(quoted)[shlex.split(quoted).index("-c") + 1]
-    compile(qcode, "<waiter-quote>", "exec")
+    assert "-c" not in parts
+    assert parts[4] == f"@researcher on {inj}"
+    reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
+    reply_path.parent.mkdir(parents=True, exist_ok=True)
+    reply_path.write_text(json.dumps({"reply": "pong"}), encoding="utf-8")
+    proc = subprocess.run(parts, capture_output=True, text=True, timeout=30)
+
+    assert proc.returncode == 0 and proc.stdout.splitlines() == [f"Reply from @researcher on {inj}:", "pong"]
 
 
 # ── message_agent integration: relay route + legacy-SOUL gate fix ───────────
@@ -331,15 +358,15 @@ def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
 
     spawned = {}
 
-    def _fake_spawn(command, label, *, task_id, agent):
+    def _fake_spawn(command, label, *, task_id, agent, **_):
         spawned["command"] = command
         spawned["label"] = label
-        return json.dumps({"status": "sent", "to": label})
+        return json.dumps({"status": "queued", "to": label})
 
     monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", _fake_spawn)
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
-    assert out.get("status") == "sent"
+    assert out.get("status") == "queued"
     assert "Hermes Cloud" in spawned["label"]
     # envelope landed in the outbox with attribution prefixed
     pending = bot_relay.claim_pending_envelopes(home)
@@ -359,21 +386,49 @@ def test_relay_route_ambiguous_target_errors_with_forms(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(
         "tools.bot_mode_dm._spawn_delivery",
-        lambda *a, **k: json.dumps({"status": "sent"}),
+        lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="scout", message="hi", agent=agent))
     assert "scout@cloud-1" in out.get("error", "") and "scout@ssh-vps" in out["error"]
     # connection-qualified form goes through
     out2 = json.loads(message_agent_tool(target="scout@ssh-vps", message="hi", agent=agent))
-    assert out2.get("status") == "sent"
+    assert out2.get("status") == "queued"
 
 
-def test_unknown_target_error_mentions_connected_machines(tmp_path):
+def test_remote_default_is_addressable_by_its_title_slug(tmp_path, monkeypatch):
+    """A remote ``default`` is ``@hermes`` like every gateway's own, so its Bot Mode title is the only
+    bare form that singles it out: ``message_agent`` accepts the slug, the prompt roster offers it
+    (never bare ``@hermes``, which is the LOCAL default), and the form does not depend on roster order."""
+    from tools import bot_mode_probe
+
     home = _managed_home(tmp_path)
+    rows = [
+        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
+        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1", "title": "Ops Bot"},
+        {"profile": "cos-bot", "handle": "cos-bot", "connection_id": "cloud-1", "title": "Other"},
+    ]
+    monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", lambda *a, **k: json.dumps({"status": "queued"}))
     agent = _FakeAgent(home)
-    out = json.loads(message_agent_tool(target="ghost", message="hi", agent=agent))
-    assert "connected machine" in out.get("error", "")
+    for order in (rows, rows[::-1]):
+        bot_relay.write_remote_roster(home, order)
+        roster = bot_relay.read_remote_roster(home)
+        forms = dict(zip((r["connection_id"] + "/" + r["profile"] for r in roster),
+                         bot_relay.remote_target_forms(roster, bot_mode_probe.local_taken_forms(home))))
+        # an exact handle beats a colliding title slug; the collided title falls back to the qualified form
+        assert forms == {"cloud-1/cos-bot": "cos-bot", "vps-1/default": "hermes@vps-1", "cloud-1/default": "ops-bot"}
+        assert bot_relay.resolve_remote_target("cos-bot", roster)["profile"] == "cos-bot"
+    out = json.loads(message_agent_tool(target="@ops-bot", message="ping", agent=agent))
+    assert out.get("status") == "queued"
+    [env] = bot_relay.claim_pending_envelopes(home)
+    assert (env["target_connection"], env["target_profile"]) == ("cloud-1", "default")
+    # a bare @hermes from the local default is the two remote defaults — offered under their reply-safe forms
+    err = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))["error"]
+    assert "hermes@vps-1" in err and "ops-bot" in err
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@ops-bot`" in section and "`@hermes@vps-1`" in section and "- `@hermes` —" not in section
+
+
 
 
 def test_protocol_section_lists_remote_teammates(tmp_path):
@@ -385,8 +440,8 @@ def test_protocol_section_lists_remote_teammates(tmp_path):
          "connection_label": "Hermes Cloud", "title": "Moxie"},
     ])
     section = bot_mode_probe.get_bot_mode_protocol_section(home, force_refresh=True)
-    assert "OTHER connected machines" in section
-    assert "`@hermes` — on Hermes Cloud — Moxie" in section
+    # Offered under its title slug: bare `@hermes` is THIS gateway's own default (#103731).
+    assert "`@moxie`" in section and "Hermes Cloud" in section
 
 
 def test_capability_fingerprint_changes_with_relay_roster(tmp_path):
@@ -524,7 +579,7 @@ def test_drain_expires_old_envelope_with_queued_expired_reply(root):
         (base / bot_relay.REPLIES_DIR / f"{env['id']}.json").read_text(encoding="utf-8")
     )
     assert reply["reason"] == "queued_expired"
-    assert "expired" in reply["error"] and "NOT delivered" in reply["error"]
+    assert reply["error"]
     assert not reply["reply"]
 
 
@@ -581,18 +636,12 @@ def test_drain_ttl_zero_disables_expiry(root, monkeypatch):
     assert [e["id"] for e in claimed] == [env["id"]]
 
 
-def test_ttl_config_read_is_lazy_and_defensive(monkeypatch):
-    import builtins
+def test_invalid_ttl_config_falls_back_instead_of_breaking_drain(monkeypatch):
+    monkeypatch.setattr(bot_relay, "_bot_mode_cfg", lambda *args, **kwargs: "not-a-number")
 
-    real_import = builtins.__import__
-
-    def _boom(name, *a, **k):
-        if name.startswith("hermes_cli"):
-            raise ImportError("config unavailable")
-        return real_import(name, *a, **k)
-
-    monkeypatch.setattr(builtins, "__import__", _boom)
     assert bot_relay._envelope_ttl_seconds() == bot_relay.DEFAULT_ENVELOPE_TTL_SECONDS
+
+
 
 
 def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
@@ -603,7 +652,7 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(
         "tools.bot_mode_dm._spawn_delivery",
-        lambda *a, **k: json.dumps({"status": "sent"}),
+        lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))

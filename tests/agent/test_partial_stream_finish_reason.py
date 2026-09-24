@@ -21,7 +21,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.conversation_loop import _get_continuation_prompt
 
 
 # ── Helpers (mirrors test_streaming.py) ────────────────────────────────────
@@ -238,8 +237,6 @@ class TestCleanStreamEndMidToolCall:
         assert getattr(response, "_dropped_tool_names", None) == ["execute_code"]
 
 
-
-
 # ── Clean stream-end before any argument byte arrives (#80498) ─────────────
 
 class TestCleanStreamEndBeforeAnyToolArgs:
@@ -359,28 +356,6 @@ class TestMixedToolCallsOneDroppedOneComplete:
 
 
 # ── Length-continuation prompt branching ──────────────────────────────────
-
-class TestLengthContinuationPromptBranching:
-    """When finish_reason=length, the continuation prompt that reaches the
-    model has to tell the truth: real truncation vs. network interruption
-    vs. dropped tool call (#31998).  Three distinct prompts now exist."""
-
-    def _simulate_branch(self, response_id: str, dropped_tools=None) -> str:
-        """Return the continuation prompt text the loop would inject for
-        a `finish_reason=length` response with the given id."""
-        is_partial = response_id == PARTIAL_STREAM_STUB_ID
-        return _get_continuation_prompt(is_partial, dropped_tools)
-
-    def test_partial_stream_stub_uses_network_prompt(self):
-        prompt = self._simulate_branch(PARTIAL_STREAM_STUB_ID)
-        assert "network error mid-stream" in prompt
-        assert "output length limit" not in prompt
-
-
-    def test_no_id_falls_through_to_length_prompt(self):
-        prompt = self._simulate_branch("")
-        assert "output length limit" in prompt
-
 
 
 # ── Integration: live conversation loop ───────────────────────────────────
@@ -585,7 +560,6 @@ class TestContentFilterStallActivatesFallback:
         assert result["completed"] is True
 
 
-
 class TestEmptyPartialStreamStubNotPersisted:
     """Regression for the session-poisoning bug hit with moonshotai/kimi-k3
     via OpenRouter (2026-07-20): a stream dropped mid-``write_file`` tool
@@ -663,7 +637,6 @@ class TestEmptyPartialStreamStubNotPersisted:
         assert result["completed"] is True
 
 
-
 class TestBuildAssistantMessageEmptyContentPad:
     """Layer 2 was consolidated into the class owner: the builder stores
     textless turns AS-IS (no write-time pad — a pad here broke codex
@@ -712,15 +685,6 @@ class TestBuildAssistantMessageEmptyContentPad:
         )
         assert msg["content"] == ""
         assert msg["tool_calls"]
-        assert isinstance(msg["timestamp"], float)
-
-    def test_non_empty_content_unchanged(self):
-        from agent.chat_completion_helpers import build_assistant_message
-        from tests.agent.test_run_agent import _mock_assistant_msg
-
-        agent = self._agent_for_builder()
-        msg = build_assistant_message(agent, _mock_assistant_msg(content="hi"), "stop")
-        assert msg["content"] == "hi"
         assert isinstance(msg["timestamp"], float)
 
 

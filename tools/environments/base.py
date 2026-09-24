@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shlex
+import subprocess
 import threading
 import time
 import uuid
@@ -51,6 +52,81 @@ if _DEBUG_INTERRUPT:
 # Thread-local activity callback: the agent sets it before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
+
+# Foreground commands in flight in THIS process, across every environment. Each runs in its
+# own session/process group, so a host that exits mid-command (TUI client gone, SIGTERM) would
+# orphan the whole tree; the process-exit funnel ``cleanup_all_environments`` kills them.
+_live_foreground: dict[int, tuple["BaseEnvironment", "ProcessHandle"]] = {}
+# Reentrant, and the hard-exit path only ever takes it with a timeout: a signal handler can run
+# on a thread that already holds it.
+_live_foreground_cond = threading.Condition(threading.RLock())
+_exit_fenced = False  # one-way, set by the hard-exit kill: no foreground command spawns after it
+_spawns_in_flight = 0  # past the fence check, child maybe alive, not yet in _live_foreground
+_HARD_KILL_BUDGET_S = 0.5
+
+
+def _enter_foreground_spawn() -> bool:
+    global _spawns_in_flight
+    with _live_foreground_cond:
+        if _exit_fenced:
+            return False
+        _spawns_in_flight += 1
+        return True
+
+
+def _leave_foreground_spawn(env: "BaseEnvironment", spawned) -> bool:
+    """Publish ``spawned`` (None: the spawn failed); True when the exit fence went up meanwhile."""
+    global _spawns_in_flight
+    with _live_foreground_cond:
+        _spawns_in_flight -= 1
+        if spawned is not None:
+            _live_foreground[id(spawned)] = (env, spawned)
+        _live_foreground_cond.notify_all()
+        return _exit_fenced
+
+
+def _quiet_kill(kill: Callable, proc) -> None:
+    try:
+        kill(proc)
+    except Exception:
+        logger.debug("exit-time kill of a foreground command failed", exc_info=True)
+
+
+def kill_live_foreground_processes(*, now: bool = False) -> int:
+    """Kill every in-flight foreground command's process tree; returns how many were signalled.
+
+    ``now=True`` is for a caller about to ``os._exit``: the graceful kill TERMs, waits and only then
+    KILLs, so a SIGTERM-ignoring command outlives a hard exit that lands inside that window. It also
+    raises the exit fence and waits for spawns already past it to register, so no command started
+    around the snapshot survives, and it never blocks past ``_HARD_KILL_BUDGET_S``: SDK cancels
+    (Modal, Daytona, Vercel) run on daemon threads under that one deadline."""
+    global _exit_fenced
+    if not now:
+        with _live_foreground_cond:
+            live = list(_live_foreground.values())
+        for env, proc in live:
+            _quiet_kill(env._kill_process, proc)
+        return len(live)
+    deadline = time.monotonic() + _HARD_KILL_BUDGET_S
+    _exit_fenced = True
+    if _live_foreground_cond.acquire(timeout=_HARD_KILL_BUDGET_S):
+        try:
+            _live_foreground_cond.wait_for(lambda: _spawns_in_flight == 0, max(0.0, deadline - time.monotonic()))
+            live = list(_live_foreground.values())
+        finally:
+            _live_foreground_cond.release()
+    else:  # the holder is stuck under our signal: a lock-free copy beats hanging the exit
+        live = list(_live_foreground.values())
+    remote = []
+    for env, proc in live:
+        if isinstance(proc, subprocess.Popen):  # killpg/kill: never blocks
+            _quiet_kill(env._force_kill_process, proc)
+        else:
+            remote.append(threading.Thread(target=_quiet_kill, args=(env._force_kill_process, proc), daemon=True))
+            remote[-1].start()
+    for t in remote:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return len(live)
 
 
 class FileFetchError(RuntimeError):
@@ -166,7 +242,7 @@ class BaseEnvironment(ABC):
     def get_temp_dir(self) -> str:
         """Backend temp directory for session artifacts (``/tmp`` in sandboxes;
         LocalEnvironment overrides for Termux where only ``TMPDIR`` is writable)."""
-        return "/tmp"
+        return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
@@ -450,6 +526,10 @@ class BaseEnvironment(ABC):
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
+    def _force_kill_process(self, proc: ProcessHandle):
+        """Kill without waiting, for a host that hard-exits next. Subclasses kill the whole tree."""
+        self._kill_process(proc)
+
     # --- CWD extraction ---
     def _update_cwd(self, result: dict):
         """Extract CWD from command output. Override for local file-based read."""
@@ -540,12 +620,24 @@ class BaseEnvironment(ABC):
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
                 set_activity_callback(parent_activity_cb)
-            spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+            if not _enter_foreground_spawn():
+                return {"output": "[host is exiting: command not started]", "returncode": 130}
+            spawned = None
+            try:
+                spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+            finally:
+                fenced = _leave_foreground_spawn(self, spawned)
             proc_holder.append(spawned)
-            return self._wait_for_process(
-                spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
-                watch_interrupt_tid=parent_tid,
-                **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+            if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
+                self._force_kill_process(spawned)
+            try:
+                return self._wait_for_process(
+                    spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
+                    watch_interrupt_tid=parent_tid,
+                    **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+            finally:
+                with _live_foreground_cond:
+                    _live_foreground.pop(id(spawned), None)
 
         def _on_timeout() -> None:
             if proc_holder:

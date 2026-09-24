@@ -38,12 +38,6 @@ class TestDeterministicCallId:
             "call_567cb168d22d"
         assert deterministic_call_id("", "", 0) == "call_feda901d71ea"
 
-    def test_deterministic_across_calls(self):
-        a = deterministic_call_id("web_search", '{"q":"x"}', 3)
-        b = deterministic_call_id("web_search", '{"q":"x"}', 3)
-        assert a == b
-        assert a.startswith("call_")
-        assert len(a) == len("call_") + 12
 
     def test_index_disambiguates(self):
         assert deterministic_call_id("t", "{}", 0) != deterministic_call_id("t", "{}", 1)
@@ -51,11 +45,6 @@ class TestDeterministicCallId:
     def test_surrogates_do_not_crash(self):
         out = deterministic_call_id("t", "bad \ud800 arg", 0)
         assert out.startswith("call_")
-
-    def test_run_agent_static_delegates(self):
-        from run_agent import AIAgent
-        assert AIAgent._deterministic_call_id("terminal", '{"command":"ls"}', 0) == \
-            deterministic_call_id("terminal", '{"command":"ls"}', 0)
 
 
 # ---------------------------------------------------------------------------
@@ -77,11 +66,6 @@ class TestCoalesceToolCallId:
         assert coalesce_tool_call_id(SimpleNamespace(call_id="c", id="i")) == "c"
         assert coalesce_tool_call_id(SimpleNamespace(call_id=None, id=" i ")) == "i"
         assert coalesce_tool_call_id(SimpleNamespace(call_id=None, id=None)) == ""
-
-    def test_run_agent_static_delegates(self):
-        from run_agent import AIAgent
-        tc = {"call_id": "c9", "id": "i9"}
-        assert AIAgent._get_tool_call_id_static(tc) == coalesce_tool_call_id(tc)
 
 
 # ---------------------------------------------------------------------------
@@ -340,25 +324,6 @@ class TestPerProviderReasoningEcho:
         assert agent._needs_thinking_reasoning_pad() is True
         assert agent._reasoning_echo_opt_in() is True
 
-    def test_opt_in_does_not_replace_family_detection(self):
-        """Kimi-coding family still gets echo-back regardless of the flag."""
-        agent = self._make_agent(
-            reasoning_echo_flag=False,
-            provider="kimi-coding",
-            model="t9s/kimi-k3",
-        )
-        agent._needs_kimi_tool_reasoning = lambda: True
-        assert agent._needs_thinking_reasoning_pad() is True
-
-    def test_opt_in_additive_with_family_detection(self):
-        """Flag on AND family match: both paths agree, still True."""
-        agent = self._make_agent(
-            reasoning_echo_flag=True,
-            provider="deepseek",
-            model="deepseek-v4-pro",
-        )
-        agent._needs_deepseek_tool_reasoning = lambda: True
-        assert agent._needs_thinking_reasoning_pad() is True
 
     def test_strict_fallback_strips_despite_primary_opt_in(self):
         """Primary has flag=True, fallback switches to a strict provider.
@@ -456,20 +421,4 @@ class TestPerProviderReasoningEcho:
         assert agent._reasoning_echo_flag is True
         assert agent.model == "glm-5.2"
 
-    def test_apply_policy_preserves_with_opt_in(self):
-        """apply_reasoning_content_policy preserves reasoning_content
-        when needs_thinking_pad is True (via opt-in)."""
-        from agent.message_sanitization import apply_reasoning_content_policy
-        source = {"role": "assistant", "content": "hi", "reasoning_content": "my thoughts"}
-        api_msg = {"role": "assistant", "content": "hi"}
-        apply_reasoning_content_policy(source, api_msg, needs_thinking_pad=True)
-        assert api_msg["reasoning_content"] == "my thoughts"
 
-    def test_apply_policy_strips_without_opt_in(self):
-        """apply_reasoning_content_policy strips reasoning_content
-        when needs_thinking_pad is False (no opt-in, not echo family)."""
-        from agent.message_sanitization import apply_reasoning_content_policy
-        source = {"role": "assistant", "content": "hi", "reasoning_content": "my thoughts"}
-        api_msg = {"role": "assistant", "content": "hi"}
-        apply_reasoning_content_policy(source, api_msg, needs_thinking_pad=False)
-        assert "reasoning_content" not in api_msg

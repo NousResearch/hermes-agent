@@ -39,12 +39,13 @@ from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
+from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
     ProfileSoulUpdate, ProfileDescriptionUpdate, ProfileModelUpdate, ProfileDescribeAuto,
     SessionPrScanBody)
-from hermes_cli.web_server_profiles import _hermes_home_scope
+from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
 
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -92,13 +93,28 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
-        "has_alias": attr("alias_path", None) is not None}
+        "has_alias": attr("alias_path", None) is not None, "role": attr("role", None)}
 
 
 def _profile_setup_command(name: str) -> str:
     """Return the shell command used to configure a profile in the CLI."""
     _resolve_profile_dir(name)
     return "hermes setup" if name == "default" else f"{name} setup"
+
+
+def _scope_profile_name(path: Path) -> Optional[str]:
+    """Map a profile directory onto the query name ``_config_profile_scope`` expects: None for
+    the process home (current-profile semantics: launch secret scope, no home override),
+    ``"default"`` for the default root (its basename -- ``.hermes`` or a custom root -- is not a
+    profile name; launched from ``profiles/<name>`` the root is a *different* profile), the
+    directory name for ``profiles/<name>``."""
+    from hermes_constants import get_default_hermes_root
+    resolved = path.resolve()
+    if resolved == get_process_hermes_home().resolve():
+        return None
+    if resolved == get_default_hermes_root().resolve():
+        return "default"
+    return path.name
 
 
 def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None) -> None:
@@ -108,12 +124,17 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     ``validate_in`` is the home whose ``providers:``/``.env``/catalog vouch for the pick (default:
     ``profile_dir`` itself). Profile-create passes the dashboard's own home: the picker that offered
     the model read THAT catalog, and a just-created profile has no credentials yet, so validating
-    in the empty profile rejected every non-env provider (anthropic, ollama, custom)."""
+    in the empty profile rejected every non-env provider (anthropic, ollama, custom).
+
+    Both spans enter ``_config_profile_scope`` (home + secret scope), matching ``/api/model/set``:
+    once the dashboard has served a secondary profile, ``switch_model``'s ``key_env`` probe goes
+    through ``get_secret``, which fails closed without a scope and reports the provider as
+    unconnected (UnscopedSecretError class, #114676)."""
     from hermes_cli.config import load_config, save_config
-    with _hermes_home_scope(validate_in or profile_dir):
+    with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model)
-    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
+    with _config_profile_scope(_scope_profile_name(profile_dir)), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         save_config(cfg)
@@ -187,16 +208,16 @@ def _best_effort(log_msg: str, *args, fn, default=None):
         return default
 
 
-def _profile_targets(log_label: str, *, lightweight: bool) -> List[Tuple[str, Path]]:
-    """(name, home) for every profile, falling back to ``default`` alone. ``lightweight``
-    uses ``profiles_to_serve`` (name/path only) instead of ``list_profiles``, which parses
-    config/meta and probes gateways/skills per profile — too heavy per sidebar refresh."""
+def _profile_targets(log_label: str) -> List[Tuple[str, Path]]:
+    """(name, home) for every profile, falling back to ``default`` alone. Uses
+    ``profiles_to_serve`` (pure directory read) instead of ``list_profiles``, which parses
+    config/meta and probes gateways per profile — every caller here is a polled sidebar
+    fan-out that only needs name/path (#114041)."""
     from hermes_cli import profiles as profiles_mod
     try:
-        targets = (list(profiles_mod.profiles_to_serve(multiplex=True)) if lightweight
-                   else [(info.name, info.path) for info in profiles_mod.list_profiles()])
+        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
-        _log.exception("%s: list_profiles failed", log_label)
+        _log.exception("%s: profile enumeration failed", log_label)
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
@@ -248,6 +269,8 @@ def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
         db = _open_session_db_at_path(db_path, read_only=True)
         return fn(db)
     except Exception as exc:
+        # An open that dies on a damaged file never reaches SessionDB's read helpers.
+        note_storage_error(db_path, exc)
         _warn_profile_read_error(name, exc)
         if errors is not None:
             errors.append({"profile": name, "error": str(exc)})
@@ -255,6 +278,14 @@ def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
     finally:
         if db is not None:
             db.close()
+
+
+def _corrupt_profile_stores(targets) -> Dict[str, str]:
+    """``{profile: "corrupt"}`` for every scanned profile whose state.db this process has latched
+    as structurally corrupt (``hermes_state_health``). Lets Desktop tell an empty or partial list
+    from a damaged store, including when some reads still succeed (#72046)."""
+    return {name: STORAGE_CORRUPT for name, home in targets
+            if storage_state(Path(home) / "state.db") == STORAGE_CORRUPT}
 
 
 # Sidebar scan cache TTL: short enough that the UI never shows meaningfully stale data, long
@@ -395,7 +426,7 @@ def get_profiles_sessions(
         raise HTTPException(status_code=400, detail="order must be one of: created, recent")
 
     targets = ([_cron_profile_home(profile)] if profile and profile != "all"
-               else _profile_targets("GET /api/profiles/sessions", lightweight=True))
+               else _profile_targets("GET /api/profiles/sessions"))
 
     # Source scoping (see /api/sessions): recents pass exclude_sources=cron, the cron-jobs
     # section source=cron — two independent lists so cron sessions can't starve recents.
@@ -427,7 +458,8 @@ def get_profiles_sessions(
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
-            "limit": limit, "offset": offset, "errors": errors}
+            "limit": limit, "offset": offset, "errors": errors,
+            "storage": _corrupt_profile_stores(targets)}
 
 
 @sessions_router.get("/api/profiles/sessions/sidebar")
@@ -446,7 +478,7 @@ def get_profiles_sessions_sidebar(
 
     See #42651, #65710, #70629.
     """
-    targets = _profile_targets("GET /api/profiles/sessions/sidebar", lightweight=True)
+    targets = _profile_targets("GET /api/profiles/sessions/sidebar")
 
     recents_scope = (recents_profile or "all").strip() or "all"
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
@@ -479,9 +511,11 @@ def get_profiles_sessions_sidebar(
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
+    scanned = []
     for name, home in targets:
         if recents_scope != "all" and name != recents_scope:
             continue
+        scanned.append((name, home))
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
@@ -495,10 +529,10 @@ def get_profiles_sessions_sidebar(
             if slices is None:
                 continue
         # A full window means more rows remain on disk — all "load more" needs, at no cost
-        # beyond the rows already read. Discount pinned back-fills: they arrive past the
-        # LIMIT and would fake a full page on a short list.
-        unpinned_count = sum(1 for s in slices["recents"] if not s.get("pinned"))
-        recents_truncated[name] = unpinned_count >= cap["recents"]
+        # beyond the rows already read. Pinned rows count: they occupy LIMIT slots, and a
+        # short list has nothing past the page for the pin back-fill to add, so pins cannot
+        # fake a full page (#81484).
+        recents_truncated[name] = len(slices["recents"]) >= cap["recents"]
         profile_totals[name] = slices["usage"]
         for key in slice_scope:
             rows[key].extend(_tag_rows(slices[key], name, now))
@@ -514,7 +548,7 @@ def get_profiles_sessions_sidebar(
                     "profiles_usage": profile_totals},
         "cron": {"sessions": _window("cron")},
         "messaging": {"sessions": _window("messaging"), "total": len(rows["messaging"])},
-        "errors": errors}
+        "errors": errors, "storage": _corrupt_profile_stores(scanned)}
 
 
 def _merge_by_id(into: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]], child_key: str) -> None:
@@ -591,7 +625,7 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     scoped_session_ids: List[str] = []
     errors: List[Dict[str, str]] = []
 
-    for name, home in _profile_targets("GET /api/profiles/projects/tree", lightweight=False):
+    for name, home in _profile_targets("GET /api/profiles/projects/tree"):
         def _read(db, name=name, home=home):
             with _hermes_home_scope(home):
                 tree, _active_id = gateway_server._build_project_tree(
@@ -643,7 +677,7 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
                 # Oldest-first, so a later `gh pr create` (the replacement PR) wins.
                 found[pr["session_id"]] = {"number": parsed[0], "url": parsed[1]}
 
-    for name, home in _profile_targets("POST /api/profiles/sessions/pull-requests", lightweight=False):
+    for name, home in _profile_targets("POST /api/profiles/sessions/pull-requests"):
         _read_profile_db(name, home, None, _read)
 
     # ``scanned``: every id looked at, so the caller can remember "nothing there".
@@ -654,7 +688,8 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 def _read_profiles():
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles = profiles_mod.list_profiles()
+        # Polled by the Desktop on every focus/roster tick: never walk skill trees in-request.
+        profiles = profiles_mod.list_profiles(lazy_skill_count=True)
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")

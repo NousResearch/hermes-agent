@@ -360,6 +360,19 @@ const TASK_PANEL_RESUME_SCRIPT: ScriptedTurn[] = [
 export const PROVIDER_FAILURE_TRIGGER = 'E2E_PROVIDER_FAILURE_TRIGGER'
 export const PROVIDER_FAILURE_MESSAGE = 'E2E invalid_api_key: the mock refused this completion on purpose'
 
+/**
+ * The same provider failure one step later: the first completion says
+ * TOOL_THEN_FAILURE_TEXT and calls a tool, the completion after the tool
+ * result is the 401. That pre-tool text is not the member's reply.
+ */
+export const TOOL_THEN_FAILURE_TRIGGER = 'E2E_TOOL_THEN_PROVIDER_401'
+export const TOOL_THEN_FAILURE_TEXT = 'Let me note the plan before answering.'
+
+const TOOL_THEN_FAILURE_TURN: ScriptedTurn = {
+  text: TOOL_THEN_FAILURE_TEXT,
+  toolCalls: [{ name: 'todo', args: { todos: [{ id: '1', content: 'Answer the room', status: 'in_progress' }] } }],
+}
+
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
   toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
@@ -700,7 +713,17 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          if (userText.includes(PROVIDER_FAILURE_TRIGGER)) {
+          if (userText.includes(TOOL_THEN_FAILURE_TRIGGER) && !messages.some(message => message?.role === 'tool')) {
+            if (stream) {
+              streamScriptedTurn(res, model, TOOL_THEN_FAILURE_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, TOOL_THEN_FAILURE_TURN)
+            }
+
+            return
+          }
+
+          if (userText.includes(PROVIDER_FAILURE_TRIGGER) || userText.includes(TOOL_THEN_FAILURE_TRIGGER)) {
             res.writeHead(401, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: PROVIDER_FAILURE_MESSAGE, type: 'invalid_request_error' } }))
 

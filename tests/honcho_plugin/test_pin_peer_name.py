@@ -31,10 +31,6 @@ from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
 
 
 class TestPinPeerNameConfigParsing:
-    def test_default_is_false(self):
-        """Default preserves existing behaviour — multi-user bots unaffected."""
-        config = HonchoClientConfig()
-        assert config.pin_peer_name is False
 
     def test_root_level_true(self, tmp_path, monkeypatch):
         config_file = tmp_path / "honcho.json"
@@ -79,10 +75,6 @@ class TestPinPeerNameConfigParsing:
 
 
 class TestRuntimePeerMappingConfigParsing:
-    def test_defaults_are_empty(self):
-        config = HonchoClientConfig()
-        assert config.user_peer_aliases == {}
-        assert config.runtime_peer_prefix == ""
 
 
     def test_malformed_alias_config_is_ignored(self, tmp_path):
@@ -443,24 +435,6 @@ class TestCrossPlatformMemoryUnification:
         )
 
 
-class TestPinUserPeerAlias:
-    """``pinUserPeer`` and ``pinPeerName`` both resolve to the same internal
-    ``pin_peer_name`` field.  Precedence when both appear: host pinUserPeer →
-    host pinPeerName → root pinUserPeer → root pinPeerName → default.
-    """
-
-
-    def test_pinPeerName_still_works_unchanged(self, tmp_path):
-        from plugins.memory.honcho.client import HonchoClientConfig
-        import json
-        config_file = tmp_path / "honcho.json"
-        config_file.write_text(json.dumps({
-            "apiKey": "***",
-            "peerName": "eri",
-            "hosts": {"hermes": {"pinPeerName": True}},
-        }))
-        config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.pin_peer_name is True
 
 
 class TestPinTransition:

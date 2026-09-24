@@ -9,7 +9,7 @@ description: "How to build a memory provider plugin for Hermes Agent"
 Memory provider plugins give Hermes Agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. This guide covers how to build one.
 
 :::tip
-Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
+Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](./context-engine-plugin.md), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
 :::
 
 ## Installation Layouts
@@ -114,7 +114,7 @@ fields; callers may initialize a provider without an agent or a session database
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
 | `agent_identity` | Active profile name, when available. |
-| `agent_workspace`, `agent_context` | Runtime agent scope (`hermes` and `primary` for the main agent). |
+| `agent_workspace`, `agent_context` | Runtime agent scope. `agent_workspace` is `hermes`; `agent_context` is `cron` for scheduler runs, `subagent` for `delegate_task` children, else `primary` — skip automatic writes for the non-primary values. |
 
 Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
 or gateway backend can serve several sessions. If `cwd` is absent and directory
@@ -161,8 +161,16 @@ workspace; absent or empty cwd remains unpinned.
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
-| `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
+| `on_memory_write(action, target, content, metadata=None)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+For native `replace` and `remove`, `metadata["previous_content"]` contains the full
+entry selected under the native-store lock. Notifications are emitted only after
+the complete write or batch succeeds. Batch notifications preserve operation order;
+each operation's previous content reflects earlier operations in that batch.
+`old_text` is the caller's search text, not the identity of the changed entry.
+Older Hermes versions can omit `previous_content`. Providers that require exact
+identity should skip destructive mirroring when it is absent.
 
 ### Oversized prefetch results
 
@@ -172,7 +180,7 @@ The preview includes the path so the agent can read the full result when it is
 actually needed. Results at or below the threshold are returned unchanged.
 
 This uses the shared `hooks.output_spill` settings (`10,000` characters by
-default); see [Plugins — oversized-context spill](/developer-guide/plugins/#oversized-context-spill).
+default); see [Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
 
 ## Pre-Compress Checkpoints (fail-closed)
 
@@ -211,6 +219,12 @@ an active provider advertising the API completed its checkpoint: the
 uncompressed transcript is preserved, the compaction attempt errors with
 `BLOCKED_MISSING_PREREQUISITE`, and it can be retried once your store
 recovers. With the gate off (default), nothing changes for existing providers.
+
+None of the providers bundled with Hermes advertise checkpoint API v2 — the
+contract is opt-in and exists for third-party archiving providers. Enabling
+`checkpoint_required` without one therefore blocks every compression attempt
+(manual and automatic): agent init logs a warning naming the active provider,
+and each refusal names `compression.checkpoint_required` as the key to disable.
 
 The gate binds to every compaction authority, not just the Hermes
 summarizer: server-side native compaction (`compression.codex_responses_native`)

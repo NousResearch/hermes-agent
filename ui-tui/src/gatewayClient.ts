@@ -133,6 +133,11 @@ export class GatewayClient extends EventEmitter {
   // only owns the two transports (child stdio, attached socket) and the
   // buffered-event replay that Ink's mount order needs.
   private readonly channel = new JsonRpcRequestChannel({
+    // A mid-turn socket streams deltas every second; killing the only
+    // transport that carried live traffic split sessions that completed
+    // server-side (#115251). Count any inbound frame as liveness, exactly
+    // like the desktop/web client; a silent drop still trips the deadline.
+    heartbeatLiveness: 'any-inbound',
     onEvent: ev => this.publish(ev as AnyGatewayEvent),
     onHeartbeatFailure: () => this.onHeartbeatFailure(),
     onRequestHandlerError: (error, req) =>
@@ -625,6 +630,18 @@ export class GatewayClient extends EventEmitter {
   }
 
   start() {
+    if (this.disposed) {
+      // kill() is terminal: every caller (die / dieWithCode /
+      // graceful-exit-cleanup / dead-output-stream) exits the Node process
+      // right after, so there is no legitimate kill-then-start flow. A
+      // start() arriving here is a recovery subscriber reacting to the
+      // killed child's late `exit` — respawning now would recreate the
+      // gateway on a PTY that is already gone.
+      this.pushLog('[lifecycle] start() ignored after kill()')
+
+      return
+    }
+
     this.disposed = false
     this.clearReconnect()
 
@@ -785,6 +802,14 @@ export class GatewayClient extends EventEmitter {
     this.clearReconnect()
     this.reconnectAttempts = 0
     const proc = this.proc
+    // Detach the reference BEFORE killing: the child's late `exit` event is
+    // identity-gated on `this.proc === ownedProc`, and graceful-exit callers
+    // (SIGHUP on a dead PTY) do not live long enough to consume a recovery
+    // restart. Leaving the reference in place let the exit reach
+    // handleTransportExit → emit('exit') → useMainApp's recovery subscriber
+    // → start(), whose first statement un-latches `disposed` and spawns a
+    // replacement gateway onto the vanished pipes.
+    this.proc = null
     const killed = proc?.kill()
 
     this.lifecycle(

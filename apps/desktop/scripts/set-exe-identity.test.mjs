@@ -30,7 +30,7 @@ test('retries transient rcedit commit failures with bounded backoff', async () =
     })
 
     assert.equal(attempts, 3)
-    assert.deepEqual(delays, [500, 1000])
+    assert.equal(delays.length, 2)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

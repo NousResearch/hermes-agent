@@ -34,6 +34,7 @@ import {
   $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
+  pendingSessionReplay,
   requestGatewayForAgent,
   retainGatewayForAgent
 } from '@/store/gateway'
@@ -1015,12 +1016,28 @@ export function useSessionActions({
       const routeToken = getRouteToken()
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
-      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
         getRouteToken() === routeToken
+
+      // A reconnect re-resumes the runtime this view is streaming. Let its
+      // replay land while that runtime still owns the view. Otherwise the REST
+      // read paints the finished turn first and the replayed rows are then
+      // overlaid onto it as concurrent runtime changes: the turn shows twice.
+      const viewRuntimeId = resumedSameSelectedSession ? activeSessionIdRef.current : null
+      const viewReplay = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+      if (viewReplay) {
+        await viewReplay
+
+        if (!isCurrentResume()) {
+          return
+        }
+      }
+
+      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -1290,6 +1307,21 @@ export function useSessionActions({
           setSessionStartedAt(Date.now())
 
           try {
+            const replay = pendingSessionReplay(cachedRuntimeId)
+
+            // Only ordering matters here. A lost socket (false) still goes on
+            // to session.activate so its existing branches own the outcome:
+            // degraded warm cache on a transport error, cold resume when the
+            // runtime is gone, or a normal rebind on a redialed socket (whose
+            // history publication is re-gated after the REST read below).
+            if (replay) {
+              await replay
+
+              if (!isCurrentResume()) {
+                return
+              }
+            }
+
             let activated: SessionResumeResult | null = null
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
@@ -1463,6 +1495,13 @@ export function useSessionActions({
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
+                const replayAtReturn = pendingSessionReplay(cachedRuntimeId)
+
+                if (replayAtReturn && !(await replayAtReturn)) {
+                  hydration.release()
+
+                  return
+                }
 
                 // Navigation only revokes foreground publication, not this
                 // runtime's display read. Edits/rebinds revoke both.
@@ -1764,6 +1803,15 @@ export function useSessionActions({
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
+        }
+
+        // The socket can drop and redial while REST is in flight. Painting now
+        // would let the new socket's replay append the same turn again; a lost
+        // socket (false) drops this read and the resume below binds without it.
+        const viewReplayAtReturn = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+        if (prefetchedResult && viewReplayAtReturn && !(await viewReplayAtReturn)) {
+          prefetchedResult = null
         }
 
         // A completed read still warms its exact durable scope after navigation.

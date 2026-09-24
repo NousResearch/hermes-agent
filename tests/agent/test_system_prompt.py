@@ -1,5 +1,6 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -277,6 +278,19 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
     assert not _stored_prompt_matches_runtime(agent, legacy)
     monkeypatch.setenv("TERMINAL_CWD", str(cwd))
     assert _stored_prompt_matches_runtime(agent, legacy)
+
+
+def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, tmp_path):
+    """With the Session ID trailer on, a prompt persisted for another session (a /branch child
+    copies its parent's bytes) must rebuild instead of telling the model the parent's id."""
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    fields = dict(platform="cli", model="test-model", provider="test-provider", pass_session_id=True)
+    parent_prompt = build_system_prompt(_make_agent(session_id="parent-sid", **fields))
+    assert _stored_prompt_matches_runtime(_make_agent(session_id="parent-sid", **fields), parent_prompt)
+    assert not _stored_prompt_matches_runtime(_make_agent(session_id="child-sid", **fields), parent_prompt)
 
 
 class TestExecutionGuidanceInjection:
@@ -848,6 +862,17 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(self._agent(sid))
         assert "Conversation started:" in vol
         assert "as of the last context rebuild" not in vol
+
+    def test_surrogate_zone_name_does_not_abort_prompt(self):
+        # Windows cp1252 zone name decoded under a UTF-8 LC_CTYPE; strftime("%Z") raised (#102910).
+        from datetime import timedelta, timezone
+        current = datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2), "Paris, Madrid (heure d'\udce9t\udce9)"))
+        with patch("hermes_time.now", return_value=current):
+            vol = self._volatile(self._agent("20260714_090000_fresh"))
+
+        json.dumps(vol, ensure_ascii=False).encode("utf-8")
+        assert "Conversation started: Tuesday, July 14, 2026" in vol
+        assert "Paris, Madrid (heure d'" in vol and "UTC+02:00" in vol
 
     def test_timeless_bot_chat_unaffected(self):
         agent = self._agent("20200110_090000_old")

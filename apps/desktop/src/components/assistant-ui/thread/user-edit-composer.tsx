@@ -79,6 +79,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $terminalBackend } from '@/store/session'
 import { isSessionRemote } from '@/store/session-states'
+import { useForcedTextDirection } from '@/store/text-direction'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
 interface UserEditComposerProps {
@@ -92,6 +93,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const copy = t.assistant.thread
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
+  const textDirection = useForcedTextDirection()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   // Capture the original draft immediately before the first edit. The runtime
@@ -869,6 +871,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               contentEditable
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
+              dir={textDirection}
               onBeforeInput={handleBeforeInput}
               onBlur={() => scheduleTimeout(closeTrigger, 80)}
               onCompositionEnd={event => {

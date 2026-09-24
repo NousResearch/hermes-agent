@@ -158,13 +158,59 @@ def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
     assert calls == [(["uv", "pip", "install", "langfuse", "--quiet"], env)]
 
 
+def test_venv_repair_restores_snapshots_with_an_isolated_uv_env(tmp_path, monkeypatch):
+    """The unhealthy-venv repair reinstalls the pre-rebuild lazy/tool snapshots through an env
+    built by ``managed_python_env`` (#83914): a third-party ``UV_PYTHON_INSTALL_DIR`` /
+    ``UV_PYTHON`` / ``VIRTUAL_ENV`` from unrelated software must not steer uv, and
+    ``VIRTUAL_ENV`` points at this install's own venv."""
+    from hermes_cli import update_cmd
+    from hermes_constants import venv_python_path
 
+    project = tmp_path / "hermes"
+    venv_python = venv_python_path(project / "venv", windows=m._is_windows())
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    foreign = tmp_path / "workbuddy"
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(foreign / "python"))
+    monkeypatch.setenv("UV_PYTHON", str(foreign / "python" / "python.exe"))
+    monkeypatch.setenv("VIRTUAL_ENV", str(foreign / "venv"))
 
+    calls = []
+    monkeypatch.setattr(m, "PROJECT_ROOT", project)
+    monkeypatch.setattr(m, "_abort_dependency_sync_if_self_locked", lambda *_a: None)
+    monkeypatch.setattr(
+        m, "_install_python_dependencies_with_optional_fallback",
+        lambda prefix, *, env, group: calls.append(("core", prefix, env, group)))
+    monkeypatch.setattr(
+        m, "_refresh_active_lazy_features",
+        lambda prefix, *, env, features: calls.append(("lazy", prefix, env, features)) or True)
+    monkeypatch.setattr(
+        m, "_restore_active_tool_dependencies",
+        lambda deps, prefix, *, env: calls.append(("tools", prefix, env, deps)))
+    monkeypatch.setattr(m, "_refresh_active_memory_provider_dependencies", lambda: None)
+    monkeypatch.setattr(m, "_reapply_plugin_python_dependencies", lambda: None)
+    monkeypatch.setattr(m, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(update_cmd, "_write_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, "ok"))
+    monkeypatch.setattr(
+        update_cmd, "_repair_node_deps_on_current_checkout", lambda *_a, **_k: True)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **_k: "uv")
 
+    assert update_cmd._repair_venv_on_current_checkout(
+        assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+        had_desktop_app_before_update=False,
+        active_lazy_features=["platform.telegram"],
+        active_tool_dependencies=["langfuse"],
+        _windows_gateway_resume=None,
+    ) is True
 
-
-
-
-
-
-
+    assert [(c[0], c[1], c[3]) for c in calls] == [
+        ("core", ["uv", "pip"], "all"),
+        ("lazy", ["uv", "pip"], ["platform.telegram"]),
+        ("tools", ["uv", "pip"], ["langfuse"]),
+    ]
+    for _phase, _prefix, env, _extra in calls:
+        assert env["VIRTUAL_ENV"] == str(project / "venv")
+        assert str(foreign) not in env.get("UV_PYTHON_INSTALL_DIR", "")
+        assert env.get("UV_PYTHON") is None
+        assert env.get("UV_MANAGED_PYTHON") == "1"

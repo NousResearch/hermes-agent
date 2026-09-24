@@ -2306,6 +2306,7 @@ _GATEWAY_IDENTITY_PARAMS = (
 )
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
+    "tool_result_metadata_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "connection_callback", "tour_callback",
@@ -2351,6 +2352,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
+    tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     _install_safe_stdio()
 
@@ -2408,6 +2410,9 @@ def init_agent(
     # Every (provider, model) that rejected image content this session. build_api_request strips
     # images from requests to those models only, so history keeps them for any model that can see.
     agent._image_rejecting_models = set()
+    # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
+    # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
+    agent._fast_mode_unavailable_models = set()
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)

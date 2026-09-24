@@ -2788,10 +2788,12 @@ export interface SessionCreateResult {
   messages: TranscriptMessage[]
   info: SessionLiveInfo
 }
-/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
+/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 export interface TranscriptMessage {
   role: string
   text?: string | null
+  content?: unknown | null
+  tool_call_id?: string | null
   timestamp?: number | null
   row_id?: number | null
   display_kind?: string | null

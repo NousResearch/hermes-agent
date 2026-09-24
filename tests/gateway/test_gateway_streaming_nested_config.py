@@ -18,7 +18,7 @@ def _load_with_yaml_dict(yaml_dict: dict):
          patch("builtins.open", create=True) as mock_file:
         mock_file.return_value.__enter__ = lambda s: s
         mock_file.return_value.__exit__ = MagicMock(return_value=False)
-        with patch("yaml.safe_load", return_value=yaml_dict):
+        with patch("utils.fast_safe_load", return_value=yaml_dict):
             return load_gateway_config()
 
 

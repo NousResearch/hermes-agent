@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 # fcntl is Unix-only; Windows uses msvcrt
 try:
@@ -41,7 +41,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
-from hermes_time import now as _hermes_now
+from hermes_time import now as _hermes_now, safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
@@ -375,12 +375,12 @@ def _repeat_alert_withheld(incident: dict) -> bool:
     if not alerted_at:
         return False
     try:
-        from cron.jobs import _ensure_aware
+        from cron.jobs import _elapsed_seconds, _ensure_aware
 
         last = _ensure_aware(datetime.fromisoformat(str(alerted_at)))
     except (TypeError, ValueError):
         return False
-    return _hermes_now() - last < timedelta(hours=hours)
+    return _elapsed_seconds(_hermes_now(), last) < hours * 3600
 
 
 def _upsert_incident_for_failure(
@@ -2093,7 +2093,7 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         # Title the cron session from the job (name -> id) and PERSIST it BEFORE end_session()/close() tear
         # the connection down, so the close can never run over an in-flight title write (#50536).
         _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
-        _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+        _cron_title = f"{_title_base} · {safe_strftime(_hermes_now(), '%b %d %H:%M')}"
         if not _set_cron_session_title(_session_db, _final_cron_session_id, _cron_title):
             _set_cron_session_title(_session_db, _final_cron_session_id, f"cron {job_id}")
     except (Exception, KeyboardInterrupt) as e:

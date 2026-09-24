@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from agent.memory_manager import sanitize_context
 from agent.message_content import flatten_message_text
-from agent.redact import redact_sensitive_text
+from agent.history_commentary import visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -135,8 +135,7 @@ class StreamDeliveryMixin:
 
     def _visible_commentary(self, text: str) -> str:
         """Think-stripped, redacted commentary text ("" when nothing visible remains)."""
-        visible = self._strip_think_blocks(text).strip()
-        return redact_sensitive_text(visible) if visible else visible
+        return visible_commentary(text, strip_thinking=getattr(self, "_strip_think_blocks"))
 
     def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
         """All visible Codex commentary joined, for comparison/fallback."""

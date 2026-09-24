@@ -1648,6 +1648,11 @@ export {
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
 
+/** THE settings rows: `ListRow` is label + description with the control beside
+ *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
+ *  never an Off/On pill pair. Use them for preference rows in plugin panes and
+ *  dialogs so they line up with core Settings. */
+export { ListRow, ToggleRow } from '@/app/settings/primitives'
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass

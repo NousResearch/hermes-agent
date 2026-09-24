@@ -551,13 +551,30 @@ def _with_tool_call_labels(message: dict) -> dict:
     return {**message, "tool_call_labels": labels} if labels else message
 
 
-def _project_for_display(messages: list) -> list:
+def _history_profile_home(profile):
+    if profile:
+        return _cron_profile_home(profile)[1]
+    # An omitted profile reads this process's DB (including custom HERMES_HOME),
+    # not necessarily the registered default profile used by cron routes.
+    from hermes_cli.config import get_hermes_home
+
+    return get_hermes_home()
+
+
+def _project_for_display(messages: list, *, home=None) -> list:
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
+    from agent.history_commentary import project_history_commentary
+    from agent.turn_failure_copy import untyped_failed_turn_display_kind
 
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
+        # Same read-side typing as session.resume (tui_gateway/session_history.py).
+        failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(
+            message.get("role"), message.get("content"))
+        if failed_turn:
+            message = {**message, "display_kind": failed_turn}
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue
@@ -573,7 +590,7 @@ def _project_for_display(messages: list) -> list:
             projected["display_content"] = display_view.get("content")
             projected.pop("display_kind", None)
         projected_messages.append(projected)
-    return projected_messages
+    return project_history_commentary(projected_messages, home=home)
 
 
 @manage_router.get("/api/sessions/{session_id}/messages")
@@ -602,7 +619,8 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
-    projected_messages = _project_for_display(messages)
+    projected_messages = await asyncio.to_thread(
+        _project_for_display, messages, home=_history_profile_home(profile))
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the
@@ -670,7 +688,8 @@ async def get_session_messages_around(
         return {"session_id": sid, "profile": owner, **page}
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
-    result["messages"] = _project_for_display(result["messages"])
+    result["messages"] = await asyncio.to_thread(
+        _project_for_display, result["messages"], home=_history_profile_home(profile))
     return result
 
 

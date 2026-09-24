@@ -765,7 +765,7 @@ class TestReviewedPinScanTrust:
     SHA = "a" * 40
 
     def _fake_clone(self, pc, monkeypatch, plugins_dir, extra_file, body):
-        def fake_clone(tmp_clone, git_url, revision):
+        def fake_clone(tmp_clone, git_url, revision, subdir=None):
             tmp_clone.mkdir()
             (tmp_clone / "plugin.yaml").write_text("name: scanme\nmanifest_version: 1\n", encoding="utf-8")
             (tmp_clone / extra_file).write_text(body, encoding="utf-8")
@@ -807,7 +807,7 @@ class TestInstallReadabilityGate:
     def _clone_with_unreadable_manifest(self, monkeypatch, pc):
         real_chmod = os.chmod  # the rollback test replaces os.chmod after this fixture runs
 
-        def fake_clone(tmp_clone, git_url, revision):
+        def fake_clone(tmp_clone, git_url, revision, subdir=None):
             tmp_clone.mkdir()
             (tmp_clone / "plugin.yaml").write_text("name: badperm\nmanifest_version: 1\n", encoding="utf-8")
             real_chmod(tmp_clone / "plugin.yaml", 0)

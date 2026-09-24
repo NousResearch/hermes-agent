@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Tuple
 
+from hermes_state_errors import is_sqlite_lock_error
+
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
 except ImportError:  # pragma: no cover - stripped/scaffold installs only
@@ -536,8 +538,7 @@ def live_writer_holds_db(
         probe.execute("ROLLBACK")
         return False
     except sqlite3.OperationalError as exc:
-        lowered = str(exc).lower()
-        return "locked" in lowered or "busy" in lowered
+        return is_sqlite_lock_error(exc)
     except sqlite3.DatabaseError:
         # Malformed/unreadable with no holder on the scan: nobody else has it open, so repair may run.
         return False

@@ -3583,7 +3583,7 @@ def _commit_compaction(
     agent: Any, messages: list, compressed: list, *, in_place: bool, lease: _CompressionLease,
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
-    verbatim_tail: Optional[list] = None,
+    verbatim_tail: Optional[list] = None, carried_messages: Optional[list] = None,
 ) -> _CommitOutcome:
     """Persist the compacted transcript: memory extraction, anti-growth guard, then the
     in-place archive or the parent->child rotation.
@@ -3646,6 +3646,7 @@ def _commit_compaction(
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=lease.watermark, lock_holder=lease.holder, tail_count=tail_count,
+                    carried_messages=carried_messages,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"
@@ -4077,6 +4078,25 @@ def compress_context(
                 )
                 return messages, _existing_sp
         _warn_summary_or_aux_fallback(agent)
+        # A just-delivered reply the engine folded away must stay live or the
+        # next render drops it from the surface (#118900). It runs FIRST: the
+        # todo fold rewrites the trailing user row (its follower would no longer
+        # match) and both later passes place themselves around the tail, so the
+        # reply has to be back in its chronological slot before they look.
+        from agent.conversation_compression_reply_anchor import _ensure_compressed_keeps_last_assistant_reply
+
+        # `/compress here N` hands only the HEAD in as `messages` and carries the kept tail
+        # separately: the head's last assistant is an OLD reply the user explicitly asked to
+        # fold, not the just-delivered one (which lives in the verbatim tail), so the guard
+        # must not undo the compression it was asked for.
+        reinserted_reply = None if verbatim_tail else _ensure_compressed_keeps_last_assistant_reply(
+            messages, compressed, session_id=agent.session_id,
+        )
+        if reinserted_reply is not None:
+            logger.info(
+                "Compression: engine folded away the just-delivered assistant reply; reinserted it into the "
+                "active set (session=%s).", agent.session_id or "none",
+            )
         _fold_todo_snapshot(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
@@ -4085,6 +4105,11 @@ def compress_context(
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
             attempt=attempt, verbatim_tail=verbatim_tail,
+            # The reinserted copy keeps the original's _row_id/timestamp (production flush stamps
+            # both); carry exactly that one row so the commit rewinds the durable original instead
+            # of archiving it compacted=1 next to a fresh twin (display would show it twice). The
+            # todo fold / user-anchor rows added above are NOT carried: they keep their own class.
+            carried_messages=[reinserted_reply] if reinserted_reply is not None else None,
         )
         if commit.refused_prompt is not None:
             return messages, commit.refused_prompt

@@ -154,6 +154,49 @@ def test_dry_run_and_blocked_preflight_change_nothing(fleet, capsys):
     assert "nothing will be changed" in capsys.readouterr().out
 
 
+def test_parked_profile_remains_in_migration_inventory(fleet):
+    home = fleet.root / "profiles/coder"
+    (home / "gateway.parked").touch()
+
+    plan = gm.build_migration_plan()
+    inventory = {p.name: p for p in plan.standalone_secondaries}
+    assert "coder" in inventory
+    assert inventory["coder"].home == home
+    assert inventory["coder"].pid == fleet.pids["coder"]
+    assert inventory["coder"].services == [("systemd", False)]
+
+    # Parking must not hide migration preflight conflicts either.
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
+    blocked = gm.build_migration_plan()
+    assert any("'coder'" in reason and "credential" in reason for reason in blocked.blockers)
+
+
+def test_migration_removes_parked_footprint_without_waiting_for_it_to_serve(fleet, monkeypatch):
+    home = fleet.root / "profiles/coder"
+    (home / "gateway.parked").touch()
+    service_op = gm._service_op
+
+    def boot_unparked_profiles(kind, system, verb, home, **kwargs):
+        service_op(kind, system, verb, home, **kwargs)
+        if _name(home) == "default" and verb in ("start", "restart"):
+            from hermes_cli.profiles import profiles_to_serve
+            path = fleet.root / "gateway_state.json"
+            runtime = json.loads(path.read_text())
+            runtime["served_profiles"] = [name for name, _ in profiles_to_serve(True)]
+            path.write_text(json.dumps(runtime))
+
+    monkeypatch.setattr(gm, "_service_op", boot_unparked_profiles)
+    plan = gm.build_migration_plan()
+    assert any("verify it serves 2 profiles" in line for line in gm.format_plan(plan, dry_run=True))
+    ok, manifest = _apply_capturing_manifest(plan, served_wait=0.1)
+    assert ok
+    assert "coder" not in fleet.pids and "coder" not in fleet.services
+    assert (home / "gateway.parked").exists()
+    assert {p["profile"] for p in manifest["secondaries"]} == {"coder", "ops"}
+    gm._write_manifest(fleet.root, manifest)
+    assert not gm.build_migration_plan().interrupted
+
+
 def _apply_capturing_manifest(plan, *, served_wait=5.0, restore=False):
     """Apply, returning (ok, manifest-as-written). A CONFIRMED convergence deletes the manifest
     (manifest present == unfinished), so the only way to inspect it is to read it mid-flight."""

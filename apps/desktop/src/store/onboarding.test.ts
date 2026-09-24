@@ -147,7 +147,7 @@ describe('refreshOnboarding', () => {
       release()
       await pending
       expect(requests.some(r => r.path === '/api/model/set')).toBe(false)
-      expect($desktopOnboarding.get()).toMatchObject({ targetProfile: 'alpha', flow: { status: 'idle' } })
+      expect($desktopOnboarding.get()).toMatchObject({ targetScope: { profile: 'alpha' }, flow: { status: 'idle' } })
       closeManualOnboarding()
       delayKey = false
       profile = 'beta'

@@ -103,7 +103,7 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
 def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
                                  mcp_server_names: List[str] | None = None) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
-    names = [n for n in (toolsets or ["hermes-acp"]) if n]
+    names = [n for n in (["hermes-acp"] if toolsets is None else toolsets) if n]
     names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
     return list(dict.fromkeys(names))
 
@@ -458,13 +458,15 @@ class SessionManager:
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
                     enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
         """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
-        them from the config-declared MCP servers (fresh session)."""
+        them from config (fresh session)."""
         if self._agent_factory is not None:
             return self._agent_factory()
 
         from run_agent import AIAgent
+        from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
         from hermes_constants import resolve_reasoning_config
 
         config = load_config()
@@ -475,17 +477,19 @@ class SessionManager:
         elif isinstance(model_cfg, str):
             default_model = model_cfg.strip()
 
-        from tools.mcp_tool_common import mcp_server_enabled
-
-        configured_mcp_servers = [
-            name for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or mcp_server_enabled(cfg)
-        ]
+        if enabled_toolsets is None:
+            # The same per-platform resolver as the gateway/cron/api_server: platform_toolsets.acp wins, else
+            # hermes-acp; its MCP half (every enabled server, a listed-name allowlist, or none for ``no_mcp``)
+            # comes back as bare server names, which ACP keys as ``mcp-<server>`` like its session servers.
+            resolved = _get_platform_tools(config, "acp")
+            mcp_servers = resolved & enabled_mcp_server_names(config)
+            enabled_toolsets = _expand_acp_enabled_toolsets(sorted(resolved - mcp_servers), sorted(mcp_servers))
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
-            "enabled_toolsets": (list(enabled_toolsets) if enabled_toolsets is not None
-                                 else _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers)),
-            "disabled_toolsets": list(disabled_toolsets) if disabled_toolsets is not None else None,
+            "enabled_toolsets": list(enabled_toolsets),
+            # agent.disabled_toolsets is subtracted at tool granularity by the agent, as on the CLI/gateway/cron.
+            "disabled_toolsets": (list(disabled_toolsets) if disabled_toolsets is not None
+                                  else parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None),
             "model": model or default_model,
             "cwd": cwd,
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never

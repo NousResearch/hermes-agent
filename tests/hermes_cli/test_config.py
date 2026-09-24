@@ -167,8 +167,8 @@ class TestLoadConfigParseFailure:
         Ported from google-gemini/gemini-cli#21541 (policy-file TOML recovery),
         adapted: we back up but deliberately do NOT reset config.yaml.
         """
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             broken = "\tmodel: test/custom\nbroken indent:\n"
@@ -200,8 +200,8 @@ class TestLoadConfigParseFailure:
         parses again.
         """
         import time
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             cfg = tmp_path / "config.yaml"
@@ -918,8 +918,8 @@ class TestConfigSupportFloor:
     _V20_EXPECTED = {
         "_config_version": 33,
         # v31 writes verify_on_stop=False, but False now equals the schema
-        # default (opt-in) so the write invariant strips it from disk.
-        "agent": {},
+        # default (opt-in) so the write invariant strips it, and the emptied
+        # section goes with it (it survived only as the phantom `agent: {}`).
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
         "model_catalog": {},
         "plugins": {"disabled": ["foo"], "enabled": []},

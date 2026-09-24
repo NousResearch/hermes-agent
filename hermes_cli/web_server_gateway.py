@@ -146,9 +146,9 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     platform maps per live gateway, an internal aggregation input never exposed directly.
     """
     try:
-        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
+        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve, profile_is_parked
         from gateway.status import read_runtime_status
-        homes = profiles_to_serve(True, include_standalone=True)
+        homes = profiles_to_serve(True, include_standalone=True, include_parked=True)
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {"profiles": [], "gateway_mode": "unknown", "gateways": [], "profile_platforms": {}}
@@ -156,6 +156,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     gateways: List[Dict[str, Any]] = []
     profile_platforms: Dict[str, dict] = {}
     multiplex = False
+    standalone_reason: Optional[str] = None
     for name, home in homes:
         try:
             # A served profile's liveness is the multiplexer's: listing it here showed one phantom
@@ -171,6 +172,8 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
         if name == "default" and len(served) > 1:
             multiplex = True
+        if (runtime or {}).get("multiplex_standalone_reason"):
+            standalone_reason = str(runtime["multiplex_standalone_reason"])
         plats = (runtime or {}).get("platforms")
         owned: dict = {}
         if isinstance(plats, dict) and plats:
@@ -188,9 +191,16 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         mode = "multiplex"
     else:
         mode = {0: "none", 1: "single"}.get(len(gateways), "multiple")
+    # A guard refusal on a multi-profile host is what the dashboard banner shows; a single-profile
+    # install has nothing unserved and gets no banner.
+    from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
+    if standalone_reason == SINGLE_PROFILE_REASON or len(homes) < 2:
+        standalone_reason = None
     return {
         "profiles": [name for name, _home in homes],
+        "parked_profiles": [name for name, home in homes if name != "default" and profile_is_parked(home)],
         "gateway_mode": mode,
+        "multiplex_standalone_reason": standalone_reason,
         "gateways": gateways,
         "profile_platforms": profile_platforms}
 
@@ -553,16 +563,17 @@ def _has_own_gateway(profile_dir: Path) -> bool:
 
 def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[str]:
     """Refusal text for ``gateway start``/``stop`` on a named profile with no gateway of its own (a
-    ``--force``-started separate one is managed normally), else None. ``stop`` is refused only when the
-    live default multiplexer serves the profile; ``start`` is refused for every named profile — one
-    host gateway serves every profile, so a new per-profile gateway is never the answer (the CLI twin
-    ``_named_profile_refused_under_multiplexer`` exits 78 into an action log nobody reads while the UI
-    shows the verb as done)."""
+    ``--force``-started separate one is managed normally), else None. A profile the live host
+    multiplexer serves is parked by ``stop`` and a parked one is unparked by ``start`` (the spawned
+    ``hermes -p X gateway <verb>`` runs ``gateway_profile_lifecycle``), so neither is refused;
+    ``start`` on an unparked named profile is — one host gateway serves every profile, so a new
+    per-profile gateway is never the answer (the CLI twin ``_named_profile_refused_under_multiplexer``
+    exits 78 into an action log nobody reads while the UI shows the verb as done)."""
     requested = _own_profile_selector(profile) or ""
     if not requested or requested.lower() in {"current", "default"}:
         return None
     served = _profile_is_multiplexed(requested)
-    from hermes_cli.profiles import profile_is_standalone
+    from hermes_cli.profiles import profile_is_parked, profile_is_standalone
     from hermes_cli.web_server_profiles import _resolve_profile_dir
     profile_dir = _resolve_profile_dir(requested)
     standalone = profile_is_standalone(profile_dir)
@@ -573,11 +584,17 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
             return None
         from gateway.host_attach import standalone_rescan_message
         return standalone_rescan_message(requested)
+    if verb == "start" and profile_is_parked(profile_dir):
+        from gateway.host_attach import host_gateway
+        if host_gateway() is not None:
+            return None  # a live host unparks it; with no host the refusal below still applies
     if not served and verb != "start":
         return None
     if _has_own_gateway(profile_dir):
         return None
     if served:
+        if verb == "stop":
+            return None  # parks the profile inside the host
         return (f"The default gateway already serves profile '{requested}' as a multiplexer; "
                 f"{verb} it from the default profile instead of a separate gateway for this profile.")
     from hermes_cli.gateway_migrate import _installed_services

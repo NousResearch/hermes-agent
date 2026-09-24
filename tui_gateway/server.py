@@ -346,7 +346,7 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
-    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner):
+    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):
             step()
     with _sessions_lock:
@@ -792,8 +792,10 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
                                            request_id=request_id or None)
 
     settle = server_requests.send_async("approval", sid, payload, on_result)
-    if request_id:
-        _approval.register_gateway_settle(session_key, request_id, settle)
+    # The wait can end between the frame going out and the hook attaching (the client answered by RPC, another
+    # surface resolved it): withdraw now, or the request stays in ``open_requests`` for every later resume.
+    if request_id and not _approval.register_gateway_settle(session_key, request_id, settle):
+        settle("resolved")
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -1222,18 +1224,20 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
-    with contextlib.suppress(Exception):
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_read_errors import FailedConfigRead
+    try:
         p = _active_config_path()
         sig = file_signature(p.stat()) if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        from hermes_cli.config import read_user_config_raw
         data = read_user_config_raw(p) if p.exists() else {}
-        with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
-            _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
-        return data
-    return {}
+    except Exception as exc:
+        return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
+    with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
+        _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
+    return data
 
 
 def _load_cfg() -> dict:
@@ -1839,7 +1843,8 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
     backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    return {"project", "desktop_ui"} if platform == "desktop" else {"project"}
+    from toolsets import CLIENT_SURFACE_TOOLSETS
+    return set(CLIENT_SURFACE_TOOLSETS) if platform == "desktop" else {"project"}
 
 
 def _with_session_toolsets(selection, platform: str | None) -> list[str]:
@@ -2113,7 +2118,7 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     agent = session.get("agent")
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
-             or getattr(agent, "model", "") or override.get("model") or _resolve_model())
+             or getattr(agent, "model", "") or override.get("model") or _session_default_model(session))
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
                 or getattr(agent, "provider", "") or override.get("provider") or "")
     return str(model), str(provider or "")
@@ -2342,8 +2347,10 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
         # agent's one-shot notice so the TUI/Desktop user sees which provider actually answered.
         from hermes_cli.fallback_config import pre_agent_fallback_notice
-        # requested_provider=None means resolve_runtime_provider read the persisted config provider.
-        primary_provider = requested_provider or (_load_cfg().get("model") or {}).get("provider")
+        # requested_provider=None means resolve_runtime_provider read the persisted config provider;
+        # ``model: <id>`` (string shorthand) names no provider.
+        cfg_model = _load_cfg().get("model")
+        primary_provider = requested_provider or (cfg_model.get("provider") if isinstance(cfg_model, dict) else None)
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
         return resolution.selected_model, resolution.runtime
@@ -2562,7 +2569,8 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _resolve_model(), "tools": {}, "skills": {}, "lazy": True,
+        "model": model or _session_default_model({"profile_home": _profile_home(profile)}),
+        "tools": {}, "skills": {}, "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
         **({"provider": provider} if provider else {}),
     }
@@ -2824,7 +2832,7 @@ def _fallback_session_info(session: dict) -> dict:
     cwd = _session_cwd(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
 
@@ -2889,7 +2897,7 @@ def _live_session_payload(
             history = _live_visible_history(session, db, in_memory_history)
     # message_count follows _resume_response: the stored size when messages are omitted, else the wire count
     # (a hidden seed row is in ``history`` but never on the wire).
-    messages = [] if omit_messages else _history_to_messages(history)
+    messages = [] if omit_messages else _history_to_messages(history, profile_home=session.get("profile_home"))
     payload = {
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
         "messages": messages,

@@ -3608,6 +3608,26 @@ def _running_under_gateway_supervisor() -> bool:
     return is_gateway_supervisor_process()
 
 
+def _multiplexer_home_is_in_current_tenant(home: Path | str) -> bool:
+    """Whether a host gateway home belongs to this HERMES_HOME's profile tree.
+
+    Host rendezvous is shared by every Hermes installation on an OS account.  Profile names are
+    only meaningful within a home, so another tenant's ``default`` (or identically named profile)
+    must not satisfy a lifecycle guard for this tenant.
+    """
+    try:
+        from gateway.status import _same_hermes_home
+
+        def tenant_root(candidate: Path | str) -> Path:
+            candidate = Path(candidate).expanduser().resolve(strict=False)
+            return candidate.parent.parent if candidate.parent.name == "profiles" else candidate
+
+        return _same_hermes_home(tenant_root(home), tenant_root(get_hermes_home()))
+    except Exception:
+        logger.debug("Host multiplexer tenant comparison failed", exc_info=True)
+        return False
+
+
 def host_multiplexer_serving(profile_name: str | None = None):
     """The ONE live host gateway when it serves ``profile_name`` (default: the current profile).
 
@@ -3620,7 +3640,8 @@ def host_multiplexer_serving(profile_name: str | None = None):
     try:
         from gateway.host_attach import host_gateway_serving
         name = profile_name if profile_name is not None else _current_profile_name()
-        return host_gateway_serving(name or "default")
+        gateway = host_gateway_serving(name or "default")
+        return gateway if gateway is not None and _multiplexer_home_is_in_current_tenant(gateway.home) else None
     except Exception:
         logger.debug("Host multiplexer probe failed", exc_info=True)
         return None

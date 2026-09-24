@@ -64,6 +64,43 @@ def test_non_standalone_refusal_names_the_opt_out(standalone_home):
     assert "gateway.standalone: true" in out
 
 
+def test_default_home_ignores_another_tenants_default_multiplexer(tmp_path, monkeypatch):
+    """A host-wide rendezvous cannot make another HERMES_HOME's default ours."""
+    from hermes_cli import gateway as gw
+    from gateway import host_attach
+
+    tenant_a = tmp_path / "tenant-a"
+    tenant_b = tmp_path / "tenant-b"
+    tenant_a.mkdir()
+    tenant_b.mkdir()
+    (tenant_b / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tenant_b))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    monkeypatch.setattr(
+        host_attach, "host_gateway_serving",
+        lambda profile: host_attach.HostGateway(123, tenant_a, ("default",)),
+    )
+
+    assert gw._named_profile_refused_under_multiplexer() is False
+
+
+def test_named_home_recognizes_its_own_tenants_multiplexer(tmp_path, monkeypatch):
+    """Tenant scoping retains the normal named-profile multiplex guard."""
+    from hermes_cli import gateway as gw
+    from gateway import host_attach
+
+    tenant = tmp_path / "tenant"
+    named_home = tenant / "profiles" / "coder"
+    named_home.mkdir(parents=True)
+    (tenant / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(named_home))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    owner = host_attach.HostGateway(123, tenant, ("default", "coder"))
+    monkeypatch.setattr(host_attach, "host_gateway_serving", lambda profile: owner)
+
+    assert gw.host_multiplexer_serving("coder") is owner
+
+
 def test_setup_stale_host_record_names_rescan(standalone_home, monkeypatch, capsys):
     gw, _home = standalone_home
     monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: True)

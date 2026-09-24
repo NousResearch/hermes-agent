@@ -196,12 +196,13 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     try:
         cfg = _title_config()
         pinned_provider = str(cfg.get("provider") or "").strip().lower()
-        if pinned_provider not in ("", "auto") and not _title_pin_may_share_endpoint(pinned_provider, provider):
+        main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
+        if pinned_provider not in ("", "auto") and not _title_pin_may_share_endpoint(
+                pinned_provider, provider, main_base_url):
             return False
     except Exception:
         return True
     pinned_base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
-    main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
     return not pinned_base_url or pinned_base_url == main_base_url
 
 
@@ -215,18 +216,24 @@ def _is_self_hosted_provider(provider: str) -> bool:
     return provider in ("custom", "lmstudio", "local") or provider.startswith("custom:")
 
 
-def _title_pin_may_share_endpoint(pinned_provider: str, main_provider: str) -> bool:
+def _title_pin_may_share_endpoint(pinned_provider: str, main_provider: str, main_base_url: str) -> bool:
     """A title pin that can land on the turn's own self-hosted server (only its ``base_url`` can prove otherwise).
 
     Hosted pins (``openrouter``…) multiplex and never share the slot. A pin to ``custom``/``lmstudio``/``local``/any
     ``custom:<name>`` is assumed to share until the caller compares ``base_url``, and a bare ``<name>`` /
     display-name pin is the same endpoint when it aliases the main ``custom:<name>`` route
-    (``hermes_cli.providers.custom_provider_aliases`` — the resolver's own identity set).
+    (``hermes_cli.providers.custom_provider_aliases`` — the resolver's own identity set) or resolves to a
+    configured custom entry serving ``main_base_url`` (a keyed ``providers:`` entry's display name does not
+    alias its ``custom:<key>`` id).
     """
-    from hermes_cli.providers import custom_provider_aliases
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    from hermes_cli.providers import custom_provider_aliases, resolve_custom_provider
     if _is_self_hosted_provider(pinned_provider):
         return True
-    return bool(custom_provider_aliases(pinned_provider) & custom_provider_aliases(main_provider))
+    if custom_provider_aliases(pinned_provider) & custom_provider_aliases(main_provider):
+        return True
+    pdef = resolve_custom_provider(pinned_provider, get_compatible_custom_providers(load_config_readonly()))
+    return bool(pdef and main_base_url and pdef.base_url.strip().rstrip("/") == main_base_url)
 
 
 def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:

@@ -426,6 +426,7 @@ class TestMaybeAutoTitle:
             ("custom:gptoss-local", {"provider": "custom:gptoss-local"}, True),
             ("custom:gptoss-local", {"provider": "gptoss-local"}, True),  # bare config name
             ("custom:gptoss-local", {"provider": "GPTOSS Local"}, True),  # display name
+            ("custom:gptoss", {"provider": "GPTOSS Local"}, True),  # display name of a keyed `providers:` entry
             ("custom:gptoss-local", {"provider": "custom"}, True),
             ("custom:gptoss-local", {"provider": "custom:gptoss-local", "base_url": "http://127.0.0.1:8080/v1/"}, True),
             ("custom:gptoss-local", {"provider": "custom:other", "base_url": "http://10.0.0.2:8080/v1"}, False),
@@ -446,7 +447,9 @@ class TestMaybeAutoTitle:
         from agent import title_generator as tg
 
         main_runtime = {"provider": main_provider, "base_url": "http://127.0.0.1:8080/v1"}
-        with patch.object(tg, "_title_config", return_value=title_cfg):
+        keyed = {"providers": {"gptoss": {"name": "GPTOSS Local", "base_url": "http://127.0.0.1:8080/v1"}}}
+        with patch.object(tg, "_title_config", return_value=title_cfg), \
+                patch("hermes_cli.config.load_config_readonly", return_value=keyed):
             assert tg.title_upgrade_must_wait_for_turn(main_runtime) is deferred
 
     def test_kanban_worker_is_named_after_its_card_without_the_llm_thread(self, tmp_path, monkeypatch):

@@ -97,7 +97,7 @@ def _strip_shell_comments(command: str) -> str:
 
     This is a word/quote-aware heuristic, not a full shell or heredoc parser.
     Quote state carries across lines. Commands containing expansion, extglob,
-    assignment, conditional or special-quote markers, or a heredoc, are preserved
+    arithmetic-command, assignment, conditional or special-quote markers, or a heredoc, are preserved
     verbatim: the shared scanner cannot establish word boundaries in those contexts,
     and a heredoc body is data (``execute_code`` wraps its Python script as one).
     """
@@ -108,9 +108,11 @@ def _strip_shell_comments(command: str) -> str:
     # Extglob may be enabled by an earlier line or inherited shell state; its
     # closing ')' belongs to the word, so a following '#' can still be data.
     # Assignment words and [[...]] regexes also have non-shell word boundaries.
+    # Bare ((...)) is distinct from $((...)); arithmetic errors do not prevent
+    # a later command from running, so invalid expressions must be kept too.
     marker_text = command.replace("\\\n", "")
     if any(marker in marker_text for marker in (
-        "<(", ">(", "$(", "${", "$'", '$"', "`", "@(", "?(", "*(", "+(", "!(", "=(", "[[",
+        "<(", ">(", "$(", "${", "$'", '$"', "`", "@(", "?(", "*(", "+(", "!(", "=(", "[[", "((",
     )):
         return command
     # A continuation can split a heredoc operator. Do not strip the body while

@@ -1,6 +1,7 @@
 """Two lifecycle invariants, using real SQLite and a local GitHub HTTP contract."""
 import json
 import os
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_pr_acceptance as acceptance
 from hermes_cli.kanban_db_connect import connect
 
 
@@ -107,6 +109,43 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+
+
+@pytest.mark.linux_only
+def test_unprotected_repo_uses_current_head_checks_when_rules_api_is_plan_limited(monkeypatch):
+    sha = "a" * 40
+    run = {
+        "id": 42, "name": "Vercel Preview Comments", "head_sha": sha,
+        "app": {"id": 8329}, "status": "completed", "conclusion": "success",
+        "html_url": "https://github.com/acme/repo/runs/42",
+    }
+    status = {"id": 43, "context": "Vercel", "sha": sha,
+              "state": "success", "target_url": "https://vercel.example/42"}
+
+    def fake_api(endpoint, *, query=None, paginate=False):
+        if endpoint == "graphql":
+            return {"data": {"repository": {"pullRequest": {
+                "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                "baseRef": {"branchProtectionRule": None}}}}}
+        if "/rules/branches/" in endpoint:
+            raise subprocess.CalledProcessError(
+                1, ["gh", "api"], stderr="Upgrade to GitHub Pro or make this repository public (HTTP 403)")
+        if "/check-runs" in endpoint:
+            return [{"total_count": 1, "check_runs": [run]}]
+        if "/statuses" in endpoint:
+            return [[status]]
+        if "/pulls/" in endpoint:
+            return {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(acceptance, "_api", fake_api)
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is True, receipt
+    assert receipt["classification"] == "success"
+    assert {check["name"] for check in receipt["checks"]} == {"Vercel", "Vercel Preview Comments"}
 
 
 @pytest.mark.linux_only

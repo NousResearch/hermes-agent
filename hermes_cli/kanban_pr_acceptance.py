@@ -61,7 +61,17 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        # GitHub's branch-rules endpoint may be unavailable on plans where
+        # current-head checks remain readable. Ignore only that documented
+        # limitation; all other API failures remain infrastructure errors.
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").lower()
+            if exc.returncode != 0 and "http 403" in stderr and "upgrade to github pro" in stderr:
+                rules = []
+            else:
+                raise
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -69,13 +79,41 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
+            runs = [run for page in pages for run in page["check_runs"]]
+            if not runs:
+                receipt["detail"] = "No repository-required checks or current PR checks are available."
+                return receipt
+            receipt["required"] = [{"context": run["name"], "app_id": (run.get("app") or {}).get("id")} for run in runs]
+            outcomes = []
+            for run in runs:
+                classification = _classify(run, sha, run.get("conclusion"), True)
+                outcomes.append(classification)
+                receipt["checks"].append({"name": run["name"], "id": run["id"],
+                    "url": run.get("html_url"), "head_sha": run.get("head_sha"),
+                    "classification": classification, "conclusion": run.get("conclusion")})
+            if any(outcome != "success" for outcome in outcomes):
+                receipt["classification"] = next(outcome for outcome in outcomes if outcome != "success")
+                return receipt
+            receipt["classification"] = "success"
+            receipt["ok"] = True
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100", paginate=True) for s in page]
+        # If branch protection is unavailable or absent, use every current-head
+        # check/status as evidence. This preserves the exact-head guarantee while
+        # allowing repositories without paid branch-protection rules to complete
+        # an explicit PR contract when their configured CI reports success.
+        if not required:
+            required.update((run["name"], run.get("app", {}).get("id", -1)) for run in runs)
+            required.update((status["context"], -1) for status in statuses)
+        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
+        if not required:
+            receipt["detail"] = "No current-head GitHub checks or statuses were found."
+            return receipt
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and

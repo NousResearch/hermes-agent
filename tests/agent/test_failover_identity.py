@@ -121,10 +121,11 @@ class TestSyncFailoverPreservesCacheDecoration:
     """The sync must not flatten a cache-decorated system message.
 
     ``apply_anthropic_cache_control`` runs once per call block, before the retry
-    loop, splitting the system prompt into ``[static prefix, volatile tail]``
-    blocks that carry the cache_control breakpoints. A failover fires *inside*
-    that retry loop, so overwriting the list with a bare string drops both
-    breakpoints and the retried request re-bills the whole system prompt.
+    loop, splitting the system prompt into either ``[static prefix, volatile
+    tail]`` or ``[stable, cacheable context, volatile tail]`` blocks. A failover
+    fires *inside* that retry loop, so overwriting the list with a bare string
+    drops the system cache breakpoints and the retried request re-bills the
+    whole system prompt.
     """
 
     _STATIC = "You are a helpful assistant.\n\nStable brief.\n"
@@ -182,6 +183,53 @@ class TestSyncFailoverPreservesCacheDecoration:
         assert isinstance(content, list) and len(content) == 1
         assert content[0].get("cache_control")
         assert "Model: gemma4:e2b-mlx" in content[0]["text"]
+
+    def test_keeps_three_part_shape_and_redecorates_after_prefix_mismatch(self):
+        """Sync rewrites only volatile bytes; a mismatch falls back then re-plans all tiers."""
+        from agent.system_prompt import _SystemCachePrefix
+
+        stable = "You are a helpful assistant.\n\nStable brief."
+        context = "\n\nProject instructions."
+        prompt = context.join((stable, "Model: gpt-5.4-mini\nProvider: openai-codex"))
+        prefix = _SystemCachePrefix(stable + context, stable)
+        agent = _agent(prompt=prompt)
+        api_messages = apply_anthropic_cache_control(
+            [{"role": "system", "content": prompt}],
+            cache_ttl=None,
+            native_anthropic=True,
+            static_system_prefix=prefix,
+        )
+
+        before = [dict(part) for part in api_messages[0]["content"]]
+        rewrite_prompt_model_identity(agent, "gemma4:e2b-mlx", "custom")
+        _sync_failover_system_message(agent, api_messages, prompt)
+
+        content = api_messages[0]["content"]
+        assert isinstance(content, list), "three-part cache decoration was flattened"
+        assert [part["text"] for part in content[:2]] == [part["text"] for part in before[:2]]
+        assert [part.get("cache_control") for part in content] == [
+            {"type": "ephemeral"}, {"type": "ephemeral"}, None,
+        ]
+        assert "".join(part["text"] for part in content) == agent._cached_system_prompt
+
+        mismatched = [{"role": "system", "content": [dict(part) for part in content]}]
+        mismatched[0]["content"][0]["text"] = "stale stable prefix"
+        _sync_failover_system_message(agent, mismatched, prompt)
+        assert mismatched[0]["content"] == agent._cached_system_prompt
+
+        cache_agent = _cache_agent(
+            use_caching=True,
+            native=True,
+            prompt=agent._cached_system_prompt,
+            static=prefix,
+            provider="anthropic",
+        )
+        redecorated, _ = _redecorate_prompt_cache_for_provider(cache_agent, mismatched)
+        redone = redecorated[0]["content"]
+        assert [part.get("cache_control") for part in redone] == [
+            {"type": "ephemeral"}, {"type": "ephemeral"}, None,
+        ]
+        assert "".join(part["text"] for part in redone) == agent._cached_system_prompt
 
 
 

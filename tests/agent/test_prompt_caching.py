@@ -59,6 +59,29 @@ def _tool_heavy_native_tools():
     ]
 
 
+def _parallel_tool_round(label, count=10):
+    """Build one completed native tool turn with matching, distinct call IDs."""
+    calls = [
+        {
+            "id": f"{label}-{index:02d}",
+            "function": {"name": f"tool_{index:02d}", "arguments": "{}"},
+        }
+        for index in range(count)
+    ]
+    return [
+        {"role": "user", "content": f"{label} request"},
+        {"role": "assistant", "content": "", "tool_calls": calls},
+        *[
+            {
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": f"{label} result {index}",
+            }
+            for index, call in enumerate(calls)
+        ],
+    ]
+
+
 def test_t20880_tool_heavy_native_loop_reproduction():
     """A 28-tool native loop needs a tool marker and a retained transaction endpoint."""
     tools = _tool_heavy_native_tools()
@@ -92,15 +115,24 @@ def test_t20880_tool_heavy_native_loop_reproduction():
 
 
 def test_native_tool_cache_preserves_two_transaction_endpoints_with_context_prefix():
-    """Two system tiers leave room for both completed-turn endpoints, not a tools marker."""
+    """Two system tiers retain the newest completed endpoint through a 10-way tool round.
+
+    Mutating the two-tier transaction budget back to one endpoint must make the
+    ``E_N`` assertion below fail: a following request would otherwise rely on
+    Anthropic's short automatic lookback after this many tool blocks.
+    """
     from agent.system_prompt import _SystemCachePrefix
 
-    history = _tool_heavy_native_history()
-    history[0]["content"] = "stable prefix\n\ncontext head\n\nvolatile suffix"
+    history = [{"role": "system", "content": "stable prefix\n\ncontext head\n\nvolatile suffix"}]
+    history.extend(_parallel_tool_round("prior", count=1))
+    history.extend(_parallel_tool_round("current"))
     prefix = _SystemCachePrefix("stable prefix\n\ncontext head", "stable prefix")
+    tools = _tool_heavy_native_tools()
+    original_history = copy.deepcopy(history)
+    original_tools = copy.deepcopy(tools)
     plan = build_prompt_cache_plan(
         history,
-        _tool_heavy_native_tools(),
+        tools,
         native_anthropic=True,
         static_system_prefix=prefix,
         direct_native_tool_cache=True,
@@ -112,26 +144,27 @@ def test_native_tool_cache_preserves_two_transaction_endpoints_with_context_pref
     ]
     assert [("cache_control" in part) for part in system_parts] == [True, True, False]
     assert "cache_control" not in plan.tools[-1]
-    assert len(_native_marker_indexes(plan.messages) - {0}) == 2
+    current_endpoint = len(history) - 1
+    prior_endpoint = 3
+    assert _native_marker_indexes(plan.messages) - {0} == {prior_endpoint, current_endpoint}
     assert _count_cache_markers(plan.messages, plan.tools) == 4
 
+    next_history = history + _parallel_tool_round("next", count=1)
+    original_next_history = copy.deepcopy(next_history)
     replanned = build_prompt_cache_plan(
-        history + [
-            {"role": "user", "content": "third request"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "third", "function": {"name": "tool_02", "arguments": "{}"}},
-            ]},
-            {"role": "tool", "tool_call_id": "third", "content": "third result"},
-        ],
-        _tool_heavy_native_tools(),
+        next_history,
+        tools,
         native_anthropic=True,
         static_system_prefix=prefix,
         direct_native_tool_cache=True,
     )
-    assert (_native_marker_indexes(plan.messages) - {0}) & (
-        _native_marker_indexes(replanned.messages) - {0}
-    )
+    next_endpoint = len(next_history) - 1
+    assert _native_marker_indexes(replanned.messages) - {0} == {current_endpoint, next_endpoint}
+    assert current_endpoint in _native_marker_indexes(replanned.messages)
     assert _count_cache_markers(replanned.messages, replanned.tools) == 4
+    assert history == original_history
+    assert next_history == original_next_history
+    assert tools == original_tools
 
 
 def test_native_three_part_system_split_survives_deepcopy_and_redecoration():

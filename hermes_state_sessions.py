@@ -1264,10 +1264,13 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        order_by_id_match: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        ``include_pinned`` back-fills pins the page missed, still obeying the other filters.
+        With ``order_by_last_active``, ``order_by_id_match`` ranks exact/prefix/substring
+        matches across the compression chain before recency and pagination."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
@@ -1300,6 +1303,17 @@ class SessionSessionsMixin:
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
+            match_order = ""
+            match_params = []
+            if order_by_id_match and (id_query or "").strip():
+                needle = id_query.strip().lower()
+                # Rank every compression segment before LIMIT, not just a recent candidate window.
+                match_order = (
+                    "(SELECT MIN(CASE WHEN LOWER(cq.cur_id) = ? THEN 0 "
+                    "WHEN LOWER(cq.cur_id) LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END) "
+                    "FROM chain cq WHERE cq.root_id = s.id), "
+                )
+                match_params = [needle, _escape_like(needle) + "%"]
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -1327,10 +1341,10 @@ class SessionSessionsMixin:
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
                 {outer_where}
-                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                ORDER BY {match_order}_effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)
+            params = params + params + id_params + match_params + [limit, offset]  # WHERE binds twice (seed + outer)
         else:
             query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active

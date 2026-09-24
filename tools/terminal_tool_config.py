@@ -89,6 +89,8 @@ def translate_mounted_host_path(path: str, host_root: str, container_root: str) 
     drive-letter case do not matter; a sibling directory (``proj`` vs ``proj-other``)
     is not a child.
     """
+    if not isinstance(path, str) or not isinstance(host_root, str) or not isinstance(container_root, str):
+        return None
     if not path or not host_root or not container_root:
         return None
     key = _host_path_key(path)

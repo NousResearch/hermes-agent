@@ -56,3 +56,24 @@ def test_profile_mission_guidance_is_scoped_to_home_and_scheduler(tmp_path, monk
     (a / "SOUL.md").unlink()
     without_mission = build_system_prompt_parts(_agent(a, {"cronjob_manage"}))["stable"]
     assert MISSION_DUTIES_GUIDANCE not in without_mission
+
+
+def test_mission_without_cadence_guides_a_paused_draft_not_activation(tmp_path, monkeypatch):
+    home = tmp_path / "mail-profile"
+    home.mkdir()
+    (home / "SOUL.md").write_text(
+        "Summarize Gmail into Discord when new mail arrives.", encoding="utf-8"
+    )
+    monkeypatch.setattr("agent.system_prompt._skills_prompt", lambda agent: "")
+    monkeypatch.setattr("agent.system_prompt._coding_parts", lambda agent: ([], [], []))
+    monkeypatch.setattr("agent.system_prompt._post_workspace_parts", lambda agent: [])
+    monkeypatch.setattr("agent.system_prompt._auto_load_parts", lambda agent: [])
+    monkeypatch.setattr("agent.prompt_builder.build_environment_hints", lambda: "")
+
+    prompt = build_system_prompt_parts(_agent(home, {"cronjob_manage"}))["stable"]
+    assert "not a cadence" in prompt
+    assert "editable default schedule" in prompt
+    assert "known or proposed schedule" in prompt
+    assert "cronjob_manage(create, paused=true)" in prompt
+    assert "confirm or change it before resuming" in prompt
+    assert "Never resume a job or send a test or other external message without explicit user consent" in prompt

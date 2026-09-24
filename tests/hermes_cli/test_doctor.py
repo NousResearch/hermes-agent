@@ -354,6 +354,31 @@ class TestDoctorMemoryProviderSection:
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
 
+    @pytest.mark.parametrize(
+        ("mem0_config", "expects_key_check"),
+        [
+            ({"mode": "oss", "api_key": ""}, False),
+            ({"mode": "platform", "api_key": ""}, True),
+        ],
+    )
+    def test_mem0_api_key_requirement_follows_mode(
+        self, monkeypatch, tmp_path, mem0_config, expects_key_check
+    ):
+        """OSS mode builds its backend from mem0.json and has no platform credential to resolve
+        (_load_config defaults api_key to "" there), so doctor must accept a keyless self-hosted
+        setup; platform mode still demands the key."""
+        import plugins.memory as _memory_pkg
+
+        cfg = {**mem0_config, "user_id": "u", "agent_id": "a"}
+        monkeypatch.setattr(
+            _memory_pkg,
+            "import_provider_module",
+            lambda name, submodule=None: types.SimpleNamespace(_load_config=lambda: cfg),
+        )
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+        assert ("Mem0 OSS mode" in out) is not expects_key_check
+        assert ("Mem0 API key not set" in out) is expects_key_check
+
     @pytest.mark.parametrize("memory_enabled", [False, True])
     def test_stale_builtin_files_reported_only_when_store_enabled(
         self, monkeypatch, tmp_path, memory_enabled
@@ -565,6 +590,8 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("kimi-coding", "kimi-k2"),
         ("nvidia", "qwen/qwen3.5-122b-a10b"),
         ("moa", "anthropic/claude-sonnet-4.6"),
+        # commandcode routes vendor/model ids (xiaomi/…, deepseek/…) straight from /provider/v1/models
+        ("commandcode", "xiaomi/mimo-v2.6-flash"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -605,7 +632,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia"}:
+    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia", "commandcode"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out

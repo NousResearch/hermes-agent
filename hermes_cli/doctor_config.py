@@ -190,9 +190,12 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
 
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
 # (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model.
+# commandcode routes a mixed catalog whose open-model IDs are vendor/model ("xiaomi/mimo-v2.6-flash",
+# "deepseek/deepseek-v4-pro") served straight from /provider/v1/models — dropping the prefix 404s, so
+# the same reasoning as the aggregators above applies to both of its wire profiles.
 _VENDOR_SLUG_PROVIDERS = {
     "openrouter", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "lmstudio", "nous", "nvidia",
-    "fireworks", "deepinfra",
+    "fireworks", "deepinfra", "commandcode", "commandcode-anthropic",
 }
 
 

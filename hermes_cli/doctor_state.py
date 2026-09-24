@@ -499,7 +499,13 @@ def _memory_provider_honcho(issues: list) -> None:
 def _memory_provider_mem0(issues: list) -> None:
     from plugins.memory import import_provider_module
     mem0_cfg = import_provider_module("mem0")._load_config()
-    if mem0_cfg.get("api_key", ""):
+    # OSS mode builds its backend from the local ``oss`` config and has no platform credential to
+    # resolve — _load_config() deliberately defaults api_key to "" there, so demanding a key would
+    # flag a healthy self-hosted setup as broken.
+    if mem0_cfg.get("mode", "platform") == "oss":
+        check_ok("Mem0 OSS mode (self-hosted — no API key required)")
+        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+    elif mem0_cfg.get("api_key", ""):
         check_ok("Mem0 API key configured")
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
     else:

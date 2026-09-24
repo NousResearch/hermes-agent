@@ -1661,8 +1661,13 @@ class TurnRunner:
         self._prepend_pending_note("_pending_skills_reload_notes")
         # Safety net: a startup auto-resume event carries empty text; if the resume_pending branch
         # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
-        # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
-        if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
+        # user turn. Its scheduler provenance survives a concurrent marker clear; ordinary empty
+        # captions remain untouched.
+        if (
+            isinstance(ctx.message, str)
+            and not ctx.message.strip()
+            and (resume_pending or ctx.startup_resume_placeholder)
+        ):
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 

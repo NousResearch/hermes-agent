@@ -56,6 +56,9 @@ class TurnContext:
     moa_config: Optional[dict] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None
+    # The startup scheduler's empty internal event must retain its recovery semantics even if
+    # another startup path clears SessionEntry.resume_pending before the turn reaches the model.
+    startup_resume_placeholder: bool = False
     # display_kind of the persisted user row for a self-injected turn; DB-only, never sent.
     # "internal_notification" for async-delegation/background notifications (#82888).
     persist_user_display_kind: Optional[str] = None

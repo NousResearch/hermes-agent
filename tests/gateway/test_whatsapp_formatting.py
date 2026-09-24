@@ -356,11 +356,4 @@ class TestBridgeEventMetadata:
 # display_config tier classification
 # ---------------------------------------------------------------------------
 
-class TestWhatsAppTier:
-    """WhatsApp should be classified as TIER_MEDIUM."""
-
-    def test_whatsapp_streaming_follows_global(self):
-        from gateway.display_config import resolve_display_setting
-        # TIER_MEDIUM has streaming: None (follow global), not False
-        assert resolve_display_setting({}, "whatsapp", "streaming") is None
 

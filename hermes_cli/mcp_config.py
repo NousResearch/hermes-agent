@@ -19,7 +19,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name
+from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +446,24 @@ def _probe_single_server(
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
-        server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
+        from tools import mcp_tool as _core
+
+        claimed = []
+        claim_token = _core._connect_server_claim.set(claimed.append)
+        if details is not None:
+            details["initialized"] = False
+        try:
+            server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
+        except asyncio.TimeoutError:
+            # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
+            raise TimeoutError(
+                f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
+                "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
+            ) from None
+        finally:
+            _core._connect_server_claim.reset(claim_token)
+            if details is not None and claimed:
+                details["initialized"] = claimed[0].initialize_result is not None
         try:
             for t in server._tools:
                 desc = getattr(t, "description", "") or ""
@@ -738,9 +755,7 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
+        enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
@@ -848,25 +863,22 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
-    # The probe triggers the OAuth flow (browser redirect + callback capture). Honor the configured
-    # connect_timeout, floored at 315s (the 300s OAuth callback window + headroom) — matching the GUI
-    # re-auth path in web_server.py. force_interactive_oauth: `hermes mcp login` is explicitly
-    # user-initiated even when stdin isn't a TTY (desktop / agent-spawned terminals), where
-    # _is_interactive() alone would refuse to open a browser.
+    # The probe triggers the OAuth flow (browser redirect + callback capture). Its bound must outlast
+    # the oauth.timeout callback window (plus headroom for the token exchange), or a user who raised
+    # oauth.timeout still gets cut off at the old fixed floor — matching the GUI re-auth path in
+    # web_server_mcp.py and tui_gateway/mcp_oauth_sessions.py. force_interactive_oauth: `hermes mcp
+    # login` is explicitly user-initiated even when stdin isn't a TTY (desktop / agent-spawned
+    # terminals), where _is_interactive() alone would refuse to open a browser.
     try:
-        from tools.mcp_oauth import force_interactive_oauth
+        from tools.mcp_oauth import force_interactive_oauth, login_connect_timeout
 
-        try:
-            _login_connect_timeout = float(server_config.get("connect_timeout"))
-        except (TypeError, ValueError):
-            _login_connect_timeout = 0.0
         if selected_flow == "device":
             from tools.mcp_oauth_device import login_device
             asyncio.run(login_device(name, url, oauth_cfg))
         probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
         with force_interactive_oauth():
             tools = _probe_single_server(
-                name, probe_config, connect_timeout=max(_login_connect_timeout, 315.0)
+                name, probe_config, connect_timeout=login_connect_timeout(probe_config)
             )
         # A clean probe is NOT proof of authentication: some servers (e.g. Google Drive) serve
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for

@@ -27,6 +27,10 @@ afterEach(() => {
   }
 
   $activeSessionId.set(null)
+
+  for (const stack of document.querySelectorAll('[data-approval-stack]')) {
+    stack.remove()
+  }
 })
 
 // `getByRole('button')` excludes aria-hidden nodes, so "queryByRole null" is the
@@ -143,5 +147,53 @@ describe('ScrollToBottomButton', () => {
 
     expect(handler).toHaveBeenCalledTimes(1)
     stop()
+  })
+
+  it('scrolls to the session approval stack instead of the bottom when one is pending', () => {
+    pendingApproval()
+    setThreadAtBottom(false, 'sess-1')
+    const bottomHandler = vi.fn()
+    const stopBottom = onScrollToBottomRequest(bottomHandler, 'sess-1')
+
+    const stack = document.createElement('div')
+    stack.setAttribute('data-approval-stack', '')
+    stack.setAttribute('data-session-id', 'sess-1')
+    const scrollIntoView = vi.fn()
+    stack.scrollIntoView = scrollIntoView
+    document.body.appendChild(stack)
+
+    render(<ScrollToBottomButton sessionId="sess-1" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Approval needed' }))
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+    expect(bottomHandler).not.toHaveBeenCalled()
+
+    stopBottom()
+    stack.remove()
+  })
+
+  it('does not jump into a sibling session’s approval stack', () => {
+    pendingApproval()
+    setThreadAtBottom(false, 'sess-1')
+
+    const otherStack = document.createElement('div')
+    otherStack.setAttribute('data-approval-stack', '')
+    otherStack.setAttribute('data-session-id', 'sess-other')
+    const otherScrollIntoView = vi.fn()
+    otherStack.scrollIntoView = otherScrollIntoView
+    document.body.appendChild(otherStack)
+
+    const bottomHandler = vi.fn()
+    const stopBottom = onScrollToBottomRequest(bottomHandler, 'sess-1')
+
+    render(<ScrollToBottomButton sessionId="sess-1" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Approval needed' }))
+
+    expect(otherScrollIntoView).not.toHaveBeenCalled()
+    // No stack tagged for this session exists, so it falls back to the bottom.
+    expect(bottomHandler).toHaveBeenCalledTimes(1)
+
+    stopBottom()
+    otherStack.remove()
   })
 })

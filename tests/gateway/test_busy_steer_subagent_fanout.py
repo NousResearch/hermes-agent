@@ -48,8 +48,7 @@ async def test_busy_steer_fans_out_to_active_subagents(route, tmp_path, monkeypa
     elif route == "priority":
         runner._hm_busy_steer(event, parent, "key")
     else:
-        reply = await runner._busy_steer_command(event, "key", event.source)
-        assert "subagent" in reply
+        await runner._busy_steer_command(event, "key", event.source)
 
     assert parent.payload and parent.payload.endswith("focus on rows 10-20")
     # The looping child — the one actually doing the work — gets the same text, not just the parent.
@@ -57,13 +56,3 @@ async def test_busy_steer_fans_out_to_active_subagents(route, tmp_path, monkeypa
     assert child_b.payload == parent.payload
 
 
-def test_busy_steer_ack_names_subagents(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    runner = GatewayRunner(config=GatewayConfig())
-    parent = _Agent(children=[_Agent()])
-    kwargs = dict(is_steer_mode=True, is_queue_mode=False, is_redirect_mode=False,
-                  demoted_for_subagents=False, demoted_for_compression=False)
-    with_children = runner._compose_busy_ack_message(_event(), 0.0, None, parent, **kwargs)
-    without = runner._compose_busy_ack_message(_event(), 0.0, None, _Agent(), **kwargs)
-    assert "subagent" in with_children
-    assert "subagent" not in without

@@ -34,6 +34,7 @@ import {
   $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
+  pendingSessionReplay,
   requestGatewayForAgent,
   retainGatewayForAgent
 } from '@/store/gateway'
@@ -117,6 +118,7 @@ import {
   dropSessionState,
   focusOpenSession,
   holdSessionOwnerUntilForeground,
+  isSessionInForeground,
   openSessionTile,
   patchSessionTile,
   publishSessionState,
@@ -139,13 +141,13 @@ import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-r
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { captureDisplayHydration } from './display-hydration'
+import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
-  suppressTranscriptForView,
   withoutTranscriptProvenance
 } from './transcript-provenance'
 import {
@@ -164,7 +166,7 @@ import {
   patchSessionWorkspace,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
-  reconcileResumeMessages,
+  reconcileDurableHistory,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
@@ -260,16 +262,21 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 function reconcileAuthoritativeChatMessages(
   authoritativeMessages: ChatMessage[],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>,
+  sourceRows?: SessionMessage[]
 ): ChatMessage[] {
-  const withLiveProjection = liveProjection
-    ? appendLiveSessionProjection(authoritativeMessages, liveProjection)
-    : authoritativeMessages
+  if (liveProjection && sourceRows) {
+    const reconciled = reconcilePersistedLiveTurn(authoritativeMessages, previousMessages, sourceRows, liveProjection)
 
-  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
-  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
+    if (reconciled) {
+      return reconciled
+    }
+  }
 
-  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
+  return reconcileDurableHistory(
+    liveProjection ? appendLiveSessionProjection(authoritativeMessages, liveProjection) : authoritativeMessages,
+    previousMessages
+  )
 }
 
 function reconcileAuthoritativeMessages(
@@ -277,7 +284,12 @@ function reconcileAuthoritativeMessages(
   previousMessages: ChatMessage[],
   liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
-  return reconcileAuthoritativeChatMessages(toChatMessages(authoritativeMessages), previousMessages, liveProjection)
+  return reconcileAuthoritativeChatMessages(
+    toChatMessages(authoritativeMessages),
+    previousMessages,
+    liveProjection,
+    authoritativeMessages
+  )
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -317,7 +329,10 @@ async function desktopSessionCreateParams(
   }
 
   const profile =
-    capturedRoute?.profile || requestedProfile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+    capturedRoute?.profile ||
+    requestedProfile ||
+    $newChatProfile.get() ||
+    normalizeProfileKey($activeGatewayProfile.get())
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)
@@ -437,7 +452,8 @@ export function useSessionActions({
     if (
       activeSessionIdRef.current !== storedIdRotation.runtimeSessionId ||
       selectedStoredSessionId !== storedIdRotation.previousStoredSessionId ||
-      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId)
+      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId) ||
+      !isSessionInForeground(storedIdRotation.previousStoredSessionId)
     ) {
       return
     }
@@ -811,15 +827,17 @@ export function useSessionActions({
         // to fall through into the last project folder while main chat was
         // occupied (openTab path for "New session in Home").
         const explicitTarget =
-          options?.profile !== undefined || options?.cwd !== undefined || options?.workspaceScope?.ownerRoute !== undefined
+          options?.profile !== undefined ||
+          options?.cwd !== undefined ||
+          options?.workspaceScope?.ownerRoute !== undefined
 
         const defaultTarget = options?.route === undefined && !explicitTarget ? defaultNewSessionTarget() : null
 
         const capturedRoute =
           options?.route !== undefined
             ? options.route
-            : options?.workspaceScope?.ownerRoute ??
-              (defaultTarget ? defaultTarget.route : resolveNewChatOwnerRoute(options?.profile))
+            : (options?.workspaceScope?.ownerRoute ??
+              (defaultTarget ? defaultTarget.route : resolveNewChatOwnerRoute(options?.profile)))
 
         // A named local profile uses the legacy profile-only transport (no
         // connectionId). Tab-strip "+" omits `options.profile`; the draft or
@@ -998,12 +1016,28 @@ export function useSessionActions({
       const routeToken = getRouteToken()
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
-      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
         getRouteToken() === routeToken
+
+      // A reconnect re-resumes the runtime this view is streaming. Let its
+      // replay land while that runtime still owns the view. Otherwise the REST
+      // read paints the finished turn first and the replayed rows are then
+      // overlaid onto it as concurrent runtime changes: the turn shows twice.
+      const viewRuntimeId = resumedSameSelectedSession ? activeSessionIdRef.current : null
+      const viewReplay = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+      if (viewReplay) {
+        await viewReplay
+
+        if (!isCurrentResume()) {
+          return
+        }
+      }
+
+      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -1226,14 +1260,16 @@ export function useSessionActions({
           dropSessionState(cachedRuntimeId)
         } else {
           // Bind the warm runtime immediately so cwd/workspace ownership don't
-          // wait on session.activate (#71254). Unproven cache entries (no
-          // persisted-display provenance) stay off the view until REST
-          // authority lands — a compressed runtime tail is legal in cache and
-          // is exactly the session-switch flicker (#73646). Proven caches and
-          // same-session re-resumes still paint immediately. The persisted
-          // refresh itself still starts after activate reattaches the live
-          // transport, so a turn finishing between snapshot and reattach
-          // cannot leave a stale partial on screen.
+          // wait on session.activate (#71254). The armed transcript gate is the
+          // single suppression authority: it hides only the unproven cached
+          // prefix (rows captured at arm time, including a compressed runtime
+          // tail — exactly the session-switch flicker, #73646) while rows that
+          // arrive live during the hold still paint (#117867). Proven caches
+          // and same-session re-resumes never arm the gate, so they paint
+          // immediately. The persisted refresh itself still starts after
+          // activate reattaches the live transport, so a turn finishing
+          // between snapshot and reattach cannot leave a stale partial on
+          // screen.
           const shouldRefreshPersistedTranscript = !isWatchWindow()
 
           const suppressUnprovenWarmTranscript =
@@ -1259,10 +1295,7 @@ export function useSessionActions({
           selectedStoredSessionIdRef.current = storedSessionId
           setActiveSessionId(cachedRuntimeId)
           activeSessionIdRef.current = cachedRuntimeId
-          syncSessionStateToView(
-            cachedRuntimeId,
-            suppressTranscriptForView(cachedViewState, suppressUnprovenWarmTranscript)
-          )
+          syncSessionStateToView(cachedRuntimeId, cachedViewState)
           setCurrentCwdTransient(cachedViewState.cwd)
           // The warm cache IS this conversation's own workspace truth, so the
           // switch is already re-homed here. This claim cannot wait for
@@ -1274,6 +1307,21 @@ export function useSessionActions({
           setSessionStartedAt(Date.now())
 
           try {
+            const replay = pendingSessionReplay(cachedRuntimeId)
+
+            // Only ordering matters here. A lost socket (false) still goes on
+            // to session.activate so its existing branches own the outcome:
+            // degraded warm cache on a transport error, cold resume when the
+            // runtime is gone, or a normal rebind on a redialed socket (whose
+            // history publication is re-gated after the REST read below).
+            if (replay) {
+              await replay
+
+              if (!isCurrentResume()) {
+                return
+              }
+            }
+
             let activated: SessionResumeResult | null = null
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
@@ -1415,10 +1463,7 @@ export function useSessionActions({
               busyRef.current = running
               setBusy(running)
               setAwaitingResponse(running && !pendingClarify)
-              syncSessionStateToView(
-                cachedRuntimeId,
-                suppressTranscriptForView(activatedLivenessState, suppressUnprovenWarmTranscript)
-              )
+              syncSessionStateToView(cachedRuntimeId, activatedLivenessState)
 
               // session.activate is the ordering barrier for reconnect recovery:
               // it atomically rebinds a running turn before returning. If the
@@ -1446,9 +1491,17 @@ export function useSessionActions({
               // Reconcile its in-flight/queued tail onto the complete transcript
               // instead of replacing durable history while the turn is running.
               let acceptedPersistedDisplayTranscript = false
+              let reconciledCurrentLiveTurn = false
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
+                const replayAtReturn = pendingSessionReplay(cachedRuntimeId)
+
+                if (replayAtReturn && !(await replayAtReturn)) {
+                  hydration.release()
+
+                  return
+                }
 
                 // Navigation only revokes foreground publication, not this
                 // runtime's display read. Edits/rebinds revoke both.
@@ -1495,17 +1548,27 @@ export function useSessionActions({
                     activated
                   )
 
-                  activatedMessages = reconcileAuthoritativeChatMessages(
+                  const currentLiveTurn = reconcilePersistedLiveTurn(
                     persistedMessages,
-                    previousMessages,
+                    sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages ?? previousMessages,
+                    persisted.messages,
                     liveProjection
                   )
+
+                  // `null` does not depend on `previous`; retrying the live-turn
+                  // reconcile inside the fallback would return `null` again.
+                  reconciledCurrentLiveTurn = currentLiveTurn !== null
+                  activatedMessages =
+                    currentLiveTurn ??
+                    reconcileAuthoritativeChatMessages(persistedMessages, previousMessages, liveProjection)
                 }
               }
 
               const currentMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
 
-              if (currentMessages) {
+              // The occurrence-aware path already read the latest cache. An
+              // additional identity overlay would restore its consumed tools.
+              if (currentMessages && !reconciledCurrentLiveTurn) {
                 activatedMessages = overlayConcurrentMessageChanges(
                   activatedMessages,
                   cachedViewState.messages,
@@ -1742,6 +1805,15 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
+        // The socket can drop and redial while REST is in flight. Painting now
+        // would let the new socket's replay append the same turn again; a lost
+        // socket (false) drops this read and the resume below binds without it.
+        const viewReplayAtReturn = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+        if (prefetchedResult && viewReplayAtReturn && !(await viewReplayAtReturn)) {
+          prefetchedResult = null
+        }
+
         // A completed read still warms its exact durable scope after navigation.
         // It must not adopt a runtime or touch the foreground on that path.
         if (
@@ -1823,7 +1895,8 @@ export function useSessionActions({
               const resumedMessages = reconcileAuthoritativeChatMessages(
                 prefetchedTranscriptMessages,
                 previousMessages,
-                liveProjection
+                liveProjection,
+                prefetchedResult?.messages
               )
 
               const withConcurrentChanges = overlayConcurrentMessageChanges(

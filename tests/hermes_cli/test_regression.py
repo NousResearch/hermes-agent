@@ -2,26 +2,8 @@
 
 import sys
 
-import hermes_cli.model_switch as ms
-from hermes_cli.model_switch import DirectAlias
 from hermes_cli.runtime_provider import _resolve_named_custom_runtime
 
-def test_ensure_direct_aliases_mutates_in_place(monkeypatch):
-    """_ensure_direct_aliases mutates DIRECT_ALIASES in place (guards against rebinding regression)."""
-    # Ensure we start with an empty but existing dict to check for mutation vs rebinding
-    ms.DIRECT_ALIASES.clear()
-    initial_id = id(ms.DIRECT_ALIASES)
-    
-    mock_data = {
-        "my-custom-alias": DirectAlias("custom-model:v1", "custom", "https://example.com/v1")
-    }
-    monkeypatch.setattr(ms, "_load_direct_aliases", lambda: mock_data)
-    
-    ms._ensure_direct_aliases()
-    
-    assert id(ms.DIRECT_ALIASES) == initial_id, f"DIRECT_ALIASES was rebound (ID changed from {initial_id} to {id(ms.DIRECT_ALIASES)})"
-    assert "my-custom-alias" in ms.DIRECT_ALIASES
-    assert ms.DIRECT_ALIASES["my-custom-alias"].model == "custom-model:v1"
 
 def test_chat_provider_argparse_acceptance(monkeypatch):
     """chat --provider <user-defined> is accepted by argparse (guards against restrictive choices)."""

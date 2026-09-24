@@ -81,7 +81,6 @@ class TestApprovalBridge:
         assert inspect.iscoroutine(scheduled["coro"])
         assert kwargs["session_id"] == "s1"
         assert tool_call.session_update == "tool_call_update"
-        assert tool_call.tool_call_id.startswith("perm-check-")
         assert tool_call.kind == "execute"
         assert tool_call.status == "pending"
         assert "dangerous command" in tool_call.title

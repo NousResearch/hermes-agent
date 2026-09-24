@@ -24,7 +24,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
+    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
@@ -723,10 +723,13 @@ PLATFORM_HINTS = {
         "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
     ),
     "bluebubbles": (
-        "You are chatting via iMessage (BlueBubbles). iMessage does not render markdown formatting — use "
-        "plain text. Keep responses concise as they appear as text messages. You can send media files "
-        "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .heic) appear "
-        "as photos and other files arrive as attachments."
+        # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
+        "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
+        "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
+        "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
+        "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
+        "can be copied. Write links as bare URLs (iMessage auto-links them). "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
     ),
     "mattermost": (
         "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
@@ -904,10 +907,11 @@ def _tenv_read(name: str, default: str = "") -> str:
 _BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
 # (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
+# OS/kernel only: the sandbox's user, $HOME and cwd are user-identifying and nothing consumes
+# them — the model can `whoami && pwd` when a task actually needs them.
 _BACKEND_PROBE_CMD = (
-    "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
-    "\"$(uname -r 2>/dev/null || echo unknown)\" "
-    "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
+    "printf 'os=%s\\nkernel=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
+    "\"$(uname -r 2>/dev/null || echo unknown)\""
 )
 
 
@@ -950,11 +954,8 @@ def _format_backend_probe(output: str) -> str:
     """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
     known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
-    fields = (
-        ("OS", " ".join(x for x in (known("os"), known("kernel")) if x)),
-        ("User", known("user")), ("Home", parsed.get("home")), ("Working directory", parsed.get("cwd")),
-    )
-    return "\n".join(f"  {label}: {value}" for label, value in fields if value)
+    os_line = " ".join(x for x in (known("os"), known("kernel")) if x)
+    return f"  OS: {os_line}" if os_line else ""
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
@@ -1001,7 +1002,7 @@ def _local_host_hints() -> list[str]:
     # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
     try:
         host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
-                          "and probes there, never under the system temp dir; entries are pruned after 72h)")
+                          "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
     except OSError:
         pass
     if not (sys.platform == "win32" and not is_wsl()):
@@ -1022,7 +1023,9 @@ def _remote_backend_hint(backend: str) -> str:
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
-            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}"
+            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}\n"
+            f"  The sandbox's current user, $HOME, and working directory are not listed here; if you need them, "
+            f"probe directly with a terminal call like `whoami && pwd`."
         )
     description = (
         _BACKEND_FALLBACK_DESCRIPTIONS.get(backend)
@@ -1031,7 +1034,7 @@ def _remote_backend_hint(backend: str) -> str:
     )
     return lead + (
         f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
-        f"prompt-build time, so the sandbox's current user, $HOME, and working directory are unknown from here. "
+        f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
     )
 
@@ -1116,7 +1119,7 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1177,6 +1180,12 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     return None
 
 
+def _requires_apps_list(frontmatter: dict) -> list[str]:
+    raw = frontmatter.get("requires_apps")
+    items = raw if isinstance(raw, list) else [raw] if raw else []
+    return [str(a).strip() for a in items if str(a).strip()]
+
+
 def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
     """Serialisable metadata dict for one skill."""
     parts = skill_file.relative_to(skills_dir).parts
@@ -1192,6 +1201,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "requires_apps": _requires_apps_list(frontmatter),
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1208,8 +1218,8 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     try:
         frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
-        if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
-            return False, frontmatter, ""
+        if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
+            return False, frontmatter, extract_skill_description(frontmatter)
         return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
@@ -1414,9 +1424,13 @@ def _build_skills_system_prompt_inner(
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(),
     )
+    snapshot = _load_skills_snapshot(skills_dir)
+    app_gated = snapshot is not None and any(
+        entry.get("requires_apps") for entry in snapshot.get("skills", []) if isinstance(entry, dict)
+    )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None:
+        if cached is not None and not app_gated:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
@@ -1428,9 +1442,10 @@ def _build_skills_system_prompt_inner(
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
-    snapshot = _load_skills_snapshot(skills_dir)
     if snapshot is not None:
-        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or []))
+        # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
+        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
+                       and skill_matches_apps({"requires_apps": entry.get("requires_apps") or []}))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
         category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}
     else:

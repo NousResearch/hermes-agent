@@ -711,14 +711,35 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
 def active_session_registry_snapshot(
     registry_home: str | Path | None = None, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return live leases; attachment callers require provable liveness."""
+    """Return live leases; attachment callers require provable liveness.
+
+    The per-entry liveness probes in ``_prune_dead`` run AFTER the file lock
+    is released: holding an exclusive, unfair lock across process-introspection
+    syscalls starves concurrent pollers once a handful of leases exist
+    (#115578). The prune write-back re-locks and drops only the lease ids
+    already proven dead, so a lease created between the snapshot and the
+    write-back is never lost.
+    """
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         raw_entries = _read_entries(state_path, strict=True)
-        entries = _prune_dead(raw_entries, strict=strict)
-        if entries != raw_entries:
-            _write_entries(state_path, entries)
-        return entries
+    entries = _prune_dead(raw_entries, strict=strict)
+    if entries != raw_entries:
+        live_lease_ids = {str(entry.get("lease_id") or "") for entry in entries}
+        dead_lease_ids = {
+            str(entry.get("lease_id") or "")
+            for entry in raw_entries
+            if str(entry.get("lease_id") or "") not in live_lease_ids
+        }
+        with _FileLock(lock_path):
+            current_entries = _read_entries(state_path, strict=True)
+            kept_entries = [
+                entry for entry in current_entries
+                if str(entry.get("lease_id") or "") not in dead_lease_ids
+            ]
+            if len(kept_entries) != len(current_entries):
+                _write_entries(state_path, kept_entries)
+    return entries
 
 
 @contextmanager

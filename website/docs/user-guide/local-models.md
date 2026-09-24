@@ -123,7 +123,26 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
+  detect_ports: [8081]  # extra ports to probe for a llama-server you run
+                        # yourself (the default probe is :8080 only)
 ```
+
+Running `llama-server` yourself on a fixed port works with the same
+`model.provider: llamacpp` selection — either list the port in
+`local_runtime.detect_ports`, or define the endpoint explicitly under
+`providers:` (an explicit entry wins over server detection):
+
+```yaml
+providers:
+  llamacpp:
+    base_url: http://127.0.0.1:8081/v1
+    model: my-model
+```
+
+The `/model` → **Local** picker row and `provider: llamacpp` resolve to that
+server; with no server reachable the error names the local runtime ("the local
+model server isn't running") instead of an unknown-provider or missing-API-key
+message.
 
 Models and runtime builds live under the Hermes home directory
 (`models/` and `runtimes/llamacpp/`). Selecting a local model as your

@@ -50,8 +50,8 @@ from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patte
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
 from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
@@ -73,7 +73,8 @@ _NO_LOCAL_UPLOAD = "DingTalk session webhook replies do not support local %s. On
 
 
 def _csv_set(raw: Any) -> Set[str]:
-    """Split a list or comma-separated string into a set of stripped, non-empty items."""
+    """Split a list, JSON-list string or comma-separated string into a set of stripped, non-empty items."""
+    raw = _decode_json_list_literal(raw)
     parts = raw if isinstance(raw, list) else str(raw).split(",")
     return {str(part).strip() for part in parts if str(part).strip()}
 

@@ -818,7 +818,8 @@ class LineAdapter(BasePlatformAdapter):
         return await self._send_messages(chat_id, msgs + ([_text_message(caption)] if caption else []))
 
     async def send_voice(
-        self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> SendResult:
         path, err = self._check_media_file("audio", audio_path)
         if err:

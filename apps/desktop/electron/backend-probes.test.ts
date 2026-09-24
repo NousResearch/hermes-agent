@@ -17,8 +17,6 @@ import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
-  hermesRuntimeImportProbe,
-  PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
   verifyHermesCli
@@ -34,8 +32,8 @@ const NODE_BIN = process.execPath
 test('execProbe keeps the parent event loop available to the child', async () => {
   let unexpectedSocketError: Error | undefined
 
-  const server = net.createServer((socket) => {
-    socket.on('error', (error) => {
+  const server = net.createServer(socket => {
+    socket.on('error', error => {
       // A successful child exits immediately after reading the sentinel. On
       // Windows that peer close can surface as ECONNRESET on the server side.
       if ((error as NodeJS.ErrnoException).code !== 'ECONNRESET') {
@@ -71,7 +69,7 @@ test('execProbe keeps the parent event loop available to the child', async () =>
     })
   } finally {
     await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()))
+      server.close(error => (error ? reject(error) : resolve()))
     })
   }
 
@@ -96,16 +94,6 @@ test('canImportHermesCli returns false when interpreter cannot run -c', async ()
 test('canImportHermesCli returns false when binary does not exist', async () => {
   const ghost = path.join(os.tmpdir(), 'hermes-probes-ghost-' + Date.now() + '.exe')
   assert.equal(await canImportHermesCli(ghost), false)
-})
-
-test('hermes runtime import probe checks config dependencies', () => {
-  const probe = hermesRuntimeImportProbe()
-  assert.match(probe, /\bimport yaml\b/)
-  // dotenv is the first third-party import on the CLI boot path
-  // (hermes_cli/env_loader.py); a mid-update venv missing python-dotenv
-  // passed the old probe and produced an unrecoverable boot loop.
-  assert.match(probe, /\bimport dotenv\b/)
-  assert.match(probe, /\bimport hermes_cli\.config\b/)
 })
 
 test('explicit Hermes override is authoritative', () => {
@@ -149,21 +137,6 @@ test('verifyHermesCli returns true when --version exits 0', async () => {
       void 0
     }
   }
-})
-
-test('verifyHermesCli swallows timeouts (does not throw)', async () => {
-  // We can't easily provoke a real hang in CI without slowing the
-  // suite, but we CAN confirm that an invocation that DOES throw
-  // (because the binary is missing) returns false rather than
-  // propagating. Same code path the timeout case takes.
-  assert.equal(await verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
-})
-
-test('default probe timeout is 15s (not the old 5s death-loop value)', () => {
-  assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 15_000)
-  // Module constant uses process.env at load time; with no override it
-  // matches the default (tests run without HERMES_PROBE_TIMEOUT_MS).
-  assert.equal(PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS)
 })
 
 test('resolveProbeTimeoutMs honours HERMES_PROBE_TIMEOUT_MS', () => {

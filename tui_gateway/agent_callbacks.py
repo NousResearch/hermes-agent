@@ -127,6 +127,8 @@ def _agent_cbs(sid: str) -> dict:
     callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(sid, tc_id, name, args),
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
+        "tool_result_metadata_callback": lambda tc_id, name, args, result: _prepare_tool_result_metadata(
+            sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
@@ -362,7 +364,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(g("request_overrides", {}) or {}),
         # The side agent persists into the PARENT's store: a named-profile chat's ``bg_*`` rows
         # belong to that profile's state.db, not the launch handle.
-        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback}
+        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback,
+        "side_agent": True}
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:

@@ -31,6 +31,7 @@ const gatewayMocks = vi.hoisted(() => {
 
 const reconnectStateMocks = vi.hoisted(() => ({
   reconcileBusyStatesOnReconnect: vi.fn(),
+  resetRouteOwnedTileRuntimeBindings: vi.fn(),
   resetTileRuntimeBindings: vi.fn()
 }))
 
@@ -352,16 +353,43 @@ describe('secondary reconnect runtime scope', () => {
     const reopening = openGatewayForAgent('homelab', 'writer')
 
     await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2))
-    expect(reconnectStateMocks.resetTileRuntimeBindings).toHaveBeenCalledWith({
+    // Not the window's ambient gateway: only tiles owned by this route can hold
+    // its runtime ids, so the reset is route-owned rather than window-wide.
+    expect(reconnectStateMocks.resetRouteOwnedTileRuntimeBindings).toHaveBeenCalledWith({
       connectionId: 'homelab',
       profile: 'writer'
     })
-    expect(reconnectStateMocks.resetTileRuntimeBindings.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(reconnectStateMocks.resetTileRuntimeBindings).not.toHaveBeenCalled()
+    expect(reconnectStateMocks.resetRouteOwnedTileRuntimeBindings.mock.invocationCallOrder[0]).toBeLessThan(
       gatewayMocks.connect.mock.invocationCallOrder[1]
     )
 
     finishReconnect()
     await reopening
+  })
+
+  it('does not re-resume unrelated tiles when a background request lease reopens its route', async () => {
+    // The Bot relay drains every registered connection on a 30s tick through
+    // requestGatewayForAgent. A local route is exempt from relay retention, so
+    // each tick dials a fresh socket and disposes it after the RPC. Treating
+    // every such reopen as a window-wide backend restart dropped every open
+    // tile's runtime binding, remounting its composer (caret reset, layout
+    // shift, model pick reverted) every 30 seconds.
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))
+    })
+
+    await requestGatewayForAgent('local', 'writer', 'bot_relay.outbox.drain')
+    expect(gatewayMocks.instances[0]?.close).toHaveBeenCalledOnce()
+
+    await requestGatewayForAgent('local', 'writer', 'bot_relay.outbox.drain')
+
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+    expect(reconnectStateMocks.resetTileRuntimeBindings).not.toHaveBeenCalled()
+    expect(reconnectStateMocks.resetRouteOwnedTileRuntimeBindings).toHaveBeenCalledWith({
+      connectionId: 'local',
+      profile: 'writer'
+    })
   })
 
   it('rebinds only Bot runtimes owned by the reconnected profile route', async () => {
@@ -956,31 +984,17 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(getConnectionFor.mock.calls.length).toBe(before + 2)
   })
-
-  it('touch pings carry the scope turn lease so main can skip leased residents early', async () => {
-    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-      descriptorFor(connectionId, profile)
-    )
-
-    const touchBackend = vi.fn(async () => ({ ok: true }))
-
-    installDesktop({ getConnectionFor, touchBackend })
-
-    await ensureGatewayForAgent('homelab', 'bot-a')
-    touchBackend.mockClear()
-
-    touchSecondaryGateways()
-    expect(touchBackend).toHaveBeenCalledWith('conn:homelab::bot-a', { activeTurn: false })
-  })
 })
 
 describe('rejected secondary authentication', () => {
   it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
     vi.useFakeTimers()
+
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
       ...descriptorFor(connectionId, profile),
       authMode: 'oauth'
     }))
+
     const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
     installDesktop({ getConnectionFor, getGatewayWsUrlFor })
     await ensureGatewayForAgent('cloud', 'default')
@@ -1033,10 +1047,12 @@ describe('rejected secondary authentication', () => {
 
 it('keeps background auth rejection after socket disposal until recovery or connection removal', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
     ...descriptorFor(connectionId, profile),
     authMode: 'oauth'
   }))
+
   const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
@@ -1057,14 +1073,18 @@ it('keeps background auth rejection after socket disposal until recovery or conn
 
 it('does not let a removed connection repopulate the auth rejection', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
     ...descriptorFor(connectionId, profile),
     authMode: 'oauth'
   }))
+
   let rejectTicket!: (error: Error) => void
+
   const ticket = new Promise<never>((_resolve, reject) => {
     rejectTicket = reject
   })
+
   const getGatewayWsUrlFor = vi.fn(() => ticket)
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   const pending = requestGatewayForAgent('cloud', 'default', 'session.list')

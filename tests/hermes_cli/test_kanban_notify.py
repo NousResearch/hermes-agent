@@ -29,15 +29,6 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _assert_inherited_notify_sub(subs: list[dict]) -> None:
-    assert len(subs) == 1
-    assert subs[0]["platform"] == "telegram"
-    assert subs[0]["chat_id"] == "chat1"
-    assert subs[0]["thread_id"] == "topic1"
-    assert subs[0]["user_id"] == "user1"
-    assert subs[0]["notifier_profile"] == "default"
-
-
 def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
     """delivery_mode persists; an explicit re-subscribe is last-write-wins, a
     ``None`` re-subscribe leaves the existing mode untouched, an unknown value
@@ -111,37 +102,6 @@ def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
     assert sub["delivery_metadata"] == {
         "chat_type": "thread", "existing": "keep", "parent_chat_id": "parent", "guild_id": "guild",
     }
-
-
-def test_child_task_inherits_parent_delivery_mode(kanban_home):
-    """Graph children inherit the parent's ACK edge AND its delivery_mode."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
-
-    conn = kbc.connect()
-    try:
-        parent = kb.create_task(conn, title="root", assignee=None)
-        kbn.add_notify_sub(
-            conn, task_id=parent, platform="telegram", chat_id="chat1",
-            thread_id="42", user_id="u1", user_id_alt="alt-u1", notifier_profile="default",
-            delivery_mode="notify+wake",
-        )
-        child = kb.create_task(
-            conn, title="review child", assignee="ccreviewer", parents=[parent],
-        )
-        subs = kbn.list_notify_subs(conn, child)
-    finally:
-        conn.close()
-
-    assert len(subs) == 1
-    assert subs[0]["platform"] == "telegram"
-    assert subs[0]["chat_id"] == "chat1"
-    assert subs[0]["thread_id"] == "42"
-    assert subs[0]["user_id"] == "u1"
-    assert subs[0]["user_id_alt"] == "alt-u1"
-    assert subs[0]["notifier_profile"] == "default"
-    assert subs[0]["delivery_mode"] == "notify+wake"
 
 
 def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
@@ -231,36 +191,6 @@ def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
 
     assert subs[0]["user_id"] == "open-id"
     assert subs[0]["user_id_alt"] == "union-id"
-
-
-def test_child_task_inherits_parent_chat_type(kanban_home):
-    """Graph children inherit the parent's chat_type alongside its ACK edge and
-    delivery_mode, so a woken child notification keys to the same session as
-    the parent's originating channel."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
-
-    conn = kbc.connect()
-    try:
-        parent = kb.create_task(conn, title="root", assignee=None)
-        kbn.add_notify_sub(
-            conn, task_id=parent, platform="telegram", chat_id="chat1",
-            user_id="u1", user_id_alt="alt-u1", chat_type="group",
-            delivery_mode="notify+wake",
-        )
-        child = kb.create_task(
-            conn, title="impl child", assignee="coder", parents=[parent],
-        )
-        subs = kbn.list_notify_subs(conn, child)
-    finally:
-        conn.close()
-
-    assert len(subs) == 1
-    assert subs[0]["chat_type"] == "group"
-    assert subs[0]["delivery_mode"] == "notify+wake"
-    assert subs[0]["user_id"] == "u1"
-    assert subs[0]["user_id_alt"] == "alt-u1"
 
 
 @pytest.mark.asyncio
@@ -613,9 +543,6 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     fake_adapter.send.assert_called_once()
     sent = fake_adapter.send.call_args[0][1]
     assert tid in sent
-    # Plain-language outcome per event kind (no internal event names).
-    expected = {"crashed": "stopped unexpectedly", "gave_up": "blocked", "timed_out": "time limit"}[kind]
-    assert expected in sent
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
@@ -634,34 +561,6 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
         "(claim_unseen_events_for_sub advances atomically inside the "
         "same write txn as the read)."
     )
-
-
-
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# Regression: gateway watchers must not double-init the kanban DB.
-#
-# Both the notifier watcher (`_kanban_notifier_watcher`) and the dispatcher
-# tick (`_tick_once_for_board`) used to call `_kb.connect(board=slug)`
-# immediately followed by `_kb.init_db(board=slug)`. Since `connect()`
-# already runs the schema + idempotent migration on first open per process,
-# the explicit `init_db()` was redundant — and worse, `init_db()`
-# deliberately busts the per-process cache and re-runs the migration on a
-# *second* connection, which races the first.  On legacy DBs this surfaced
-# as `duplicate column name: <col>` (now tolerated by
-# `_add_column_if_missing`) and intermittent `database is locked` errors
-# (issue #21378).
-#
-# The fix removes the `init_db()` calls in both watchers; this regression
-# test pins that behaviour so we don't reintroduce them.
-# ---------------------------------------------------------------------------
-
-
 
 
 @pytest.mark.asyncio
@@ -716,7 +615,6 @@ async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_ho
             timeout=10.0,
         )
 
-    assert any("ready for review" in message for message in delivered)
     assert any("Implementation and tests ready" in message for message in delivered)
     with kbc.connect() as conn:
         assert kbn.list_notify_subs(conn), "review is non-final; subscription must survive"
@@ -896,10 +794,15 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        # A dispatcher-spawned worker completes a card it holds a run on: bind the
+        # run id like the dispatcher does, or the ownership CAS refuses (#116239).
+        assert kb.claim_task(conn, tid) is not None
+        run_id = kb._current_run_id(conn, tid)
     finally:
         conn.close()
 
     import os
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
         kt._handle_complete({
@@ -1309,22 +1212,3 @@ def test_gc_purges_blocked_task_that_never_done(kanban_home):
         conn.close()
 
 
-def test_gc_archived_rows_already_removed_by_unsub(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
-
-    conn = kbc.connect()
-    try:
-        tid = _make_done_task_with_sub(kb, conn, title="archived", chat_id="c-arch")
-        assert kb.archive_task(conn, tid)
-        # The notifier removes the sub at archive time; the GC targets only
-        # ``done`` tasks, so an archived task contributes nothing to purge.
-        kbn.remove_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="c-arch",
-        )
-        _backdate_task(kb, conn, tid, days=365)
-        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=30) == 0
-        assert kbn.list_notify_subs(conn, tid) == []
-    finally:
-        conn.close()

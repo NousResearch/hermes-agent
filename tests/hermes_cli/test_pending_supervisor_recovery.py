@@ -7,6 +7,13 @@ import pytest
 from hermes_cli import gateway, main, update_cmd_fleet as fleet, update_receipt
 
 
+@pytest.fixture(autouse=True)
+def _units_belong_to_this_update(monkeypatch):
+    """The fake ``hermes-gateway-one/two`` units carry no home; ownership (#93349,
+    ``test_update_fleet_home_scope.py``) is pinned so this file keeps testing the catch-up contract."""
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope_cmd, svc_name: True)
+
+
 @pytest.mark.linux_only
 @pytest.mark.parametrize("failure", ["listing", "timeout", "missing", "restart", "inactive", "running", "missing-owned", None])
 def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path, failure):
@@ -50,14 +57,13 @@ def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path
     fleet._write_fleet_restart_pending_marker(expected_sha="pending", runtimes=[
         {"kind": "gateway", "profile": profile} for profile in ("one", "two")
     ])
-    marker = fleet._fleet_restart_pending_marker_path()
     if failure not in (None, "running"):
         with pytest.raises(SystemExit, match="1"):
             fleet._apply_pending_fleet_restart_catchup()
-        assert marker.exists()
+        assert fleet._fleet_restart_obligation_armed()
     else:
         fleet._apply_pending_fleet_restart_catchup()
-        assert not marker.exists()
+        assert not fleet._fleet_restart_obligation_armed()
         assert set(recovered) == {"hermes-gateway-one", "hermes-gateway-two"}
 
 

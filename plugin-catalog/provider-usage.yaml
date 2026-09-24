@@ -1,0 +1,34 @@
+# Community catalog entry: provider-usage
+#
+# Owner-submitted: the PR author (`PhoeniXAbhisheK`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as static
+# files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+name: provider-usage
+repo: https://github.com/PhoeniXAbhisheK/hermes-plugin-provider-usage
+sha: "a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a"   # tag v0.1.0
+description: >-
+  Per-provider quota and balance readout in the Hermes desktop status bar.
+  Per-provider chips with eye toggles, a popover with every quota window, reset times,
+  balance and key-cap amounts, near-limit amber tint, a desktop notification per
+  threshold crossing, and burn-rate projections (ETA to reset or depletion).
+  Providers: OpenCode, OpenAI Codex, OpenRouter, plus Anthropic, GitHub Copilot, Nous,
+  Z.AI, Kimi, MiniMax and DeepSeek when configured. Disclosure: credentials are resolved
+  read-only (Hermes account-usage helpers for Codex/Claude/Copilot/Nous, else the
+  provider env key or its CLI auth file) and never serialized; only the provider
+  endpoints listed in the README are called; the GitHub Copilot check presents the
+  VS Code / Copilot client identity. No subprocesses, no telemetry, no self-updater.
+maintainer: PhoeniXAbhisheK
+tier: community
+category: desktop
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/PhoeniXAbhisheK/hermes-plugin-provider-usage#readme
+version: "0.1.0"
+screenshots:
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a/media/panel.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a/media/status-bar.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a/media/notification.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

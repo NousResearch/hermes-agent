@@ -141,6 +141,8 @@ No secrets land in `~/.hermes/.env` for Entra mode — `azure-identity` caches t
 
 Interactive browser credential is excluded by default for unattended Hermes runs; use Azure CLI, Azure Developer CLI, managed identity, workload identity, or service principal credentials instead.
 
+**Multiplexed profiles (`gateway.multiplex_profiles: true`):** every source in that chain resolves from the *process* — the launch profile's `AZURE_*`, its `az login` session, the host's managed identity. A served profile that sets no `AZURE_*` of its own is therefore refused instead of borrowing the launch identity (the same rule the Vertex adapter applies to Application Default Credentials). Give each profile its own `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` (or `AZURE_FEDERATED_TOKEN_FILE`) in its `.env`; `AZURE_CLIENT_ID` alone opts that profile into the host's user-assigned managed identity. Single-profile runs (`hermes`, `hermes -p beta`) keep the full chain.
+
 ### Deployment patterns
 
 **Local development:**

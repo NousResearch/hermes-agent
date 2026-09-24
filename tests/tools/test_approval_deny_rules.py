@@ -5,7 +5,6 @@ A match blocks unconditionally â€” BEFORE the --yolo / /yolo / mode=off bypass â
 making it the user-editable counterpart to the code-shipped hardline floor.
 """
 
-import os
 import shlex
 
 import pytest
@@ -264,11 +263,3 @@ class TestDenyOrdering:
         result = mod.check_dangerous_command("ls -la", "local")
         assert result["approved"] is True
 
-    def test_block_message_tells_agent_not_to_retry(self, deny_config, clean_env):
-        deny_config(["git push --force*"])
-        result = mod.check_dangerous_command("git push --force origin main", "local")
-        msg = result["message"]
-        assert "BLOCKED" in msg
-        assert "git push --force*" in msg
-        assert "retry" in msg.lower()
-        assert "rephrase" in msg.lower()

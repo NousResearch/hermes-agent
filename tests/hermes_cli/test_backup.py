@@ -182,6 +182,18 @@ class TestShouldExclude:
         assert not _should_exclude(Path("profiles/sage/cache/citations/ledger.json"))
         assert not _should_exclude(Path("skills/example/cache/notes.md"))
 
+    def test_excludes_package_manager_stores_outside_cache(self):
+        """npm and pnpm keep their content-addressable stores outside .cache/
+        (profile homes put them at home/.npm and home/.local/share/pnpm). They are
+        restored by re-running install, and archiving them made a full backup ~17x larger."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("profiles/benny/home/.npm/_cacache/index-v5/aa/bb"))
+        assert _should_exclude(Path("profiles/benny/home/.local/share/pnpm/store/v10/files/00/x"))
+        assert _should_exclude(Path("home/.npm/_logs/debug.log"))
+        # A sibling that merely starts with the name is user data.
+        assert not _should_exclude(Path("profiles/benny/home/.npmrc"))
+        assert not _should_exclude(Path("skills/web/pnpm-notes.md"))
+
     def test_keeps_nested_dirs_named_like_runtime_trees(self):
         """A deeper directory that happens to be called models/ or node/ is
         user data (a skill's assets, project files) and must survive."""

@@ -67,6 +67,11 @@ _EXCLUDED_DIRS = {
     ".venv", "venv", "site-packages",
     # Tool / build caches — all regeneratable.
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    # Package-manager download stores that do NOT live under .cache (e.g.
+    # profiles/<name>/home/.npm and .local/share/pnpm) — content-addressable,
+    # restored by re-running install. Without these, the sandbox nightly archive
+    # ballooned 44MB -> 748MB (17x) between 2026-08-16 and 08-24.
+    ".npm", "pnpm",
 }
 
 # Hermes-managed runtime downloads (see ``LOCAL_RUNTIME_ROOT_DIRS``). Matched ONLY at the root of

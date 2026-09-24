@@ -466,6 +466,16 @@ class TestFailureAttribution:
         assert (recovered, retried) == (False, False)
         agent._swap_credential.assert_not_called()
 
+        # Once a transient provider-wide outage clears, neither key should
+        # remain benched for an hour just because this pool has two entries.
+        from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+
+        exhausted_at = max(e.last_status_at for e in pool.entries())
+        assert pool.next_available_at() <= exhausted_at + EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+        monkeypatch.setattr(time, "time", lambda: exhausted_at + EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS + 1)
+        assert pool.select().id == "cred-0"
+        assert all(e.last_status != "exhausted" for e in pool.entries())
+
 
 
     def test_pre_exhausted_check_uses_failing_key(self, tmp_path, monkeypatch):

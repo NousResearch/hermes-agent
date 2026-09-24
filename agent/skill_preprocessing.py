@@ -83,7 +83,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
         return f"[inline-shell exit {completed.returncode} with no output: {command}]"
     if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = elide_text(output, _INLINE_SHELL_MAX_OUTPUT)
+        output = elide_text(output, _INLINE_SHELL_MAX_OUTPUT, max_chars=_INLINE_SHELL_MAX_OUTPUT)
     return output
 
 

@@ -8,7 +8,7 @@ from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _COMPRESSION_MA
 from agent.context_compressor import (
     ContextCompressor, _compact_fallback_turn, _sum_clarify, _truncate_tool_call_args_json,
 )
-from agent.skill_preprocessing import run_inline_shell
+from agent.skill_preprocessing import _INLINE_SHELL_MAX_OUTPUT, run_inline_shell
 
 
 def test_elision_keeps_counts_budget_and_original_tail():
@@ -42,7 +42,9 @@ def test_model_visible_renderers_share_non_original_marker():
         json.loads(_truncate_tool_call_args_json(json.dumps({"content": source})))["content"],
     )
     with patch("agent.skill_preprocessing.subprocess.run", return_value=SimpleNamespace(stdout=source, stderr="", returncode=0)):
-        rendered += (run_inline_shell("printf text", None, 1),)
+        inline_result = run_inline_shell("printf text", None, 1)
+        rendered += (inline_result,)
+    assert len(inline_result) <= _INLINE_SHELL_MAX_OUTPUT
     for text in rendered:
         assert _COMPRESSION_MARKER_RE.search(text)
         assert "...[truncated]" not in text

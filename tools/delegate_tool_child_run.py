@@ -337,6 +337,7 @@ class _Heartbeat:
             pass
         with _quiet(None):
             touch(desc)
+        _safe_progress(getattr(child, "tool_progress_callback", None), "subagent.heartbeat")
         return None
 
 

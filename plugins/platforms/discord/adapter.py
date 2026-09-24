@@ -3842,7 +3842,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             audio_path = os.path.join(tmp_dir, "piece.wav")
             try:
                 result = json.loads(await asyncio.wait_for(
-                    asyncio.to_thread(text_to_speech_tool, text=piece, output_path=audio_path),
+                    asyncio.to_thread(text_to_speech_tool, text=piece, output_path=audio_path,
+                                      skip_rewrite=True),
                     timeout=timeout_s))
             except Exception as e:
                 logger.warning("Streaming TTS piece failed (%s)", e)
@@ -3920,6 +3921,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         mixer = self._voice_mixers.get(guild_id)
         if mixer is None:
             return False
+        if label == "reply":
+            # A new reply supersedes an in-flight one (e.g. a steer while a reply is still
+            # playing): cancel the old pump task so it stops pushing PCM. The mixer appends
+            # this pump's chunks behind the old child's remaining audio (play_speech_streaming
+            # reuses the live child), so the rest of the old reply finishes first - no overlap.
+            prev_task = self._stream_tts_tasks.pop(guild_id, None) if getattr(self, "_stream_tts_tasks", None) else None
+            if prev_task is not None and not prev_task.done():
+                prev_task.cancel()
 
         async def _pump() -> None:
             pause_s = self._stream_tts_piece_pause_s()

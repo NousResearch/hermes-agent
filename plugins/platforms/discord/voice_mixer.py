@@ -205,9 +205,14 @@ class VoiceMixer(discord.AudioSource):
             fade_in_ms: Fade-in duration for the child.
 
         Returns:
-            The new :class:`StreamingMixerChild` to feed.
+            The new :class:`StreamingMixerChild` to feed. When a previous streaming child
+            is still live, THAT child is returned instead - the new stream's chunks are
+            appended behind its remaining audio, so concurrent replies never overlap.
         """
         with self._lock:
+            last = self._speech[-1] if self._speech else None
+            if isinstance(last, StreamingMixerChild) and not last._finished:
+                return last
             child = StreamingMixerChild(
                 gain=self._speech_gain if gain is None else float(gain), fade_in_ms=fade_in_ms,
             )

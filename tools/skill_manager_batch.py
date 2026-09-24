@@ -2,6 +2,7 @@
 (``skill_manage``/``_find_skill``/``_skill_gate_bypass``) is reached lazily
 through ``tools.skill_manager_tool`` so that module owns it."""
 
+from contextlib import suppress
 import json
 import logging
 import posixpath
@@ -128,9 +129,13 @@ def _validate_batch_ops(operations, default_name, tool_error):
     return names, None
 
 
-def _snapshot_skills(names, snap_root, find_skill):
-    """Copy every touched skill aside. Returns (snapshots, None) or (None, error_text)."""
-    snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None)
+def _snapshot_skills(names, snap_root, find_skill, create_targets=None):
+    """Copy every touched skill aside. Returns (snapshots, None) or (None, error_text).
+
+    ``create_targets`` maps a name with no skill yet to the dir its ``create`` op will use.
+    An EMPTY pre-existing dir there has no SKILL.md to snapshot, yet create adopts it (see
+    ``_create_skill``): record that it pre-dated the batch so rollback never rmtree()s it."""
+    snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None, dir_pre_existed)
     for nm in dict.fromkeys(names):  # ordered unique
         pre = find_skill(nm)
         pre_dir = Path(pre["path"]) if pre else None
@@ -140,15 +145,25 @@ def _snapshot_skills(names, snap_root, find_skill):
                 shutil.copytree(pre_dir, snap)
             except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
-        snapshots[nm] = (pre_dir, snap)
+        target = (create_targets or {}).get(nm) if pre is None else None
+        snapshots[nm] = (pre_dir, snap, target is not None and target.is_dir())
     return snapshots, None
 
 
-def _restore_snapshot(pre_dir, snap, post_dir) -> None:
+def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False) -> None:
     post_exists = post_dir is not None and post_dir.is_dir()
     if snap is None:
-        if post_exists:  # Batch created this skill: remove the partial result.
+        if not post_exists:
+            return
+        if not dir_pre_existed:  # Batch created this skill: remove the partial result.
             shutil.rmtree(post_dir)
+            return
+        # The dir predates the batch (adopted empty leftover): undo only the SKILL.md the batch
+        # wrote and drop the dir only if that leaves it empty — never anything foreign.
+        with suppress(OSError):
+            (post_dir / "SKILL.md").unlink()
+        with suppress(OSError):
+            post_dir.rmdir()
         return
     if not post_exists:
         shutil.copytree(snap, pre_dir)
@@ -171,10 +186,10 @@ def _restore_snapshot(pre_dir, snap, post_dir) -> None:
 def _rollback(snapshots, find_skill):
     """Restore every snapshot. Returns (note, failed)."""
     notes = []
-    for nm, (pre_dir, snap) in snapshots.items():
+    for nm, (pre_dir, snap, dir_pre_existed) in snapshots.items():
         try:
             post = find_skill(nm)
-            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None)
+            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None, dir_pre_existed)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))
@@ -223,7 +238,9 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     # between the snapshot and a rollback would be silently reverted.
     with _smt._skill_mutation_locks(names):
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
-        snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
+        create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
+                          for i, op in enumerate(operations) if op.get("action") == "create"}
+        snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill, create_targets)
         if snap_err is not None:
             shutil.rmtree(snap_root, ignore_errors=True)
             return tool_error(snap_err, success=False)

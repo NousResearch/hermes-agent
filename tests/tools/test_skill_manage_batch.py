@@ -170,22 +170,40 @@ class TestSkillManageBatch(unittest.TestCase):
 
     def test_cross_skill_batch_and_rollback(self):
         """Ops may target DIFFERENT skills; a late failure rolls back
-        every touched skill, including removing a batch-created one."""
+        every touched skill, including removing a batch-created one — but a dir
+        that pre-dated the batch (empty leftover create adopted) is never rmtree'd,
+        only the SKILL.md the batch wrote is undone."""
         self._call("alpha", [{"action": "create", "content": SK.format(n="alpha")}])
-        r = json.loads(self.smt.skill_manage(action="", name="", operations=[
-            {"name": "alpha", "action": "patch",
-             "old_string": "Step 1.", "new_string": "Step A."},
-            {"name": "beta", "action": "create", "content": SK.format(n="beta")},
-            {"name": "beta", "action": "write_file",
-             "file_path": "bad/nope.md", "file_content": "x"},
-        ]))
+        gamma = os.path.join(self.home, "skills", "gamma")
+        os.mkdir(gamma)  # empty pre-existing dir with no SKILL.md: create adopts it
+        real_from = self.smt._skill_manage_from
+
+        def drop_file_before_failing_op(payload, **kw):
+            if payload.get("action") == "write_file":  # something lands mid-batch
+                open(os.path.join(gamma, "dropped.txt"), "w").write("keep me")
+            return real_from(payload, **kw)
+
+        from unittest.mock import patch as _patch
+        with _patch.object(self.smt, "_skill_manage_from", side_effect=drop_file_before_failing_op):
+            r = json.loads(self.smt.skill_manage(action="", name="", operations=[
+                {"name": "alpha", "action": "patch",
+                 "old_string": "Step 1.", "new_string": "Step A."},
+                {"name": "beta", "action": "create", "content": SK.format(n="beta")},
+                {"name": "gamma", "action": "create", "content": SK.format(n="gamma")},
+                {"name": "beta", "action": "write_file",
+                 "file_path": "bad/nope.md", "file_content": "x"},
+            ]))
         self.assertFalse(r["success"])
-        self.assertEqual(r["failed_index"], 2)
+        self.assertEqual(r["failed_index"], 3)
         # alpha's patch undone; beta (batch-created) removed entirely.
         content = open(os.path.join(self.home, "skills", "alpha", "SKILL.md")).read()
         self.assertIn("Step 1.", content)
         self.assertNotIn("Step A.", content)
         self.assertFalse(os.path.exists(os.path.join(self.home, "skills", "beta")))
+        # gamma pre-existed: its SKILL.md is undone, the dir and the foreign file survive.
+        self.assertTrue(os.path.isdir(gamma))
+        self.assertFalse(os.path.exists(os.path.join(gamma, "SKILL.md")))
+        self.assertEqual(open(os.path.join(gamma, "dropped.txt")).read(), "keep me")
 
     def test_failed_restore_never_destroys_the_skill(self):
         """Rollback used to rmtree the live skill directory BEFORE

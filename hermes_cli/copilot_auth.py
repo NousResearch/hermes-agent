@@ -35,6 +35,47 @@ _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
 
 
+def load_copilot_cli_config() -> dict:
+    """Read Copilot's JSONC token store without changing strings or auth precedence.
+
+    Missing/empty files are empty configs. Invalid JSON and I/O errors propagate
+    so each caller retains its own best-effort fallback policy.
+    """
+    path = Path(os.path.expanduser("~/.copilot/config.json"))
+    if not path.is_file():
+        return {}
+    raw = path.read_text(encoding="utf-8-sig", errors="ignore")
+    chars = list(raw)
+    i = 0
+    in_string = False
+    while i < len(raw):
+        if in_string:
+            if raw[i] == "\\":
+                i += 2
+                continue
+            if raw[i] == '"':
+                in_string = False
+        elif raw[i] == '"':
+            in_string = True
+        elif raw.startswith("//", i) or raw.startswith("/*", i):
+            start = i
+            if raw.startswith("//", i):
+                while i < len(raw) and raw[i] not in "\r\n":
+                    i += 1
+            else:
+                end = raw.find("*/", i + 2)
+                if end == -1:
+                    raise ValueError("Unterminated comment in Copilot CLI config")
+                i = end + 2
+            for pos in range(start, i):
+                if chars[pos] not in "\r\n":
+                    chars[pos] = " "
+            continue
+        i += 1
+    text = "".join(chars)
+    return json.loads(text) if text.strip() else {}
+
+
 def validate_copilot_token(token: str) -> tuple[bool, str]:
     """Validate that a token is usable with the Copilot API."""
     token = token.strip()

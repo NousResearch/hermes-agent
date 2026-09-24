@@ -1213,15 +1213,9 @@ def _first_exchangeable_copilot_token(raw_tokens) -> str:
 
 
 def _copilot_cli_config_tokens() -> list[str]:
-    """``copilotTokens`` from the GitHub Copilot CLI's own plaintext store (JSONC — strip
-    ``//``-comment lines), written by ``copilot login`` on hosts without an OS keychain."""
-    cli_config = os.path.expanduser("~/.copilot/config.json")
-    if not os.path.isfile(cli_config):
-        return []
-    with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
-        raw_text = "\n".join(
-            line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
-    data = json.loads(raw_text) if raw_text.strip() else {}
+    """``copilotTokens`` from the Copilot CLI's JSONC plaintext token store."""
+    from hermes_cli.copilot_auth import load_copilot_cli_config
+    data = load_copilot_cli_config()
     tokens = data.get("copilotTokens")
     return list(tokens.values()) if isinstance(tokens, dict) else []
 

@@ -901,6 +901,9 @@ _POOL_TOKEN_GENERATION_FIELDS = (
     "access_token", "refresh_token", "expires_at", "expires_at_ms", "expires_in", "obtained_at",
     "last_refresh", "agent_key", "agent_key_expires_at", "agent_key_expires_in", "agent_key_id",
     "agent_key_obtained_at", "agent_key_reused",
+    # Refresh-coupled metadata: a Nous refresh rewrites scope and the validated
+    # inference route together with the new pair, so they travel with it.
+    "scope", "inference_base_url",
 )
 
 
@@ -918,7 +921,14 @@ def _merge_pool_row_generation(
     base_pair: Optional[Tuple[Any, Any]] = None,
     status_cleared: bool = False,
 ) -> Dict[str, Any]:
-    """Keep a newer on-disk token generation authoritative during stale writes."""
+    """Keep a newer on-disk token generation authoritative during stale writes.
+
+    Only a terminal auth verdict (``last_status == dead``) is scoped to the token pair
+    it was observed on; account-wide cooldowns (402 billing, 429 throttle) from the
+    stale writer still apply to the rotated pair and go through the ordinary recency
+    merge in ``_merge_disk_cooldown_state``."""
+    from agent.credential_pool import STATUS_DEAD
+
     merge_disk = None if status_cleared else disk_entry
     if not isinstance(disk_entry, dict) or base_pair is None:
         return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
@@ -932,7 +942,7 @@ def _merge_pool_row_generation(
             merged[field] = disk_entry[field]
         else:
             merged.pop(field, None)
-    if not status_cleared:
+    if not status_cleared and entry.get("last_status") == STATUS_DEAD:
         for field in _POOL_STATUS_FIELDS:
             if field in disk_entry:
                 merged[field] = disk_entry[field]

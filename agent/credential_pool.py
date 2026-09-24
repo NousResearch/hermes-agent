@@ -1126,7 +1126,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 self.provider, payloads,
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
-                token_bases=getattr(self, "_persisted_token_pairs", {}),
+                token_bases=self._persisted_token_pairs,
             )
             if written is None:
                 return
@@ -1135,7 +1135,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             self._persisted_token_pairs = {row_id: pair for row_id, pair in pairs.items() if any(pair)}
             for index, entry in enumerate(self._entries):
                 row = rows.get(entry.id)
-                if row is not None and any(pairs[entry.id]):
+                if row is None or not any(pairs[entry.id]):
+                    continue
+                # Adopt only rows the store overrode with a peer's newer pair; re-hydrating an
+                # unchanged row would drop in-memory-only runtime fields to_dict() omits.
+                if pairs[entry.id] != (entry.access_token, entry.refresh_token):
                     # Reference-only rows are intentionally secret-free on disk; never dehydrate
                     # their live in-memory credential while adopting a concurrent generation.
                     self._entries[index] = PooledCredential.from_dict(self.provider, row)

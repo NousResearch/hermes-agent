@@ -762,24 +762,8 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
 # ── G. token generation is the authority boundary (#120815) ─────────────
 
 @pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
-def test_stale_pool_cannot_roll_back_peer_token_generation(fleet, borrowed):
-    from agent.credential_pool import load_pool
-
-    fleet["use"](_profile(fleet, "stale-write") if borrowed else fleet["root"])
-    stale, peer = load_pool("anthropic"), load_pool("anthropic")
-    assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
-
-    stale.mark_exhausted_and_rotate(status_code=429, credential_id="abc123")
-
-    row = fleet["rows"](fleet["root"])[0]
-    assert row["refresh_token"] == "sk-ant-ort-RT1"
-    selected = stale.select()
-    assert selected is not None and selected.refresh_token == "sk-ant-ort-RT1"
-
-
-@pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
 def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowed):
-    from agent.credential_pool import STATUS_DEAD, load_pool
+    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
 
     fleet["use"](_profile(fleet, "stale-dead") if borrowed else fleet["root"])
     stale, peer = load_pool("anthropic"), load_pool("anthropic")
@@ -795,6 +779,13 @@ def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowe
     assert row.get("last_status") != STATUS_DEAD
     selected = stale.select()
     assert selected is not None and selected.refresh_token == "sk-ant-ort-RT1"
+
+    # Only the terminal verdict was scoped to the old pair: a later account-wide
+    # billing 402 from the same stale writer still applies to the rotated pair.
+    stale.mark_exhausted_and_rotate(status_code=402, credential_id="abc123")
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT1"
+    assert row["last_status"] == STATUS_EXHAUSTED
 
 
 def test_terminal_verdict_for_current_token_generation_still_persists(fleet):

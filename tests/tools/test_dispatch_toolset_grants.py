@@ -27,6 +27,6 @@ def test_dispatch_preserves_granted_tool_and_unrestricted_calls(tmp_path):
     args = {"path": str(target), "content": "permitted"}
     for scope in ({"enabled_toolsets": ["file"]}, {}):
         result = json.loads(handle_function_call("write_file", args, **scope))
-        assert result["success"] is True
+        assert result["verified"] is True
         assert target.read_text() == "permitted"
         target.unlink()

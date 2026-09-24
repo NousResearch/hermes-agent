@@ -489,6 +489,86 @@ afterEach(async () => {
 })
 
 describe('automatic shipped Group Chat adoption', () => {
+  it.each(['remote', 'scoped', 'missing-owner'])('keeps a hydrated %s orphan intact instead of adopting a same-named local replacement', async shape => {
+    const transport = backend()
+    const record = await releasedRecord()
+    // A valid local builder must not lend its owner to the unresolved builder.
+    record.Release.members.push({ name: 'builder', handle: 'local-builder', connectionId: 'owner-a', remoteSource: true } as any)
+    record.Release.members.push({
+      name: 'builder', handle: 'lost-builder',
+      ...(shape === 'remote' ? { remoteSource: true } : {}),
+      ...(shape === 'scoped' ? { sourceScoped: true } : {}),
+      ...(shape === 'missing-owner' ? { sourceMissing: true, connectionId: 'owner-a' } : {})
+    } as any)
+    const storage = new Map<string, unknown>([['group-chats', record]])
+    const loaded = await coldHydrate(storage)
+    const { annotateOrphanedGroupChatMembers } = await import('./hygiene')
+    const annotated = annotateOrphanedGroupChatMembers(loaded.chat.$groupChats.get(), new Set(['owner-a', 'remote-b']))
+    loaded.chat.$groupChats.set(annotated.rooms)
+    const original = structuredClone(annotated.rooms.Release)
+    expect(original.members!.at(-1)?.sourceMissing).toBe(true)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    expect(transport.imports).toHaveLength(0)
+    expect(transport.calls.some(call => ['groups.send', 'groups.member.resolve'].includes(call.method))).toBe(false)
+    expect(loaded.registry.$canonicalGroupBindings.get()).toEqual({})
+    const retained = (storage.get('group-chats') as Record<string, any>).Release
+    expect(retained.members).toEqual(original.members)
+    expect(retained.log).toEqual(original.log)
+    expect(retained.stranded).toEqual(original.stranded)
+    expect(retained.shippedAdoption.state).not.toBe('adopted')
+  })
+
+  it.each([false, true])('canonical discovery reuses the adopted Send lease, refusing replacement before retry: %s', async replace => {
+    const transport = backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    const built = await loaded.adoption.buildShippedGroupImport('Release', loaded.chat.$groupChats.get().Release, 'owner-a')
+
+    const earlierAlias = loaded.registry.registerCanonicalGroup(
+      { connectionId: 'owner-a', profile: 'default' }, { room_id: built.request.room_id, name: 'Release', members: [] })
+
+    const earlierBinding = loaded.registry.$canonicalGroupBindings.get()[earlierAlias]
+    expect(earlierBinding.isCurrent?.()).toBe(true)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    expect(earlierBinding.isCurrent?.()).toBe(false)
+    const binding = loaded.registry.$canonicalGroupBindings.get().Release!
+    const journal = await import('./canonical-group-send')
+    const prepared = await journal.prepareCanonicalGroupSend(binding, { text: 'private owner A intent' })
+    const retained = localStorage.getItem('hermes.desktop.canonicalGroupSends.v1')
+    const route = { connectionId: binding.connectionId, profile: binding.profile }
+    const room = { room_id: binding.roomId, name: 'Release', members: [] }
+    const alias = loaded.registry.registerCanonicalGroup(route, room)
+    expect(loaded.registry.$canonicalGroupBindings.get()[alias]).toBe(binding)
+    render(<loaded.workspace.CanonicalGroupWorkspace binding={loaded.registry.$canonicalGroupBindings.get()[alias]} />)
+    await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('private owner A intent'))
+    const send = screen.getByRole('button', { name: 'Retry' })
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false))
+
+    if (replace) {
+      runtime.authority = 'install:replacement'
+      runtime.routeGeneration += 1
+    }
+
+    fireEvent.click(send)
+
+    if (replace) {
+      expect(transport.calls.filter(call => call.method === 'groups.send')).toHaveLength(0)
+      expect(localStorage.getItem('hermes.desktop.canonicalGroupSends.v1')).toBe(retained)
+      loaded.registry.revokeStaleAdoptedCanonicalGroups()
+      expect(loaded.registry.registerCanonicalGroup(route, room)).toBe('Release')
+      expect(loaded.registry.$canonicalGroupBindings.get()).toEqual({})
+      cleanup()
+      const view = await import('./group-chat-view')
+      render(<view.GroupChatWorkspace group="Release" members={[]} />)
+      expect(screen.queryByRole('textbox')).toBeNull()
+      expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.upgradeChecking)).toBeTruthy()
+    } else {
+      await waitFor(() => expect(transport.calls.filter(call => call.method === 'groups.send')).toHaveLength(1))
+      expect(transport.calls.find(call => call.method === 'groups.send')?.params).toMatchObject(prepared.params)
+      await waitFor(async () => expect(await journal.readCanonicalGroupSend(binding)).toBeUndefined())
+    }
+  })
+
   it('cold-hydrates a released record, retries the exact committed request, and mounts retained history in the canonical consumer', async () => {
     const transport = backend({ failAfterFirstCommit: true })
     const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
@@ -913,9 +993,10 @@ describe('automatic shipped Group Chat adoption', () => {
       runtime.routeGeneration += 1
       release()
       await waitFor(() => expect(binding.isCurrent?.()).toBe(false))
-      const pending = await journal.readCanonicalGroupSend(binding)
-      expect(pending?.params.payload.text).toBe('new user work')
-      expect(pending?.binding).not.toHaveProperty('routeOwner')
+      await expect(journal.readCanonicalGroupSend(binding)).rejects.toThrow(/owner/i)
+      const pending = Object.values(JSON.parse(localStorage.getItem('hermes.desktop.canonicalGroupSends.v1')!))[0] as any
+      expect(pending.params.payload.text).toBe('new user work')
+      expect(pending.binding).not.toHaveProperty('routeOwner')
     } else {
       await waitFor(async () => expect(await journal.readCanonicalGroupSend(binding)).toBeUndefined())
     }

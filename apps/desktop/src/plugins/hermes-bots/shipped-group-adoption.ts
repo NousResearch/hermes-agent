@@ -393,6 +393,13 @@ export async function buildShippedGroupImport(
     const sourceIdForMember = sourceMemberId(sourceId, index, member)
     const connectionId = memberConnectionId(member)
 
+    // A missing source is not the selected owner. Keep the entire original room
+    // until that member's route can be resolved, rather than making a same-named
+    // local profile executable or inventing an importer ownership classification.
+    if (member.sourceMissing || (!connectionId && memberIsRemote(member))) {
+      throw new Error(`Member ${index + 1} has an unresolved source owner. The original Group Chat was kept.`)
+    }
+
     const imported: ShippedGroupImportMember = {
       source_member_id: sourceIdForMember,
       name,

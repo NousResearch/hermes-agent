@@ -117,8 +117,13 @@ function requireRoute(route: CanonicalGroupRoute): void {
     throw new Error('Canonical group binding is no longer current')
   }
 
-  const routeOwner = (route as Partial<CanonicalGroupBinding>).routeOwner
-  routeOwner?.assertCurrent()
+  const binding = route as Partial<CanonicalGroupBinding>
+
+  if (binding.adoptionOwner && (!binding.routeOwner || binding.isCurrent?.() !== true)) {
+    throw new Error('Adopted group requires its current owner lease')
+  }
+
+  binding.routeOwner?.assertCurrent()
 }
 
 export function captureCanonicalGroupRoute(): CanonicalGroupRoute {

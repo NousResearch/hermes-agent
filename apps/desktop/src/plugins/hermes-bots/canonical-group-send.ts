@@ -67,13 +67,23 @@ export async function readCanonicalGroupSend(binding: CanonicalGroupBinding): Pr
     throw new Error('Invalid canonical group Send entry')
   }
 
-  if (entry && binding.adoptionOwner && (
-    entry.binding.authorityGatewayId !== binding.adoptionOwner.authorityGatewayId ||
-    entry.binding.sourceId !== binding.adoptionOwner.sourceId ||
-    entry.binding.requestHash !== binding.adoptionOwner.requestHash
+  // Persisted qualification is a constraint, never a source of runtime authority.
+  // A weaker alias must not read, replace or retire an installation-bound intent.
+  const qualified = entry && ['authorityGatewayId', 'sourceId', 'requestHash']
+    .some(field => Object.hasOwn(entry.binding, field))
+
+  if ((qualified || binding.adoptionOwner) && (
+    !binding.adoptionOwner || !binding.routeOwner || binding.isCurrent?.() !== true ||
+    (entry && (
+      entry.binding.authorityGatewayId !== binding.adoptionOwner.authorityGatewayId ||
+      entry.binding.sourceId !== binding.adoptionOwner.sourceId ||
+      entry.binding.requestHash !== binding.adoptionOwner.requestHash
+    ))
   )) {
     throw new Error('Pending Send does not match this Group Chat owner; the original intent was retained')
   }
+
+  if (qualified || binding.adoptionOwner) { binding.routeOwner!.assertCurrent() }
 
   return entry
 }

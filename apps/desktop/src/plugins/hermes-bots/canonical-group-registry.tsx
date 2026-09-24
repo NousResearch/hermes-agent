@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
+import { $groupChats } from './group-chat'
 import type { ShippedGroupAdoption } from './types'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
@@ -66,7 +67,19 @@ export function bindAdoptedCanonicalGroup(
     previous.release()
   }
 
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: binding })
+  const next = { ...$canonicalGroupBindings.get() }
+
+  // Retire any pre-adoption discovery alias as well as the old adopted binding.
+  // Its mounted view retains its old closure and must not become writable again.
+  for (const [alias, existing] of Object.entries(next)) {
+    if (alias !== key && existing.connectionId === route.connectionId &&
+        existing.profile === route.profile && existing.roomId === room.room_id) {
+      existing.routeOwner?.release()
+      delete next[alias]
+    }
+  }
+
+  $canonicalGroupBindings.set({ ...next, [key]: binding })
 
   return key
 }
@@ -126,9 +139,23 @@ export function revokeStaleAdoptedCanonicalGroups(): void {
 }
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
+  // Discovery is another door to the retained room, not another execution owner.
+  // With no live lease, opening this key uses the existing read-only recovery UI.
+  // Never rebuild runtime authority from the durable checkpoint or Send journal.
+  const adopted = Object.entries($groupChats.get()).find(([, retained]) => {
+    const adoption = retained.shippedAdoption
+
+    return adoption?.roomId === room.room_id && adoption.route?.connectionId === route.connectionId &&
+      adoption.route.profile === route.profile
+  })
+
+  if (adopted) { return adopted[0] }
+
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
+  const binding: CanonicalGroupBinding = { ...route, roomId: room.room_id, bindingGeneration: ++bindingGeneration }
+  binding.isCurrent = () => $canonicalGroupBindings.get()[key] === binding
   $canonicalGroupBindings.get()[key]?.routeOwner?.release()
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id } })
+  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: binding })
 
   return key
 }

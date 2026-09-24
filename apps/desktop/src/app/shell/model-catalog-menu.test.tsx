@@ -86,14 +86,14 @@ describe('the current row effort', () => {
     $defaultReasoningEffort.set('ultra')
     renderMenu({ effortPending: true, model: 'gemini-2.5-flash', provider: 'google' })
 
-    const row = (await screen.findByText(/Gemini 2\.5 Flash/i)).closest('[role="menuitem"]')!
+    const row = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
 
     expect(row.textContent).not.toContain('Ultra')
     cleanup()
 
     renderMenu({ model: 'gemini-2.5-flash', provider: 'google' })
 
-    const settled = (await screen.findByText(/Gemini 2\.5 Flash/i)).closest('[role="menuitem"]')!
+    const settled = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
 
     expect(settled.textContent).toContain('Ultra')
   })
@@ -180,7 +180,7 @@ describe('the catalog owns model curation', () => {
 
     renderMenu()
 
-    await screen.findByText(/Gemini 2\.5 Flash/i)
+    await screen.findByText('Gemini 2.5')
     expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
   })
 
@@ -188,7 +188,7 @@ describe('the catalog owns model curation', () => {
     setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
 
     renderMenu()
-    await screen.findByText(/Gemini 2\.5 Flash/i)
+    await screen.findByText('Gemini 2.5')
 
     const input = screen.getByRole('textbox', { name: 'Search models' })
 

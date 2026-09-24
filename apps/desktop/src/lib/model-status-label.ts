@@ -65,6 +65,7 @@ export function modelBaseId(model: string): string {
 // the same display name.
 const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
   [/-fast$/i, 'Fast'],
+  [/-flash$/i, 'Flash'],
   [/-thinking$/i, 'Thinking'],
   [/-preview$/i, 'Preview'],
   [/-latest$/i, 'Latest']
@@ -72,11 +73,25 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
-function prettifyBase(base: string): string {
-  if (/^deepseek-flash$/i.test(base)) {
-    return 'DeepSeek V4.1 Flash'
-  }
+// Vendors spell their own names in casing the title-cased id does not carry:
+// `deepseek-v4.1-flash` reads as "Deepseek V4.1 Flash" instead of the
+// catalog's "DeepSeek V4.1 Flash" (#118083). One map, applied after
+// title-casing, so each vendor is spelled once for every id that contains it.
+const VENDOR_WORDS: Readonly<Record<string, string>> = {
+  deepseek: 'DeepSeek',
+  ernie: 'ERNIE',
+  glm: 'GLM',
+  minimax: 'MiniMax',
+  mimo: 'MiMo',
+  openai: 'OpenAI',
+  qwen: 'Qwen'
+}
 
+function applyVendorCasing(text: string): string {
+  return text.replace(/\b\w+/g, word => VENDOR_WORDS[word.toLowerCase()] ?? word)
+}
+
+function prettifyBase(base: string): string {
   if (/^claude-/i.test(base)) {
     // Anthropic ids spell the version with hyphens (`haiku-4-5`, `fable-5-1`);
     // the human name is dotted ("Haiku 4.5"), not "Haiku 4 5".
@@ -96,7 +111,7 @@ function prettifyBase(base: string): string {
     return base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')
   }
 
-  return titleCase(base.replace(/-/g, ' '))
+  return applyVendorCasing(titleCase(base.replace(/-/g, ' ')))
 }
 
 /** Split a model id into a clean display name plus an optional grayed variant

@@ -11,6 +11,7 @@ from hermes_cli.models import (
     normalize_provider,
     provider_model_ids,
 )
+from hermes_cli.models_validate import validate_requested_model
 
 
 def test_nebius_aliases_resolve(monkeypatch):
@@ -185,3 +186,59 @@ def test_nebius_model_normalization_strips_canonical_and_alias_prefixes():
     assert normalize_model_for_provider(
         "openai/gpt-oss-120b-fast", "nebius-token-factory"
     ) == "openai/gpt-oss-120b-fast"
+
+
+def test_nebius_relay_listing_validates_relay_only_model(monkeypatch):
+    """An explicit relay URL must outrank Nebius's canonical profile catalog."""
+    seen = []
+    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: ["official-model"])
+
+    def fetch_models(api_key, base_url):
+        seen.append((api_key, base_url))
+        return ["relay-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch_models)
+
+    result = validate_requested_model(
+        "relay-model",
+        "nebius-token-factory",
+        api_key="test-key",
+        base_url="http://127.0.0.1:9001/nebius-token-factory/v1",
+    )
+
+    assert result["accepted"] is True
+    assert seen == [("test-key", "http://127.0.0.1:9001/nebius-token-factory/v1")]
+
+
+def test_nebius_unreachable_relay_does_not_reject_from_official_catalog(monkeypatch):
+    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: ["official-model"])
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
+
+    result = validate_requested_model(
+        "relay-model",
+        "nebius-token-factory",
+        api_key="test-key",
+        base_url="http://127.0.0.1:9001/nebius-token-factory/v1",
+    )
+
+    assert result["accepted"] is True
+    assert result["recognized"] is False
+    assert "curated catalog" in result["message"]
+
+
+def test_nebius_canonical_endpoint_keeps_authoritative_catalog(monkeypatch):
+    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: ["official-model"])
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url: ["relay-model"],
+    )
+
+    result = validate_requested_model(
+        "unknown-model",
+        "nebius-token-factory",
+        api_key="test-key",
+        base_url="https://api.tokenfactory.nebius.com/v1",
+    )
+
+    assert result["accepted"] is False
+    assert "provider's catalog" in result["message"]

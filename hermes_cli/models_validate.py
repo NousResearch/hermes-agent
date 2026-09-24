@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname
 from hermes_constants import openrouter_variant_base
 
 
@@ -457,7 +457,7 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     return None
 
 
-def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
+def _profile_catalog(req: _Request) -> tuple[list[str], bool]:
     """``(catalog, authoritative)`` for a profile whose catalog is not the generic
     ``{base_url}/models`` listing — it overrides ``fetch_models`` or points ``models_url``
     elsewhere — so that listing is not authoritative for it (a relay may 200 with a different
@@ -469,14 +469,21 @@ def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
     from providers import get_provider_profile
     from providers.base import ProviderProfile
 
-    profile = get_provider_profile(normalized)
+    profile = get_provider_profile(req.normalized)
     if profile is None:
+        return [], False
+    # A provider-owned catalog is authoritative only for that provider's endpoint.  An explicit
+    # base_url may instead route this provider through an OpenAI-compatible relay whose /models
+    # listing is the source of truth; applying the vendor catalog there rejects relay-only models
+    # before the configured endpoint is ever queried.
+    configured_host = base_url_hostname(req.base_url or "")
+    if configured_host and configured_host != base_url_hostname(profile.base_url):
         return [], False
     generic = (profile.base_url or "").rstrip("/") + "/models"
     own_endpoint = bool(profile.models_url) and profile.models_url.rstrip("/") != generic
     if not own_endpoint and type(profile).fetch_models is ProviderProfile.fetch_models:
         return [], False
-    catalog = _static_catalog(normalized)
+    catalog = _static_catalog(req.normalized)
     return catalog, own_endpoint and bool(catalog)
 
 
@@ -486,7 +493,7 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
-    catalog, authoritative = _profile_catalog(req.normalized)
+    catalog, authoritative = _profile_catalog(req)
     if catalog:
         match = _match_in_catalog(req.lookup, catalog, suggest_query=req.requested)
         if match.exact:

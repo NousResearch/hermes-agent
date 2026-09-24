@@ -418,6 +418,7 @@ from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
 from hermes_cli.subcommands.sessions import build_sessions_parser
 from hermes_cli.subcommands.completion import build_completion_parser
+from hermes_cli.subcommands.commands import build_commands_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -2766,6 +2767,13 @@ def cmd_completion(args, parser=None):
     print(generate(parser))
 
 
+def cmd_commands(args, parser=None):
+    """Print the full command tree (every group + subcommand) in one call."""
+    from hermes_cli.commands_tree import cmd_commands as _render
+
+    _render(args, parser)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -3464,6 +3472,9 @@ def _build_cli_parser():
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
     build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
+    # Deliberately NOT in _BUILTIN_SUBCOMMANDS: the unknown-token path runs plugin
+    # discovery, so the printed tree includes plugin-registered commands too.
+    build_commands_parser(subparsers, cmd_commands=cmd_commands, parser=parser)
     build_dashboard_parser(
         subparsers,
         cmd_dashboard=cmd_dashboard,

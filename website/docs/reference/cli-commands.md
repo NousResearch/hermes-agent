@@ -104,6 +104,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
+| `hermes commands` | Print every command and subcommand as one indented tree (`--json` for tooling). |
 | `hermes --version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
@@ -1948,6 +1949,28 @@ hermes completion zsh >> ~/.zshrc
 # Fish
 hermes completion fish > ~/.config/fish/completions/hermes.fish
 ```
+
+## `hermes commands`
+
+```bash
+hermes commands [--json]
+```
+
+Print the whole command tree — every group, its subcommands, and their one-line descriptions — in a single call. `hermes --help` lists only the ~70 top-level groups, so learning that `hermes cron resnap` exists otherwise costs one more `--help` per group; this is the one-shot inventory for agents and scripts. The tree is walked from the live argparse parser (plugin-registered commands included), so it never drifts from what the CLI accepts. Deprecated hidden commands are omitted exactly as in `--help`.
+
+```text
+hermes command tree — 70 groups, 413 commands.
+Flags for any node: `hermes <command> [<subcommand>] --help`.
+
+chat                          Interactive chat with the agent
+...
+cron                          Cron job management
+  list                        List scheduled jobs
+  create                      Create a scheduled job
+  ...
+```
+
+`--json` emits `{"prog": "hermes", "subcommands": [{"name", "help", "subcommands": [...]}, ...]}` for tooling.
 
 ## `hermes update`
 

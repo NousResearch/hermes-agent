@@ -1,6 +1,7 @@
 # Hermes CLI Reference
 
-Live sources when anything looks stale: `hermes --help`, `hermes <command> --help`,
+Live sources when anything looks stale: `hermes commands` (whole tree in one call; `--json`
+for tooling), `hermes <command> --help` for flags,
 https://hermes-agent.nousresearch.com/docs/reference/cli-commands
 
 ### Global Flags

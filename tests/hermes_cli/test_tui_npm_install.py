@@ -812,3 +812,69 @@ class TestPersistentNpmUserconfig:
         monkeypatch.delenv("NPM_CONFIG_USERCONFIG")
         env = main_tui_launch._npm_lifecycle_env({"NPM_CONFIG_USERCONFIG": "/from-caller/npmrc"})
         assert env["NPM_CONFIG_USERCONFIG"] == "/from-caller/npmrc"
+
+# ── npm run build child env: managed node tree must be on PATH (#104089) ──
+
+
+def test_tui_npm_build_prepends_managed_node_dir_to_child_path(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """npm runs by absolute path, but its lifecycle script spawns `node`
+    (e.g. `node scripts/build.mjs`) through cmd/sh, which resolves from PATH.
+    A server whose PATH lacks the managed tree (the dashboard running as a
+    Windows service) used to fail every `npm run build` — and thus every chat
+    attach — with "'node' is not recognized" (#104089). The build child env
+    must carry the managed node directories, like the install child env."""
+    import hermes_constants
+
+    managed = tmp_path / "node" / "bin"
+    managed.mkdir(parents=True)
+    monkeypatch.setattr(
+        hermes_constants, "iter_hermes_node_dirs", lambda home=None: [managed]
+    )
+    # A service-like PATH: usable for the process itself, but without the tree
+    # the npm lifecycle script needs.
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-mismatch")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_tui_launch._run_tui_npm_build("/managed/npm", tmp_path, "TUI build failed.")
+
+    assert calls[0][0][0] == ["/managed/npm", "run", "build"]
+    env = calls[0][1]["env"]
+    assert env["PATH"].split(os.pathsep)[0] == str(managed)
+    assert env["CI"] == "1"
+    assert "ESBUILD_BINARY_PATH" not in env
+
+
+def test_tui_npm_build_does_not_duplicate_managed_dir_already_on_path(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """An already-present managed dir must not be prepended again — a growing
+    PATH would accumulate duplicate entries across every build launch."""
+    import hermes_constants
+
+    managed = tmp_path / "node" / "bin"
+    managed.mkdir(parents=True)
+    monkeypatch.setattr(
+        hermes_constants, "iter_hermes_node_dirs", lambda home=None: [managed]
+    )
+    monkeypatch.setenv("PATH", f"{managed}{os.pathsep}/usr/bin")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_tui_launch._run_tui_npm_build("/managed/npm", tmp_path, "TUI build failed.")
+
+    parts = calls[0][1]["env"]["PATH"].split(os.pathsep)
+    assert parts.count(str(managed)) == 1

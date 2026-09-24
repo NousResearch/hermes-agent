@@ -56,6 +56,7 @@ hermes plugins disable disk-cleanup
 | 插件 | 类型 | 用途 |
 |---|---|---|
 | `disk-cleanup` | hook + 斜杠命令 | 自动追踪临时文件并在会话结束时清理 |
+| `security-guidance` | hook | 在 `write_file`/`patch` 上对危险代码模式做匹配，并追加安全警告（或拦截）——25 条规则（Anthropic `claude-plugins-official` 模式的 Apache-2.0 派生）|
 | `observability/langfuse` | hook | 将轮次 / LLM 调用 / 工具追踪到 [Langfuse](https://langfuse.com) |
 | `spotify` | 后端（7 个工具） | 原生 Spotify 播放、队列、搜索、播放列表、专辑、曲库 |
 | `google_meet` | 独立插件 | 加入 Meet 通话、实时字幕转录、可选实时双工音频 |
@@ -114,6 +115,28 @@ hermes plugins disable disk-cleanup
 **启用：** `hermes plugins enable disk-cleanup`（或在 `hermes plugins` 中勾选复选框）。
 
 **再次禁用：** `hermes plugins disable disk-cleanup`。
+
+### security-guidance
+
+文件写入时的快速模式匹配安全警告。当 agent 的 `write_file` / `patch` / `skill_manage` 调用携带的内容匹配到已知的危险代码模式时——例如 `pickle.load`、未指定 `SafeLoader` 的 `yaml.load`、`eval(`、`os.system`、`subprocess(..., shell=True)`、JS `child_process.exec`、React `dangerouslySetInnerHTML`、裸 `.innerHTML =` / `.outerHTML =` / `document.write`、Node `crypto.createCipher`、AES ECB 模式、关闭 TLS 校验、易受 XXE 攻击的 `xml.etree` / `minidom` parser、缺少 SRI 的 `<script src="//..." >`、`torch.load` 未带 `weights_only=True`、GitHub Actions `${{ github.event.* }}` 注入——插件会向该工具结果追加一段 `⚠️ Security guidance` 提示块。
+
+文件仍会被写入。模型在下一轮的工具消息中读到这个警告，可以选择修复代码，或解释为什么这种写法在当前上下文是安全的。模式匹配存在不可忽略的误报率，所以默认是 warn（而不是 block）模式。
+
+**覆盖范围：** 共 25 条规则，涵盖不安全反序列化、命令注入、XSS sink、加密陷阱、XXE、供应链（SRI）以及 CI/CD workflow 注入。模式数据是 [Anthropic `claude-plugins-official`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/security-guidance/hooks) 的 Apache-2.0 派生（verbatim 拷贝）——归属声明见插件的 `LICENSE` 与 `NOTICE` 文件。
+
+**模式：**
+
+| 环境变量 | 效果 |
+|---|---|
+| （未设置） | **warn 模式**（默认）——文件被写入，警告追加到结果中 |
+| `SECURITY_GUIDANCE_BLOCK=1` | **block 模式**——拒绝写入，警告作为拦截原因返回 |
+| `SECURITY_GUIDANCE_DISABLE=1` | kill switch——插件加载但不做任何事 |
+
+**启用：** `hermes plugins enable security-guidance`（或在 `hermes plugins` 中勾选复选框）。
+
+**再次禁用：** `hermes plugins disable security-guidance`。
+
+**目前尚未覆盖的能力：** 上游 Anthropic 插件还有两层——agent 每轮触碰文件后的 LLM diff review、以及在 commit 时跨文件追踪数据流的 agentic 审查。这两层都还没移植。如有需要，可以通过 `delegate_task` 让 agent 按需运行类似的审查。
 
 ### observability/langfuse
 

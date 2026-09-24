@@ -414,7 +414,7 @@ def write_self(text: str, ts: datetime) -> None:
     path = self_path()
     fd, tmp = tempfile.mkstemp(prefix=".self.", dir=str(path.parent))
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text.strip()[:SELF_MAX_CHARS] + "\n")
+        fh.write(text.strip() + "\n")  # length is checked by the caller: never cut
     os.replace(tmp, path)
 
 

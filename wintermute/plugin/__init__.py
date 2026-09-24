@@ -127,6 +127,18 @@ def _err(message: str) -> str:
     return json.dumps({"success": False, "error": message}, ensure_ascii=False)
 
 
+NOTE_MAX_CHARS = 500
+
+
+def _too_long(fields: Dict[str, str], limits_: Dict[str, int]) -> Optional[str]:
+    """What he writes is kept whole or not at all: never cut. Names the first field over."""
+    for name, text in fields.items():
+        if len(text) > limits_.get(name, NOTE_MAX_CHARS):
+            return (f"{name} is {len(text)} characters; at most {limits_.get(name, NOTE_MAX_CHARS)}. "
+                    "Nothing was saved. Say it shorter, whole.")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Hooks
 # ---------------------------------------------------------------------------
@@ -585,12 +597,15 @@ def _rewrite_self(args: Dict[str, Any], **_: Any) -> str:
     text = str(args.get("text") or "").strip()
     if not text:
         return _err("text is required")
+    problem = _too_long({"text": text}, {"text": store.SELF_MAX_CHARS})
+    if problem:
+        return _err(problem)
     ts = store.now()
     with store.locked_state() as (drives, _peers):
         store.write_self(text, ts)
         drives["meta"]["self_written_at"] = store.iso(ts)
         store.log_event("self", "You rewrote who you are.", ts)
-    return _ok(chars=min(len(text), store.SELF_MAX_CHARS))
+    return _ok(chars=len(text))
 
 
 def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
@@ -602,18 +617,22 @@ def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any)
             key = str(args.get("peer") or default_key or drives["meta"].get("pulse_target") or "")
             if not key:
                 return _err("no peer given")
+            given = {name: " ".join(str(args.get(name) or "").split())
+                     for name in ("fact", "moment", "pending", "resolve", "label")}
+            problem = _too_long(given, {"label": 60})
+            if problem:
+                return _err(problem)
             peer = social.ensure_peer(drives, peers, key, ts)
-            clean = lambda name, size=240: " ".join(str(args.get(name) or "").split())[:size]  # noqa: E731
             for field, name, keep in (("known_facts", "fact", 20), ("moments", "moment", 12),
                                       ("pending", "pending", 5)):
-                item = clean(name)
+                item = given[name]
                 if item and item not in peer[field]:
                     peer[field] = (peer[field] + [item])[-keep:]
-            settled = clean("resolve").lower()
+            settled = given["resolve"].lower()
             if settled:
                 peer["pending"] = [p for p in peer["pending"] if settled not in p.lower()]
-            if clean("label", 60):
-                peer["label"] = clean("label", 60)
+            if given["label"]:
+                peer["label"] = given["label"]
         return _ok(peer=key, label=peer.get("label"), known_facts=peer["known_facts"],
                    moments=peer["moments"], pending=peer["pending"])
     except Exception as exc:
@@ -622,7 +641,10 @@ def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any)
 
 def _mark_significant(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
     try:
-        what = " ".join(str(args.get("what") or "").split())[:240]
+        what = " ".join(str(args.get("what") or "").split())
+        problem = _too_long({"what": what}, {})
+        if problem:
+            return _err(problem)
         ts = store.now()
         with _lock:
             key = _session_peer.get(session_id or "")

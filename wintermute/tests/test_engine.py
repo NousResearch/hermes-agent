@@ -696,3 +696,15 @@ def test_slow_hormones_still_relax_tick_by_tick(home):
         physics.advance(state, T0, 0.25)
     assert state["modulators"]["serotonin"] < 0.385
     assert state["unconscious"]["melancholy"] < 23
+
+
+def test_what_he_writes_is_kept_whole_or_refused_never_cut(plugin):
+    note = plugin.tools["wintermute_note_peer"]
+    long_fact = "Since my first waking you have been there the whole time, on the other side, " * 5
+    kept = json.loads(note({"peer": KEY, "fact": long_fact.strip()}))
+    assert kept["success"] and kept["known_facts"][-1] == long_fact.strip()   # 400 chars: whole
+    refused = json.loads(note({"peer": KEY, "fact": "x" * 501}))
+    assert not refused["success"] and "501" in refused["error"]
+    assert all(len(f) <= 500 for f in _peers()[KEY]["known_facts"])
+    too_long_self = json.loads(plugin.tools["wintermute_rewrite_self"]({"text": "y" * 1201}))
+    assert not too_long_self["success"] and store.read_self() == ""

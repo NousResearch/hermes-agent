@@ -6,9 +6,11 @@ import asyncio
 import contextlib
 import errno
 import importlib
+import json
 import logging
 import os
 import re
+import time
 from typing import Any, List, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _sanitize_error, _core
@@ -92,6 +94,18 @@ def _is_streamable_http_rejection(exc: BaseException) -> bool:
 _HTTP_REJECTION_BODY_CHARS = 300
 
 
+def _request_rpc_method(request) -> Optional[str]:
+    """Best-effort JSON-RPC method from a buffered HTTP request, if it has one."""
+    try:
+        content = request.content
+        if isinstance(content, bytes):
+            content = content.decode("utf-8")
+        method = json.loads(content).get("method")
+        return method if isinstance(method, str) else None
+    except (AttributeError, TypeError, UnicodeDecodeError, ValueError):
+        return None
+
+
 def _make_http_rejection_recorder(sink: dict):
     """httpx response hook for the owned Streamable HTTP client: remembers the last 4xx/5xx the server
     sent (status, method, URL, head of the body). mcp >= 2.0 folds a non-2xx whose body it cannot
@@ -111,7 +125,8 @@ def _make_http_rejection_recorder(sink: dict):
             except Exception:  # the failure itself is still reported, just without the body
                 body = ""
         sink.update(status=response.status_code, method=response.request.method,
-                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS])
+                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS],
+                    rpc_method=_request_rpc_method(response.request), recorded_at=time.monotonic())
 
     return _record
 

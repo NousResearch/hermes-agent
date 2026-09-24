@@ -68,7 +68,11 @@ class TestChatVerboseArg:
         assert not hasattr(args, "verbose")
 
 
-    def test_cmd_chat_forwards_none_when_verbose_is_absent(self, monkeypatch):
+    @pytest.mark.parametrize("argv,skip_provider", [
+        (["chat"], False),
+        (["chat", "-Q", "-q", "eval", "--no-memory-provider"], True),
+    ])
+    def test_cmd_chat_forwards_none_when_verbose_is_absent(self, monkeypatch, argv, skip_provider):
         import types
         import sys
 
@@ -77,7 +81,7 @@ class TestChatVerboseArg:
 
         parser, _subparsers, chat_parser = build_top_level_parser()
         chat_parser.set_defaults(func=main_mod.cmd_chat)
-        args = parser.parse_args(["chat"])
+        args = parser.parse_args(argv)
         captured = {}
         fake_cli = types.ModuleType("cli")
 
@@ -98,8 +102,9 @@ class TestChatVerboseArg:
 
         main_mod.cmd_chat(args)
 
-        assert captured["quiet"] is False
+        assert captured["quiet"] is skip_provider
         assert "verbose" not in captured
+        assert captured["no_memory_provider"] is skip_provider
 
 
 @pytest.mark.parametrize("argv", [

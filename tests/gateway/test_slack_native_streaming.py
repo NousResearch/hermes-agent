@@ -430,14 +430,25 @@ class TestSendFinalization:
         assert not _open_streams(adapter)
 
     @pytest.mark.asyncio
-    async def test_rewritten_turn_final_seals_stale_stream_then_posts(self):
-        """A turn-final (notify=True) that no longer continues the stream."""
+    async def test_rewritten_turn_final_replaces_stream_in_place(self):
+        """A mrkdwn-rewritten turn-final (notify=True) replaces the sealed stream; no 2nd post."""
         adapter, client = _make_adapter()
-        await adapter.send_draft("D1", 7, "Draft answer that got rewritten", metadata=META)
-        result = await adapter.send("D1", "Completely new answer", metadata=dict(META, notify=True))
+        await adapter.send_draft("D1", 7, "*Done:* all good", metadata=META)
+        result = await adapter.send("D1", "_Done:_ all good", metadata=dict(META, notify=True))
         assert result.success
         client.chat_stopStream.assert_awaited_once()
-        assert "markdown_text" not in client.chat_stopStream.await_args.kwargs
+        client.chat_update.assert_awaited()
+        assert client.chat_update.await_args.kwargs["ts"] == result.message_id
+        client.chat_postMessage.assert_not_awaited()
+        assert not _open_streams(adapter)
+
+    @pytest.mark.asyncio
+    async def test_rewritten_turn_final_posts_when_update_fails(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer that got rewritten", metadata=META)
+        client.chat_update = AsyncMock(side_effect=Exception("update failed"))
+        result = await adapter.send("D1", "Completely new answer", metadata=dict(META, notify=True))
+        assert result.success
         client.chat_postMessage.assert_awaited_once()
         assert not _open_streams(adapter)
 

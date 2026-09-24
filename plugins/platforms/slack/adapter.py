@@ -2618,11 +2618,17 @@ class SlackAdapter(BasePlatformAdapter):
         kind, delta = self._stream_relation(stream.get("sent", ""), text)
         if kind == "unrelated":
             if md.get("notify"):
-                # A turn-final that does not continue the stream (the model rewrote its answer):
-                # close the stale stream on what is visible so no live-typing indicator hangs,
-                # then let send() post the real final.
+                # A turn-final that does not continue the stream (the model rewrote its answer,
+                # e.g. mrkdwn conversion turned ``*Done:*`` into ``_Done:_``): close the stale
+                # stream, then replace its content in place so the thread holds ONE answer.
+                # Only when the in-place update fails does send() post the real final.
                 self._active_streams.pop(key, None)
-                await self._seal_stream(chat_id, stream)
+                if await self._seal_stream(chat_id, stream) and text.strip():
+                    replaced = await self.edit_message(
+                        chat_id, stream["ts"], text, finalize=True, metadata=metadata)
+                    if replaced.success:
+                        await self.stop_typing(chat_id, metadata)
+                        return SendResult(success=True, message_id=stream["ts"])
             return None
         if kind == "extends" and len(delta) > self.MAX_MESSAGE_LENGTH:
             # Tail too large for one append: close the stream on what is visible and let the

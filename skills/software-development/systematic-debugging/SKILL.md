@@ -300,6 +300,84 @@ pytest tests/ -q
 - **If ≥ 3: STOP and question the architecture (step 5 below)**
 - DON'T attempt Fix #4 without architectural discussion
 
+### 4l. GitHub Pages Browser Cache — Live Site Has Fix But Browser Shows Old Code
+
+**Symptom:** You deployed a fix to GitHub Pages, but testing shows the bug still exists. The browser seems to be running old code even though `curl` confirms the server has the new file.
+
+**Root Cause:** Browser or CDN caching. GitHub Pages aggressively caches assets. The fix is on the server but the browser is running cached JavaScript.
+
+**Diagnosis — verify actual deployed code:**
+```bash
+# Check what's actually served from GitHub Pages
+curl -s "https://yeluo45.github.io/path/index.html" | grep -n "fix_pattern"
+
+# Or check a specific function in the deployed JS
+curl -s "https://domain.com/assets/bundle.js" | grep "function_name"
+```
+
+**Diagnosis — check what the browser actually loaded:**
+```javascript
+// In browser console — check function source code
+startCombat.toString().includes('drawPile = shuffle')  // true = fix present
+
+// Or check a specific variable
+window.hasOwnProperty('someFunction')
+```
+
+**Fix:** Force refresh:
+- `Ctrl+Shift+R` (Windows/Linux) or `Cmd+Shift+R` (macOS) — hard refresh
+- Append a cache-busting query param: `https://domain.com/?t=1700000000000`
+- Open in incognito/private window
+- Clear browser cache for the domain
+
+**Why `curl` confirms but browser doesn't:** `curl` fetches fresh from server. Browser uses cached version. The server file IS correct.
+
+**Prevention:** GitHub Pages cache headers typically expire after 10 minutes. If deploying a hotfix, always force-refresh or use cache-busting URL.
+
+### 4m. MUI Conditional Render — Empty Box When Falsy String
+
+**Symptom:** A visible empty rectangular box appears on screen where no content should be. No console errors. The box has the right styles but no content.
+
+**Root Cause:** In React/MUI, `{condition && <Box>}` evaluates to `false` when `condition` is a falsy value — but React still renders... something. When `condition` is an empty string `''`, MUI's `Box` component with `sx` prop apparently renders a zero-height but full-width element that appears as a thin line/rectangle. Or in some React versions, the `&&` short-circuit returns the falsy value itself which can cause rendering issues.
+
+**Classic pattern that breaks:**
+```jsx
+// memoNotification is a string — could be '' or null or 'some text'
+{memoNotification && (
+  <Box sx={{ p: 1, bgcolor: 'rgba(255,255,255,0.05)', borderRadius: 1 }}>
+    <Typography>{memoNotification}</Typography>
+  </Box>
+)}
+```
+
+When `memoNotification` is `''` (empty string):
+- `'' && <Box>` evaluates to `''` (falsy)
+- React renders `''` which appears as nothing... BUT if the condition was meant to hide it entirely and doesn't, you might see a ghost box
+
+Actually the more common pattern: When `condition` is `null` or `undefined`, React renders nothing. But empty string `''` can sometimes cause issues especially with MUI Box components that have `sx` props.
+
+**Fix — always use double-bang or trim guard:**
+```jsx
+// Safe: explicit boolean check
+{memoNotification && memoNotification.trim() && (
+  <Box>...</Box>
+)}
+
+// Or:
+{!!memoNotification && memoNotification.trim() && (
+  <Box>...</Box>
+)}
+
+// Or use ternary (always safest):
+{memoNotification ? (
+  <Box>...</Box>
+) : null}
+```
+
+**Rule:** For any condition that could be a string, always add `&& condition.trim()` before rendering JSX, not just `&& condition`. Empty string `''` is falsy in `&&` but can cause rendering quirks in MUI.
+
+**Diagnosis:** Add `console.log('rendering notification:', JSON.stringify(memoNotification))` right before the conditional. If it logs `""` but the box still appears, you have this bug.
+
 ### 5. If 3+ Fixes Failed: Question Architecture
 
 **Pattern indicating an architectural problem:**

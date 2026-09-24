@@ -41,6 +41,7 @@ from hermes_cli.profiles import (
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
+    profile_is_served,
 )
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -1736,6 +1737,64 @@ class TestProfilesToServe:
         assert profiles.profile_is_standalone(alpha) is False
         assert profiles.profile_is_standalone(beta) is False
         assert profiles.profile_is_standalone(alpha) is False
+
+
+class TestProfileIsServed:
+    """profile_is_served(name) — the per-name twin of the profiles_to_serve roster."""
+
+    @staticmethod
+    def _agrees(name, **kw):
+        """Assert the twin answers exactly what roster membership answers, and return it."""
+        roster = {n for n, _ in profiles_to_serve(multiplex=True, **kw)}
+        answer = profile_is_served(name, True, **kw)
+        assert answer is (name in roster), name
+        return answer
+
+    def test_agrees_with_the_roster_across_the_opt_out_matrix(self, profile_env):
+        create_profile("member", no_alias=True)
+        create_profile("solo", no_alias=True)
+        create_profile("dormant", no_alias=True)
+        (get_profile_dir("solo") / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        (get_profile_dir("dormant") / "gateway.parked").write_text("")
+        assert self._agrees("default") is True
+        assert self._agrees("member") is True
+        assert self._agrees("solo") is False
+        assert self._agrees("dormant") is False
+        assert self._agrees("missing") is False
+        assert self._agrees("solo", include_standalone=True) is True
+        assert self._agrees("dormant", include_parked=True) is True
+
+    def test_tombstoned_and_marker_less_dirs_are_not_served(self, profile_env):
+        from hermes_constants import mark_named_profile_deleted
+
+        create_profile("gone", no_alias=True)
+        mark_named_profile_deleted(get_profile_dir("gone"))
+        (profiles._get_profiles_root() / "ghost").mkdir(parents=True)
+        assert self._agrees("gone") is False
+        assert self._agrees("ghost") is False
+
+    @pytest.mark.parametrize("name", ["Member", " member", "../default", "", "member/x"])
+    def test_a_name_is_matched_as_it_is_spelled_on_disk(self, profile_env, name):
+        create_profile("member", no_alias=True)
+        assert self._agrees(name) is False
+
+    def test_answered_without_enumerating_profiles(self, profile_env, monkeypatch):
+        """The whole point: the request path must not walk profiles/ to route one prefix."""
+        create_profile("member", no_alias=True)
+
+        def _enumerated(*_args, **_kwargs):
+            raise AssertionError("profile_is_served enumerated profiles/")
+
+        monkeypatch.setattr(profiles, "_iter_named_profile_dirs", _enumerated)
+        assert profile_is_served("member", True) is True
+        assert profile_is_served("missing", True) is False
+
+    def test_single_profile_gateway_serves_only_the_active_profile(self, profile_env, monkeypatch):
+        create_profile("coder", no_alias=True)
+        monkeypatch.setenv("HERMES_HOME", str(get_profile_dir("coder")))
+        assert [n for n, _ in profiles_to_serve(multiplex=False)] == ["coder"]
+        assert profile_is_served("coder", False) is True
+        assert profile_is_served("default", False) is False
 
 
 # ---------------------------------------------------------------------------

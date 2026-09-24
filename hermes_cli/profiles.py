@@ -1070,9 +1070,48 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", default)]
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
-                 if (include_standalone or not profile_is_standalone(entry))
-                 and (include_parked or not profile_is_parked(entry)))
+                 if _profile_is_servable(entry, include_standalone=include_standalone,
+                                         include_parked=include_parked))
     return serve
+
+
+def _profile_is_servable(home: Path, *, include_standalone: bool, include_parked: bool) -> bool:
+    """The opt-outs a named profile can carry, shared by :func:`profiles_to_serve` and
+    :func:`profile_is_served` so the roster and the membership test cannot drift apart."""
+    return ((include_standalone or not profile_is_standalone(home))
+            and (include_parked or not profile_is_parked(home)))
+
+
+def profile_is_served(name: str, multiplex: bool, *, include_standalone: bool = False,
+                      include_parked: bool = False) -> bool:
+    """Is *name* in ``profiles_to_serve(multiplex, ...)``, answered without enumerating ``profiles/``.
+
+    The ``/p/<profile>/`` prefix middlewares ask exactly this once per HTTP request. Building the
+    whole roster to answer it is O(profiles) stat calls on the event loop — tens of milliseconds
+    at a thousand profiles, paid by every request on the shared listener including the ones bound
+    for other profiles — while one name costs a handful of stats whatever the roster size.
+
+    A name is matched as it is spelled on disk: the roster yields directory names, so a mixed-case
+    prefix misses here too rather than resolving through ``normalize_profile_name``. The
+    parked-default warning stays a roster-build side effect; repeating it per request is noise.
+    """
+    if not isinstance(name, str):
+        return False
+    try:
+        canon = normalize_profile_name(name)
+    except ValueError:
+        return False
+    if canon != name:
+        return False
+    if not multiplex:
+        return canon == (get_active_profile_name() or "default")
+    if canon == "default":
+        return True
+    if not _PROFILE_ID_RE.match(canon):
+        return False
+    home = _get_profiles_root() / canon
+    return named_profile_is_live(home) and _profile_is_servable(
+        home, include_standalone=include_standalone, include_parked=include_parked)
 
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:

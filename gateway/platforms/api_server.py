@@ -1516,7 +1516,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _resolve_request_profile(self, request: "web.Request"):
         """Resolve + validate the /p/<profile>/ prefix: ``None`` (no prefix, or multiplexing
         off and the prefix names this gateway's own profile), the served profile name, or
-        ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
+        ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored.
+
+        Membership is resolved per name: this runs in the prefix middleware, so enumerating the
+        served roster here made every request O(profiles) stat calls on the event loop."""
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
             return None
@@ -1524,11 +1527,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not getattr(cfg, "multiplex_profiles", False):
             return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED
         try:
-            from hermes_cli.profiles import profiles_to_serve
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+            from hermes_cli.profiles import profile_is_served
+            served = profile_is_served(profile, multiplex=True)
         except Exception:
             return _PROFILE_REJECTED
-        return profile if profile in served else _PROFILE_REJECTED
+        return profile if served else _PROFILE_REJECTED
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):

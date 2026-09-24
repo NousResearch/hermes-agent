@@ -25,6 +25,7 @@ from agent.codex_runtime import (
     _codex_item_to_args,
     _codex_item_to_preview,
     _codex_item_to_tool_name,
+    _stable_call_id,
     make_codex_app_server_event_bridge,
 )
 
@@ -180,35 +181,39 @@ class TestToolProgressDispatch:
     def test_command_started_fires_tool_started(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({
+        item = {
             "type": "commandExecution",
             "id": "exec-1",
             "command": "ls /tmp",
             "cwd": "/tmp",
-        }))
+        }
+        bridge(_item_started(item))
         agent.tool_progress_callback.assert_called_once()
         call = agent.tool_progress_callback.call_args
         assert call.args[0] == "tool.started"
         assert call.args[1] == "exec_command"
         assert "ls /tmp" in call.args[2]  # preview
         assert call.args[3] == {"command": "ls /tmp", "cwd": "/tmp"}
+        assert call.kwargs["tool_call_id"] == _stable_call_id(item, "exec_command")
 
     def test_command_completed_fires_tool_completed_with_result(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({
+        started_item = {
             "type": "commandExecution",
             "id": "exec-2",
             "command": "echo hi",
             "cwd": "/tmp",
-        }))
-        bridge(_item_completed({
+        }
+        completed_item = {
             "type": "commandExecution",
             "id": "exec-2",
             "exitCode": 0,
             "aggregatedOutput": "hi\n",
             "durationMs": 42,
-        }))
+        }
+        bridge(_item_started(started_item))
+        bridge(_item_completed(completed_item))
         # tool.started then tool.completed
         assert agent.tool_progress_callback.call_count == 2
         completed = agent.tool_progress_callback.call_args_list[1]
@@ -219,6 +224,8 @@ class TestToolProgressDispatch:
         assert completed.kwargs["duration"] == pytest.approx(0.042)
         assert completed.kwargs["is_error"] is False
         assert completed.kwargs["result"] == "hi\n"
+        started = agent.tool_progress_callback.call_args_list[0]
+        assert started.kwargs["tool_call_id"] == completed.kwargs["tool_call_id"] == _stable_call_id(completed_item, "exec_command")
 
 
 

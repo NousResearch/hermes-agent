@@ -75,22 +75,61 @@ def _upgrade_queue(tool_call_ids: Dict[str, Deque[str]], name: str) -> Deque[str
     return queue
 
 
-def close_tool_call(
-    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
-) -> str | None:
-    """Close the oldest open ACP tool call for ``name``; returns its id, or None when none is open."""
+def _model_call_id(value: Any) -> str | None:
+    """Model tool-call id, when the callback actually carried one."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _claim_open_call(
+    tool_call_ids: Dict[str, Deque[str]], tool_call_meta: Dict[str, Dict[str, Any]], name: str, call_id: str | None,
+) -> tuple[str, Dict[str, Any]] | None:
+    """Take one open ACP row for ``name``.
+
+    A model call id closes that call only. Without one, the oldest row that
+    itself has no id is the legacy FIFO. An unidentified event must not consume
+    a sibling whose id is known: two terminal bubbles can both look finished
+    while one holds the other's result.
+    """
     queue = _upgrade_queue(tool_call_ids, name)
     if not queue:
         return None
-    tc_id = queue.popleft()
-    meta = tool_call_meta.pop(tc_id, {})
+    chosen = None
+    if call_id:
+        for ui_id in queue:
+            if tool_call_meta.get(ui_id, {}).get("call_id") == call_id:
+                chosen = ui_id
+                break
+    else:
+        for ui_id in queue:
+            if not tool_call_meta.get(ui_id, {}).get("call_id"):
+                chosen = ui_id
+                break
+    if chosen is None:
+        return None
+    queue.remove(chosen)
+    meta = tool_call_meta.pop(chosen, {})
+    if not queue:
+        tool_call_ids.pop(name, None)
+    return chosen, meta
+
+
+def close_tool_call(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
+    call_id: str | None = None,
+) -> str | None:
+    """Close one open ACP tool call for ``name``; returns its UI id, or None when none matches."""
+    claimed = _claim_open_call(tool_call_ids, tool_call_meta, name, _model_call_id(call_id))
+    if claimed is None:
+        return None
+    tc_id, meta = claimed
     _send_update(conn, session_id, loop, build_tool_complete(
         tc_id, name, result=str(result) if result is not None else None,
         function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
     ))
-    if not queue:
-        tool_call_ids.pop(name, None)
     return tc_id
 
 
@@ -124,17 +163,19 @@ def make_tool_progress_cb(
     """Create a ``tool_progress_callback`` for AIAgent.
 
     Signature: ``tool_progress_callback(event_type, name, preview, args, **kwargs)``.
-    Emits ``ToolCallStart`` for ``tool.started`` and tracks IDs in a FIFO per tool
-    name so parallel same-name calls complete against the right ACP tool call.
-    ``tool.completed`` closes that call with its own result — the step callback
-    only fires on the *next* step, which leaves a turn's last tools open."""
+    Emits ``ToolCallStart`` for ``tool.started``. When ``tool_call_id`` is present
+    it is the same pairing id the executor stores on the tool result, so a later
+    completion closes that row rather than the next same-name call. Untagged
+    events keep the legacy per-name FIFO. ``tool.completed`` closes the call
+    with its own result — the step callback only fires on the *next* step,
+    which leaves a turn's last tools open."""
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
         if event_type == "tool.completed" and name:
             # The executor's verdict: a cancelled/errored tool may return plain text the heuristic misses.
             close_tool_call(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
-                is_error=bool(kwargs.get("is_error")),
+                is_error=bool(kwargs.get("is_error")), call_id=kwargs.get("tool_call_id"),
             )
             return
         if event_type != "tool.started":
@@ -154,7 +195,10 @@ def make_tool_progress_cb(
                 snapshot = capture_local_edit_snapshot(name, args)
             except Exception:
                 logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
-        tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
+        meta = {"args": args, "snapshot": snapshot}
+        if call_id := _model_call_id(kwargs.get("tool_call_id")):
+            meta["call_id"] = call_id
+        tool_call_meta[tc_id] = meta
 
         edit_diff = None
         if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
@@ -259,35 +303,32 @@ def make_step_cb(
         if not isinstance(prev_tools, list):
             return
         for tool_info in prev_tools:
-            tool_name = result = function_args = None
+            tool_name = result = function_args = call_id = None
             if isinstance(tool_info, dict):
                 tool_name = tool_info.get("name") or tool_info.get("function_name")
                 # Key presence, not truthiness: "", 0 and False are real results (#10845).
                 result = tool_info.get("result") if "result" in tool_info else tool_info.get("output")
                 function_args = tool_info.get("arguments") or tool_info.get("args")
+                call_id = _model_call_id(tool_info.get("id")) or _model_call_id(tool_info.get("tool_call_id"))
             elif isinstance(tool_info, str):
                 tool_name = tool_info
 
             if not tool_name:
                 continue
-            # ``tool.completed`` already closed this call with its own result (empty queue
-            # below stands down); this callback is the fallback for runtimes that never
-            # project one.
-            queue = _upgrade_queue(tool_call_ids, tool_name)
-            if not queue:
-                continue
-            tc_id = queue.popleft()
-            meta = tool_call_meta.pop(tc_id, {})
-            # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
-            # builders index it as a dict, so an uncoerced string raised inside this
-            # (swallowed) callback and the bubble never closed.
-            _send_update(conn, session_id, loop, build_tool_complete(
-                tc_id, tool_name, result=str(result) if result is not None else None,
-                function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
-                snapshot=meta.get("snapshot"),
-            ))
-            if not queue:
-                tool_call_ids.pop(tool_name, None)
+            # Closing the row and publishing the native plan are separate.
+            # ``tool.completed`` may already have emptied this call's queue; the
+            # todo result in this batch still has to reach the plan panel.
+            claimed = _claim_open_call(tool_call_ids, tool_call_meta, tool_name, call_id)
+            if claimed is not None:
+                tc_id, meta = claimed
+                # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
+                # builders index it as a dict, so an uncoerced string raised inside this
+                # (swallowed) callback and the bubble never closed.
+                _send_update(conn, session_id, loop, build_tool_complete(
+                    tc_id, tool_name, result=str(result) if result is not None else None,
+                    function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
+                    snapshot=meta.get("snapshot"),
+                ))
             if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
 

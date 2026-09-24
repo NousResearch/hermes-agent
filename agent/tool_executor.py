@@ -987,7 +987,10 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         except Exception as callback_error:
             logging.debug("Tool progress callback error: %s", callback_error)
         else:
-            _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
+            _safe_callback(
+                agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args,
+                tool_call_id=tool_call_id,
+            )
     _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
 
     if not agent._checkpoint_mgr.enabled:
@@ -1107,7 +1110,8 @@ def _commit_tool_result(
         # reconstruct the result even if the UI bridge dies mid-projection.
         _safe_callback(
             agent.tool_progress_callback, "Tool progress",
-            "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
+            "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error,
+            result=function_result, tool_call_id=tool_call_id,
         )
     if isinstance(function_result, str) and len(function_result) >= _LARGE_TOOL_RESULT_TRIM_CHARS:
         agent._trim_after_tool_batch = True

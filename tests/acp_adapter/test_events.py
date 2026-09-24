@@ -252,39 +252,39 @@ class TestAssistantMessageIds:
 class TestToolCallsAlwaysReachATerminalStatus:
     """A tool call left ``in_progress`` makes a finished turn look like it ran nothing.
 
-    Every call is closed exactly once: its own ``tool.completed`` wins when projected;
-    otherwise the per-call ``prev_tools`` fallback closes it. Whatever is still open
-    at turn end is failed with both per-turn dicts drained together.
+    Every call is closed exactly once, matched by model tool-call id when the
+    runtime supplies one. A repeated row for a call that already completed must
+    not close the next same-name sibling. Whatever is still open at turn end is
+    failed with both per-turn dicts drained together.
     """
 
     def _patch(self):
         return patch("acp_adapter.events.asyncio.run_coroutine_threadsafe")
 
-    def test_tool_completed_closes_its_call_and_step_fallback_closes_the_rest(
+    def test_repeated_completion_does_not_close_the_same_name_sibling(
         self, mock_conn, event_loop_fixture,
     ):
-        from collections import deque
+        """Call A's progress completion, then A's row again, must leave B open.
 
-        ids = {"read": deque(["tc-1", "tc-2"])}
-        meta = {"tc-1": {"args": {"path": "a"}}}
+        Identical arguments on both rows used to pass while B inherited A's result.
+        """
+        ids, meta = {}, {}
         progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, meta)
         step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta)
         with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete") as btc:
             rcts.return_value = MagicMock(spec=Future)
-            progress("tool.completed", "read", None, None, result="file body")
-            step(2, [{"name": "read", "result": "file body", "arguments": '{"path": "a"}'}])
+            progress("tool.started", "read", None, {"path": "a"}, tool_call_id="call-A")
+            progress("tool.started", "read", None, {"path": "b"}, tool_call_id="call-B")
+            ui_a, ui_b = list(ids["read"])
+            progress("tool.completed", "read", None, None, result="body-A", tool_call_id="call-A")
+            step(2, [{"id": "call-A", "name": "read", "result": "body-A", "arguments": '{"path": "a"}'}])
 
-        assert btc.call_count == 2
-        btc.assert_any_call(
-            "tc-1", "read", result="file body",
+        btc.assert_called_once_with(
+            ui_a, "read", result="body-A",
             function_args={"path": "a"}, snapshot=None, is_error=False,
         )
-        btc.assert_called_with(
-            "tc-2", "read", result="file body",
-            function_args={"path": "a"}, snapshot=None,
-        )
-        assert "read" not in ids
-        assert meta == {}
+        assert list(ids["read"]) == [ui_b]
+        assert meta[ui_b]["args"] == {"path": "b"}
 
     def test_step_fallback_coerces_wire_arguments_and_turn_end_flush_fails_what_is_still_open(
         self, mock_conn, event_loop_fixture,

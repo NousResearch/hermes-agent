@@ -239,7 +239,22 @@ def prepare_iteration(
 
 
 def _previous_tool_round(messages: Any) -> list:
-    """The newest assistant tool_calls batch with each call's result, for ``agent:step``."""
+    """The newest assistant tool_calls batch with each call's result, for ``agent:step``.
+
+    ``id`` is the pairing id (``call_id``, else ``id``, pipe-suffix stripped). That
+    is the id stored on the tool result and the id ``tool.completed`` carries.
+    The raw ``id`` field is not enough: Responses rows use ``call_id|item`` and
+    two calls to the same tool are not distinguishable by name.
+    """
+    from agent.message_sanitization import coalesce_tool_call_id
+
+    def _joined(results: dict, pairing_id: str | None, raw_id: Any):
+        if pairing_id is not None and pairing_id in results:
+            return results[pairing_id]
+        if raw_id is not None and raw_id in results:
+            return results[raw_id]
+        return None
+
     for _idx, _m in enumerate(reversed(messages)):
         if _m.get("role") == "assistant" and _m.get("tool_calls"):
             _results_by_id = {}
@@ -249,15 +264,18 @@ def _previous_tool_round(messages: Any) -> list:
                 _tcid = _tm.get("tool_call_id")
                 if _tcid:
                     _results_by_id[_tcid] = _tm.get("content", "")
-            return [
-                {
+            rows = []
+            for tc in _m["tool_calls"]:
+                if not isinstance(tc, dict):
+                    continue
+                pairing_id = coalesce_tool_call_id(tc) or None
+                rows.append({
+                    "id": pairing_id,
                     "name": tc["function"]["name"],
-                    "result": _results_by_id.get(tc.get("id")),
+                    "result": _joined(_results_by_id, pairing_id, tc.get("id")),
                     "arguments": tc["function"].get("arguments"),
-                }
-                for tc in _m["tool_calls"]
-                if isinstance(tc, dict)
-            ]
+                })
+            return rows
     return []
 
 

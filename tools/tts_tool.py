@@ -39,7 +39,7 @@ from tools.tts_command_provider import (
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from tools.tts_tool_delivery import (
     _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
-    _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
+    _repair_ogg_container, _resolve_audio_delivery_profile, _sniff_ogg_codec, _split_text_for_tts)
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
@@ -251,7 +251,12 @@ def _finalize_voice_delivery(
         return (opus_path, True) if opus_path else (file_str, False)
     else:
         native = provider in _NATIVE_OPUS_PROVIDERS
-        return file_str, native and want_opus and file_str.endswith(".ogg")
+        if not (want_opus and file_str.endswith(".ogg")):
+            return file_str, native and want_opus and file_str.endswith(".ogg")
+        # Already-Opus Ogg (a WAV/MP3 built-in given an explicit ``.ogg`` path, repaired just
+        # above): Opus inside is what the bubble needs, so a verified codec earns the marker too.
+        # Unsniffable files stay conservative — a wrong marker means a broken bubble.
+        return file_str, native or _sniff_ogg_codec(file_str) == "opus"
     if not opted_in:
         return file_str, False
     # Plugin-registered provider (issue #30398). Voice-bubble delivery opts in via
@@ -365,8 +370,9 @@ def _text_to_speech_single(
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
             return _error_json(f"TTS generation produced no output (provider: {provider})")
 
-        # Sniff once for every provider: MP3/WAV bytes in a .ogg path render as 0-second bubbles.
-        file_str = _repair_ogg_container(file_str)
+        # Sniff once for every provider: MP3/WAV bytes in a .ogg path render as 0-second bubbles,
+        # and so does the wrong codec inside a real Ogg container when the platform needs Opus.
+        file_str = _repair_ogg_container(file_str, want_opus=want_opus)
         file_str, voice_compatible = _finalize_voice_delivery(
             file_str, provider, command_provider_config, want_opus)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{os.path.getsize(file_str):,}", provider)

@@ -1,7 +1,9 @@
 import { Button } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { canonicalFilesFailure, type FilesAuthority } from './canonical-files-client'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
+import { CanonicalGroupFiles } from './canonical-group-files'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
@@ -11,7 +13,15 @@ import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState { room: { name: string; authority_gateway_id?: string; authority_epoch?: number }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
+
+function filesAuthority(snapshot: RoomState | null): FilesAuthority | undefined {
+  const id = snapshot?.room?.authority_gateway_id
+  const epoch = snapshot?.room?.authority_epoch
+
+  return typeof id === 'string' && id.trim() && Number.isSafeInteger(epoch) && epoch! > 0
+    ? { gatewayId: id, epoch: epoch! } : undefined
+}
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
@@ -29,6 +39,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
   const [readError, setReadError] = useState('')
+  const [filesAccessDenied, setFilesAccessDenied] = useState(false)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [restored, setRestored] = useState(false)
@@ -38,6 +49,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const alive = useRef(true)
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
   const revision = useRef(0)
+  // Authoritative writer ownership, not a render/effect mirror. Replacing the
+  // token retires Files continuations before React can publish the new view.
+  const filesAccess = useRef({ authority: undefined as FilesAuthority | undefined, allowed: false, generation: 0 })
+  const filesOwner = filesAccess.current
 
   // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
   useEffect(() => {
@@ -60,25 +75,47 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const refresh = async () => {
     const version = ++revision.current
-    const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
-    const log: RoomEvent[] = []
-    let cursor = 0
 
-    for (;;) {
-      const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
-      log.push(...page.events)
+    try {
+      const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
+      const log: RoomEvent[] = []
+      let cursor = 0
 
-      if (!page.has_more) {break}
-      const next = page.events.at(-1)?.seq
+      for (;;) {
+        const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
+        log.push(...page.events)
 
-      if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
-      cursor = next
-    }
+        if (!page.has_more) {break}
+        const next = page.events.at(-1)?.seq
 
-    if (alive.current && version === revision.current) {
-      setState(snapshot)
-      setEvents(log)
-      setReadError('')
+        if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
+        cursor = next
+      }
+
+      if (alive.current && version === revision.current) {
+        const authority = filesAuthority(snapshot)
+        const owner = filesAccess.current
+
+        if (!authority || !owner.allowed || authority.gatewayId !== owner.authority?.gatewayId || authority.epoch !== owner.authority?.epoch) {
+          filesAccess.current = { authority, allowed: Boolean(authority), generation: owner.generation + 1 }
+        }
+
+        setState(snapshot)
+        setEvents(log)
+        setReadError('')
+        setFilesAccessDenied(false)
+      }
+    } catch (e) {
+      const failure = canonicalFilesFailure(e)
+
+      if (alive.current && version === revision.current && (failure === 'access' || failure === 'scope')) {
+        // Keep the denied dialog's classification, but never revive its token.
+        // A later valid snapshot advances the view generation even for the same pair.
+        filesAccess.current = { ...filesAccess.current, allowed: false }
+        setFilesAccessDenied(true)
+      }
+
+      throw e
     }
   }
 
@@ -140,6 +177,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     <header className="flex items-center gap-2">
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
       <h2>{state?.room.name || labels.loadingGroup}</h2>
+      {visible && <CanonicalGroupFiles accessDenied={filesAccessDenied} authority={filesAuthority(state)}
+        authorityCurrent={() => filesAccess.current === filesOwner && filesOwner.allowed}
+        authorityGeneration={filesOwner.generation}
+        binding={binding} latestFileSeq={events.reduce((latest, event) => event.payload.attachments?.length ? Math.max(latest, event.seq) : latest, 0)}
+        name={state?.room.name || binding.roomId} />}
       <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
     </header>
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}

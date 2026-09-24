@@ -1,0 +1,520 @@
+{
+  "first": {
+    "items": [
+      {
+        "attachment_id": "att_53e333b547f7ed986dc2d585db2a10b4",
+        "event_id": "event-3",
+        "seq": 3,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.4623113
+      },
+      {
+        "attachment_id": "att_ec681bb765441558aba4963c43ac62ae",
+        "event_id": "event-3",
+        "seq": 3,
+        "manifest_index": 1,
+        "kind": "file",
+        "name": "notes-3-1.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.4623113
+      },
+      {
+        "attachment_id": "att_90b905619002a10e3222eeb91fd154c0",
+        "event_id": "event-3",
+        "seq": 3,
+        "manifest_index": 2,
+        "kind": "file",
+        "name": "notes-3-2.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.4623113
+      },
+      {
+        "attachment_id": "att_fe3895cb22bc5cfd91e3cd5ae5066856",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      },
+      {
+        "attachment_id": "att_6193845899d574fbeed37248b9b3d0f6",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 1,
+        "kind": "file",
+        "name": "notes-2-1.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      },
+      {
+        "attachment_id": "att_f514e48e738fbdac164eb331a479e9a5",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 2,
+        "kind": "file",
+        "name": "notes-2-2.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      },
+      {
+        "attachment_id": "att_b687aabd784fefd5d43f44ad9cdc5387",
+        "event_id": "event-1",
+        "seq": 1,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.3718245
+      },
+      {
+        "attachment_id": "att_504de2aff23db151d97195fa8e6f2038",
+        "event_id": "event-1",
+        "seq": 1,
+        "manifest_index": 1,
+        "kind": "file",
+        "name": "notes-1-1.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.3718245
+      }
+    ],
+    "next_cursor": "eyJhdXRob3JpdHlfZXBvY2giOjEsImF1dGhvcml0eV9nYXRld2F5X2lkIjoiaW5zdGFsbDpmaWxlcy1jb250cmFjdCIsImxhc3RfYXR0YWNobWVudF9pZCI6ImF0dF81MDRkZTJhZmYyM2RiMTUxZDk3MTk1ZmE4ZTZmMjAzOCIsImxhc3RfbWFuaWZlc3RfaW5kZXgiOjEsImxhc3Rfc2VxIjoxLCJwcm9kdWNlcl9tZW1iZXJfaWQiOiIiLCJxdWVyeV9kaWdlc3QiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwicmVjaXBpZW50X21lbWJlcl9pZCI6IiIsInJvb21faWQiOiJmaWxlcy1jb250cmFjdC1yb29tIiwic25hcHNob3Rfc2VxIjozLCJ2ZXJzaW9uIjoyfQ",
+    "has_more": true,
+    "snapshot_seq": 3,
+    "latest_seq": 3,
+    "authority": {
+      "gateway_id": "install:files-contract",
+      "epoch": 1
+    },
+    "room_id": "files-contract-room"
+  },
+  "older": {
+    "items": [
+      {
+        "attachment_id": "att_580e8af6408e4b49f4a8d2dffb4670a1",
+        "event_id": "event-1",
+        "seq": 1,
+        "manifest_index": 2,
+        "kind": "file",
+        "name": "notes-1-2.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.3718245
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false,
+    "snapshot_seq": 3,
+    "latest_seq": 3,
+    "authority": {
+      "gateway_id": "install:files-contract",
+      "epoch": 1
+    },
+    "room_id": "files-contract-room"
+  },
+  "filename": {
+    "items": [
+      {
+        "attachment_id": "att_53e333b547f7ed986dc2d585db2a10b4",
+        "event_id": "event-3",
+        "seq": 3,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.4623113
+      },
+      {
+        "attachment_id": "att_fe3895cb22bc5cfd91e3cd5ae5066856",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      },
+      {
+        "attachment_id": "att_b687aabd784fefd5d43f44ad9cdc5387",
+        "event_id": "event-1",
+        "seq": 1,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.3718245
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false,
+    "snapshot_seq": 3,
+    "latest_seq": 3,
+    "authority": {
+      "gateway_id": "install:files-contract",
+      "epoch": 1
+    },
+    "room_id": "files-contract-room"
+  },
+  "sharer": {
+    "items": [
+      {
+        "attachment_id": "att_fe3895cb22bc5cfd91e3cd5ae5066856",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      },
+      {
+        "attachment_id": "att_6193845899d574fbeed37248b9b3d0f6",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 1,
+        "kind": "file",
+        "name": "notes-2-1.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      },
+      {
+        "attachment_id": "att_f514e48e738fbdac164eb331a479e9a5",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 2,
+        "kind": "file",
+        "name": "notes-2-2.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false,
+    "snapshot_seq": 3,
+    "latest_seq": 2,
+    "authority": {
+      "gateway_id": "install:files-contract",
+      "epoch": 1
+    },
+    "room_id": "files-contract-room"
+  },
+  "downloads": [
+    {
+      "attachment_id": "att_53e333b547f7ed986dc2d585db2a10b4",
+      "kind": "file",
+      "name": "report.txt",
+      "size": 28,
+      "mime": "text/plain",
+      "sha256": "d1915086e2eabb3c5cbb198d71946b846926b25b28660a1bd5b98323da1a7881",
+      "state": "committed",
+      "created_at": 1789446790.4218397,
+      "idempotent": false,
+      "event_id": "event-3",
+      "data_base64": "c3ludGhldGljIHZlcnNpb24gMywgZmlsZSAwCg==",
+      "room_id": "files-contract-room",
+      "authority": {
+        "gateway_id": "install:files-contract",
+        "epoch": 1
+      }
+    },
+    {
+      "attachment_id": "att_fe3895cb22bc5cfd91e3cd5ae5066856",
+      "kind": "file",
+      "name": "report.txt",
+      "size": 28,
+      "mime": "text/plain",
+      "sha256": "232a4b6797e7be0e60c3f30481c4c533356bcc0065788a71522c0195d6ccbab6",
+      "state": "committed",
+      "created_at": 1789446790.3766804,
+      "idempotent": false,
+      "event_id": "event-2",
+      "data_base64": "c3ludGhldGljIHZlcnNpb24gMiwgZmlsZSAwCg==",
+      "room_id": "files-contract-room",
+      "authority": {
+        "gateway_id": "install:files-contract",
+        "epoch": 1
+      }
+    },
+    {
+      "attachment_id": "att_b687aabd784fefd5d43f44ad9cdc5387",
+      "kind": "file",
+      "name": "report.txt",
+      "size": 28,
+      "mime": "text/plain",
+      "sha256": "a308d77098308cea0bc9eb3aae05a45bf4b256d11d5a908734e08ee87920df5c",
+      "state": "committed",
+      "created_at": 1789446790.3318045,
+      "idempotent": false,
+      "event_id": "event-1",
+      "data_base64": "c3ludGhldGljIHZlcnNpb24gMSwgZmlsZSAwCg==",
+      "room_id": "files-contract-room",
+      "authority": {
+        "gateway_id": "install:files-contract",
+        "epoch": 1
+      }
+    }
+  ],
+  "continuation_after_append": {
+    "items": [
+      {
+        "attachment_id": "att_580e8af6408e4b49f4a8d2dffb4670a1",
+        "event_id": "event-1",
+        "seq": 1,
+        "manifest_index": 2,
+        "kind": "file",
+        "name": "notes-1-2.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.3718245
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false,
+    "snapshot_seq": 3,
+    "latest_seq": 4,
+    "authority": {
+      "gateway_id": "install:files-contract",
+      "epoch": 1
+    },
+    "room_id": "files-contract-room"
+  },
+  "latest": {
+    "items": [
+      {
+        "attachment_id": "att_da91cfea5ffaf0a7517032cba2210f43",
+        "event_id": "event-4",
+        "seq": 4,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.6346087
+      },
+      {
+        "attachment_id": "att_3b9c449070d758a52360bf14151edbda",
+        "event_id": "event-4",
+        "seq": 4,
+        "manifest_index": 1,
+        "kind": "file",
+        "name": "notes-4-1.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.6346087
+      },
+      {
+        "attachment_id": "att_90bf86e319425eae69d296840ad15ab8",
+        "event_id": "event-4",
+        "seq": 4,
+        "manifest_index": 2,
+        "kind": "file",
+        "name": "notes-4-2.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.6346087
+      },
+      {
+        "attachment_id": "att_53e333b547f7ed986dc2d585db2a10b4",
+        "event_id": "event-3",
+        "seq": 3,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.4623113
+      },
+      {
+        "attachment_id": "att_ec681bb765441558aba4963c43ac62ae",
+        "event_id": "event-3",
+        "seq": 3,
+        "manifest_index": 1,
+        "kind": "file",
+        "name": "notes-3-1.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.4623113
+      },
+      {
+        "attachment_id": "att_90b905619002a10e3222eeb91fd154c0",
+        "event_id": "event-3",
+        "seq": 3,
+        "manifest_index": 2,
+        "kind": "file",
+        "name": "notes-3-2.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "user",
+          "id": "desktop",
+          "label": "You"
+        },
+        "shared_at": 1789446790.4623113
+      },
+      {
+        "attachment_id": "att_fe3895cb22bc5cfd91e3cd5ae5066856",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 0,
+        "kind": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      },
+      {
+        "attachment_id": "att_6193845899d574fbeed37248b9b3d0f6",
+        "event_id": "event-2",
+        "seq": 2,
+        "manifest_index": 1,
+        "kind": "file",
+        "name": "notes-2-1.txt",
+        "mime": "text/plain",
+        "size": 28,
+        "producer": {
+          "kind": "member",
+          "id": "analyst",
+          "label": "Analyst"
+        },
+        "shared_at": 1789446790.4169946
+      }
+    ],
+    "next_cursor": "eyJhdXRob3JpdHlfZXBvY2giOjEsImF1dGhvcml0eV9nYXRld2F5X2lkIjoiaW5zdGFsbDpmaWxlcy1jb250cmFjdCIsImxhc3RfYXR0YWNobWVudF9pZCI6ImF0dF82MTkzODQ1ODk5ZDU3NGZiZWVkMzcyNDhiOWIzZDBmNiIsImxhc3RfbWFuaWZlc3RfaW5kZXgiOjEsImxhc3Rfc2VxIjoyLCJwcm9kdWNlcl9tZW1iZXJfaWQiOiIiLCJxdWVyeV9kaWdlc3QiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwicmVjaXBpZW50X21lbWJlcl9pZCI6IiIsInJvb21faWQiOiJmaWxlcy1jb250cmFjdC1yb29tIiwic25hcHNob3Rfc2VxIjo0LCJ2ZXJzaW9uIjoyfQ",
+    "has_more": true,
+    "snapshot_seq": 4,
+    "latest_seq": 4,
+    "authority": {
+      "gateway_id": "install:files-contract",
+      "epoch": 1
+    },
+    "room_id": "files-contract-room"
+  }
+}

@@ -1,20 +1,24 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
-import type { ComponentProps } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const request = vi.hoisted(() => vi.fn())
-vi.mock('@hermes/plugin-sdk', async () => {
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const gateway = createGroupGateway()
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
-  return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
-    useI18n: () => ({ t: en }),
+  return { ...sdk, ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
+    useI18n: () => ({ locale: 'en', t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
+    Codicon: () => <span />,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
     host: { ...gateway.host, requestProfile: request } }
 })
 import { registerCanonicalGroup } from './canonical-group-registry'
@@ -24,6 +28,25 @@ import { GroupChatWorkspace } from './group-chat-view'
 const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
 afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+
+it('opens Files through the canonical registry while the coordinator is stopped', async () => {
+  request.mockImplementation(async (_route, method) => {
+    // Decoded canonical state still carries room authority while execution is stopped.
+    if (method === 'groups.state') {return { room: { name: 'Stopped owner', authority_gateway_id: 'owner', authority_epoch: 1 } }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.attachment.list') {return { room_id: 'files-room', authority: { gateway_id: 'owner', epoch: 1 }, snapshot_seq: 0, items: [], has_more: false, next_cursor: null }}
+    throw new Error(`Unexpected method: ${method}`)
+  })
+  const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'files-room', name: 'Stopped owner', members: [] })
+  render(<GroupChatWorkspace group={group} members={[]} />)
+  await screen.findByRole('heading', { name: 'Stopped owner' })
+  fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+  await screen.findByText('No files shared yet.')
+  expect(request.mock.calls.some(call => call[1] === 'groups.attachment.list')).toBe(true)
+  expect(request.mock.calls.every(call => ['groups.state', 'groups.log', 'groups.attachment.list'].includes(call[1]))).toBe(true)
+})
 
 it('restores a frozen send after remount and retires only its acknowledged exact retry', async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'restore' }

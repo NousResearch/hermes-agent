@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -1175,10 +1176,16 @@ def create_profile(
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:
-    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
-    rename is atomic). A leftover from a crashed create is discarded."""
+    """Build off the watched home on Windows when temp shares the destination volume."""
     staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        temp_root = Path(tempfile.gettempdir())
+        if os.stat(temp_root).st_dev == os.stat(profile_dir.parent).st_dev:
+            # A watcher holding any copied skill open prevents renaming its ancestor on
+            # Windows. Keep the entire build outside the watched home, but on the same
+            # volume so the final publish remains one atomic rename.
+            return Path(tempfile.mkdtemp(prefix=f".hermes-{profile_dir.name}-staging-", dir=temp_root))
     if staging.is_symlink() or staging.is_file():
         staging.unlink()
     elif staging.is_dir():

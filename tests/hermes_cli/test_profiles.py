@@ -125,6 +125,32 @@ class TestGetProfileDir:
 class TestCreateProfile:
     """Tests for create_profile()."""
 
+    @pytest.mark.windows_only
+    def test_watched_home_cannot_lock_staging_before_atomic_publish(self, profile_env, monkeypatch):
+        """A home watcher opening new skill files must not pin the rename source."""
+        home = profile_env / ".hermes"
+        skills = home / "skills" / "example"
+        skills.mkdir(parents=True)
+        (skills / "SKILL.md").write_text("example")
+        actual_rename = profiles.os.rename
+        published = []
+
+        def rename(source, target):
+            source = Path(source)
+            target = Path(target)
+            if source.is_relative_to(home):
+                raise PermissionError(5, "watcher has an open skill", str(source))
+            assert not target.exists()
+            assert (source / ".env").is_file()
+            published.append(source)
+            return actual_rename(source, target)
+
+        monkeypatch.setattr(profiles.os, "rename", rename)
+        profile_dir = create_profile("watched", clone_config=True, no_alias=True)
+        assert len(published) == 1
+        assert (profile_dir / "skills" / "example" / "SKILL.md").read_text() == "example"
+        assert not published[0].exists()
+
 
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env

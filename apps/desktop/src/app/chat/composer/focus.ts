@@ -414,6 +414,9 @@ export interface DraftRequestDetail {
   active?: boolean
   /** Set-draft payload; absent on read requests. */
   text?: string
+  /** Stamped by the first owning surface so a second owner of the same id
+   *  (the primary pane plus a keep-alive tile showing that session) skips it. */
+  claimed?: boolean
 }
 
 interface DraftReplyDetail {
@@ -551,11 +554,17 @@ export const onComposerDraftRequests = (
       return
     }
 
-    // `active` requests belong to exactly ONE surface — the composer the focus
-    // bus routes to. Every mounted surface claiming them (the previous
+    // Exactly ONE surface answers a request. `active` belongs to the composer
+    // the focus bus routes to — every mounted surface claiming it (the previous
     // behavior) let listener registration order decide instead: with keep-alive
     // tabs in the stack a buried composer answered the read, and a `set`
-    // painted onto every mounted draft.
+    // painted onto every mounted draft. An id-addressed request can have two
+    // owners (the primary pane and a keep-alive tile showing the same session);
+    // the first to see it claims it and the other skips.
+    if (e.detail.claimed) {
+      return
+    }
+
     if (e.detail.active) {
       if (!address.isActive()) {
         return
@@ -567,6 +576,8 @@ export const onComposerDraftRequests = (
         return
       }
     }
+
+    e.detail.claimed = true
 
     if (e.type === GET_DRAFT_EVENT) {
       window.dispatchEvent(

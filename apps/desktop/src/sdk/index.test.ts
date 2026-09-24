@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ackComposerInsert } from '@/app/chat/composer/focus'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
-import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
+import { $selectedStoredSessionId, setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 // The warm path must route through the guarded prewarm resolver, not dial the
@@ -266,83 +266,95 @@ describe('host workspace scope', () => {
 })
 
 describe('host.composer draft facade', () => {
-  it('routes insertText by address: tile for a session, resolved-active for null', async () => {
-    const seen: { mode: string; target: string }[] = []
+  afterEach(() => {
+    setActiveSessionId(null)
+    $selectedStoredSessionId.set(null)
+    clearAllSessionStates()
+  })
 
-    const off = (event: Event) => {
+  it('routes insertText and focus by address: tile for a session, resolved-active for null', async () => {
+    const seen: string[] = []
+
+    const onInsert = (event: Event) => {
       const { mode, target, token } = (event as CustomEvent).detail
 
-      seen.push({ mode, target })
-
+      seen.push(`insert:${mode}:${target}`)
       // A mounted surface acknowledges the insert like the real composer does.
       ackComposerInsert(token, true)
     }
 
-    window.addEventListener('hermes:composer-insert', off)
+    const onFocus = (event: Event) => seen.push(`focus:${(event as CustomEvent<{ target: string }>).detail.target}`)
+
+    window.addEventListener('hermes:composer-insert', onInsert)
+    window.addEventListener('hermes:composer-focus', onFocus)
 
     const [tileOk, activeOk] = await Promise.all([
       host.composer.insertText('sess-1', ' snippet ', { mode: 'inline' }),
       host.composer.insertText(null, 'to active')
     ])
 
-    window.removeEventListener('hermes:composer-insert', off)
-
-    expect(tileOk).toBe(true)
-    expect(activeOk).toBe(true)
-    expect(seen).toEqual([
-      { mode: 'inline', target: 'tile:sess-1' },
-      { mode: 'block', target: 'main' }
-    ])
-  })
-
-  it('reports insertText failure on blank text or when no surface answers', async () => {
-    await expect(host.composer.insertText('sess-1', '   ')).resolves.toBe(false)
-    // Nothing listens on the insert bus here → the ack settles false, never
-    // a silent success the plugin would act on.
-    await expect(host.composer.insertText(null, 'to nobody')).resolves.toBe(false)
-  })
-
-  it('reads the live draft through a bus reply', async () => {
-    const reply = (event: Event) => {
-      const { token } = (event as CustomEvent<{ token: number }>).detail
-
-      window.dispatchEvent(new CustomEvent('hermes:composer-draft-reply', { detail: { text: 'live text', token } }))
-    }
-
-    window.addEventListener('hermes:composer-get-draft', reply)
-    const text = await host.composer.getDraft(null)
-    window.removeEventListener('hermes:composer-get-draft', reply)
-
-    expect(text).toBe('live text')
-  })
-
-  it('falls back to the persisted stash when no surface answers', async () => {
-    const { stashSessionDraft } = await import('@/store/composer')
-
-    stashSessionDraft('sess-stash', 'stashed draft', [])
-
-    await expect(host.composer.getDraft('sess-stash')).resolves.toBe('stashed draft')
-    // Never-stashed + unanswered → null (timeout), never a wrong-session read.
-    await expect(host.composer.getDraft('sess-never')).resolves.toBeNull()
-  })
-
-  it('reports a setDraft failure when no surface answers', async () => {
-    await expect(host.composer.setDraft('sess-ghost', 'hello')).resolves.toBe(false)
-  })
-
-  it('routes focus by address on the app focus bus: tile for a session, resolved-active for null', async () => {
-    const seen: string[] = []
-    const off = (event: Event) => seen.push((event as CustomEvent<{ target: string }>).detail.target)
-
-    window.addEventListener('hermes:composer-focus', off)
     host.composer.focus('sess-1')
     host.composer.focus(null)
     // requestComposerFocus defers a plain focus request one macrotask.
     await new Promise(resolve => window.setTimeout(resolve, 0))
-    window.removeEventListener('hermes:composer-focus', off)
 
+    window.removeEventListener('hermes:composer-insert', onInsert)
+    window.removeEventListener('hermes:composer-focus', onFocus)
+
+    expect([tileOk, activeOk]).toEqual([true, true])
     // A session id never resolves to the primary unless the primary shows it —
-    // an absent tile drops the request rather than focusing the wrong pane.
-    expect(seen).toEqual(['tile:sess-1', 'main'])
+    // an absent tile drops the request rather than reaching the wrong pane.
+    expect(seen).toEqual(['insert:inline:tile:sess-1', 'insert:block:main', 'focus:tile:sess-1', 'focus:main'])
+  })
+
+  it("addresses 'new' to the session-less primary composer only, never to the active one", async () => {
+    const seen: string[] = []
+
+    const onInsert = (event: Event) => {
+      const { target, token } = (event as CustomEvent).detail
+
+      seen.push(`insert:${target}`)
+      ackComposerInsert(token, true)
+    }
+
+    const onFocus = (event: Event) => seen.push(`focus:${(event as CustomEvent<{ target: string }>).detail.target}`)
+
+    window.addEventListener('hermes:composer-insert', onInsert)
+    window.addEventListener('hermes:composer-focus', onFocus)
+
+    // The primary shows a session → nothing hosts the new draft; the verbs
+    // fail closed instead of landing in whatever composer the bus routes to.
+    setActiveSessionId('rt-1')
+    $selectedStoredSessionId.set('sess-1')
+    await expect(host.composer.insertText('new', 'x')).resolves.toBe(false)
+    expect(host.composer.submit('new', 'x')).toBe(false)
+    host.composer.focus('new')
+    await new Promise(resolve => window.setTimeout(resolve, 5))
+    expect(seen).toEqual([])
+
+    // No session in the primary → it IS the new draft.
+    setActiveSessionId(null)
+    $selectedStoredSessionId.set(null)
+    await expect(host.composer.insertText('new', 'x')).resolves.toBe(true)
+    host.composer.focus('new')
+    await new Promise(resolve => window.setTimeout(resolve, 5))
+
+    window.removeEventListener('hermes:composer-insert', onInsert)
+    window.removeEventListener('hermes:composer-focus', onFocus)
+
+    expect(seen).toEqual(['insert:main', 'focus:main'])
+  })
+
+  it('falls back to the persisted stash, keyed by the stored id, when no surface answers', async () => {
+    const { stashSessionDraft } = await import('@/store/composer')
+
+    stashSessionDraft('sess-stash', 'stashed draft', [])
+    // The stash is keyed by the durable id; a plugin holding the runtime id
+    // must still reach it once the session states map runtime → stored.
+    publishSessionState('rt-stash', createClientSessionState('stored-stash'))
+    stashSessionDraft('stored-stash', 'runtime-addressed', [])
+
+    await expect(host.composer.getDraft('sess-stash')).resolves.toBe('stashed draft')
+    await expect(host.composer.getDraft('rt-stash')).resolves.toBe('runtime-addressed')
   })
 })

@@ -470,7 +470,9 @@ host.composer: {
 **Arbitration.** Every verb is fail-closed on its address: a request is
 answered only by the mounted composer that owns that session (its tile, or the
 primary pane when it shows that session); `null` is answered only by the surface
-the app's focus bus currently routes to. No exact surface → `null`/`false`, never
+the app's focus bus currently routes to; `'new'` only by the primary pane while it
+shows no session — it never falls through to the active composer. No exact
+surface → `null`/`false`, never
 a broadcast into whichever pane happens to be mounted. Writes go through the
 app's own paint path, so `@`-ref / `/`-command tokens hydrate as chips and the
 result is byte-for-byte what the user would get by pasting. These are discrete,

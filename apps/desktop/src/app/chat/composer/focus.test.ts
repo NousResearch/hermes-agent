@@ -412,12 +412,16 @@ describe('composer draft requests', () => {
     expect(await requestComposerGetDraft([], { active: true })).toEqual({ text: 'on screen' })
   })
 
-  it('writes only the addressed session and reports success', async () => {
+  it('writes only the addressed session, through exactly one owner, and reports success', async () => {
     const a = mountDraft('sess-a', 'x')
+    // A second owner of the same id (primary pane + keep-alive tile showing
+    // one session) must not paint too: the first claim wins.
+    const aTwin = mountDraft('sess-a', 'x')
     const b = mountDraft('sess-b', 'y')
 
     expect(await requestComposerSetDraft(['sess-a'], 'new text')).toBe(true)
     expect(a.wrote).toBe('new text')
+    expect(aTwin.wrote).toBeNull()
     expect(b.wrote).toBeNull()
   })
 

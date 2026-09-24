@@ -25,16 +25,28 @@ from tests.fakes.providers.anthropic_messages import AnthropicMessagesServer, Re
 pytestmark = [pytest.mark.skipif(not sys.platform.startswith("linux"), reason="process-tree cleanup uses /proc"),
               pytest.mark.live_system_guard_bypass]
 
-KNOWN: dict[str, str] = {
-    "discovery_env": "#120844 Anthropic model discovery ignores ANTHROPIC_BASE_URL",
-    "alias_describe": "#120858 wire alias chat_history_lookup not reverse-mapped in tool_describe args",
+class DiscoveryIgnoredEndpoint(AssertionError):
+    """#120844's signature: raised ONLY when the configured endpoint's catalog is not what the picker serves."""
+
+
+class AliasNotReverseMapped(AssertionError):
+    """#120858's signature: raised ONLY when tool_describe fails to resolve the advertised wire alias."""
+
+
+# Red on main for a tracked, open bug. Strict: XPASS fails, forcing the entry out with the fix; each
+# xfail accepts only its dedicated exception, so harness failures in a KNOWN cell stay failures.
+KNOWN: dict[str, tuple[str, type[AssertionError]]] = {
+    "discovery_env": ("#120844 Anthropic model discovery ignores ANTHROPIC_BASE_URL", DiscoveryIgnoredEndpoint),
+    "alias_describe": ("#120858 wire alias chat_history_lookup not reverse-mapped in tool_describe args",
+                       AliasNotReverseMapped),
 }
 RELAY_ONLY_MODEL = "claude-e2e-relay-only-7"
 OAUTH_TOKEN = "sk-ant-oat01-e2e-fake-oauth-token"
 
 
 def known(key: str):
-    return pytest.mark.xfail(strict=True, reason=KNOWN[key])
+    reason, signature = KNOWN[key]
+    return pytest.mark.xfail(strict=True, raises=signature, reason=reason)
 
 
 @pytest.fixture
@@ -94,8 +106,10 @@ def test_model_discovery_probes_the_configured_anthropic_endpoint(rig, via: str)
         r = rig([])
         ids = _discover(r, relay, via=via)
         probed = [g["path"] for g in relay.gets if "/v1/models" in g["path"]]
-        assert probed, f"discovery never probed the configured endpoint (native host saw {len(r.srv.gets)} GETs)"
-        assert RELAY_ONLY_MODEL in ids, f"relay catalog not served: {ids[:15]}"
+        if not probed or RELAY_ONLY_MODEL not in ids:
+            raise DiscoveryIgnoredEndpoint(
+                f"configured endpoint probed={bool(probed)} (native host saw {len(r.srv.gets)} GETs); "
+                f"relay catalog served={RELAY_ONLY_MODEL in ids}: {ids[:15]}")
     finally:
         relay.stop()
 
@@ -153,5 +167,7 @@ def test_oauth_deferred_alias_resolves_through_tool_describe(rig) -> None:
     catalog = next(t for t in mains[0]["body"]["tools"] if t["name"] == "mcp__tool_search")
     assert "chat_history_lookup" in catalog["description"], "precondition: alias advertised in the catalog"
     (result,) = _tool_results(mains[1]["body"])
-    assert "not_found" not in result or "chat_history_lookup" not in result.split("not_found", 1)[1][:80], result
-    assert "chat_history_lookup" in result and ("parameters" in result or "input_schema" in result), result
+    not_found = "not_found" in result and "chat_history_lookup" in result.split("not_found", 1)[1][:80]
+    described = "chat_history_lookup" in result and ("parameters" in result or "input_schema" in result)
+    if not_found or not described:
+        raise AliasNotReverseMapped(f"tool_describe did not resolve the advertised alias: {result[:600]}")

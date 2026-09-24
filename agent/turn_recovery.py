@@ -32,7 +32,7 @@ from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_
 from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
-    provider_label_for, site_copy, stamp_failure,
+    provider_label_for, site_copy, stamp_failure, VERTEX_AUTH_GUIDANCE,
 )
 from agent.turn_retry_state import TurnRetryState
 from hermes_constants import display_hermes_home
@@ -807,6 +807,9 @@ def _print_nonretryable_auth_guidance(
     ):
         return
     if provider == "nous" and _print_nous_entitlement_guidance(agent, "Nous model access"):
+        return
+    if str(provider or "").strip().lower() == "vertex" and status_code in {401, 403}:
+        _vlines(agent, f"   💡 {VERTEX_AUTH_GUIDANCE}")
         return
     if provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
         if provider == "openai-codex":

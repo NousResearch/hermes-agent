@@ -21,6 +21,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     _find_skill,
+    _iter_skill_dirs,
     _skill_lock_path,
     skill_manage,
 )
@@ -136,6 +137,61 @@ class TestValidateFilePath:
     def test_other_root_md_still_rejected(self):
         # Only SKILL.md gets the root-level exception, not arbitrary files.
         assert _validate_file_path("README.md") is not None
+
+
+class TestSkillMdFilePathRouting:
+    """The main file's accepted spellings ('SKILL.md', '<skill-name>/SKILL.md') must
+    target the skill ROOT (#40568's "so callers can target the main file") with the
+    same guards the default paths have — not nest a duplicate SKILL.md that skill
+    discovery reads as a second skill, and not bypass structure/delete guards."""
+
+    def test_name_prefixed_skill_md_targets_main_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            replacement = VALID_SKILL_CONTENT.replace(
+                "A test skill for unit testing.", "Updated via prefixed spelling.")
+            result = _write_file("my-skill", "my-skill/SKILL.md", replacement)
+            assert result["success"] is True, result.get("error")
+            main = tmp_path / "my-skill" / "SKILL.md"
+            assert "Updated via prefixed spelling." in main.read_text(encoding="utf-8")
+            assert not (tmp_path / "my-skill" / "my-skill").exists()
+            assert sorted(p.name for p in _iter_skill_dirs(tmp_path)) == ["my-skill"]
+
+    def test_foreign_prefix_skill_md_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _write_file("my-skill", "other/SKILL.md", VALID_SKILL_CONTENT_2)
+            assert result["success"] is False
+            assert "nested SKILL.md" in result["error"]
+            assert not (tmp_path / "my-skill" / "other").exists()
+
+    def test_write_file_skill_md_requires_frontmatter(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _write_file("my-skill", "SKILL.md", "no frontmatter, just text")
+            assert result["success"] is False
+            assert "frontmatter" in result["error"]
+            main = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+            assert main == VALID_SKILL_CONTENT  # failed rewrite left the file intact
+
+    def test_patch_skill_md_keeps_structure_guard(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _patch_skill(
+                "my-skill", "description: A test skill for unit testing.", "",
+                file_path="SKILL.md")
+            assert result["success"] is False
+            assert "Patch would break SKILL.md structure" in result["error"]
+            main = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+            assert "description:" in main  # guard fired before any write
+
+    def test_remove_file_skill_md_points_to_delete(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _remove_file("my-skill", "SKILL.md")
+            assert result["success"] is False
+            assert "action='delete'" in result["error"]
+            assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------

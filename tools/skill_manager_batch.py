@@ -116,8 +116,15 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # create and full-rewrite patch (content) always hit SKILL.md.
         full_rewrite = act == "patch" and bool(op.get("content"))
         fp = (op.get("file_path") or "").strip()
-        target = ("SKILL.md" if (act == "create" or full_rewrite or not fp)
-                  else posixpath.normpath(fp.lstrip("/")))
+        if act == "create" or full_rewrite or not fp:
+            target = "SKILL.md"
+        else:
+            target = posixpath.normpath(fp.lstrip("/"))
+            # '<skill-name>/SKILL.md' resolves to the main file in the op handlers — key it
+            # as such or the clobber guard would miss a destructive op colliding with it.
+            if target.endswith("/SKILL.md") and target.count("/") == 1 \
+                    and target.split("/")[0] == posixpath.basename(nm):
+                target = "SKILL.md"
         key = (nm, target)
         if (act in ("create", "write_file", "remove_file") or full_rewrite) and key in touched_files:
             return fail(i, f": {act} on '{target}' of skill '{nm}' — an earlier op in this "

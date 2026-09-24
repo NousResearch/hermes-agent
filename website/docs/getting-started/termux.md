@@ -110,6 +110,22 @@ pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgr
 Why these packages?
 
 - `python` — runtime + venv support
+
+:::warning Supported Python range
+Hermes requires **Python >=3.11,&lt;3.14**. Current Termux ships `python`
+3.14.x, which is outside that range — the installer detects this, and will
+automatically try the [Termux User Repository (TUR)](https://github.com/termux-user-repository/tur)
+for a supported interpreter. For a manual install, get one yourself:
+
+```bash
+pkg install tur-repo
+pkg install python3.13
+```
+
+Then use `python3.13` in place of `python` in the commands below
+(e.g. `python3.13 -m venv venv`).
+:::
+
 - `git` — clone/update the repo
 - `clang`, `rust`, `make`, `pkg-config`, `libffi`, `openssl` — needed to build a few Python dependencies on Android
 - `nodejs` — optional Node runtime for experiments beyond the tested core path
@@ -157,7 +173,7 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 ### 6. Verify the install
 
 ```bash
-hermes version
+hermes --version
 hermes doctor
 ```
 
@@ -244,6 +260,10 @@ Set the API level explicitly before installing:
 export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
+
+### `Failed building wheel for uvloop`
+
+`uvloop` bundles libuv, whose `./configure` does not run on Android. Hermes keeps it out of the core install and of the `termux` / `termux-all` extras — `uvicorn` falls back to the stdlib asyncio loop, which the dashboard and gateway run fine on. If you see this error, you are installing an extra that includes `uvloop` (for example `[all]`): install `.[termux]` or `.[termux-all]` instead.
 
 ### `hermes doctor` says ripgrep or Node is missing
 

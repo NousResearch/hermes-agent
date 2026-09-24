@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.file_tools as ft
+import tools.file_tools_paths as ft
 import tools.terminal_tool as terminal_tool
 
 

@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ProfileRail } from './profile-switcher'
 
-afterEach(cleanup)
-
 // The rail's discoverability pills are navigation, not identity — assert the
 // multi-gateway entry point deep-links to Settings → Connections instead of
 // relying on someone finding the pane three levels into Settings (the exact
@@ -23,12 +21,16 @@ vi.mock('@/i18n', () => ({
       common: { cancel: 'Cancel' },
       profiles: {
         allProfiles: 'All profiles',
-        connectGateway: 'Connect another Hermes gateway…',
+        connectGateway: 'Manage gateways…',
         failedLoadSoul: 'Failed to load SOUL.md',
         failedSaveSoul: 'Failed to save SOUL.md',
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
         newProfile: 'New profile',
+        remoteOverride: {
+          badge: (host: string) => `Runs on ${host}`,
+          menuItem: 'Connect to a remote host…'
+        },
         saveSoul: 'Save',
         saving: 'Saving…',
         showAllProfiles: 'Show all profiles',
@@ -59,13 +61,20 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
+vi.mock('@/store/connections', () => ({
+  $activeConnectionId: atom(null),
+  $connectionsRegistry: atom(null),
+  $hasMultipleConnections: atom(false),
+  selectConnection: vi.fn()
+}))
+
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),
   runImportProfileFlow: vi.fn()
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 vi.mock('@/hermes', () => ({
@@ -78,11 +87,22 @@ vi.mock('../../profiles/create-profile-dialog', () => ({ CreateProfileDialog: ()
 vi.mock('../../profiles/delete-profile-dialog', () => ({ DeleteProfileDialog: () => null }))
 vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: () => null }))
 
+const { $hasMultipleConnections } = await import('@/store/connections')
+const hasMultipleConnections = $hasMultipleConnections as ReturnType<typeof atom<boolean>>
+const { $profiles } = await import('@/store/profile')
+const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
+
+afterEach(() => {
+  cleanup()
+  hasMultipleConnections.set(false)
+  profiles.set([{ is_default: true, name: 'default' }])
+})
+
 describe('ProfileRail multi-gateway entry point', () => {
   it('deep-links to the unified Settings → Gateways page from the rail', () => {
     render(<ProfileRail />)
 
-    const pill = screen.getByRole('button', { name: 'Connect another Hermes gateway…' })
+    const pill = screen.getByRole('button', { name: 'Manage gateways…' })
     fireEvent.click(pill)
 
     expect(navigate).toHaveBeenCalledWith('/settings?tab=gateway')
@@ -93,7 +113,16 @@ describe('ProfileRail multi-gateway entry point', () => {
 
     // The whole point is first-run discoverability: the pill must not be
     // gated behind multiProfile the way the default↔all toggle is.
-    expect(screen.getByRole('button', { name: 'Connect another Hermes gateway…' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Manage gateways…' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
+  })
+
+  it('keeps the active profile explicit when gateway identity moves to the statusbar', () => {
+    hasMultipleConnections.set(true)
+    render(<ProfileRail />)
+
+    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })
 })

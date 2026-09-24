@@ -1,9 +1,11 @@
+import { hermesApi } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { translateNow } from '@/i18n'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -19,6 +21,13 @@ export function setDesktopFsRemotePicker(next: DesktopFsRemotePicker | null) {
 function connectionCacheKey(connection: HermesConnection | null) {
   if (!connection) {
     return 'local:'
+  }
+
+  // A profile belongs to a registry connection, not the whole Desktop. The
+  // registry id is the isolation boundary, including for SSH connections; the
+  // stable host identity below is only the fallback for legacy connections.
+  if (connection.connectionId) {
+    return `connection:${connection.connectionId}:${connection.profile || ''}`
   }
 
   const target =
@@ -58,7 +67,7 @@ function bridge() {
 }
 
 function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return bridge().api<T>(
+  return hermesApi<T>(
     body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
   )
 }
@@ -151,8 +160,14 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
 }
 
 // Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.
+// The bridge answers `false` when the path is not on this computer (a remote
+// backend's workspace) — surface it instead of a silent no-op.
 export async function revealDesktopPath(path: string): Promise<void> {
-  await bridge().revealPath?.(path)
+  const revealed = await bridge().revealPath?.(path)
+
+  if (revealed === false) {
+    throw new Error(translateNow('fileMenu.revealMissing'))
+  }
 }
 
 // Rename a file/folder in place; returns the new absolute path. Local only.
@@ -201,13 +216,15 @@ export async function desktopFileDiff(repoRoot: string, filePath: string): Promi
 
 export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {
   const desktop = bridge()
+  const profile = desktopFsProfile()
+  const localOptions = profile ? { ...options, profile } : options
 
   if (!isDesktopFsRemoteMode()) {
-    return desktop.selectPaths(options)
+    return desktop.selectPaths(localOptions)
   }
 
   if (!options?.directories) {
-    return desktop.selectPaths(options)
+    return desktop.selectPaths(localOptions)
   }
 
   return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []

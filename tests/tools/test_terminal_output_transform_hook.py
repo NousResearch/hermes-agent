@@ -119,7 +119,7 @@ def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
         return []
 
     monkeypatch.setattr(
-        terminal_tool_module, "_sudo_wrong_password_failure", _sudo_spy
+        "tools.terminal_tool_sudo._sudo_wrong_password_failure", _sudo_spy
     )
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hook_spy)
 

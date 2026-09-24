@@ -7,33 +7,11 @@ import {
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isInlineMediaSrc,
-  isRemoteGateway,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
-
-describe('isRemoteGateway', () => {
-  afterEach(() => {
-    $connection.set(null)
-  })
-
-  it('is false with no connection', () => {
-    $connection.set(null)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is false in local mode', () => {
-    $connection.set({ mode: 'local' } as never)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is true in remote mode', () => {
-    $connection.set({ mode: 'remote' } as never)
-    expect(isRemoteGateway()).toBe(true)
-  })
-})
 
 describe('filePathFromMediaPath', () => {
   it('passes through a plain path', () => {
@@ -90,6 +68,19 @@ describe('mediaGatewayStreamUrl', () => {
   it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
     $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
     expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
+  })
+
+  it('pins remote streams to their registered connection and profile', () => {
+    $connection.set({
+      connectionId: 'studio-ssh',
+      mode: 'remote',
+      profile: 'voice reviewer',
+      remoteKind: 'ssh'
+    } as never)
+
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
+      'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
+    )
   })
 })
 
@@ -225,7 +216,7 @@ describe('downloadGatewayMediaFile', () => {
   beforeEach(() => {
     saveGatewayFile.mockClear()
     vi.stubGlobal('window', { hermesDesktop: { saveGatewayFile } })
-    $connection.set({ mode: 'remote', profile: 'docker-gw' } as never)
+    $connection.set({ connectionId: 'work-ssh', mode: 'remote', profile: 'docker-gw' } as never)
   })
 
   afterEach(() => {
@@ -240,7 +231,8 @@ describe('downloadGatewayMediaFile', () => {
     })
 
     expect(saveGatewayFile).toHaveBeenCalledWith({
-      path: '/Users/me/project/a b.md',
+      connectionId: 'work-ssh',
+      path: 'file:///Users/me/project/a%20b.md',
       profile: 'docker-gw',
       suggestedName: 'a b.md'
     })

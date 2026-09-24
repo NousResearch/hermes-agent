@@ -25,6 +25,51 @@ def test_setup_telemetry_enables_shared_metrics(monkeypatch):
     assert config["telemetry"]["shared_metrics"]["enabled"] is True
 
 
+def test_disabling_collection_closes_the_send_consent_window(monkeypatch, tmp_path):
+    """`hermes tools` -> disable shared metrics must withdraw send consent.
+
+    The not-enabled branch returned early without recording anything, so the
+    consent window stayed open and re-enabling later would release every
+    package collected in between.
+    """
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_cli.observability.shared_metrics_sender import (
+        reconcile_send_consent,
+    )
+    from hermes_cli.sqlite_util import write_txn
+
+    store = SharedMetricsStore(
+        database_path=tmp_path / "m.db", outbox_directory=tmp_path / "o"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.observability.shared_metrics.SharedMetricsStore",
+        lambda *a, **k: store,
+    )
+
+    # The user had consented; now they turn collection off entirely.
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_yes_no", lambda _question, default: False
+    )
+    config = {"telemetry": {"shared_metrics": {"enabled": True, "send": True}}}
+    # Consent was granted earlier, so a window is open — that is precisely
+    # the state whose closure must be recorded.
+    with store._connection() as connection:
+        with write_txn(connection):
+            reconcile_send_consent(connection, True)
+
+    setup_telemetry(config)
+
+    assert config["telemetry"]["shared_metrics"]["enabled"] is False
+    assert config["telemetry"]["shared_metrics"]["send"] is False
+    with store._connection() as connection:
+        open_windows = connection.execute(
+            "SELECT COUNT(*) FROM send_consent_windows WHERE closed_at IS NULL"
+        ).fetchone()[0]
+    assert open_windows == 0, (
+        "disabling collection left the send consent window open"
+    )
+
+
 def test_setup_parser_accepts_telemetry_section():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")

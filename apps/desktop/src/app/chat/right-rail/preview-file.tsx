@@ -13,7 +13,6 @@ import { Streamdown } from 'streamdown'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
-import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
@@ -31,7 +30,10 @@ import {
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { Check, Pencil, X } from '@/lib/icons'
+import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
@@ -43,6 +45,11 @@ const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const SOURCE_CHUNK_LINES = 200
 const SOURCE_LINE_PX = 20
 const SOURCE_OVERSCAN_LINES = 400
+
+// Math plugin for the static file preview, configured once at module scope.
+// Mirrors the chat transcript's plugin (`markdown-text.tsx`) — same memoized
+// KaTeX wrapper, with `singleDollarTextMath: true` so `$x$` renders inline.
+const previewMathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -300,7 +307,11 @@ const MD_TAG_CLASSES = {
   ol: 'mb-4 list-decimal pl-6 marker:text-muted-foreground/70 last:mb-0',
   li: 'mt-1 leading-relaxed',
   blockquote: 'mb-4 border-l-2 border-border pl-3 text-muted-foreground italic last:mb-0',
-  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono'
+  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono',
+  hr: 'my-6 border-border',
+  th: 'px-3 py-2 text-left text-sm font-semibold text-foreground',
+  td: 'px-3 py-2 align-top text-sm leading-relaxed',
+  thead: 'bg-muted/35 text-muted-foreground'
 } as const
 
 function tagged<T extends keyof typeof MD_TAG_CLASSES>(Tag: T) {
@@ -336,23 +347,52 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
 
   const code = String(children).replace(/\n$/, '')
 
-  const highlighted = (
-    <ShikiHighlighter
-      addDefaultStyles={false}
-      as="div"
-      defaultColor="light-dark()"
-      delay={80}
-      language={language}
-      showLanguage={false}
-      theme={SHIKI_THEME}
-    >
-      {code}
-    </ShikiHighlighter>
-  )
+  const highlighted = <ShikiHighlighter code={code} language={language} theme={SHIKI_THEME} />
 
   // ```mermaid / ```svg fences route to the shared lazy renderers (same
   // registry the chat transcript uses); everything else stays on Shiki.
   return <RichCodeBlock code={code} fallback={highlighted} language={language} />
+}
+
+function MarkdownTable({ className, ...rest }: ComponentProps<'table'>) {
+  return (
+    <div className="mb-4 w-full overflow-x-auto rounded-lg border border-border last:mb-0">
+      <table
+        className={cn(
+          'm-0 w-full min-w-[18rem] border-collapse [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+          className
+        )}
+        {...rest}
+      />
+    </div>
+  )
+}
+
+function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
+  return (
+    <img
+      alt={alt ?? ''}
+      className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
+      src={src}
+      {...rest}
+    />
+  )
+}
+
+function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
+  const isExternal = /^https?:\/\//i.test(href || '')
+
+  return (
+    <a
+      className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
+      href={href}
+      rel={isExternal ? 'noopener noreferrer' : undefined}
+      target={isExternal ? '_blank' : undefined}
+      {...rest}
+    >
+      {children}
+    </a>
+  )
 }
 
 const MARKDOWN_COMPONENTS = {
@@ -366,14 +406,29 @@ const MARKDOWN_COMPONENTS = {
   li: tagged('li'),
   blockquote: tagged('blockquote'),
   pre: tagged('pre'),
-  code: MarkdownCode
+  code: MarkdownCode,
+  hr: tagged('hr'),
+  table: MarkdownTable,
+  th: tagged('th'),
+  td: tagged('td'),
+  thead: tagged('thead'),
+  img: MarkdownImage,
+  a: MarkdownLink
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({ text }: { text: string }) {
+  const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
+      <Streamdown
+        components={MARKDOWN_COMPONENTS}
+        controls={false}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        plugins={{ math: previewMathPlugin }}
+      >
+        {mathText}
       </Streamdown>
     </div>
   )
@@ -538,7 +593,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event)) {
+      if (!isComposerChord(event)) {
         return
       }
 
@@ -594,17 +649,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
               })}
             </div>
             <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
-              <ShikiHighlighter
-                addDefaultStyles={false}
-                as="div"
-                defaultColor="light-dark()"
-                delay={80}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {chunk.text}
-              </ShikiHighlighter>
+              <ShikiHighlighter code={chunk.text} language={language || 'text'} theme={SHIKI_THEME} />
             </div>
           </Fragment>
         ))}
@@ -616,7 +661,17 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
-export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
+export function LocalFilePreview({
+  onSelectRendered,
+  reloadKey,
+  target
+}: {
+  /** Present when the pane can render this file live (HTML). Adds the
+   *  `rendered` mode to the switcher and routes its selection to the pane. */
+  onSelectRendered?: () => void
+  reloadKey: number
+  target: PreviewTarget
+}) {
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
@@ -661,8 +716,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     baselineRef.current = ''
   }, [filePath, reloadKey])
 
-  // HTML files are rendered as source code, not in a webview - so they take
-  // the same path as plain text files. `previewKind === 'binary'` arrives
+  // In source mode HTML files take the same path as plain text files; the
+  // pane owns the rendered (webview) mode. `previewKind === 'binary'` arrives
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
@@ -1036,7 +1091,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     // Order the toggle reads left→right; default lands on the most useful view.
     const modes: PreviewViewMode[] = []
 
-    if (isMarkdown) {
+    if (isMarkdown || onSelectRendered) {
       modes.push('rendered')
     }
 
@@ -1047,7 +1102,17 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     }
 
     const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
-    const mode = userMode && modes.includes(userMode) ? userMode : autoMode
+    // The pane hands an HTML file over only once Source was picked; that pick
+    // outranks the diff-first default.
+    const mode = userMode && modes.includes(userMode) ? userMode : onSelectRendered ? 'source' : autoMode
+
+    const selectMode = (next: PreviewViewMode) => {
+      if (next === 'rendered' && onSelectRendered) {
+        onSelectRendered()
+      } else {
+        setUserMode(next)
+      }
+    }
 
     return (
       <div
@@ -1068,7 +1133,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         <PreviewModeSwitcher
           active={mode}
           modes={modes}
-          onSelect={setUserMode}
+          onSelect={selectMode}
           trailing={
             canEdit ? (
               <Tip label={`${t.preview.edit} (e)`}>

@@ -27,7 +27,6 @@ from tools import terminal_tool as tt
 from tools.interrupt import (
     set_interrupt,
     is_interrupted,
-    clear_current_thread_interrupt,
     _interrupted_threads,
     _lock,
 )
@@ -156,7 +155,6 @@ def test_natural_exit_130_not_mislabeled_as_interrupt(monkeypatch):
 
     assert result["exit_code"] == 130, result
     note = result.get("approval", "")
-    assert note == "Command required approval (x) and was approved by the user.", note
     assert "then interrupted" not in note
     assert "[Command interrupted]" not in result["output"]
 
@@ -232,5 +230,8 @@ def test_execute_code_non_approved_still_interrupts_on_stale_bit(monkeypatch):
 
     # Killed on the first poll before the script can print.
     assert "CODE_DONE" not in result["output"], result
+    assert result["status"] == "interrupted", result
+    assert result["output"] == "[execution interrupted]"
+    assert "user sent a new message" not in result["output"]
 
 

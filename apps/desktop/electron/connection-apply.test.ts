@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { applyConnectionChange, commitConnectionFailure, resolveTerminalConnection } from './connection-apply'
+import {
+  applyConnectionChange,
+  commitConnectionFailure,
+  resolveTerminalConnection,
+  teardownSshState
+} from './connection-apply'
 
 function deferred() {
   let resolve!: () => void
@@ -13,37 +18,34 @@ function deferred() {
 }
 
 describe('applyConnectionChange', () => {
-  it.each([['SSH A to SSH B'], ['SSH to Cloud'], ['Cloud to SSH']])(
-    'serializes %s behind bootstrap rollback before teardown and apply',
-    async () => {
-      const gate = deferred()
-      const events: string[] = []
+  it('serializes a connection switch behind bootstrap rollback before teardown and apply', async () => {
+    const gate = deferred()
+    const events: string[] = []
 
-      const run = applyConnectionChange({
-        cancelAndWait: async () => {
-          events.push('cancel')
-          await gate.promise
-          events.push('drained')
-        },
-        isPrimary: true,
-        scope: '',
-        sendApplied: () => events.push('applied'),
-        stopPool: vi.fn(),
-        teardownPrimary: async () => {
-          events.push('primary')
-        },
-        teardownSsh: async () => {
-          events.push('ssh')
-        }
-      })
+    const run = applyConnectionChange({
+      cancelAndWait: async () => {
+        events.push('cancel')
+        await gate.promise
+        events.push('drained')
+      },
+      isPrimary: true,
+      scope: '',
+      sendApplied: () => events.push('applied'),
+      stopPool: vi.fn(),
+      teardownPrimary: async () => {
+        events.push('primary')
+      },
+      teardownSsh: async () => {
+        events.push('ssh')
+      }
+    })
 
-      await Promise.resolve()
-      expect(events).toEqual(['cancel'])
-      gate.resolve()
-      await run
-      expect(events).toEqual(['cancel', 'drained', 'ssh', 'primary', 'applied'])
-    }
-  )
+    await Promise.resolve()
+    expect(events).toEqual(['cancel'])
+    gate.resolve()
+    await run
+    expect(events).toEqual(['cancel', 'drained', 'ssh', 'primary', 'applied'])
+  })
 
   it('tears down only a non-primary scope without applying the primary connection', async () => {
     const events: string[] = []
@@ -83,6 +85,39 @@ describe('resolveTerminalConnection', () => {
         async () => undefined
       )
     ).rejects.toThrow('not ready')
+  })
+})
+
+describe('teardownSshState', () => {
+  it('terminates the owned remote backend before closing its tunnel and SSH transport', async () => {
+    const events: string[] = []
+
+    const ssh = {
+      cancelForward: async () => events.push('forward'),
+      close: async () => events.push('ssh')
+    }
+
+    await teardownSshState(
+      { ssh, ownershipId: 'owner', localPort: 1234, remotePort: 5678 },
+      { cleanupRemote: async () => events.push('remote') }
+    )
+
+    expect(events).toEqual(['remote', 'forward', 'ssh'])
+  })
+
+  it('still closes the SSH transport when remote cleanup fails', async () => {
+    const close = vi.fn(async () => undefined)
+
+    await teardownSshState(
+      { ssh: { cancelForward: vi.fn(async () => undefined), close }, ownershipId: 'owner' },
+      {
+        cleanupRemote: async () => {
+          throw new Error('remote unavailable')
+        }
+      }
+    )
+
+    expect(close).toHaveBeenCalledOnce()
   })
 })
 

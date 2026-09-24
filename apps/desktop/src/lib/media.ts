@@ -1,4 +1,9 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
+import { hermesApi, type OwnerScope } from '@/api/client'
+import type { HermesConnection } from '@/global'
+import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
@@ -40,18 +45,32 @@ export function mediaKind(path: string): MediaKind {
   return mediaInfo(path)?.kind ?? 'file'
 }
 
+// Markdown is renderable content, not an opaque download: the preview rail
+// already knows how to render a `.md` file (rendered/source toggle), so the
+// MEDIA delivery path routes these to a preview instead of a download link.
+const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'mkd'])
+
+export function isMarkdownDocumentPath(path: string): boolean {
+  const ext = path.split(/[?#]/, 1)[0]?.split('.').pop()?.toLowerCase()
+
+  return ext ? MARKDOWN_EXTENSIONS.has(ext) : false
+}
+
 export function mediaMime(path: string): string {
   return mediaInfo(path)?.mime ?? 'application/octet-stream'
 }
 
 export function mediaName(path: string): string {
-  try {
-    const url = new URL(path)
-
-    return url.pathname.split('/').filter(Boolean).pop() || path
-  } catch {
-    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  // `C:\Users\…` parses as a URL with scheme `c:`; a drive letter is a path, not a scheme.
+  if (!/^[A-Za-z]:[\\/]/.test(path)) {
+    try {
+      return new URL(path).pathname.split('/').filter(Boolean).pop() || path
+    } catch {
+      // not a URL — fall through to the path split
+    }
   }
+
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
 export function mediaMarkdownHref(path: string): string {
@@ -62,13 +81,36 @@ export function isInlineMediaSrc(path: string): boolean {
   return /^(?:https?|data):/i.test(path)
 }
 
-function isFileMediaPath(path: string): boolean {
+export function isArtifactFilePath(path: string): boolean {
+  return /^(?:file:|\/|[~.][\\/]|\.\.[\\/]|[a-z]:[\\/]|\\\\)/i.test(path)
+}
+
+export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
 
-export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): Promise<string> {
   if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
     return path
+  }
+
+  // An explicit local owner is this device, even with a remote foreground.
+  // Keep the native reader and its configured size cap; the backend preview
+  // endpoint has a separate fixed limit.
+  if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
+    return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  }
+
+  // A tile can belong to a different gateway than the foreground. Pin both
+  // halves at read admission rather than resolving them when the read settles.
+  if (window.hermesDesktop && (owner?.connectionId || owner?.profile)) {
+    const result = await hermesApi<string | { dataUrl?: string }>({
+      path: `/api/fs/read-data-url?path=${encodeURIComponent(filePathFromMediaPath(path))}`,
+      ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+      ...(owner.profile ? { profile: owner.profile } : {})
+    })
+
+    return typeof result === 'string' ? result : result.dataUrl || ''
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
@@ -80,6 +122,79 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
   }
 
   return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+}
+
+export interface MediaImageDimensions {
+  width: number
+  height: number
+}
+
+// Decoded geometry only: never retain image bytes/data URLs for every visited
+// transcript. A miss costs a letterboxed first display, not a collapsed row.
+// 'broken' remembers a failed load so a remount starts as a text line instead
+// of reserving a frame that collapses again.
+const imageDimensions = new LruCache<string, 'broken' | MediaImageDimensions>(512)
+
+export function mediaImageKey(path: string, connection: HermesConnection | null, owner?: OwnerScope): string {
+  // File reads ignore URL query/fragment, but callers can use them to identify
+  // a new revision. Keep them in the geometry key while joining proven aliases.
+  const revision = /^file:/i.test(path) ? (path.match(/[?#].*$/)?.[0] ?? '') : ''
+
+  return JSON.stringify([
+    owner?.connectionId ||
+      connection?.connectionId ||
+      desktopFsCacheKey(connection && { ...connection, profile: owner?.profile ?? connection.profile }),
+    owner?.profile ?? connection?.profile ?? '',
+    mediaSourceIdentity(path),
+    revision
+  ])
+}
+
+// Inline sources are the bytes themselves (often megabytes) and this key is
+// rebuilt every render. Length plus head (format header, usually the size)
+// and tail keeps it small and cacheable; a collision can only borrow another
+// image's frame shape, never its pixels.
+function mediaSourceIdentity(path: string): string {
+  return /^data:/i.test(path) && path.length > 512
+    ? `data#${path.length}:${path.slice(0, 160)}:${path.slice(-96)}`
+    : filePathFromMediaPath(path)
+}
+
+export function validImageDimensions(width: unknown, height: unknown): MediaImageDimensions | undefined {
+  const w = Number(width)
+  const h = Number(height)
+
+  return Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0 ? { width: w, height: h } : undefined
+}
+
+export function getMediaImageDimensions(key: string): MediaImageDimensions | undefined {
+  const entry = imageDimensions.get(key)
+
+  return entry === 'broken' ? undefined : entry
+}
+
+export function isKnownBrokenMediaImage(key: string): boolean {
+  return imageDimensions.get(key) === 'broken'
+}
+
+// A pathological URL can still make a huge key; keep this metadata cache from
+// becoming a second copy of it.
+function rememberMediaImage(key: string, entry: 'broken' | MediaImageDimensions): void {
+  if (key.length <= 4096) {
+    imageDimensions.set(key, entry)
+  }
+}
+
+export function rememberMediaImageDimensions(key: string, width: number, height: number): void {
+  const dimensions = validImageDimensions(width, height)
+
+  if (dimensions) {
+    rememberMediaImage(key, dimensions)
+  }
+}
+
+export function rememberMediaImageFailure(key: string): void {
+  rememberMediaImage(key, 'broken')
 }
 
 // Audio/video need a seekable source instead of a whole-file data URL. Keep
@@ -128,9 +243,15 @@ export function mediaGatewayStreamUrl(path: string): string {
 
   if (isRemoteGateway()) {
     const file = encodeURIComponent(filePathFromMediaPath(path))
-    const profile = conn?.profile ? `?profile=${encodeURIComponent(conn.profile)}` : ''
 
-    return `hermes-media://remote/${file}${profile}`
+    const scope = [
+      conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
+      conn?.profile ? `profile=${encodeURIComponent(conn.profile)}` : ''
+    ]
+      .filter(Boolean)
+      .join('&')
+
+    return `hermes-media://remote/${file}${scope ? `?${scope}` : ''}`
   }
 
   return mediaExternalUrl(path)
@@ -187,9 +308,11 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
 // used by preview endpoints.
 export async function downloadGatewayMediaFile(
-  path: string
+  path: string,
+  origin?: { sessionId: string; profile?: string }
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
-  const file = filePathFromMediaPath(path)
+  // URI conversion belongs to the gateway OS, not the renderer's URL parser.
+  const file = path
   const conn = $connection.get()
 
   if (!window.hermesDesktop?.saveGatewayFile) {
@@ -197,9 +320,17 @@ export async function downloadGatewayMediaFile(
   }
 
   return window.hermesDesktop.saveGatewayFile({
+    connectionId: conn?.connectionId,
     path: file,
-    profile: conn?.profile,
-    suggestedName: mediaName(file)
+    profile: origin?.profile ?? conn?.profile,
+    ...(origin ? { sessionId: origin.sessionId } : {}),
+    suggestedName: mediaName(file).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+      try {
+        return decodeURIComponent(encoded)
+      } catch {
+        return encoded
+      }
+    })
   })
 }
 

@@ -12,21 +12,24 @@ Covers:
     through to normal dispatch;
   - the Discord type-3 hp1 decode (structured prompt_response replacing the
     bare-custom_id stub; foreign custom_ids keep the legacy text shape);
-  - on_processing_start/complete drive react ops (👀 → ✅/❌), op-gated and
+  - on_processing_start/complete drive react ops (👀 → ✅/❌, or 👀 → 👍/👎 on
+    Telegram, whose reaction vocabulary is a fixed set), op-gated and
     best-effort.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, Optional
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.ws_transport import _event_from_wire
 from gateway.session import SessionSource
 
 from tests.gateway.relay.stub_connector import StubConnector
@@ -227,12 +230,12 @@ def test_discord_component_interaction_decodes_prompt_token():
 # ── react ack lifecycle ──────────────────────────────────────────────────
 
 
-def _reactable_event() -> MessageEvent:
+def _reactable_event(platform=Platform.DISCORD) -> MessageEvent:
     return MessageEvent(
         text="do something",
         message_type=MessageType.TEXT,
         source=SessionSource(
-            platform="discord",
+            platform=platform,
             chat_id="ch1",
             chat_type="channel",
             user_id="u1",
@@ -240,6 +243,20 @@ def _reactable_event() -> MessageEvent:
         ),
         message_id="m42",
     )
+
+
+# Telegram's ENTIRE allowed reaction vocabulary, from `ReactionTypeEmoji`:
+# https://core.telegram.org/bots/api#reactiontypeemoji — "Reaction emoji.
+# Currently, it can be one of …". Transcribed verbatim (73 entries). The point
+# of holding the whole list here rather than just the three emoji we use: the
+# completion ack silently failed on every Telegram turn for want of exactly
+# this check, so any future edit to the ack emoji is verified against the real
+# vocabulary instead of someone's recollection of it.
+TELEGRAM_ALLOWED_REACTIONS = frozenset(
+    "❤ 👍 👎 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳"
+    " 🌚 🌭 💯 🤣 ⚡ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👀 🎃 🙈 😇 😨"
+    " 🤝 ✍ 🤗 🫡 🎅 🎄 ☃ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷 😡".split()
+) | {"❤‍🔥", "👨‍💻", "🤷‍♂", "🤷‍♀"}
 
 
 @pytest.mark.asyncio
@@ -255,6 +272,94 @@ async def test_processing_lifecycle_reacts_eyes_then_check():
         ("✅", False),
     ]
     assert all(r["message_id"] == "m42" and r["chat_id"] == "ch1" for r in reacts)
+
+
+# ── the ack vocabulary is per-platform (turn_ack_reaction_lifecycle) ──────
+#
+# Telegram rejects any reaction outside its curated set, so the ✅/❌ completion
+# ack was refused by the Bot API on every turn while the 👀 that opened it
+# succeeded. `_react` is best-effort by design, so nothing surfaced: in
+# production this showed only as `relay.outbound` react spans alternating
+# success/failure, one failure per completed turn.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome,expected",
+    [(ProcessingOutcome.SUCCESS, "👍"), (ProcessingOutcome.FAILURE, "👎")],
+)
+async def test_telegram_ack_uses_an_emoji_telegram_actually_allows(outcome, expected):
+    adapter, stub = _adapter()
+    event = _reactable_event(platform=Platform.TELEGRAM)
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, outcome)
+    emojis = [a["emoji"] for a in stub.sent if a["op"] == "react"]
+    assert emojis == ["👀", "👀", expected]
+    # The real constraint, not just the literal we happened to choose.
+    for emoji in emojis:
+        assert emoji in TELEGRAM_ALLOWED_REACTIONS, (
+            f"{emoji!r} is not in Telegram's ReactionTypeEmoji vocabulary; "
+            "setMessageReaction will reject it and the ack will never land"
+        )
+
+
+@pytest.mark.asyncio
+async def test_free_form_reaction_platforms_keep_the_check_mark():
+    """Slack/Discord/Matrix/Signal take arbitrary emoji — they must NOT be
+    dragged down to Telegram's vocabulary."""
+    for platform in (Platform.SLACK, Platform.DISCORD, Platform.MATRIX, Platform.SIGNAL):
+        adapter, stub = _adapter()
+        event = _reactable_event(platform=platform)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        emojis = [a["emoji"] for a in stub.sent if a["op"] == "react"]
+        assert emojis == ["👀", "✅"], f"{platform.value} should keep ✅, got {emojis}"
+
+
+@pytest.mark.asyncio
+async def test_ack_platform_falls_back_through_the_real_wire_decode():
+    """`_event_from_wire` maps an absent OR unknown wire platform to
+    `Platform.RELAY` — never to "" — so the fallback must treat the "relay"
+    placeholder as unresolved. Built through the real decoder, because an
+    event with no platform at all is a state the wire cannot produce."""
+    for wire_platform in ({}, {"platform": "relay"}, {"platform": "not_a_platform"}):
+        adapter, stub = _adapter()  # make_desc default platform is telegram
+        event = _event_from_wire(
+            {
+                "text": "hi",
+                "message_id": "m42",
+                "source": {"chat_id": "ch1", "chat_type": "channel", "user_id": "u1", **wire_platform},
+            }
+        )
+        assert event.source.platform is Platform.RELAY, wire_platform
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        emojis = [a["emoji"] for a in stub.sent if a["op"] == "react"]
+        assert emojis == ["👀", "👍"], f"{wire_platform} fell back to {emojis}"
+
+
+@pytest.mark.asyncio
+async def test_ack_platform_prefers_the_chat_lane_over_the_primary():
+    """A multi-platform gateway records each chat's lane inbound. When the
+    event itself is unresolved, that lane must win over the primary platform —
+    otherwise every non-primary lane gets the primary's emoji."""
+    adapter, stub = _adapter(platform="slack", label="Slack")
+    adapter._platform_by_chat["ch1"] = "telegram"
+    event = _event_from_wire(
+        {"text": "hi", "message_id": "m42", "source": {"chat_id": "ch1", "chat_type": "channel"}}
+    )
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert [a["emoji"] for a in stub.sent if a["op"] == "react"] == ["👀", "👍"]
+
+
+@pytest.mark.asyncio
+async def test_ack_on_a_genuinely_generic_relay_keeps_the_check_mark():
+    """Nothing resolves to a real platform: a relay-primary descriptor with no
+    inbound lane must not invent Telegram's vocabulary."""
+    adapter, stub = _adapter(platform="relay", label="Relay")
+    event = _event_from_wire(
+        {"text": "hi", "message_id": "m42", "source": {"chat_id": "ch1", "chat_type": "channel"}}
+    )
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert [a["emoji"] for a in stub.sent if a["op"] == "react"] == ["👀", "✅"]
 
 
 # ── fanned-out prompt answers (one press, many gateways) ─────────────────
@@ -328,6 +433,11 @@ async def test_expired_own_prompt_notifies_instead_of_unknown_command():
 
     event = _event({"prompt_id": prompt_id, "option_id": "c1"})
     assert await adapter._consume_prompt_response(event) is True
+    # The notice is fire-and-forget now (read-loop self-deadlock fix:
+    # awaiting a send from _consume_prompt_response blocks the very read
+    # loop that resolves the send's result future). Yield so the
+    # background ack task runs before asserting egress.
+    await asyncio.sleep(0.05)
     notices = [a for a in stub.sent if a["op"] == "send"]
     assert len(notices) == 1
     assert "no longer waiting" in notices[0]["content"]

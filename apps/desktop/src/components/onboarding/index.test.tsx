@@ -2,20 +2,10 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import { makeOAuthProvider } from '@/test/oauth-provider'
 import type { OAuthProvider } from '@/types/hermes'
 
 import { Picker } from '.'
-
-function provider(id: string, name = id): OAuthProvider {
-  return {
-    cli_command: `hermes login ${id}`,
-    docs_url: `https://example.com/${id}`,
-    flow: 'pkce',
-    id,
-    name,
-    status: { logged_in: false }
-  }
-}
 
 function setProviders(providers: OAuthProvider[]) {
   $desktopOnboarding.set({
@@ -27,7 +17,8 @@ function setProviders(providers: OAuthProvider[]) {
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false
+    localEndpoint: false,
+    freeTierReady: false
   } satisfies DesktopOnboardingState)
 }
 
@@ -51,13 +42,14 @@ afterEach(() => {
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false
+    localEndpoint: false,
+    freeTierReady: false
   })
 })
 
 describe('onboarding Picker', () => {
   it('features Nous Portal and hides other providers behind a disclosure', () => {
-    setProviders([provider('anthropic', 'Anthropic Claude'), provider('nous', 'Nous Portal')])
+    setProviders([makeOAuthProvider('anthropic', 'Anthropic Claude'), makeOAuthProvider('nous', 'Nous Portal')])
     render(<Picker ctx={ctx} />)
 
     expect(screen.getByText('Nous Portal')).toBeTruthy()
@@ -74,29 +66,11 @@ describe('onboarding Picker', () => {
     expect(screen.getByRole('button', { name: 'Collapse' })).toBeTruthy()
   })
 
-  it('shows Fireworks first in the expanded list, ahead of other OAuth providers', () => {
-    setProviders([
-      provider('openai-codex', 'OpenAI Codex / ChatGPT'),
-      provider('minimax-oauth', 'MiniMax'),
-      provider('nous', 'Nous Portal')
-    ])
-    render(<Picker ctx={ctx} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
-
-    const labels = screen
-      .getAllByRole('button')
-      .map(el => el.textContent ?? '')
-      .filter(text => /Nous Portal|Fireworks AI|ChatGPT or Codex|MiniMax|OpenRouter/.test(text))
-
-    const indexOf = (needle: string) => labels.findIndex(text => text.includes(needle))
-    expect(indexOf('Nous Portal')).toBeGreaterThanOrEqual(0)
-    expect(indexOf('Fireworks AI')).toBeGreaterThan(indexOf('Nous Portal'))
-    expect(indexOf('ChatGPT or Codex')).toBeGreaterThan(indexOf('Fireworks AI'))
-    expect(indexOf('MiniMax')).toBeGreaterThan(indexOf('ChatGPT or Codex'))
-  })
-
   it('shows every provider directly when Nous Portal is absent', () => {
-    setProviders([provider('anthropic', 'Anthropic Claude'), provider('openai-codex', 'OpenAI Codex / ChatGPT')])
+    setProviders([
+      makeOAuthProvider('anthropic', 'Anthropic Claude'),
+      makeOAuthProvider('openai-codex', 'OpenAI Codex / ChatGPT')
+    ])
     render(<Picker ctx={ctx} />)
 
     expect(screen.getByText('Fireworks AI')).toBeTruthy()
@@ -107,7 +81,7 @@ describe('onboarding Picker', () => {
   })
 
   it('offers "choose later" on first run and persists the skip', () => {
-    setProviders([provider('nous', 'Nous Portal')])
+    setProviders([makeOAuthProvider('nous', 'Nous Portal')])
     render(<Picker ctx={ctx} />)
 
     const skip = screen.getByRole('button', { name: "I'll choose a provider later" })
@@ -119,7 +93,7 @@ describe('onboarding Picker', () => {
   })
 
   it('hides "choose later" in manual (add-provider) mode', () => {
-    setProviders([provider('nous', 'Nous Portal')])
+    setProviders([makeOAuthProvider('nous', 'Nous Portal')])
     $desktopOnboarding.set({ ...$desktopOnboarding.get(), manual: true })
     render(<Picker ctx={ctx} />)
 

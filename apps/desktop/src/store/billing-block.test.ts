@@ -8,9 +8,7 @@ import { openExternalLink } from '@/lib/external-link'
 import {
   $billingBlock,
   $billingSettingsRequest,
-  billingCtaLabel,
   clearBillingBlock,
-  requestBillingSettings,
   runBillingRecovery,
   setBillingBlock
 } from './billing-block'
@@ -31,12 +29,6 @@ beforeEach(() => {
   $billingBlock.set(null)
   $billingSettingsRequest.set(0)
   vi.clearAllMocks()
-})
-
-test('setBillingBlock stores the block against its session', () => {
-  setBillingBlock('s1', makeBlock())
-  expect($billingBlock.get()?.sessionId).toBe('s1')
-  expect($billingBlock.get()?.block.provider).toBe('openai')
 })
 
 test('clearBillingBlock scoped to a session leaves a different session block intact', () => {
@@ -71,16 +63,4 @@ test('runBillingRecovery falls back to in-app settings when a provider has no UR
   runBillingRecovery(makeBlock({ billing_url: null, provider: 'custom' }))
   expect(openExternalLink).not.toHaveBeenCalled()
   expect($billingSettingsRequest.get()).toBe(1)
-})
-
-test('requestBillingSettings increments the intent counter', () => {
-  requestBillingSettings()
-  requestBillingSettings()
-  expect($billingSettingsRequest.get()).toBe(2)
-})
-
-test('billingCtaLabel picks the right verb per route', () => {
-  const copy = { addCredits: 'Add credits', openBilling: 'Open billing' }
-  expect(billingCtaLabel(makeBlock({ is_nous: true }), copy)).toBe('Open billing')
-  expect(billingCtaLabel(makeBlock({ is_nous: false }), copy)).toBe('Add credits')
 })

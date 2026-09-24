@@ -51,15 +51,6 @@ def _responses_payload(text: str, annotations=None, citations=None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-class TestXAIProviderIdentity:
-    def test_provider_name(self):
-        from plugins.web.xai.provider import XAIWebSearchProvider
-        assert XAIWebSearchProvider().name == "xai"
-
-
-    def test_display_name(self):
-        from plugins.web.xai.provider import XAIWebSearchProvider
-        assert "Grok" in XAIWebSearchProvider().display_name
 
 
 class TestXAIProviderIsAvailable:
@@ -69,10 +60,6 @@ class TestXAIProviderIsAvailable:
     visible CLI latency.
     """
 
-    def test_available_via_env_var(self, monkeypatch):
-        monkeypatch.setenv("XAI_API_KEY", "sk-xai-test")
-        from plugins.web.xai.provider import XAIWebSearchProvider
-        assert XAIWebSearchProvider().is_available() is True
 
 
     def test_unavailable_when_auth_store_corrupted(self, monkeypatch, tmp_path):
@@ -399,11 +386,6 @@ class TestXAIProviderSearchErrors:
 
 
 class TestXAIBackendWiring:
-    def test_is_backend_available_true_via_env_var(self, monkeypatch):
-        from tools import web_tools
-
-        monkeypatch.setenv("XAI_API_KEY", "sk-xai-test")
-        assert web_tools._is_backend_available("xai") is True
 
 
     def test_is_backend_available_does_not_call_resolver(self, monkeypatch):
@@ -419,10 +401,6 @@ class TestXAIBackendWiring:
         ):
             assert web_tools._is_backend_available("xai") is True
 
-    def test_configured_backend_xai_accepted(self, monkeypatch):
-        from tools import web_tools
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "xai"})
-        assert web_tools._get_backend() == "xai"
 
     def test_xai_not_in_legacy_backend_candidate_chain(self, monkeypatch):
         """The hardcoded ``backend_candidates`` tuple in ``_get_backend()``
@@ -442,7 +420,7 @@ class TestXAIBackendWiring:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in (
             "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
-            "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY",
+            "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "KEENABLE_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")

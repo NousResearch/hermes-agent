@@ -9,6 +9,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { modeBound } from '@/store/interface-mode'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { stampSessionPrBranch } from './pull-requests'
@@ -36,7 +37,11 @@ const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-export const $reviewOpen = persistentAtom(OPEN_KEY, false, Codecs.bool)
+// Simple mode rests it closed without touching the preference; ⌘G still opens
+// it for the session.
+const $reviewOpenPref = persistentAtom(OPEN_KEY, false, Codecs.bool)
+
+export const $reviewOpen = modeBound('reviewOpen', $reviewOpenPref, open => $reviewOpenPref.set(open))
 
 // The split-button's remembered default action ('commit' | 'commitPush').
 export type CommitAction = 'commit' | 'commitPush'
@@ -90,6 +95,10 @@ export const $reviewCommitMsgBusy = atom(false)
 // tiles can sit in different worktrees than main, and reviewing "the diff I'm
 // looking at" must mean that tile's repo, not whatever main happens to be on.
 export const $reviewScopeCwd = atom<null | string>(null)
+// The composer target that opened the pane. The review pane is a shared
+// surface, but its "let the agent ship it" action must return to the session
+// whose worktree the user is reviewing, not broadcast to every mounted tile.
+export const $reviewScopeTarget = atom('main')
 
 /** The repo the pane is reading right now: its pinned scope, else the active
  *  session's cwd. Exported for pane helpers that join repo-relative paths. */
@@ -258,9 +267,11 @@ function refreshShipInfoIfStale(): void {
 }
 
 /** Open the pane scoped to `scopeCwd` (a tile's worktree), or to the active
- *  session's cwd when null — see `$reviewScopeCwd`. */
-export function openReview(scopeCwd: null | string = null): void {
+ *  session's cwd when null — see `$reviewScopeCwd`. Keep the originating
+ *  composer target alongside it for agent-ship actions. */
+export function openReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
   $reviewScopeCwd.set(scopeCwd?.trim() || null)
+  $reviewScopeTarget.set(scopeTarget.trim() || 'main')
   $reviewOpen.set(true)
   void refreshReview()
   void refreshShipInfo()
@@ -269,16 +280,22 @@ export function openReview(scopeCwd: null | string = null): void {
 export function closeReview(): void {
   $reviewOpen.set(false)
   $reviewScopeCwd.set(null)
+  $reviewScopeTarget.set('main')
   clearReviewSelection()
 }
 
-export function toggleReview(scopeCwd: null | string = null): void {
+export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
   // Narrow width: the pane is a collapsed overlay (like the sidebar under ⌘B).
   // Make sure its data is loaded, then slide it in/out via the forced-reveal pin
   // — never the docked open state, which a 0px track would render invisibly.
   if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
-    if (!$reviewOpen.get()) {
-      openReview(scopeCwd)
+    const target = scopeTarget.trim() || 'main'
+
+    const originChanged =
+      ($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target
+
+    if (!$reviewOpen.get() || originChanged) {
+      openReview(scopeCwd, target)
     }
 
     window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: REVIEW_PANE_ID } }))
@@ -294,7 +311,7 @@ export function toggleReview(scopeCwd: null | string = null): void {
   if (isPaneVisible(REVIEW_PANE_ID)) {
     closeReview()
   } else {
-    revealReview(scopeCwd)
+    revealReview(scopeCwd, scopeTarget)
   }
 }
 
@@ -303,15 +320,18 @@ export function toggleReview(scopeCwd: null | string = null): void {
  * closes an already-open pane — it's the "take me to the diff" entry point used
  * by the transcript's changed-files card.
  */
-export function revealReview(scopeCwd: null | string = null): void {
+export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
   const wasOpen = $reviewOpen.get()
+  const target = scopeTarget.trim() || 'main'
 
   if (!wasOpen) {
-    openReview(scopeCwd)
-  } else if (($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null)) {
+    openReview(scopeCwd, target)
+  } else if (($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target) {
     // Already open but on another worktree's diff — re-home it. The scope
-    // subscription below clears the stale list and re-probes.
+    // subscription below clears the stale list and re-probes. Keep the
+    // originating composer target alongside the cwd for the agent-ship action.
     $reviewScopeCwd.set(scopeCwd?.trim() || null)
+    $reviewScopeTarget.set(target)
   }
 
   if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
@@ -346,8 +366,12 @@ function matchReviewFile(files: readonly HermesReviewFile[], path: string): Herm
  * Open the review pane on one file's diff. The path comes from a tool call, so
  * it may be absolute while git reports repo-relative — match on the tail.
  */
-export async function openReviewForPath(path: string, scopeCwd: null | string = null): Promise<void> {
-  revealReview(scopeCwd)
+export async function openReviewForPath(
+  path: string,
+  scopeCwd: null | string = null,
+  scopeTarget = 'main'
+): Promise<void> {
+  revealReview(scopeCwd, scopeTarget)
   await refreshReview()
 
   const file = matchReviewFile($reviewFiles.get(), path)

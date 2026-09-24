@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from tools import approval_context, approval_prompt
 
 
 def _manifest(name: str = "fixture-approval") -> PluginManifest:
@@ -249,7 +250,7 @@ def test_host_caps_hung_transport_workers():
 
 
 def _configure_manual_guard(monkeypatch, approval_module, manager, *, fallback=None):
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval_module, "_is_interactive_cli", lambda: True)
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "detect_hardline_command", lambda command: (False, ""))
@@ -263,13 +264,8 @@ def _configure_manual_guard(monkeypatch, approval_module, manager, *, fallback=N
         lambda *args, **kwargs: "session-a",
     )
     monkeypatch.setattr(approval_module, "is_approved", lambda *args: False)
-    monkeypatch.setattr(approval_module, "get_plugin_manager", lambda: manager, raising=False)
-    monkeypatch.setattr(
-        approval_module,
-        "_get_approval_transport_config",
-        lambda: ("phone", fallback),
-        raising=False,
-    )
+    monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_config", lambda: ("phone", fallback))
     monkeypatch.setattr("tools.tirith_security.check_command_security", lambda command: {"action": "allow"})
 
 
@@ -299,6 +295,7 @@ def test_cli_selected_transport_replaces_builtin_prompt(monkeypatch):
 
 def test_gateway_selected_transport_does_not_require_gateway_notifier(monkeypatch):
     from tools import approval
+    import tools.approval_context as tools_approval_context
 
     manager = PluginManager()
     seen = []
@@ -308,6 +305,7 @@ def test_gateway_selected_transport_does_not_require_gateway_notifier(monkeypatc
     _configure_manual_guard(monkeypatch, approval, manager)
     monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
     monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: True)
     monkeypatch.setattr(approval, "_gateway_notify_cbs", {})
 
     result = approval.check_all_command_guards("rm -rf /tmp/example", "local")
@@ -319,22 +317,28 @@ def test_gateway_selected_transport_does_not_require_gateway_notifier(monkeypatc
 
 def test_execute_code_gateway_uses_selected_transport(monkeypatch):
     from tools import approval
+    import tools.approval_context as tools_approval_context
 
     manager = PluginManager()
     seen = []
     _context(manager).register_approval_transport(
         "phone", lambda request: seen.append(request) or request.respond("once")
     )
-    monkeypatch.setattr(approval, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: True)
     monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: False)
+    monkeypatch.setattr(tools_approval_context, "_is_cron_approval_context", lambda: False)
     monkeypatch.setattr(
         approval, "get_current_session_key", lambda *args, **kwargs: "session-a"
     )
-    monkeypatch.setattr(approval, "is_approved", lambda *args: False)
-    monkeypatch.setattr(approval, "get_plugin_manager", lambda: manager)
     monkeypatch.setattr(
-        approval, "_get_approval_transport_config", lambda: ("phone", None)
+        tools_approval_context, "get_current_session_key", lambda *args, **kwargs: "session-a"
+    )
+    monkeypatch.setattr(approval, "is_approved", lambda *args: False)
+    monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(
+        approval_context, "_get_approval_transport_config", lambda: ("phone", None)
     )
     monkeypatch.setattr(approval, "_gateway_notify_cbs", {})
 
@@ -369,13 +373,13 @@ def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, c
     from tools import approval
 
     monkeypatch.setattr(
-        approval, "_get_approval_transport_config", lambda: ("phone", None)
+        approval_context, "_get_approval_transport_config", lambda: ("phone", None)
     )
 
     def broken_manager():
         raise RuntimeError("plugin-owned-secret-value")
 
-    monkeypatch.setattr(approval, "get_plugin_manager", broken_manager)
+    monkeypatch.setattr(approval_prompt, "get_plugin_manager", broken_manager)
 
     result = approval._present_with_selected_transport(
         command="rm -rf /tmp/example",
@@ -500,7 +504,7 @@ def register(ctx):
     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
     manager = PluginManager()
     monkeypatch.setattr(plugins_module, "_plugin_manager", manager)
-    token = approval.set_hermes_interactive_context(True)
+    token = approval_context.set_hermes_interactive_context(True)
     approval.clear_session("local")
     approval._permanent_approved.clear()
     try:
@@ -511,17 +515,17 @@ def register(ctx):
         reloaded = approval.check_all_command_guards(
             "rm -rf /tmp/hermes-approval-transport-fixture-reloaded", "local"
         )
-        gateway_token = approval.set_hermes_interactive_context(False)
+        gateway_token = approval_context.set_hermes_interactive_context(False)
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         try:
             gateway_routed = approval.check_all_command_guards(
                 "rm -rf /tmp/hermes-approval-transport-fixture-gateway", "local"
             )
         finally:
-            approval.reset_hermes_interactive_context(gateway_token)
+            approval_context.reset_hermes_interactive_context(gateway_token)
         hardline = approval.check_all_command_guards("rm -rf /", "local")
     finally:
-        approval.reset_hermes_interactive_context(token)
+        approval_context.reset_hermes_interactive_context(token)
 
     records = [
         json.loads(line)
@@ -543,6 +547,7 @@ def register(ctx):
 
 def test_hardline_blocks_before_selected_transport(monkeypatch):
     from tools import approval
+    import tools.approval_detection as approval_detection
 
     manager = PluginManager()
     calls = []
@@ -552,6 +557,11 @@ def test_hardline_blocks_before_selected_transport(monkeypatch):
     _configure_manual_guard(monkeypatch, approval, manager)
     monkeypatch.setattr(
         approval,
+        "detect_hardline_command",
+        lambda command: (True, "recursive delete of root filesystem"),
+    )
+    monkeypatch.setattr(
+        approval_detection,
         "detect_hardline_command",
         lambda command: (True, "recursive delete of root filesystem"),
     )

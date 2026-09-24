@@ -1,19 +1,42 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   acceptsTriggerCompletion,
+  implicitSlashAcceptIndex,
   isPendingDraftPersistCurrent,
+  liveComposerDraft,
   type PendingDraftPersist,
-  pickPlaceholder,
+  shouldDisableComposerInput,
   slashArgStage,
   slashChipKindForItem,
   slashCommandToken,
   type TriggerAcceptInput
 } from './composer-utils'
+import { normalizeComposerEditorDom, RICH_INPUT_SLOT } from './rich-editor'
 
 const item = (group: string): Unstable_TriggerItem =>
   ({ id: 'x', type: 'slash', label: 'x', metadata: { group } }) as unknown as Unstable_TriggerItem
+
+describe('shouldDisableComposerInput', () => {
+  it.each(['idle', 'connecting', 'closed', 'error'] as const)(
+    'keeps the draft editable while the gateway is %s',
+    gatewayState => {
+      expect(shouldDisableComposerInput(true, gatewayState)).toBe(false)
+    }
+  )
+
+  it('fails closed when connection atoms disagree about an open gateway', () => {
+    expect(shouldDisableComposerInput(true, 'open')).toBe(true)
+  })
+
+  it.each(['idle', 'connecting', 'open', 'closed', 'error'] as const)(
+    'never disables an otherwise enabled composer while the gateway is %s',
+    gatewayState => {
+      expect(shouldDisableComposerInput(false, gatewayState)).toBe(false)
+    }
+  )
+})
 
 describe('slashArgStage', () => {
   it('is true only once the query is past the command name', () => {
@@ -88,10 +111,31 @@ describe('acceptsTriggerCompletion', () => {
   })
 })
 
-describe('pickPlaceholder', () => {
-  it('returns a member of the pool', () => {
-    const pool = ['a', 'b', 'c'] as const
-    expect(pool).toContain(pickPlaceholder(pool))
+describe('implicitSlashAcceptIndex', () => {
+  const rows = ['/compress', '/review', '/resume']
+
+  it('completes a prefix of the highlighted row', () => {
+    expect(implicitSlashAcceptIndex('com', rows, 0, false)).toBe(0)
+  })
+
+  it('keeps a fully typed command even when another row is highlighted', () => {
+    expect(implicitSlashAcceptIndex('review', rows, 0, false)).toBe(1)
+  })
+
+  it('does not steal when the typed token is not a prefix of any row', () => {
+    expect(implicitSlashAcceptIndex('review', ['/compress', '/resume'], 0, false)).toBeNull()
+  })
+
+  it('takes the only prefix match when the highlight is a leftover', () => {
+    expect(implicitSlashAcceptIndex('rev', ['/compress', '/review', '/resume'], 0, false)).toBe(1)
+  })
+
+  it('honours an arrowed pick even when it is not a prefix', () => {
+    expect(implicitSlashAcceptIndex('review', rows, 0, true)).toBe(0)
+  })
+
+  it('matches an arg-stage prefix against the full completion text', () => {
+    expect(implicitSlashAcceptIndex('personality alic', ['/personality alice', '/personality none'], 0, false)).toBe(0)
   })
 })
 
@@ -125,5 +169,40 @@ describe('isPendingDraftPersistCurrent (#54527 integrity guard)', () => {
 
   it('rejects when nothing was ever captured', () => {
     expect(isPendingDraftPersistCurrent(null, null)).toBe(false)
+  })
+})
+
+/** Real contentEditable, built the way `empty-composer.test.ts` builds one. */
+function editorWith(text: string): HTMLDivElement {
+  const el = document.createElement('div')
+
+  el.dataset.slot = RICH_INPUT_SLOT
+  el.contentEditable = 'true'
+  el.append(document.createTextNode(text))
+  normalizeComposerEditorDom(el)
+  document.body.append(el)
+
+  return el
+}
+
+// editorWith appends to the shared JSDOM body; empty it so the element does not
+// leak into other cases in this file.
+afterEach(() => {
+  document.body.replaceChildren()
+})
+
+describe('liveComposerDraft (stale-mirror guard for the ArrowUp recall)', () => {
+  it('reads the live editor text even when the mirror is still empty', () => {
+    // The race this exists for: a keystroke or paste flushed only by the
+    // coalesced rAF, so `draftRef.current` holds the pre-keystroke text while
+    // the editor already holds what the user typed. The recall guard must see
+    // the typed text, not the stale empty mirror.
+    const editor = editorWith('just typed this')
+
+    expect(liveComposerDraft(editor, '')).toBe('just typed this')
+  })
+
+  it('falls back to the mirror before the editor mounts', () => {
+    expect(liveComposerDraft(null, 'mirrored draft')).toBe('mirrored draft')
   })
 })

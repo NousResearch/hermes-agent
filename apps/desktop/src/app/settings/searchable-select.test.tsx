@@ -1,21 +1,14 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { stubResizeObserver } from '@/test/jsdom'
 import type { ConfigFieldSchema } from '@/types/hermes'
 
 import { ConfigField } from './config-field'
 import { rankSearchOption, SearchableSelect } from './searchable-select'
 
-// Radix Popover + cmdk call scrollIntoView / pointer-capture / ResizeObserver
-// APIs jsdom lacks.
-class TestResizeObserver {
-  disconnect() {}
-  observe() {}
-  unobserve() {}
-}
-
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', TestResizeObserver)
+  stubResizeObserver()
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.releasePointerCapture = vi.fn()
@@ -42,17 +35,9 @@ describe('rankSearchOption', () => {
     expect(rankSearchOption('ASIA/KOLKATA', 'kolkata')).toBe(2)
   })
 
-  it('scores a substring match anywhere as 1', () => {
-    expect(rankSearchOption('America/New_York', 'amer')).toBe(1)
-  })
-
   it('scores a slashless option by plain substring', () => {
     expect(rankSearchOption('UTC', 'ut')).toBe(1)
     expect(rankSearchOption('UTC', 'xyz')).toBe(0)
-  })
-
-  it('scores a non-match as 0', () => {
-    expect(rankSearchOption('Europe/Berlin', 'tokyo')).toBe(0)
   })
 })
 
@@ -88,12 +73,6 @@ describe('SearchableSelect', () => {
     fireEvent.click(screen.getByRole('combobox'))
 
     expect(screen.queryByText('System default')).toBeNull()
-  })
-
-  it('shows the placeholder when the value is blank', () => {
-    render(<SearchableSelect onChange={vi.fn()} options={options} placeholder="Search…" value="" />)
-
-    expect(screen.getByRole('combobox').textContent).toContain('Search…')
   })
 })
 

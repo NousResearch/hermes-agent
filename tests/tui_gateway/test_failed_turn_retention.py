@@ -32,7 +32,7 @@ from tui_gateway import server
 class _InlineThread:
     """Run the turn synchronously so tests observe its final state."""
 
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
@@ -171,6 +171,66 @@ def test_returned_error_result_retains_snapshot_and_emits_terminal_frame(
     assert session["running"] is False
 
 
+def test_returned_error_result_carries_error_surface(emits, turn_env):
+    """A classified failure_reason rides the terminal frame AND the retained
+    snapshot as a structured {layer, code, retryable} descriptor, so the
+    desktop names the failing layer instead of sniffing the message."""
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        provider="openrouter",
+        model="test/model",
+        run_conversation=lambda *a, **k: {
+            "final_response": "",
+            "error": "Rate limit exceeded",
+            "failed": True,
+            "failure_reason": "rate_limit",
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["error_surface"] == {
+        "layer": "provider",
+        "code": "rate_limit",
+        "retryable": True,
+        # The failing session's identity rides the descriptor so clients
+        # report the model that actually failed, not the composer's current.
+        "provider": "openrouter",
+        "model": "test/model",
+    }
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+    assert snapshot["error_surface"]["layer"] == "provider"
+
+
+def test_returned_error_without_reason_omits_no_frame(emits, turn_env):
+    """Legacy result dicts (no failure_reason) still get a best-effort
+    descriptor — never a crash, never a missing terminal frame."""
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda *a, **k: {
+            "final_response": "",
+            "error": "something odd",
+            "failed": True,
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "go")
+
+    server._run_prompt_submit("rid", "sid", session, "go")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["status"] == "error"
+    assert payload["error_surface"]["layer"] == "provider"
+    assert payload["error_surface"]["code"] == "unknown"
+
+
 def test_completed_turn_still_clears_inflight(emits, turn_env):
     agent = types.SimpleNamespace(
         session_id="session-key",
@@ -187,6 +247,75 @@ def test_completed_turn_still_clears_inflight(emits, turn_env):
     assert completes[0]["status"] == "complete"
     assert "error" not in completes[0]
     assert server._inflight_snapshot(session) is None
+
+
+@pytest.mark.parametrize("streamed_prefix", [None, "", "Earlier commentary. "])
+def test_returned_partial_error_keeps_final_response_text(emits, turn_env, monkeypatch, streamed_prefix):
+    """A partial answer survives both the terminal frame and a reconnect that missed it."""
+    text = "Hello! How can I help?"
+    error = "Response remained truncated after 4 continuation attempts"
+
+    def run(message, stream_callback=None, **kwargs):
+        if streamed_prefix is not None:
+            assert stream_callback is not None
+            stream_callback(streamed_prefix + text)
+        return {"final_response": text, "error": error, "failed": True, "partial": True}
+
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=run,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "hello")
+
+    server._run_prompt_submit("rid", "sid", session, "hello")
+
+    completes = _events(emits, "message.complete")
+    assert len(completes) == 1
+    payload = completes[0]
+    assert payload["status"] == "error"
+    assert payload["partial"] is True
+    assert payload["text"] == text
+    assert payload["error"] == error
+
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    resumed = server._live_session_payload("sid", session)
+    assert resumed["running"] is False
+    assert resumed["inflight"]["assistant"] == (streamed_prefix or "") + text
+    assert resumed["inflight"]["user"] == "hello"
+    assert resumed["inflight"]["status"] == payload["status"]
+    assert resumed["inflight"]["error"] == payload["error"]
+    assert resumed["inflight"]["error_surface"] == payload["error_surface"]
+    assert resumed["inflight"]["streaming"] is False
+
+
+@pytest.mark.parametrize("result, status", [
+    ({"final_response": "answer", "error": "failure", "failed": True}, "error"),
+    ({"final_response": "", "error": "failure", "partial": True}, "error"),
+    ({"final_response": "  ", "error": "failure", "partial": True}, "error"),
+    ({"final_response": " failure \n", "error": "failure", "partial": True}, "error"),
+    ({"final_response": "answer", "partial": True}, "complete"),
+    ({"final_response": "answer", "error": "failure", "partial": True, "interrupted": True}, "interrupted"),
+])
+def test_only_partial_answers_on_failed_turns_set_flag(emits, turn_env, result, status):
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda *a, **k: result,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["status"] == status
+    assert "partial" not in payload
+    if status == "error":
+        assert server._inflight_snapshot(session)["assistant"] == ""
+    else:
+        assert server._inflight_snapshot(session) is None
 
 
 # ── Exception path ─────────────────────────────────────────────────────
@@ -224,6 +353,10 @@ def test_exception_closes_turn_with_terminal_complete_and_partial(emits, turn_en
     assert snapshot["assistant"] == "half an ans"
     assert snapshot["error"] == "connection reset mid-stream"
     assert session["running"] is False
+
+    # Dispatcher-side exceptions (not API errors) classify as gateway-layer.
+    assert payload["error_surface"]["layer"] == "gateway"
+    assert snapshot["error_surface"]["layer"] == "gateway"
 
 
 # ── Resume replay (the reason retention exists) ───────────────────────

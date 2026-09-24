@@ -10,7 +10,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-from hermes_cli.main import _session_browse_picker
+from hermes_cli.sessions_cmd_browse import _session_browse_picker
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -149,34 +149,6 @@ class TestCursesBrowse:
 
 # ─── Argument parser registration ──────────────────────────────────────────
 
-class TestSessionBrowseArgparse:
-    """Verify the 'browse' subcommand is properly registered."""
-
-    def test_browse_subcommand_exists(self):
-        """hermes sessions browse should be parseable."""
-
-        # We can't run main(), but we can import and test the parser setup
-        # by checking that argparse doesn't error on "sessions browse"
-        # Re-create the parser portion
-        # Instead, let's just verify the import works and the function exists
-        from hermes_cli.main import _session_browse_picker
-        assert callable(_session_browse_picker)
-
-    def test_browse_default_limit_is_500(self):
-        """The default --limit for browse should be 500."""
-        # Build the same argparse tree cmd_sessions uses and verify the default.
-        import argparse
-        parser = argparse.ArgumentParser()
-        subparsers = parser.add_subparsers(dest="sessions_action")
-        browse = subparsers.add_parser("browse")
-        browse.add_argument("--source")
-        browse.add_argument("--limit", type=int, default=500)
-
-        args = parser.parse_args(["browse"])
-        assert args.limit == 500
-
-        args = parser.parse_args(["browse", "--limit", "42"])
-        assert args.limit == 42
 
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────

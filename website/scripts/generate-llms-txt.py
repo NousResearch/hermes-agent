@@ -2,11 +2,19 @@
 """Generate llms.txt and llms-full.txt for the Hermes docs site.
 
 Outputs:
-  website/static/llms.txt        — short curated index of the docs, one link per page,
-                                    grouped by section. Conforms to https://llmstxt.org.
-  website/static/llms-full.txt   — every `.md` file under `website/docs/` concatenated,
+  website/static/llms.txt        — index of the docs, one link per page, grouped by
+                                    section. Conforms to https://llmstxt.org.
+  website/static/llms-full.txt   — every doc under `website/docs/` concatenated,
                                     with `# <title>` headings and `<!-- source: … -->`
                                     comments separating files.
+
+Both are driven by `iter_docs()`, which walks the docs tree. `SECTIONS` below
+curates *order and grouping*, never membership: a page nobody curated still
+gets indexed, under the section its path belongs to. That distinction is the
+reason this file was rewritten — when the section list also decided membership,
+it silently drifted to 53% coverage, and Bot Mode, the desktop app, computer
+use, web search, and 22 messaging platforms were absent from the index every
+LLM reads to learn what Hermes does.
 
 Both publish at:
   https://hermes-agent.nousresearch.com/docs/llms.txt
@@ -33,9 +41,11 @@ STATIC = WEBSITE / "static"
 
 SITE_BASE = "https://hermes-agent.nousresearch.com/docs"
 
-# Curated sections for llms.txt — mirrors the product story, not the filesystem.
-# Each entry: (docs-relative path without .md, display title, optional short desc).
-# `None` desc → pulled from frontmatter `description:` field.
+# The product story: which pages lead, and in what order. Everything not named
+# here is still indexed — ABSORB decides where it lands — so this list is safe
+# to leave alone as the docs grow, and worth editing only to promote a page.
+# Each entry: (docs-relative path without extension, display title, optional
+# short desc). `None` desc → pulled from frontmatter `description:` field.
 SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
     ("Getting Started", [
         ("getting-started/installation", "Installation", None),
@@ -88,7 +98,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("user-guide/features/tts", "Text-to-Speech", None),
     ]),
     ("Messaging Platforms", [
-        ("user-guide/messaging/index", "Overview", None),
+        ("user-guide/messaging", "Overview", None),
         ("user-guide/messaging/telegram", "Telegram", None),
         ("user-guide/messaging/discord", "Discord", None),
         ("user-guide/messaging/slack", "Slack", None),
@@ -102,7 +112,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("user-guide/messaging/webhooks", "Webhooks", None),
     ]),
     ("Integrations", [
-        ("integrations/index", "Integrations Overview", None),
+        ("integrations", "Integrations Overview", None),
         ("integrations/providers", "Providers", None),
         ("user-guide/features/mcp", "MCP (Model Context Protocol)", None),
         ("user-guide/features/acp", "ACP (Agent Context Protocol)", None),
@@ -121,7 +131,6 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("guides/use-mcp-with-hermes", "Use MCP with Hermes", None),
         ("guides/use-voice-mode-with-hermes", "Use Voice Mode with Hermes", None),
         ("guides/use-soul-with-hermes", "Use SOUL.md with Hermes", None),
-        ("guides/build-a-hermes-plugin", "Build a Hermes Plugin", None),
         ("guides/automate-with-cron", "Automate with Cron", None),
         ("guides/work-with-skills", "Work with Skills", None),
         ("guides/delegation-patterns", "Delegation Patterns", None),
@@ -158,9 +167,40 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
 ]
 
 
+DOC_EXTS = (".md", ".mdx")
+
+# Per-skill pages are generated from the skill tree and summarized by the two
+# catalog reference pages. Listing ~195 of them would bury the product docs in
+# the index and add ~1.4 MB of duplicative material to llms-full.txt.
+SKILL_CATALOG = ("user-guide/skills/bundled", "user-guide/skills/optional")
+
+# Where a page nobody curated goes. First match wins, so a narrower prefix must
+# precede the tree containing it. Anything matching nothing lands in
+# MISC_SECTION — no path can drop a page out of the index.
+ABSORB: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Getting Started", ("getting-started",)),
+    ("Messaging Platforms", ("user-guide/messaging",)),
+    ("Core Features", ("user-guide/features",)),
+    ("Using Hermes", ("user-guide",)),
+    ("Integrations", ("integrations",)),
+    ("Guides & Tutorials", ("guides",)),
+    ("Developer Guide", ("developer-guide",)),
+    ("Reference", ("reference",)),
+)
+MISC_SECTION = "More"
+
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-DESC_RE = re.compile(r"^description:\s*[\"'](.+?)[\"']\s*$", re.MULTILINE)
-TITLE_RE = re.compile(r"^title:\s*[\"'](.+?)[\"']\s*$", re.MULTILINE)
+DESC_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
+TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
+H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+# MDX pages open with component imports — markup plumbing, not prose.
+MDX_IMPORT_RE = re.compile(r"^(?:import|export)\s.*$\n?", re.MULTILINE)
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
 
 
 def read_frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -172,30 +212,86 @@ def read_frontmatter(path: Path) -> tuple[dict[str, str], str]:
     if m:
         fm = m.group(1)
         body = text[m.end():]
-        dm = DESC_RE.search(fm)
-        if dm:
-            meta["description"] = dm.group(1)
-        tm = TITLE_RE.search(fm)
-        if tm:
-            meta["title"] = tm.group(1)
+        for key, pattern in (("description", DESC_RE), ("title", TITLE_RE)):
+            found = pattern.search(fm)
+            if found:
+                meta[key] = _unquote(found.group(1))
+    if path.suffix == ".mdx":
+        body = MDX_IMPORT_RE.sub("", body)
     return meta, body
+
+
+def slug_for(path: Path) -> str:
+    """URL slug for a page: `user-guide/messaging/index.md` → `user-guide/messaging`."""
+    rel = path.relative_to(DOCS).with_suffix("")
+    if rel.name == "index":
+        rel = rel.parent
+    return "" if str(rel) == "." else str(rel)
+
+
+def doc_path(slug: str) -> Path | None:
+    """The file backing a slug, whether it's a page or a section landing page."""
+    for ext in DOC_EXTS:
+        for candidate in (DOCS / f"{slug}{ext}", DOCS / slug / f"index{ext}"):
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def iter_docs() -> list[str]:
+    """Every indexable page, as a slug — the one enumeration of the docs tree.
+
+    llms.txt lists exactly these and llms-full.txt emits exactly these, so a
+    page on disk cannot be missing from either output.
+    """
+    slugs = set()
+    for ext in DOC_EXTS:
+        for path in DOCS.rglob(f"*{ext}"):
+            slug = slug_for(path)
+            # The docs landing page is this index's subject, not an entry in it.
+            if slug and not slug.startswith(SKILL_CATALOG):
+                slugs.add(slug)
+    return sorted(slugs)
+
+
+def section_for(slug: str) -> str:
+    for section, prefixes in ABSORB:
+        if any(slug == prefix or slug.startswith(f"{prefix}/") for prefix in prefixes):
+            return section
+    return MISC_SECTION
+
+
+def resolve_meta(slug: str) -> tuple[str, str]:
+    """(title, description) for a page, falling back to its H1 then its slug."""
+    path = doc_path(slug)
+    if path is None:
+        return slug, ""
+    meta, body = read_frontmatter(path)
+    title = meta.get("title")
+    if not title:
+        h1 = H1_RE.search(body)
+        title = h1.group(1) if h1 else slug.rsplit("/", 1)[-1].replace("-", " ").title()
+    return title, meta.get("description", "")
 
 
 def resolve_desc(slug: str, provided: str | None) -> str:
     """Resolve short description for llms.txt entry."""
-    if provided:
-        return provided
-    path = DOCS / f"{slug}.md"
-    if not path.exists():
-        path = DOCS / slug / "index.md"
-    if not path.exists():
-        return ""
-    meta, _ = read_frontmatter(path)
-    return meta.get("description", "")
+    return provided or resolve_meta(slug)[1]
+
+
+def _entry(slug: str, title: str, desc: str) -> str:
+    url = f"{SITE_BASE}/{slug}"
+    return f"- [{title}]({url}): {desc}" if desc else f"- [{title}]({url})"
 
 
 def emit_llms_index() -> str:
-    """Build the short llms.txt index."""
+    """Build the llms.txt index: curated pages lead a section, the rest follow."""
+    curated = {slug for _section, items in SECTIONS for slug, _title, _desc in items}
+    absorbed: dict[str, list[str]] = {}
+    for slug in iter_docs():
+        if slug not in curated:
+            absorbed.setdefault(section_for(slug), []).append(slug)
+
     lines: list[str] = []
     lines.append("# Hermes Agent")
     lines.append("")
@@ -222,23 +318,24 @@ def emit_llms_index() -> str:
         lines.append(f"## {section}")
         lines.append("")
         for slug, title, desc_override in items:
-            desc = resolve_desc(slug, desc_override)
-            url = f"{SITE_BASE}/{slug}"
-            if desc:
-                lines.append(f"- [{title}]({url}): {desc}")
-            else:
-                lines.append(f"- [{title}]({url})")
+            lines.append(_entry(slug, title, resolve_desc(slug, desc_override)))
+        for slug in absorbed.pop(section, []):
+            lines.append(_entry(slug, *resolve_meta(slug)))
+        lines.append("")
+
+    # Only MISC_SECTION can survive the pops — a page whose path matched no
+    # section still has to appear somewhere.
+    for section, slugs in absorbed.items():
+        lines.append(f"## {section}")
+        lines.append("")
+        for slug in slugs:
+            lines.append(_entry(slug, *resolve_meta(slug)))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
 def emit_llms_full() -> str:
-    """Concatenate every doc under website/docs/ into a single markdown file.
-
-    Order: mirrors the curated SECTIONS list first (so the most important
-    pages are front-loaded for agents that truncate on token budget), then
-    appends any remaining .md files sorted by path.
-    """
+    """Concatenate every doc under website/docs/ into a single markdown file."""
     seen: set[Path] = set()
     chunks: list[str] = [
         "# Hermes Agent — Full Documentation\n",
@@ -253,41 +350,24 @@ def emit_llms_full() -> str:
         "\n---\n\n",
     ]
 
-    def emit_file(rel: str) -> None:
-        path = DOCS / f"{rel}.md"
-        if not path.exists():
-            path = DOCS / rel / "index.md"
-        if not path.exists() or path in seen:
+    def emit_file(slug: str) -> None:
+        path = doc_path(slug)
+        if path is None or path in seen:
             return
         seen.add(path)
-        meta, body = read_frontmatter(path)
-        title = meta.get("title") or rel
+        title, _desc = resolve_meta(slug)
+        _meta, body = read_frontmatter(path)
         chunks.append(f"<!-- source: website/docs/{path.relative_to(DOCS)} -->\n")
         chunks.append(f"# {title}\n\n")
         chunks.append(body.rstrip() + "\n\n---\n\n")
 
-    # Curated order first
-    for _, items in SECTIONS:
-        for slug, _t, _d in items:
+    # Curated order first, so a reader truncating on token budget keeps the
+    # pages that matter most; then everything else the docs tree holds.
+    for _section, items in SECTIONS:
+        for slug, _title, _desc in items:
             emit_file(slug)
-
-    # Everything else (sorted, skipping already emitted and auto-gen skill pages
-    # — those are covered by the two catalog reference pages, emitting every
-    # individual skill would add ~1.4 MB of largely duplicative material).
-    for path in sorted(DOCS.rglob("*.md")):
-        if path in seen:
-            continue
-        rel = path.relative_to(DOCS)
-        parts = rel.parts
-        if len(parts) >= 3 and parts[0] == "user-guide" and parts[1] == "skills" \
-                and parts[2] in {"bundled", "optional"}:
-            continue
-        seen.add(path)
-        meta, body = read_frontmatter(path)
-        title = meta.get("title") or str(rel)
-        chunks.append(f"<!-- source: website/docs/{rel} -->\n")
-        chunks.append(f"# {title}\n\n")
-        chunks.append(body.rstrip() + "\n\n---\n\n")
+    for slug in iter_docs():
+        emit_file(slug)
 
     return "".join(chunks).rstrip() + "\n"
 

@@ -345,7 +345,14 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     }
   }
 
-  const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
+  // Always pass the link's own text as the fallback label so a bare URL stays
+  // fully visible (#121007): previously this was `undefined` when the child
+  // text matched the target URL (the bare-autolink case), so PrettyLink fell
+  // through to urlSlugTitleLabel — a host-only label like `ncpssd.org` with
+  // the address readable only via hover/inspect. The full URL is the label the
+  // sender actually wrote into the chat. Labeled links are unchanged: their
+  // authored label already wins display by design.
+  const fallbackLabel = text || undefined
 
   return (
     <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={fallbackLabel} href={target} {...props} />

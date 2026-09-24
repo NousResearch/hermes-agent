@@ -232,50 +232,59 @@ def recover_abandoned_delegations() -> int:
         from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
     except Exception:
         return 0
-    now, recovered = time.time(), 0
+    now = time.time()
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, result_json, state
                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
-        for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
-            if pid and _pid_exists(int(pid)) and (
-                started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0)
-            ):
-                continue
-            task = json.loads(task_json or "{}")
-            error = "Delegation owner exited before recording a terminal result; outcome unknown."
-            recovered_results = _recovered_results(task, result_json, error)
-            if recovered_results:
-                done = sum(1 for r in recovered_results if r.get("status") != "unknown")
-                error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
-                         "results were recorded and are included below, the rest are unknown.")
-            diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
-            # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
-            # continue or re-dispatch from the event alone instead of opening files (#116000).
-            from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
-            if tails := transcript_tails(diagnostics["task_transcripts"]):
-                diagnostics["transcript_tails"] = tails
-            if hint := git_state_hint(task.get("owner_cwd")):
-                diagnostics["git_state_hint"] = hint
-            event = {
-                "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
-                "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
-                "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
-                "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
-                "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None, "error": error, **diagnostics,
-                **({"results": recovered_results} if recovered_results else {}),
-                "dispatched_at": dispatched_at, "completed_at": now,
-                **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
-            result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
-                      **({"results": recovered_results} if recovered_results else {})}
+    # Forensic hints are bounded subprocess/file I/O (up to three git calls x 5s per row). Running
+    # them inside the ledger transaction held _DB_LOCK and the SQLite write lock for that whole
+    # window, stalling every dispatch/finalize/delivery — cross-process state.db writers then
+    # fail on busy_timeout. The owner is verified dead above, so nothing writes these rows between
+    # the read and the update; a concurrent restorer in another process would only redo the same
+    # idempotent update (duplicate queue events are deduped by the delivery claim).
+    prepared = []
+    for row in rows:
+        delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
+        if pid and _pid_exists(int(pid)) and (
+            started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0)
+        ):
+            continue
+        task = json.loads(task_json or "{}")
+        error = "Delegation owner exited before recording a terminal result; outcome unknown."
+        recovered_results = _recovered_results(task, result_json, error)
+        if recovered_results:
+            done = sum(1 for r in recovered_results if r.get("status") != "unknown")
+            error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
+                     "results were recorded and are included below, the rest are unknown.")
+        diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
+        # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
+        # continue or re-dispatch from the event alone instead of opening files (#116000).
+        from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
+        if tails := transcript_tails(diagnostics["task_transcripts"]):
+            diagnostics["transcript_tails"] = tails
+        if hint := git_state_hint(task.get("owner_cwd")):
+            diagnostics["git_state_hint"] = hint
+        event = {
+            "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
+            "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
+            "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
+            "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
+            "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+            "status": "unknown", "summary": None, "error": error, **diagnostics,
+            **({"results": recovered_results} if recovered_results else {}),
+            "dispatched_at": dispatched_at, "completed_at": now,
+            **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
+        result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
+                  **({"results": recovered_results} if recovered_results else {})}
+        prepared.append((delegation_id, event, result))
+    with _DB_LOCK, _transaction() as conn:
+        for delegation_id, event, result in prepared:
             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
-            recovered += 1
-    return recovered
+    return len(prepared)
 
 
 def restore_undelivered_completions(target_queue) -> int:

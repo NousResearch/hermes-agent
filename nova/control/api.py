@@ -928,6 +928,10 @@ class ControlAPI:
                     "approval_required_for": list(spec.approval.required_for),
                     "knowledge_sources": list(spec.knowledge.sources),
                     "may_assign_to": list(spec.delegation.may_assign_to),
+                    # For the Team chart: what each agent is allowed to do and reach, beside
+                    # who it may hand work to.
+                    "permissions": list(spec.permissions),
+                    "integrations": list(spec.extensions.mcp),
                 }
             )
 

@@ -24,6 +24,11 @@ export type Agent = {
   approval_required_for?: string[];
   knowledge_sources?: string[];
   model?: Record<string, any>;
+  /** Agents this one may hand work to (delegation.may_assign_to). */
+  may_assign_to?: string[];
+  permissions?: string[];
+  /** MCP servers granted to this agent. */
+  integrations?: string[];
 };
 export type Task = {
   task_id: string; title: string; state: string; runtime_status: string;

@@ -511,3 +511,12 @@ def test_a_failure_is_not_presented_as_a_decision(api, home):
     assert rows["t_fail"]["attention_kind"] == "failed"
     assert rows["t_fail"]["error_summary"]["headline"]
     assert rows["t_ok"]["attention_kind"] == ""
+
+
+def test_agents_carry_what_the_team_chart_draws(api):
+    """The Team chart draws hand-offs, integrations and permissions from this one list, so
+    it needs no request per agent."""
+    rows = {a["id"]: a for a in api.handle("/platform/v1/agents").body["agents"]}
+    support = rows["customer-support"]
+    assert support["may_assign_to"] == ["operations"]
+    assert isinstance(support["permissions"], list) and isinstance(support["integrations"], list)

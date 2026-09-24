@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/tooltip";
 import { AgentDetail, AgentsScreen } from "@/screens/agents";
 import { CreateAgent } from "@/screens/agent-create";
 import { SettingsScreen } from "@/screens/settings";
+import { TeamScreen } from "@/screens/team";
 import {
   ActivityScreen, ApprovalsScreen, ChannelsScreen, KnowledgeScreen,
   ObjectivesScreen, PoliciesScreen, UsageScreen, WorkScreen,
@@ -33,6 +34,7 @@ const SCREEN_META: Record<string, { title: string; subtitle: string }> = {
   overview: { title: "Overview", subtitle: "The state of the whole workforce, at a glance." },
   settings: { title: "Settings", subtitle: "Who this deployment serves, and what the workforce is called." },
   agents: { title: "Agents", subtitle: "Every AI worker, what it is doing, and what it may reach." },
+  team: { title: "Team", subtitle: "How work arrives, and who may hand it to whom. Every arrow is enforced." },
   objectives: { title: "Objectives", subtitle: "Repeatable business processes and how far each has got." },
   work: { title: "Work", subtitle: "Everything on the board, newest first." },
   approvals: { title: "Approvals", subtitle: "What is waiting on a person, and what always will be." },
@@ -44,7 +46,7 @@ const SCREEN_META: Record<string, { title: string; subtitle: string }> = {
   knowledge: { title: "Knowledge", subtitle: "The documents the workforce may quote, and who may read each." },
   channels: { title: "Channels", subtitle: "The places customers already talk, wired to the workforce." },
   policies: { title: "Policies", subtitle: "What each agent is permitted to do, and what is actually enforced." },
-  usage: { title: "Usage", subtitle: "Model usage as reported by the runtime. Observed, never enforced." },
+  usage: { title: "Usage", subtitle: "Model usage as the runtime reports it, and spend against each monthly budget." },
 };
 
 export default function App() {
@@ -418,6 +420,8 @@ export default function App() {
                 <AgentsScreen agents={agents} tasks={taskRows} channels={channelRows}
                               onOpen={(id) => go(`agents/${id}`)} />
               </div>
+            ) : route === "team" ? (
+              <TeamScreen agents={agentRows} channels={channelRows} onOpen={(id) => go(`agents/${id}`)} />
             ) : route === "settings" ? (
               // Bumping the identity nonce re-reads the branding the shell is drawn from,
               // so a saved colour or logo appears without a reload.

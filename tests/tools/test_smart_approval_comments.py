@@ -21,6 +21,13 @@ ARITHMETIC_COMMANDS = [
     "echo \"$((1 << 2))\"#; python -c 'print(2)'",
     "echo '$((1 << 2))'#; python -c 'print(2)'",
 ]
+# Unlike $((...)), these are arithmetic commands. Even an invalid expression
+# can leave a later top-level command executable, so keep the complete input.
+BARE_ARITHMETIC_COMMANDS = [
+    f"({continuation}( {expression} )); printf SECOND"
+    for expression in ("(1)#2", "1 #2", "1 / 0", "(1 + 2)")
+    for continuation in ("", "\\\n")
+]
 EXPANSION_COMMANDS = [
     "echo $( (printf hi) )#; echo SECOND",
     "echo $(printf hi; # )\nprintf bye)#; echo SECOND",
@@ -53,7 +60,7 @@ CONDITIONAL_COMMANDS = [
 ]
 PRESERVED_COMMANDS = (
     PROCESS_SUBSTITUTION_COMMANDS + ARITHMETIC_COMMANDS + EXPANSION_COMMANDS + EXTGLOB_COMMANDS
-    + ASSIGNMENT_COMMANDS + CONDITIONAL_COMMANDS
+    + ASSIGNMENT_COMMANDS + CONDITIONAL_COMMANDS + BARE_ARITHMETIC_COMMANDS
 )
 
 WHITESPACE_COMMANDS = [

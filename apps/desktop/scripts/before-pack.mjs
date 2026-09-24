@@ -60,7 +60,8 @@
 import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
-import { stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
+import { removeDirSync, stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
+import { buildHudModifierMonitor } from './build-hud-modifier-monitor.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -73,6 +74,13 @@ export function cleanStaleAppOutDir(appOutDir) {
   // can't block the wipe. retry/maxRetries rides out transient EBUSY on
   // Windows where an AV/indexer may briefly hold a handle.
   rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  // Node's native rmSync silently deletes nothing on non-ASCII Windows
+  // paths (nodejs/node#56049, fixed in v24.13.1) — without this check the
+  // stale tree survives and the "removed" log below lies. Fall back to
+  // the libuv-backed walk, which handles those paths on every version.
+  if (existsSync(appOutDir)) {
+    removeDirSync(appOutDir)
+  }
   return true
 }
 
@@ -103,6 +111,11 @@ export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe')
   const backupDir = `${appOutDir}.bak`
   try {
     rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    // Same non-ASCII rmSync no-op as cleanStaleAppOutDir: a surviving .bak
+    // makes the rename fail and the previous build is wiped instead of kept.
+    if (existsSync(backupDir)) {
+      removeDirSync(backupDir)
+    }
     renameSync(appOutDir, backupDir)
     return true
   } catch {
@@ -134,6 +147,7 @@ export default async function beforePack(context) {
     const platform = context && context.electronPlatformName
     const archName = context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
     if (platform && archName) {
+      buildHudModifierMonitor({ platform, arch: archName })
       if (archName === 'universal') {
         console.warn(
           '[before-pack] target arch is "universal" — node-pty has no universal prebuild; ' +

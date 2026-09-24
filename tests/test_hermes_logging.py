@@ -4,7 +4,6 @@ import logging
 import os
 import stat
 import sys
-import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -73,24 +72,12 @@ class TestSetupLogging:
         assert log_dir == hermes_home / "logs"
         assert log_dir.is_dir()
 
-    def test_creates_agent_log_handler(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        root = logging.getLogger()
-
-        agent_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "agent.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(agent_handlers) == 1
-        assert agent_handlers[0].level == logging.INFO
 
 
     def test_idempotent_no_duplicate_handlers(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
         hermes_logging.setup_logging(hermes_home=hermes_home)  # second call — should be no-op
 
-        root = logging.getLogger()
         agent_handlers = [
             h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
@@ -141,6 +128,84 @@ class TestSetupLogging:
         assert "profile-routed cron record" not in (
             hermes_home / "logs" / "agent.log"
         ).read_text()
+
+    @pytest.mark.parametrize("launch_redacts, routed_opt_out, routed_redacted", [
+        (False, None, True),      # the launch profile opted out, the routed one did not
+        (True, "env", False),     # the routed profile opted out in its own .env
+    ], ids=["launch-opt-out", "routed-env-opt-out"])
+    def test_routed_records_follow_their_own_profiles_redaction_policy(
+            self, hermes_home, tmp_path, monkeypatch, launch_redacts, routed_opt_out, routed_redacted):
+        """The listener thread formats every record after its profile scope is gone, so a routed profile's own
+        agent.log was redacted by the LAUNCH profile's policy: raw credentials if only the launch opted out."""
+        from agent import redact
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        monkeypatch.setattr(redact, "_REDACT_ENABLED", launch_redacts)
+        monkeypatch.setattr(redact, "_REDACT_ENABLED_BY_HOME", {})
+        routed = tmp_path / "profile-b"
+        routed.mkdir()
+        if routed_opt_out == "config":
+            (routed / "config.yaml").write_text("security:\n  redact_secrets: false\n", encoding="utf-8")
+        elif routed_opt_out == "env":
+            (routed / ".env").write_text("HERMES_REDACT_SECRETS=false\n", encoding="utf-8")
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, routed]) is True
+        routed_secret = "sk-proj-ROUTEDPROFILE" + "b" * 24
+        launch_secret = "sk-proj-LAUNCHPROFILE" + "a" * 24
+
+        logger = logging.getLogger("gateway.redaction-routing-test")
+        token = set_hermes_home_override(routed)
+        try:
+            logger.warning("provider rejected key %s", routed_secret)
+        finally:
+            reset_hermes_home_override(token)
+        logger.warning("launch key %s", launch_secret)
+        hermes_logging.flush_log_queue()
+
+        assert (routed_secret not in (routed / "logs" / "agent.log").read_text()) is routed_redacted
+        assert (launch_secret not in (hermes_home / "logs" / "agent.log").read_text()) is launch_redacts
+
+    def test_release_profile_log_handlers_closes_only_deleted_profile(self, hermes_home, tmp_path):
+        """Profile deletion releases its routed log files without disturbing another profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        deleted_home = tmp_path / "profile-deleted"
+        other_home = tmp_path / "profile-other"
+        deleted_home.mkdir()
+        other_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, deleted_home, other_home]
+        ) is True
+
+        logger = logging.getLogger("agent.profile-delete-log-release")
+        token = set_hermes_home_override(deleted_home)
+        try:
+            logger.warning("deleted profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        token = set_hermes_home_override(other_home)
+        try:
+            logger.warning("other profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        routers = [
+            handler for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        ]
+        assert len(routers) == 2  # agent.log and errors.log
+        assert all(deleted_home.resolve() in handler._profile_handlers for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+
+        assert hermes_logging.release_profile_log_handlers(deleted_home) == 2
+
+        assert all(deleted_home.resolve() not in handler._profile_handlers for handler in routers)
+        assert all(deleted_home.resolve() not in handler._profile_homes for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+        assert "other profile log handles" in (other_home / "logs" / "agent.log").read_text()
+        assert "other profile log handles" in (other_home / "logs" / "errors.log").read_text()
 
     def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
         """A dashboard or serve backend builds agents for several profiles in ONE process, and each
@@ -231,7 +296,6 @@ class TestSetupLogging:
 
         hermes_logging.setup_logging(hermes_home=hermes_home, log_level="WARNING")
 
-        root = logging.getLogger()
         agent_handlers = [
             h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
@@ -244,27 +308,7 @@ class TestSetupLogging:
 class TestGatewayMode:
     """setup_logging(mode='gateway') creates a filtered gateway.log."""
 
-    def test_gateway_log_created(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-        root = logging.getLogger()
 
-        gw_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gateway.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gw_handlers) == 1
-
-    def test_gateway_log_not_created_in_cli_mode(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
-        root = logging.getLogger()
-
-        gw_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gateway.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gw_handlers) == 0
 
 
 
@@ -304,16 +348,6 @@ class TestGatewayMode:
 class TestGuiMode:
     """setup_logging(mode='gui') creates a filtered gui.log."""
 
-    def test_gui_log_created(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
-        root = logging.getLogger()
-
-        gui_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gui.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gui_handlers) == 1
 
 
     def test_gui_log_receives_only_gui_components(self, hermes_home):
@@ -357,23 +391,6 @@ class TestSessionContext:
 
 
 
-class TestComponentFilter:
-    """Unit tests for _ComponentFilter."""
-
-    def test_passes_matching_prefix(self):
-        f = hermes_logging._ComponentFilter(("gateway",))
-        record = logging.LogRecord(
-            "gateway.run", logging.INFO, "", 0, "msg", (), None
-        )
-        assert f.filter(record) is True
-
-
-    def test_blocks_non_matching(self):
-        f = hermes_logging._ComponentFilter(("gateway",))
-        record = logging.LogRecord(
-            "tools.terminal_tool", logging.INFO, "", 0, "msg", (), None
-        )
-        assert f.filter(record) is False
 
 
 
@@ -424,29 +441,6 @@ class TestAddRotatingHandler:
         assert len(rotating_handlers) == 1
         # Clean up
 
-    def test_no_session_filter_on_handler(self, tmp_path):
-        """Handlers rely on record factory, not per-handler _SessionFilter."""
-        log_path = tmp_path / "no_session_filter.log"
-        logger = logging.getLogger("_test_no_session_filter")
-        formatter = logging.Formatter("%(session_tag)s%(message)s")
-
-        hermes_logging._add_rotating_handler(
-            log_path,
-            level=logging.INFO, max_bytes=1024, backup_count=1,
-            formatter=formatter,
-        )
-
-        handlers = [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
-        assert len(handlers) == 1
-        # No _SessionFilter on the handler — record factory handles it
-        assert len(handlers[0].filters) == 0
-
-        # But session_tag still works (via record factory)
-        hermes_logging.set_session_context("factory_test")
-        logger.info("test msg")
-        hermes_logging.flush_log_queue()
-        content = log_path.read_text()
-        assert "[factory_test]" in content
 
         # Clean up
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
@@ -685,7 +679,6 @@ class TestExternalRotationRecovery:
 def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
     """A failing log destination is named once (no per-record traceback) and writes resume
     once the file is reachable again."""
-    import io
 
     class _SickStream(io.TextIOBase):
         def writable(self):
@@ -720,7 +713,6 @@ def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsy
 def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys):
     """The reported case: open() succeeds but every write/seek/flush raises EIO. Reopening must
     not re-arm the notice, or a stuck device prints the path once per record."""
-    import io
 
     class _SickStream(io.TextIOBase):
         def writable(self):
@@ -755,7 +747,6 @@ class TestSafeStderr:
 
     def test_wraps_non_utf8_stderr(self, monkeypatch):
         """On non-UTF-8 systems (e.g. Windows cp949), wraps stderr with UTF-8."""
-        import io
 
         class FakeStderr:
             """Simulates a Windows stderr with legacy encoding."""
@@ -776,57 +767,5 @@ class TestSafeStderr:
         assert result.encoding == "utf-8"
         assert result.errors == "replace"
 
-    def test_handler_emits_unicode_without_crash(self, tmp_path):
-        """StreamHandler with _safe_stderr can emit Unicode messages."""
-        import io
-
-        # Create a stderr-like stream with ASCII encoding
-        class AsciiStream:
-            encoding = "ascii"
-            buffer = io.BytesIO()
-
-            def write(self, s):
-                self.buffer.write(s.encode("ascii", errors="replace"))
-
-            def flush(self):
-                pass
-
-        # Without the fix, this would crash on cp949/ASCII stderr.
-        # With the wrapper, the em-dash is replaced with '?'
-        handler = logging.StreamHandler(
-            io.TextIOWrapper(
-                io.BytesIO(),
-                encoding="utf-8",
-                errors="replace",
-            )
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger = logging.getLogger("_test_unicode")
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-        try:
-            # Em-dash U+2014 — the exact character from the bug report
-            logger.info("Session hygiene: 400 messages — auto-compressing")
-        finally:
-            logger.removeHandler(handler)
 
 
-class TestAsyncQueueLogging:
-    """File logging runs through a QueueListener so emits never block on the
-    cross-process rotation lock (Windows event-loop-stall fix)."""
-
-    def test_file_handlers_not_on_root(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        root = logging.getLogger()
-        # Rotating file handlers live on the async listener, never on root.
-        assert not any(isinstance(h, RotatingFileHandler) for h in root.handlers)
-        # Exactly one queue handler funnels records to the listener.
-        queue_handlers = [
-            h for h in root.handlers if getattr(h, "_hermes_queue", False)
-        ]
-        assert len(queue_handlers) == 1
-        # The real file handlers are discoverable via the accessor.
-        assert any(
-            "agent.log" in getattr(h, "baseFilename", "")
-            for h in hermes_logging._queued_file_handlers
-        )

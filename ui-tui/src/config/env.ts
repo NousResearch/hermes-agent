@@ -28,6 +28,9 @@ export const TERMUX_TUI_MODE = isTermuxTuiMode()
 export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 export const STARTUP_QUERY = (process.env.HERMES_TUI_QUERY ?? '').trim()
 export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
+// Workspace the dashboard user picked for a fresh chat (`/api/pty?cwd=`). Sent as the explicit
+// `cwd` of session.create: the in-memory gateway's own cwd is the dashboard's launch dir.
+export const STARTUP_WORKSPACE_CWD = (process.env.HERMES_TUI_CWD ?? '').trim()
 
 // Mouse tracking mode resolution at startup. Per-mode selection (off|wheel|
 // buttons|all) lives in display.mouse_tracking in config.yaml — these env

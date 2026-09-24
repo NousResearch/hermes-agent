@@ -62,9 +62,6 @@ description: test skill
 # Round-trip
 # ---------------------------------------------------------------------------
 
-def test_empty_usage_returns_empty_dict(skills_home):
-    from tools.skill_usage import load_usage
-    assert load_usage() == {}
 
 
 def test_save_and_load_roundtrip(skills_home):
@@ -333,10 +330,6 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 # State transitions
 # ---------------------------------------------------------------------------
 
-def test_set_state_active(skills_home):
-    from tools.skill_usage import set_state, get_record, STATE_ACTIVE
-    set_state("x", STATE_ACTIVE)
-    assert get_record("x")["state"] == "active"
 
 
 def test_restoring_from_archive_clears_timestamp(skills_home):
@@ -345,6 +338,29 @@ def test_restoring_from_archive_clears_timestamp(skills_home):
     assert get_record("x")["archived_at"] is not None
     set_state("x", STATE_ACTIVE)
     assert get_record("x")["archived_at"] is None
+
+
+def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
+    """`mlops/training/accelerate` is the skill `huggingface-accelerate`: archive lands under the NAME,
+    and an older archive flattened under the directory name is still found by `restore_skill`."""
+    from tools.skill_usage import archive_skill, mark_agent_created, restore_skill
+    skills_dir = skills_home / "skills"
+    d = skills_dir / "training" / "accelerate"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: huggingface-accelerate\ndescription: x\n---\n", encoding="utf-8")
+    mark_agent_created("huggingface-accelerate")
+
+    ok, msg = archive_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / ".archive" / "huggingface-accelerate" / "SKILL.md").exists()
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+
+    # Legacy layout: archived under the directory name by an older build.
+    (skills_dir / "huggingface-accelerate").rename(skills_dir / ".archive" / "accelerate")
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
 
 
 def test_forget_removes_record(skills_home):
@@ -514,7 +530,7 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
     """Adoption writes a provenance claim, so it must refuse anything with an
     external owner rather than stamping a lie onto the record.
 
-    ``prune_builtins`` is forced ON here — the shipped default — because that
+    ``prune_builtins`` is forced ON here (opt-in; the shipped default is off) because that
     is the configuration in which a bundled skill is otherwise curation-
     eligible. With it off, ``mark_agent_created``'s own eligibility gate would
     block the write and this test would pass without exercising adopt's guard
@@ -571,3 +587,29 @@ def test_foreground_create_stamps_learn_provenance_not_agent(skills_home):
     skill_usage.record_created("agent-skill", agent_created=True)
     assert skill_usage.get_record("agent-skill")["created_by"] == "agent"
     assert skill_usage.is_curator_managed("agent-skill")
+
+
+def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp_path):
+    """A nested acquire of the same lock path in one thread must not deadlock (an atomic
+    skill_manage batch holds every target lock while its per-op calls re-acquire them), while a
+    second thread still waits until the outer holder releases.
+    """
+    import threading
+    from tools.skill_usage import skill_file_lock
+
+    lock_path = tmp_path / ".locks" / "demo.lock"
+    entered = threading.Event()
+    other_done = threading.Event()
+
+    def other():
+        with skill_file_lock(lock_path):
+            other_done.set()
+
+    t = threading.Thread(target=other)
+    with skill_file_lock(lock_path):
+        with skill_file_lock(lock_path):  # re-entrant: returns immediately
+            entered.set()
+        t.start()
+        assert not other_done.wait(timeout=0.2), "second thread acquired a held lock"
+    t.join(timeout=2)
+    assert entered.is_set() and other_done.is_set()

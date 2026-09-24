@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
 
@@ -100,6 +101,10 @@ const MAINTENANCE_ROUTE = '/command-center?section=maintenance'
 
 /** One-click recoveries reused by several rules. */
 export const RECOVERY_ACTIONS = {
+  openUpdates: (): NotificationAction => ({
+    label: translateNow('notifications.updateHermes'),
+    onClick: () => void import('@/store/updates').then(({ openUpdatesWindow }) => openUpdatesWindow())
+  }),
   restartHermes: (): NotificationAction => ({
     label: translateNow('notifications.actions.restartHermes'),
     onClick: requestBackendRestart
@@ -179,6 +184,11 @@ const ERROR_SUMMARIES: ErrorSummaryRule[] = [
     summarize: () => translateNow('notifications.errors.microphonePermission')
   },
   {
+    test: msg => isOutOfSyncRpcParams(msg),
+    summarize: () => translateNow('notifications.errors.rpcOutOfSync'),
+    action: () => RECOVERY_ACTIONS.openUpdates()
+  },
+  {
     test: msg => /Restart required:/i.test(msg),
     summarize: () => translateNow('notifications.errors.codeSkewRestartRequired'),
     action: () => RECOVERY_ACTIONS.restartHermes()
@@ -232,7 +242,8 @@ export function notify(input: NotificationInput): string {
 
   window.clearTimeout(timers.get(id))
   timers.delete(id)
-  $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)].slice(0, 4))
+  // Visual depth is capped by CardStack, not by discarding queued notifications.
+  $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)])
 
   const duration = input.durationMs ?? defaultDuration(kind)
 
@@ -246,7 +257,11 @@ export function notify(input: NotificationInput): string {
   return id
 }
 
-export function notifyError(error: unknown, fallback: string, options: { action?: NotificationAction } = {}): string {
+export function notifyError(
+  error: unknown,
+  fallback: string,
+  options: { action?: NotificationAction; id?: string } = {}
+): string {
   const readable = readableError(error, fallback)
   const poolSlotTimeout = isLocalBackendSlotWaitTimeout(error)
 
@@ -257,6 +272,8 @@ export function notifyError(error: unknown, fallback: string, options: { action?
           onClick: requestPoolLimitsSettings
         }
       : (options.action ?? readable.action),
+    // A caller that can fire again for the same cause names its toast, so the repeat replaces it.
+    id: options.id,
     kind: 'error',
     title: fallback,
     message: poolSlotTimeout ? translateNow('desktop.poolSlotTimeoutBody') : readable.message,

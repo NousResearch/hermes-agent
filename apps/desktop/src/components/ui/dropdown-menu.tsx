@@ -3,6 +3,13 @@ import * as React from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
+import {
+  menuItemClass,
+  menuItemFocusClass,
+  menuLabelClass,
+  menuMotionClass,
+  menuSurfaceClass
+} from '@/components/ui/menu'
 import { cn } from '@/lib/utils'
 
 // Shared class tokens for edge-to-edge menus (use with `p-0` content): rows go
@@ -89,11 +96,10 @@ function DropdownMenuContent({
   return (
     <DropdownMenuPrimitive.Portal container={container}>
       <DropdownMenuPrimitive.Content
-        // `dt-portal-scrollbar` reproduces the thin themed scrollbar from
-        // `.scrollbar-dt` for portaled overlays (Radix renders this under
-        // document.body, outside #root's scope). See styles.css.
         className={cn(
-          'dt-portal-scrollbar z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-36 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-1 text-[length:var(--conversation-text-font-size)] text-popover-foreground shadow-md backdrop-blur-md data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          menuSurfaceClass,
+          menuMotionClass,
+          'z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-36 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto',
           className
         )}
         // Keep the menu inside the viewport: Radix flips/shifts away from edges
@@ -123,7 +129,9 @@ function DropdownMenuItem({
   return (
     <DropdownMenuPrimitive.Item
       className={cn(
-        "relative flex items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-7 data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive dark:data-[variant=destructive]:focus:bg-destructive/20 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary) data-[variant=destructive]:*:[svg]:text-destructive!",
+        menuItemClass,
+        menuItemFocusClass,
+        "data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-7 data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive dark:data-[variant=destructive]:focus:bg-destructive/20 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary) data-[variant=destructive]:*:[svg]:text-destructive!",
         className
       )}
       data-inset={inset}
@@ -144,7 +152,9 @@ function DropdownMenuCheckboxItem({
     <DropdownMenuPrimitive.CheckboxItem
       checked={checked}
       className={cn(
-        "relative flex items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
+        menuItemClass,
+        menuItemFocusClass,
+        'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className
       )}
       data-slot="dropdown-menu-checkbox-item"
@@ -170,7 +180,9 @@ function DropdownMenuRadioItem({
   return (
     <DropdownMenuPrimitive.RadioItem
       className={cn(
-        "relative flex items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
+        menuItemClass,
+        menuItemFocusClass,
+        'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className
       )}
       data-slot="dropdown-menu-radio-item"
@@ -193,7 +205,7 @@ function DropdownMenuLabel({
 }) {
   return (
     <DropdownMenuPrimitive.Label
-      className={cn('px-2 py-1 text-xs font-medium text-(--ui-text-tertiary) data-[inset]:pl-7', className)}
+      className={cn(menuLabelClass, 'data-[inset]:pl-7', className)}
       data-inset={inset}
       data-slot="dropdown-menu-label"
       {...props}
@@ -264,13 +276,13 @@ function DropdownMenuSubContent({
     // it to the SubTrigger and handles collision/flip, so portaling is safe.
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
-        // `dt-portal-scrollbar` reproduces the themed scrollbar for portaled
-        // overlays (rendered under document.body). Use a fixed `max-h-80`
-        // rather than the Radix available-height variable: that variable is
-        // only published on Content, NOT SubContent — using it here collapses
-        // the submenu to 0px height.
+        // Fixed `max-h-80` rather than the Radix available-height variable:
+        // that variable is only published on Content, NOT SubContent — using
+        // it here collapses the submenu to 0px height.
         className={cn(
-          'dt-portal-scrollbar z-50 max-h-80 min-w-36 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto rounded-lg border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-1 text-[length:var(--conversation-text-font-size)] text-popover-foreground shadow-md backdrop-blur-md data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          menuSurfaceClass,
+          menuMotionClass,
+          'z-50 max-h-80 min-w-36 origin-(--radix-dropdown-menu-content-transform-origin) overflow-y-auto',
           className
         )}
         // Flip to the other side / shift vertically when near a viewport edge

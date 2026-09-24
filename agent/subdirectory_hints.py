@@ -37,15 +37,48 @@ def _digest(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _resolved_hint_target(hint_path: Path, working_dir: Path) -> Optional[Path]:
+    """Resolved hint-file target, or None when the file must not be loaded.
+
+    ``is_file()`` and ``read_text`` follow symlinks, so a checked-in
+    ``sub/AGENTS.md -> ~/.aws/credentials`` would inject an out-of-tree file
+    into the tool result. The resolved target must stay inside the resolved
+    working dir (same containment ``_within_working_dir`` applies to the
+    directory itself) and pass the canonical read deny-list
+    (``context_references`` applies it to explicit @-references), which also
+    catches in-tree targets like a symlink to the project ``.env``.
+    """
+    try:
+        resolved = hint_path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        inside = resolved.is_relative_to(working_dir)
+    except (OSError, ValueError, RuntimeError):
+        inside = False
+    if not inside:
+        return None
+    try:
+        from agent.file_safety import get_read_block_error
+        blocked = get_read_block_error(str(resolved)) is not None
+    except Exception:
+        # Mirror context_references: a deny-list lookup that fails re-opens the
+        # exact hole the check closes, so fail closed.
+        return None
+    return None if blocked else resolved
+
+
 def _first_hint_file(directory: Path):
     """``(path, stripped content)`` of the first readable non-empty hint file
     in *directory* (priority order), or None. Unreadable files are skipped."""
     for filename in _HINT_FILENAMES:
         candidate = directory / filename
         try:
-            if not candidate.is_file():
+            if not candidate.is_file() or (target := _resolved_hint_target(candidate, directory)) is None:
                 continue
-            content = candidate.read_text(encoding="utf-8").strip()
+            # Read the resolved target (not the link path) so a symlink swapped
+            # between check and read still lands on the vetted file.
+            content = target.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
             continue
         return candidate, content
@@ -202,8 +235,10 @@ class SubdirectoryHintTracker:
                     continue
             except OSError:
                 continue
+            if (target := _resolved_hint_target(hint_path, self.working_dir)) is None:
+                continue
             try:
-                content = (_read_text_with_timeout(hint_path) or "").strip()
+                content = (_read_text_with_timeout(target) or "").strip()
                 if not content:
                     continue
                 digest = _digest(content)
@@ -214,7 +249,9 @@ class SubdirectoryHintTracker:
                 # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
                 rel_path = self._display_path(hint_path)
-                content = _truncate_content(content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path)
+                content = _truncate_content(
+                    content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path, queue_warning=False,
+                )
                 logger.debug("Loaded subdirectory hints from %s: %s", directory, [rel_path])
                 return f"[Subdirectory context discovered: {rel_path}]\n{content}"  # first match wins per directory
             except Exception as exc:

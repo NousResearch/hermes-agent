@@ -36,6 +36,24 @@ def _no_host_browser_use_cli():
 
 
 @pytest.fixture(autouse=True)
+def _no_host_bot_desktop_autostart():
+    """Keep the host's TigerVNC/Xfce install out of tests.
+
+    ``computer_use`` auto-starts the profile's Bot Desktop on a headless Linux
+    host with the packages installed, so a developer box that has them would
+    launch a real Xvnc + Xfce session per test. Pin the binaries to "missing";
+    tests that exercise the desktop path monkeypatch ``runtime`` themselves.
+    """
+    try:
+        from tools.bot_desktop import runtime as bd_runtime
+    except Exception:
+        yield
+        return
+    with patch.object(bd_runtime, "missing_binaries", lambda: ["Xvnc"]):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _materialize_mcp_sdk_symbols():
     """Materialize the lazily-imported MCP SDK before each tools test.
 

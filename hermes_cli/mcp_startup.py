@@ -65,10 +65,21 @@ def _has_configured_mcp_servers() -> bool:
         return True  # conservative: still try discovery in the background; startup can't block
 
 
+def _discovery_registered_servers(status) -> bool:
+    """True when a discovery run left servers usable: a live session OR a lazy registration.
+
+    A ``lazy: true`` server never connects until first use, so an all-lazy config (the
+    memory-saving setup the feature exists for) looked like a run that achieved nothing:
+    the zero-connected warning fired on every startup and the retry path re-ran discovery
+    on every later call (#111717).
+    """
+    return any(entry.get("connected") or entry.get("status") == "lazy" for entry in (status or []))
+
+
 def _any_mcp_connected() -> bool:
     from tools.mcp_tool_discovery import get_mcp_status
 
-    return any(entry.get("connected") for entry in (get_mcp_status() or []))
+    return _discovery_registered_servers(get_mcp_status() or [])
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
@@ -166,12 +177,16 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
             discover_mcp_tools(allowed_mcp_names=_mcp_server_filter)
 
 
-def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float) -> None:
+def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float | None) -> None:
     """Arm ``start_background_mcp_discovery`` to run ``delay`` seconds from now.
 
     Used by the Desktop ``serve`` backend after its socket is announced: the thread's first act is
     the ~350ms ``mcp`` SDK import, which would hold the GIL against the renderer's connect + first
     hydration reads (or the web_server import) if started earlier.
+
+    ``delay=None`` arms without a clock: the standalone dashboard fires it from the first ``/api/ws``
+    client (``start_deferred_mcp_discovery_now``) or the first agent build (``wait_for_mcp_discovery``),
+    so an idle, unvisited dashboard never spawns the configured stdio MCP servers (#58733).
     """
     global _mcp_discovery_deferred
     with _mcp_discovery_lock:
@@ -184,17 +199,21 @@ def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float) ->
                 _mcp_discovery_deferred = None
             start_background_mcp_discovery(logger=logger, thread_name=thread_name)
 
-        timer = threading.Timer(delay, _fire)
+        # ``None`` builds the Timer only as the holder of ``_fire``; it is never started and
+        # ``start_deferred_mcp_discovery_now`` runs ``timer.function()`` directly.
+        timer = threading.Timer(0 if delay is None else delay, _fire)
         timer.daemon = True
         timer.name = f"{thread_name}-deferred"
         _mcp_discovery_deferred = timer
-        timer.start()
+        if delay is not None:
+            timer.start()
 
 
-def _start_deferred_mcp_discovery_now() -> None:
+def start_deferred_mcp_discovery_now() -> None:
     """Run an armed deferred start immediately (idempotent, thread-safe)."""
-    with _mcp_discovery_lock:
-        timer = _mcp_discovery_deferred
+    global _mcp_discovery_deferred
+    with _mcp_discovery_lock:  # take the slot atomically: two racing first clients fire once
+        timer, _mcp_discovery_deferred = _mcp_discovery_deferred, None
     if timer is None:
         return
     timer.cancel()
@@ -208,7 +227,7 @@ def wait_for_mcp_discovery(timeout: "float | None" = None, *, single_query: bool
     server's real connect time. ``single_query`` uses ``mcp_single_query_discovery_timeout``
     (15s vs 1.5s) because one-shot sessions have no second turn to recover.
     """
-    _start_deferred_mcp_discovery_now()
+    start_deferred_mcp_discovery_now()
     thread = _current_home_thread()
     if thread is None or not thread.is_alive():
         return

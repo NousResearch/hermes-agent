@@ -639,6 +639,7 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     conn = _sqlite_connect(path)
     try:
         conn.row_factory = sqlite3.Row
+        conn.text_factory = _kb._lossy_text
         with _INIT_LOCK:
             # WAL doesn't work on network filesystems; the helper falls back to
             # DELETE with one ERROR log (see hermes_state_wal._WAL_INCOMPAT_MARKERS).
@@ -678,6 +679,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
         # missing board or migrate on a descendant's behalf; the owner initializes it.
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
+        conn.text_factory = _kb._lossy_text
         if not _schema_is_present(conn):
             conn.close()
             raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
@@ -765,6 +767,26 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     return path
 
 
+# Nullable/defaulted columns of the v1 ``tasks`` CREATE TABLE that external
+# harnesses seeding a board with a reduced schema have omitted. Hermes's own
+# DBs always carry them, so this is a no-op there; without it a board that
+# also has ``task_runs`` fails every ``connect()`` inside
+# ``_backfill_legacy_inflight_runs`` ("no such column: claim_lock") — before
+# ``_INITIALIZED_PATHS`` caches, so the dispatcher re-raises each tick (#112953).
+# DDL must match SCHEMA_SQL exactly.
+_BASE_TASK_COLUMNS = (
+    ("body", "body TEXT"),
+    ("assignee", "assignee TEXT"),
+    ("priority", "priority INTEGER DEFAULT 0"),
+    ("created_by", "created_by TEXT"),
+    ("started_at", "started_at INTEGER"),
+    ("completed_at", "completed_at INTEGER"),
+    ("workspace_kind", "workspace_kind TEXT NOT NULL DEFAULT 'scratch'"),
+    ("workspace_path", "workspace_path TEXT"),
+    ("claim_lock", "claim_lock TEXT"),
+    ("claim_expires", "claim_expires INTEGER"),
+)
+
 # Additive ``tasks`` columns in the order legacy DBs receive them (= physical
 # column order for ``SELECT *`` on migrated boards).
 _EARLY_TASK_COLUMNS = (
@@ -829,6 +851,12 @@ _NOTIFY_SUB_COLUMNS = (
     ("delivery_metadata", "delivery_metadata TEXT"),
 )
 
+_TASK_RUN_COLUMNS = (
+    # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
+    # terminal-worker reaper; NULL = legacy row, never signalled).
+    ("worker_started_at", "worker_started_at INTEGER"),
+)
+
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -843,7 +871,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after v1 to legacy DBs (called via ``init_db``)."""
     cols = _column_names(conn, "tasks")
-    for name, ddl in _EARLY_TASK_COLUMNS:
+    for name, ddl in _BASE_TASK_COLUMNS + _EARLY_TASK_COLUMNS:
         if name not in cols:
             _add_column_if_missing(conn, "tasks", name, ddl)
 
@@ -870,6 +898,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # so a ``CREATE INDEX`` over a missing column in SCHEMA_SQL would abort
     # init on legacy boards before the ALTER TABLE pass runs. ``IF NOT EXISTS``
     # keeps re-running here cheap and correct on fresh DBs.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
@@ -900,6 +929,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 )
 
     if _table_exists(conn, "task_runs"):
+        run_cols = _column_names(conn, "task_runs")
+        for name, ddl in _TASK_RUN_COLUMNS:
+            if name not in run_cols:
+                _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
 
     # One-shot event-kind rename: old names still worked but were awkward on
@@ -999,7 +1032,7 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, worker_started_at INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",

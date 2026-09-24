@@ -13,6 +13,7 @@ from contextlib import suppress
 from functools import lru_cache
 import json
 import logging
+import os
 import secrets
 import socket
 import subprocess
@@ -24,7 +25,7 @@ import urllib.request
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
-from hermes_cli.local_runtime.processes import spawn_server
+from hermes_cli.local_runtime.processes import server_child_env, spawn_server
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +34,10 @@ TOUCH_EXPECT = "paris"
 _RESTART_BACKOFF_S = (1, 5, 15, 60)
 _RESIDENT = ("loaded", "ready")
 
-# Chosen once and reused across restarts: sessions persist the resolved base_url, so an ephemeral
-# port would strand every resumed session after each restart. Deliberately NOT 8080 so we never
-# collide with a user's own llama-server/Ollama-adjacent stack.
+# Chosen once and reused across restarts: sessions persist the resolved base_url as a snapshot, and
+# every resume path re-resolves llamacpp-alias sessions to the live endpoint (a stale port is
+# recoverable, but a stable one keeps external tooling pointed at the right place). Deliberately NOT
+# 8080 so we never collide with a user's own llama-server/Ollama-adjacent stack.
 _DEFAULT_PORT = 18434
 
 
@@ -67,7 +69,7 @@ def _stable_port() -> int:
     except OSError:
         logger.warning(
             "port %d busy; managed llama-server falling back to an ephemeral "
-            "port — existing sessions may need a model re-pick", _DEFAULT_PORT)
+            "port — resumed sessions follow the live endpoint", _DEFAULT_PORT)
         return _free_port()
 
 
@@ -196,8 +198,8 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle,
-                                             stderr=subprocess.STDOUT, cwd=str(exe.parent))
+        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
+                                             cwd=str(exe.parent), env=server_child_env(os.environ))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -224,7 +226,8 @@ class LlamaServerSupervisor:
                        "executable": proc.exe(), "owner_pid": os.getpid(),
                        "owner_create_time": psutil.Process().create_time()}
         path = state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, self._state, mode=0o600)
 
     def _wait_health(self, timeout_s: int) -> None:

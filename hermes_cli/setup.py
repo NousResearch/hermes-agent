@@ -60,9 +60,14 @@ def _sub_dict(parent: dict, key: str) -> dict:
 
 def _current_reasoning_effort(config: dict) -> str:
     agent_cfg = config.get("agent")
-    if isinstance(agent_cfg, dict):
-        return str(agent_cfg.get("reasoning_effort") or "").strip().lower()
-    return ""
+    if not isinstance(agent_cfg, dict):
+        return ""
+    effort = agent_cfg.get("reasoning_effort")
+    if isinstance(effort, dict):  # {enabled, effort} form: the tier name, never str(dict)
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(effort) or {}
+        effort = "none" if parsed.get("enabled") is False else parsed.get("effort")
+    return str(effort or "").strip().lower()
 
 
 def _set_reasoning_effort(config: dict, effort: str) -> None:

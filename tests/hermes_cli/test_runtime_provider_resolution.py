@@ -62,6 +62,32 @@ def _fake_invoke_jwt(ttl_seconds=3600):
     return f"{header}.{payload}.sig"
 
 
+def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeypatch):
+    """Copilot picked at runtime without a config write (`/model copilot/<m> --session`,
+    `--provider copilot`) must still hand the EXCHANGED token and the enterprise base_url to the
+    client: the seeder leaves an ambient gh-CLI credential raw while copilot is not configured
+    (#114740), and a raw token 400s on enterprise-only models."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {}}))
+    (hermes_home / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n")
+    from hermes_cli import config as _cfg
+    _cfg._LOAD_CONFIG_CACHE.clear()
+    _cfg._RAW_CONFIG_CACHE.clear()
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token",
+                        lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
+    monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+
+    resolved = rp.resolve_runtime_provider(requested="copilot", target_model="gpt-4.1")
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_key"] == "tid=exchanged;exp=1"
+    assert resolved["base_url"].startswith("https://api.enterprise.ghe.example")
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"
@@ -72,7 +98,7 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -97,7 +123,7 @@ def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -108,6 +134,33 @@ def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
 
     assert resolved["provider"] == "openai-codex"
     assert resolved["base_url"] == "http://127.0.0.1:8787/v1"
+
+
+def test_codex_pool_honors_model_base_url(monkeypatch):
+    """#40913: model.base_url under provider openai-codex is the secondary proxy override; the
+    canonical URL stored on the pool row must not shadow it."""
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self, **_kwargs):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai-codex", "default": "gpt-5.3-codex", "base_url": "http://127.0.0.1:8400/backend-api/codex/"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["base_url"] == "http://127.0.0.1:8400/backend-api/codex"
+    assert resolved["api_mode"] == "codex_responses"
 
 
 class TestCustomProviderPoolLoopbackNoKeyExemption:
@@ -129,7 +182,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, **_kwargs):
                 return entry
 
         return _Pool()
@@ -443,7 +496,7 @@ def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -473,7 +526,7 @@ def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeyp
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -570,6 +623,26 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     assert resolved["api_key"] == "sk-openai-fallback"
 
 
+@pytest.mark.parametrize("openai_base_url, expected_key", [
+    ("https://proxy.corp.example/v1", ""),
+    ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
+    ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+])
+def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == expected_key
+
+
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
     """Persisted custom endpoints in config.yaml must still resolve when
     OPENAI_BASE_URL is absent from the current environment.
@@ -642,6 +715,31 @@ def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monke
     assert resolved["base_url"] == "http://127.0.0.1:8082/v1"
     # 127.0.0.1 is not openai.com — OPENAI_API_KEY must not leak here
     assert resolved["api_key"] == "no-key-required"
+
+
+def test_codex_app_server_opt_in_routes_only_named_custom_providers(monkeypatch):
+    """#75186: ``model.openai_runtime: codex_app_server`` reaches a configured ``providers.<name>``
+    entry (codex selects it by id from its own config); anonymous ``custom`` has no stable id and
+    stays on chat_completions, as does the named entry without the opt-in."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config = {
+        "model": {"provider": "custom:my-gateway", "default": "gpt-5.4", "openai_runtime": "codex_app_server"},
+        "providers": {"my-gateway": {"api": "https://gateway.example.com/v1", "api_key": "test-key", "default_model": "gpt-5.4"}},
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:my-gateway")
+    assert (resolved["provider"], resolved["requested_provider"], resolved["api_mode"]) == (
+        "custom", "custom:my-gateway", "codex_app_server")
+    assert resolved["api_key"] == "test-key"  # Hermes' own aux/fallback client keeps the credential
+
+    anonymous = rp.resolve_runtime_provider(requested="custom", explicit_base_url="https://gateway.example.com/v1",
+                                            explicit_api_key="k")
+    assert anonymous["api_mode"] == "chat_completions"
+
+    config["model"].pop("openai_runtime")
+    assert rp.resolve_runtime_provider(requested="custom:my-gateway")["api_mode"] == "chat_completions"
 
 
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
@@ -758,6 +856,108 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["requested_provider"] == "custom"
 
 
+def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):
+    """#111741: a bare ``custom`` placeholder that falls through to the OpenRouter default with no
+    key must raise a typed AuthError naming the request at resolve time, instead of returning a
+    dead runtime that dies later as "No LLM provider configured". Local aliases also need an
+    endpoint: without one they must not adopt a cloud credential through OpenRouter. With an
+    OpenRouter key present, the bare custom request resolves exactly as before."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "volcano": {
+                    "api": "https://ark.example.com/v1",
+                    "key_env": "ARK_API_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "volcano"})
+
+    with pytest.raises(rp.AuthError, match="provider 'custom'.*credentials.*real name") as error:
+        rp.resolve_runtime_provider(requested="custom")
+    assert error.value.provider == "custom"
+    assert error.value.code == "missing_api_key"
+
+    with pytest.raises(rp.AuthError, match="provider 'ollama' has no endpoint") as alias_error:
+        rp.resolve_runtime_provider(requested="ollama")
+    assert alias_error.value.provider == "ollama"
+    assert alias_error.value.code == "missing_base_url"
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-usable-key")
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "sk-or-v1-usable-key"
+
+
+@pytest.mark.parametrize("alias", ("ollama", "vllm"))
+def test_local_alias_without_any_endpoint_never_reaches_openrouter(monkeypatch, alias):
+    """#113703: a local alias with no endpoint configured anywhere must raise a typed AuthError
+    naming the alias instead of walking the ladder to the OpenRouter fallback with a cloud key.
+    Neither ``OPENROUTER_BASE_URL`` (a mirror, not the alias endpoint) nor an explicit api_key
+    (meant for the alias's own server) lifts the guard; bare ``custom`` keeps its own contract."""
+    for name in ("OPENAI_API_KEY", "CUSTOM_BASE_URL", "OPENROUTER_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-cloud-key")
+    monkeypatch.setattr(rp, "load_config", lambda: {"model": {"provider": alias}})
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+
+    with pytest.raises(rp.AuthError, match=rf"provider '{alias}' has no endpoint.*providers\.{alias}\.base_url") as error:
+        rp.resolve_runtime_provider(requested=alias)
+    assert (error.value.provider, error.value.code) == (alias, "missing_base_url")
+
+    bare = rp.resolve_runtime_provider(requested="custom")
+    assert bare["provider"] == "custom" and bare["api_key"] == "sk-or-v1-cloud-key"
+
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example/api/v1")
+    with pytest.raises(rp.AuthError, match="has no endpoint"):
+        rp.resolve_runtime_provider(requested=alias, explicit_api_key="key-for-my-local-server")
+
+
+@pytest.mark.parametrize("configured", ("providers", "model", "explicit"))
+def test_local_alias_with_an_endpoint_anywhere_still_resolves_to_it(monkeypatch, configured):
+    """#113703 control: every place an ollama endpoint can be configured keeps resolving to that
+    URL with the local placeholder key — the guard keys on the absence of an endpoint, not on the
+    alias name (the name-keyed version broke ``/model <direct-alias>``; see a9fabe43c4)."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-cloud-key")
+    url = "http://192.168.1.5:11434/v1"
+    config = {
+        "providers": {"providers": {"ollama": {"base_url": url}}},
+        "model": {"model": {"provider": "ollama", "base_url": url}},
+        "explicit": {"model": {"provider": "ollama"}},
+    }[configured]
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+
+    resolved = rp.resolve_runtime_provider(requested="ollama", explicit_base_url=url if configured == "explicit" else None)
+
+    assert (resolved["provider"], resolved["base_url"], resolved["api_key"]) == ("custom", url, "no-key-required")
+
+
+def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
+    """Control: a configured no-auth local endpoint still resolves with the placeholder key."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "custom": {
+                    "api": "http://localhost:11434/v1",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+    assert resolved["api_key"] == "no-key-required"
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
@@ -932,7 +1132,7 @@ def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -1024,6 +1224,53 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
+    """End-to-end for #112600: a ``model.base_url`` pinned to the Zen relay must follow the
+    resolved provider family. The CLI inherits that pinned override across a switch, and the Zen
+    relay does not serve Go-subscription models, so the client was built against
+    ``https://opencode.ai/zen/v1`` and every request 401'd ("Model mimo-v2.5 is not supported").
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "mimo-v2.5",
+            "base_url": "https://opencode.ai/zen/v1",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "glm-5.3-flash"])
+def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
+    """#100854: an explicit ``--api-key`` must not change which OpenCode endpoint a model
+    reaches. The explicit-credential rung used to derive api_mode from config instead of the
+    model and skipped the /v1 normalization, so ``qwen3.8-flash`` (Anthropic-routed) was sent
+    to ``/zen/go/v1`` over chat_completions and 404'd, while the env-key rung routed it right.
+    Both rungs must agree on (api_mode, base_url) for every model.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "opencode-go", "default": "glm-5.3-flash"})
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    explicit = rp.resolve_runtime_provider(requested="opencode-go", explicit_api_key="test-opencode-go-key", target_model=model)
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    env_key = rp.resolve_runtime_provider(requested="opencode-go", target_model=model)
+
+    assert explicit["source"] == "explicit"
+    assert (explicit["api_mode"], explicit["base_url"]) == (env_key["api_mode"], env_key["base_url"])
+    assert explicit["api_mode"] == rp._models.opencode_model_api_mode("opencode-go", model)
 
 
 # ------------------------------------------------------------------
@@ -1289,7 +1536,7 @@ class TestAzureAnthropicEnvVarHint:
         })
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)
         called = {"resolve_anthropic_token": False}
-        def _fake_resolve():
+        def _fake_resolve(**_kwargs):
             called["resolve_anthropic_token"] = True
             return "token-from-resolver"
         monkeypatch.setattr(
@@ -1327,11 +1574,6 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized.get("key_env") == "MY_VENDOR_KEY"
 
 
-    def test_valid_fields_set_lists_key_env(self):
-        """The _VALID_CUSTOM_PROVIDER_FIELDS documentation set must include
-        key_env so the set stays in sync with what the runtime actually reads."""
-        from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
-        assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
 
     def test_extra_body_is_supported_schema(self):
         from hermes_cli.config import (
@@ -1408,7 +1650,7 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
@@ -1489,23 +1731,6 @@ def test_openai_key_reaches_openai_host(monkeypatch):
     assert resolved["api_key"] == "sk-openai-secret"
 
 
-def test_openrouter_key_reaches_openrouter_host(monkeypatch):
-    """OPENROUTER_API_KEY must be forwarded when the base_url is openrouter.ai."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "openrouter",
-            "base_url": "https://openrouter.ai/api/v1",
-        },
-    )
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-secret")
-
-    resolved = rp.resolve_runtime_provider(requested="openrouter")
-
-    assert resolved["api_key"] == "or-secret"
 
 
 # ----------------------------------------------------------------------
@@ -1761,61 +1986,6 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["requested_provider"] == "custom:lmstudio"
 
 
-def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(monkeypatch):
-    """OpenCode Free is keyless: an exhausted credential pool must not raise
-    a missing-credential error. The provider resolves with the keyless
-    placeholder + empty-Authorization headers so the request goes out
-    anonymously."""
-    class _ExhaustedPool:
-        def has_credentials(self):
-            return True
-
-        def select(self):
-            return None
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
-    )
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _ExhaustedPool())
-
-    resolved = rp.resolve_runtime_provider(
-        requested="opencode-free", target_model="x-preview-f-free"
-    )
-
-    assert resolved["provider"] == "opencode-free"
-    assert resolved["api_key"] == "opencode-zen-free-keyless"
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["default_headers"]["Authorization"] == ""
-
-
-def test_resolve_runtime_provider_opencode_free_missing_env_still_resolves(monkeypatch):
-    """OpenCode Free resolves keylessly with no env var configured at all —
-    the provider declares no credentials."""
-    class _NoPool:
-        def has_credentials(self):
-            return False
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
-    )
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _NoPool())
-
-    resolved = rp.resolve_runtime_provider(
-        requested="opencode-free", target_model="x-preview-f-free"
-    )
-
-    assert resolved["provider"] == "opencode-free"
-    assert resolved["api_key"] == "opencode-zen-free-keyless"
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
-
-
 def test_custom_provider_explicit_target_model_wins(monkeypatch):
     """An explicit target_model must not be silently replaced by the custom
     provider's configured default model (regression: auxiliary slots such as
@@ -1884,3 +2054,149 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+@pytest.mark.parametrize("name", ["opencode-free", "free", "opencode_free"])
+def test_removed_keyless_free_provider_points_at_its_replacements(name):
+    """The keyless OpenCode free tier is gone (the relay 403s anonymous traffic), so a persisted
+    ``model.provider`` — or ``--provider`` — still naming it must fail with the removal hint
+    naming both surviving OpenCode providers, not a bare "Unknown provider"."""
+    from hermes_cli.auth import AuthError, resolve_provider
+
+    with pytest.raises(AuthError) as excinfo:
+        resolve_provider(name)
+
+    assert excinfo.value.code == "invalid_provider"
+    message = str(excinfo.value)
+    assert "opencode-zen" in message and "opencode-go" in message
+
+
+def test_bare_custom_resolves_model_key_env_for_configured_base_url(monkeypatch):
+    """#67453: ``model.provider: custom`` + ``model.base_url`` + ``model.key_env`` (the setup wizard's
+    bare-custom shape) must send the named variable's value, not the ``no-key-required`` placeholder.
+    A CUSTOM_BASE_URL pointing elsewhere is a different endpoint: the declared key stays home."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(rp, "load_config", lambda: {"custom_providers": []})
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom", "base_url": "https://api.example.test/v1", "key_env": "MY_LLM_API_KEY",
+        "default": "glm-5.2", "api_mode": "chat_completions"})
+    for var in ("CUSTOM_BASE_URL", "OPENROUTER_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("MY_LLM_API_KEY", "scw-real-key-0123456789abcdef")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert (resolved["base_url"], resolved["api_key"]) == ("https://api.example.test/v1", "scw-real-key-0123456789abcdef")
+
+    monkeypatch.setenv("CUSTOM_BASE_URL", "https://other.example.test/v1")
+    assert rp.resolve_runtime_provider(requested="custom")["api_key"] == "no-key-required"
+
+    # Direct-alias rung (`hermes --resume` provider change, `/model` direct aliases pass explicit_base_url):
+    # the declared key follows the configured endpoint and stays home for any other endpoint.
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    direct = rp.resolve_runtime_provider(requested="custom", explicit_base_url="https://api.example.test/v1")
+    assert (direct["source"], direct["api_key"]) == ("direct-alias", "scw-real-key-0123456789abcdef")
+    other = rp.resolve_runtime_provider(requested="custom", explicit_base_url="https://other.example.test/v1")
+    assert other["api_key"] == "no-key-required"
+
+
+def test_configured_key_env_resolving_empty_is_logged(monkeypatch, caplog):
+    """#67453: a declared ``key_env`` whose variable is unset used to be laundered silently into
+    ``no-key-required`` and surface only as the provider's 403; a keyless block stays silent."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(rp, "load_config", lambda: {"custom_providers": [
+        {"name": "scw", "base_url": "https://api.example.test/v1", "key_env": "UNSET_LLM_KEY", "model": "m"},
+        {"name": "local", "base_url": "http://127.0.0.1:8080/v1", "model": "m"}]})
+    monkeypatch.delenv("UNSET_LLM_KEY", raising=False)
+    with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
+        assert rp.resolve_runtime_provider(requested="custom:scw")["api_key"] == "no-key-required"
+        assert rp.resolve_runtime_provider(requested="custom:local")["api_key"] == "no-key-required"
+    hits = [r for r in caplog.records if "UNSET_LLM_KEY" in r.getMessage()]
+    assert len(hits) == 1 and "scw" in hits[0].getMessage()
+
+
+# ── model.openai_runtime: codex_app_server on every ladder rung (#115169) ─────────────────
+
+_CODEX_STORE_CREDS = {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": "tok",
+                      "source": "hermes-auth-store", "last_refresh": 1}
+
+
+def _codex_rung(monkeypatch, rung: str) -> dict:
+    """Isolate one openai-codex ladder rung; returns the kwargs for resolve_runtime_provider."""
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda: dict(_CODEX_STORE_CREDS))
+    if rung == "pool":
+        entry = SimpleNamespace(api_key="tok", runtime_api_key="tok", base_url="", source="pool")
+        monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(
+            has_credentials=lambda: True, select=lambda model=None: entry))
+        monkeypatch.setattr(rp, "credential_pool_matches_provider", lambda *a, **k: True)
+        return {}
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    return {"explicit_api_key": "sk-explicit"} if rung == "explicit" else {}
+
+
+@pytest.mark.parametrize("rung", ["pool", "oauth", "explicit"])
+def test_openai_runtime_codex_app_server_applies_on_every_rung(monkeypatch, rung):
+    """#115169: the opt-in was applied only inside the credential-pool rung, so the OAuth-store
+    and explicit --api-key/--base-url rungs silently resolved codex_responses."""
+    kwargs = _codex_rung(monkeypatch, rung)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai-codex", "default": "gpt-5.5", "openai_runtime": "codex_app_server"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex", **kwargs)
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["api_mode"] == "codex_app_server"
+
+
+@pytest.mark.parametrize("rung", ["pool", "oauth", "explicit"])
+@pytest.mark.parametrize("openai_runtime", [None, "auto"])
+def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runtime):
+    kwargs = _codex_rung(monkeypatch, rung)
+    model_cfg = {"provider": "openai-codex", "default": "gpt-5.5"}
+    if openai_runtime is not None:
+        model_cfg["openai_runtime"] = openai_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
+
+    assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
+
+
+def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_expansion(monkeypatch):
+    """``provider: openai`` expands to the anonymous ``custom`` runtime (#116055) before the overlay runs;
+    the overlay must judge the name the user configured, or the documented ``openai`` opt-in is a silent no-op."""
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai", "default": "gpt-5.5-codex", "openai_runtime": "codex_app_server"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai", explicit_api_key="sk-explicit")
+
+    assert resolved["provider"] == "custom"  # the alias expansion itself is unchanged
+    assert resolved["api_mode"] == "codex_app_server"
+
+
+# ── #116055: ``provider: openai`` means the same thing on both auxiliary paths ──────────────────
+
+def test_openai_alias_resolves_identically_on_runtime_and_aux_client_paths(monkeypatch):
+    """background_review/curator/MoA (resolve_runtime_provider) and compression/vision/title
+    (_resolve_task_provider_model) must land on the same endpoint for the same aux block."""
+    from agent import auxiliary_client as aux
+    block = {"provider": "openai", "model": "review-model", "base_url": "https://gateway.example/v1", "api_key": "gw-key"}
+    monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: block if task == "background_review" else {})
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})
+
+    aux_provider, aux_model, aux_base, aux_key, _ = aux._resolve_task_provider_model("background_review")
+    runtime = rp.resolve_runtime_provider(requested=block["provider"], target_model=block["model"],
+                                          explicit_api_key=block["api_key"], explicit_base_url=block["base_url"])
+
+    assert (aux_provider, aux_base, aux_key) == ("custom", "https://gateway.example/v1", "gw-key")
+    assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == (aux_provider, aux_base, aux_key)
+
+
+def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(monkeypatch):
+    """No aux base_url: the alias lands on OPENAI_BASE_URL (the proxy the key was issued for) and the
+    runtime path pairs OPENAI_API_KEY with it instead of sending a placeholder key to the proxy."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://llm-proxy.corp.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proxy-issued")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})
+
+    runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
+
+    assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")

@@ -364,6 +364,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 *self._delivered_segment_texts)
         return bool(target) and any(sent.strip() == target for sent in seen)
 
+    def has_durably_delivered_text(self, text: str) -> bool:
+        """``has_delivered_text`` restricted to deliveries that outlive the turn: commentary and
+        finalized segments always count; the visible prefix only once ``_already_sent`` (a draft frame
+        sets ``_last_sent_text`` but is ephemeral — a failed finalize send after it must still fall
+        back to the gateway's real final send, same gate as ``delivered_final_matches``)."""
+        target = self._clean_for_display(text or "").strip()
+        seen = [*self._delivered_commentary_texts, *self._delivered_segment_texts]
+        if self._already_sent:
+            seen.append(self._visible_prefix())
+        return bool(target) and any(sent.strip() == target for sent in seen)
+
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
@@ -563,13 +574,23 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 if self._should_edit(tick) and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
                 ):
+                    # Seal first: it clears the message id, so a remainder still over the limit
+                    # is split again below. A plain first send would let the adapter split it and
+                    # adopt only the LAST chunk as the preview; the next seal then overwrites that
+                    # chunk with the head of the whole remainder (duplicated + lost text, #25349).
+                    await self._seal_overflow_heads()
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
                     if not self._use_native_streaming and self._first_send_overflows():
                         if await self._split_first_send(tick):
                             return
-                        continue
-                    await self._seal_overflow_heads()
+                        if self._first_send_overflows():
+                            # A head send failed: keep the full text for the fallback final, and
+                            # skip the boundary reset below that would clear it.
+                            self._signal_flush(tick.flush_event)
+                            continue
+                    # The split tail goes out now, so a commentary or tool boundary drained in
+                    # this tick still lands after it instead of being dropped.
                     await self._push_update(tick)
 
                 if tick.got_done:
@@ -715,9 +736,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         else:
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
-            # platform-limit check (_len_fn is for overflow).
+            # platform-limit check (_len_fn is for overflow).  It must not
+            # override an active flood backoff: while a refusal is being
+            # waited out, only the (server-requested) interval may fire an edit.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+                               or (len(self._accumulated) >= self.cfg.buffer_threshold
+                                   and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(
@@ -741,7 +765,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             reply_to = new_id
 
         if heads_delivered:
-            self._accumulated = chunks[-1]
+            # truncate_message suffixes multi-chunk output with " (n/n)"; the tail is the LIVE
+            # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
+            tail = chunks[-1]
+            indicator = f" ({len(chunks)}/{len(chunks)})"
+            self._accumulated = tail[: -len(indicator)] if tail.endswith(indicator) else tail
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.
@@ -764,11 +792,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if tick.got_segment_break:
             self._fallback_final_send = False
             self._fallback_prefix = ""
-            if not self._accumulated:
-                return False
-        # Early `continue` skips the bottom-of-loop flush signal.
-        if tick.got_flush:
-            self._signal_flush(tick.flush_event)
         return False
 
     def _overflows(self) -> bool:
@@ -903,9 +926,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():
             return
-        # If the segment-break edit didn't land (flood control / fallback mode),
-        # _accumulated holds unseen pre-boundary text — flush it before the reset.
-        if (self._accumulated and not tick.update_visible and self._message_id
+        # If the segment-break edit or send didn't land (flood control / fallback mode, or a
+        # failed first send of a split tail with no message id yet), _accumulated holds unseen
+        # pre-boundary text — flush it before the reset clears it.
+        if (self._accumulated and not tick.update_visible
                 and self._message_id != "__no_edit__"):
             await self._flush_segment_tail_on_edit_failure()
         self._reset_segment_state(preserve_no_edit=True)

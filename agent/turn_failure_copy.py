@@ -9,6 +9,7 @@ trailing "Provider said:" / "Details:" line.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
@@ -26,6 +27,45 @@ def stamp_failure(result: Dict[str, Any], reason: str, retryable: bool) -> Dict[
     result["failure_reason"] = reason
     result["failure_retryable"] = bool(retryable)
     return result
+
+
+# ---- failed-turn transcript boundary ----------------------------------------------------------
+# The Hermes-authored assistant row that closes a durable turn which ended without one. A
+# transcript boundary, NOT the model's answer: no provider/model error or refusal detail is
+# ever interpolated (that rides ``final_response``). Owned here so the core closer
+# (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
+# (``gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
+
+FAILED_TURN_NOTICE = (
+    "Your request was not processed. Send it again if you still want me to carry it out."
+)
+PARTIAL_FAILED_TURN_NOTICE = (
+    "This turn did not complete. Some actions may already have run; verify their effects "
+    "before resending."
+)
+# ``messages.display_kind`` of that row: display-only (stripped before every provider request),
+# so renderers show a Hermes notice and room pollers never read it as the model's reply.
+FAILED_TURN_DISPLAY_KIND = "failed_turn"
+
+
+def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
+    """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
+    (exact notice text, so a real reply quoting it stays a reply); read-side only."""
+    if role == "assistant" and isinstance(content, str) and content.strip() in (
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+    ):
+        return FAILED_TURN_DISPLAY_KIND
+    return None
+
+
+def failed_turn_notice(turn_messages: Any) -> str:
+    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
+    for row in turn_messages or ():
+        if isinstance(row, dict) and (
+            row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
+        ):
+            return PARTIAL_FAILED_TURN_NOTICE
+    return FAILED_TURN_NOTICE
 
 
 def provider_label_for(provider: Any) -> str:
@@ -100,6 +140,23 @@ def exit_reason_failure(turn_exit_reason: Any) -> Optional[ExitFailure]:
     return None
 
 
+def is_max_iteration_handoff(result: Any) -> bool:
+    """A non-failed, non-interrupted ``max_iterations_reached(N/N)`` result that still carries a
+    summary. ``completed`` is False because the work did not finish in that turn, but the turn
+    itself is a resumable boundary — not a failure — so cron delivers the summary and an active
+    ``/goal`` may judge it (#102213). Provider/API failures never match (cf. #63180)."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("failed") is True or result.get("interrupted") is True:
+        return False
+    if result.get("completed") is not False:
+        return False
+    reason = result.get("turn_exit_reason")
+    if not (isinstance(reason, str) and reason.startswith("max_iterations_reached(")):
+        return False
+    return bool(str(result.get("final_response") or "").strip())
+
+
 # ---- chat copy tables -----------------------------------------------------------------------
 
 _NEXT_STEPS_RETRY = "Wait a minute and send /retry, or switch models with /model."
@@ -128,6 +185,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
         "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
     ),
+    FailoverReason.role_alternation.value: (
+        "{label} requires user and assistant turns to strictly alternate and rejected this "
+        "conversation's shape. Start a clean session with /new or switch models with /model."
+    ),
     FailoverReason.ssl_cert_verification.value: (
         "Hermes couldn't verify {label}'s security certificate, so the connection was refused. "
         "This is usually a corporate proxy or an outdated certificate store on this computer — "
@@ -135,8 +196,15 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "with /model."
     ),
     FailoverReason.provider_policy_blocked.value: (
-        "{label}'s account settings don't allow this model for your request, so it didn't "
-        "answer. Check the provider's data/privacy settings, or switch models with /model."
+        "{label} refused this request because of a policy on your account (its data/privacy "
+        "settings, or a block the model's upstream provider placed on the account), so the model "
+        "didn't answer and retrying won't help. Check the account with the provider, or switch "
+        "models with /model."
+    ),
+    FailoverReason.upstream_blocked.value: (
+        "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
+        "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
+        "the proxy/WAF rules, or switch providers with /model."
     ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
@@ -144,10 +212,7 @@ _NONRETRYABLE_DEFAULT_COPY = (
     "or check the details in `{home}/logs/agent.log`."
 )
 _AUTH_COPY: Dict[str, str] = {
-    "oauth": (
-        "{label} rejected your sign-in, so the model can't be reached. Sign in again: "
-        "`hermes portal` for Nous, `hermes auth add <provider> --type oauth` for other accounts."
-    ),
+    "oauth": "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
     "api_key": (
         "{label} rejected your API key, so the model can't be reached. Update it in "
         "Settings → Providers, or run `hermes setup` in a terminal."
@@ -175,8 +240,12 @@ FAILURE_CAUSE_GLOSS: Dict[str, str] = {
     "billing_unverified": "the AI model service says the account's usage or credit limit is reached",
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
+    FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
+    FailoverReason.provider_policy_blocked.value: (
+        "the AI model service refused the request because of a policy on the account"
+    ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",
 }
@@ -230,6 +299,17 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
     ),
+    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
+    # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
+    # message must stay in the transcript and the session must not be auto-reset.
+    "server_context_rejection": (
+        "The model server rejected this request as too large, but this conversation is only "
+        "about {tokens:,} tokens — well under the {window:,}-token window Hermes knows for "
+        "{model} — so shrinking it would not help. Another request on the same server (for "
+        "example a background memory review from an earlier session) was probably holding its "
+        "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
+        "moment and send /retry; if it keeps happening, check the server's context setting."
+    ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "
         "so nothing was run. Check your network and send /retry; asking for the file in smaller "
@@ -263,13 +343,63 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str) -> str:
-    """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``)."""
+def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+    """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
     lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    if reset_seconds is not None and reset_seconds >= 120:
+        from agent.retry_utils import format_reset_window
+        situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
+                     "Send /retry after that, or switch models with /model.")
+    else:
+        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
     return (
-        f"{lead} — it looks temporarily unavailable. {_NEXT_STEPS_RETRY} To avoid this in future, "
+        f"{lead} — {situation} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
     )
+
+
+def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
+    """One chat/CLI line naming when the provider says the limit lifts (#98852): the Retry-After
+    / ``resets_at`` the loop already honours for backoff, shown to the user instead of a bare
+    "wait a minute". Local wall-clock time plus the remaining wait; empty once it has passed."""
+    now = time.time() if now is None else now
+    remaining = int(resets_at - now)
+    if remaining <= 0:
+        return ""
+    hours, minutes = divmod((remaining + 59) // 60, 60)
+    wait = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+    return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
+
+
+def oauth_relogin_command(provider: Any) -> str:
+    """The exact re-login command for a rejected OAuth grant, naming the provider slug and the active
+    named profile: a profile's credentials are its own (93889b770da), so a bare ``hermes auth`` from
+    the root profile re-signs the wrong store and the goal judge, reading a bare 401, guesses which
+    service revoked the token (#114012)."""
+    from hermes_constants import profile_cli_selector
+
+    slug = str(provider or "").strip().lower()
+    if slug == "nous":
+        return f"hermes {profile_cli_selector()}portal"
+    return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def relogin_command_hint(provider: Any) -> str:
+    """Re-sign-in command for a rejected credential on surfaces that may not know the provider:
+    the exact OAuth command for a known OAuth slug, ``hermes auth add <slug>`` for a known API-key
+    slug, and the ``<provider>`` placeholder when the slug is unknown — always carrying the
+    ``-p <profile>`` selector so a profile user never re-signs the ROOT store (#114012)."""
+    from hermes_constants import profile_cli_selector
+
+    slug = str(provider or "").strip().lower()
+    if not slug:
+        return f"hermes {profile_cli_selector()}auth add <provider>"
+    from agent.error_surface import auth_kind
+
+    if auth_kind(slug) == "oauth":
+        return oauth_relogin_command(slug)
+    return f"hermes {profile_cli_selector()}auth add {slug}"
 
 
 def nonretryable_copy(
@@ -288,7 +418,8 @@ def nonretryable_copy(
         f"'{prefix_suggestion}'?"
         if prefix_suggestion else ""
     )
-    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint)
+    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
+                           relogin=oauth_relogin_command(provider))
     return f"{body}\n\nProvider said: {summary}"
 
 

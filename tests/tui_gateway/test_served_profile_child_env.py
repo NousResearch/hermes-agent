@@ -84,6 +84,36 @@ def test_slash_worker_child_runs_in_the_served_profiles_env(mux_homes, monkeypat
     _assert_is_b_env(_child_view(served_env), b, with_secrets=True)
 
 
+def test_launch_profile_worker_spawns_with_own_home_after_multiplex_flip(mux_homes, monkeypatch):
+    """After ``set_multiplex_active`` (first foreign-profile request), the launch profile's own worker
+    must still spawn under ITS home — ``served_profile_child_env(target_home=None, inherit_credentials=True)``
+    raises ``UnscopedSecretError`` by design once multiplexing is on, so the spawn site must pass the
+    launch home explicitly when no served home is set (regression for #115427)."""
+    import tui_gateway.server as server
+
+    a, _b = mux_homes
+    monkeypatch.setattr(server, "_hermes_home", str(a))  # launch profile home, captured at import
+    captured = {}
+
+    class _Popen:
+        def __init__(self, argv, **kw):
+            captured["env"] = kw["env"]
+            self.stdout = self.stderr = iter(())
+            self.stdin = None
+
+        def poll(self):
+            return 0
+
+    with monkeypatch.context() as m:
+        m.setattr(server.subprocess, "Popen", _Popen)
+        # Multiplex is already active (mux_homes fixture). profile_home=None = launch-profile session.
+        server._SlashWorker("sess", "", profile_home=None)
+    # No UnscopedSecretError: the worker is launched under the launch profile's own home, not routed.
+    env = captured["env"]
+    assert env["HERMES_HOME"] == str(a)
+    assert env["A_MARKER"] == "a"  # launch residual retained (target is not a routed/foreign home)
+
+
 def test_helper_children_resolve_secrets_through_the_served_profile(mux_homes):
     """``key_cmd`` helpers and the browser driver spawned during B's turn see B's key, never A's."""
     from agent.command_token_source import _mint

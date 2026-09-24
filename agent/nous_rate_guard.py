@@ -34,14 +34,16 @@ WELCOME_LONG_WAIT_SECONDS = 20.0
 format_remaining = _fmt_seconds
 
 
-def _state_path() -> str:
+def _state_path(*, anonymous: bool = False) -> str:
     """Path to the Nous rate limit state file."""
     try:
         from hermes_constants import get_hermes_home
         base = get_hermes_home()
     except ImportError:
         base = os.path.join(os.path.expanduser("~"), ".hermes")
-    return os.path.join(base, "rate_limits", "nous.json")
+    # Signing in must not inherit the anonymous allowance's cooldown (or clear it for
+    # another anonymous session). Keep the existing named-account file unchanged.
+    return os.path.join(base, "rate_limits", "nous-anonymous.json" if anonymous else "nous.json")
 
 
 def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float]:
@@ -58,6 +60,7 @@ def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float
 def record_nous_rate_limit(
     *, headers: Optional[Mapping[str, str]] = None, error_context: Optional[dict[str, Any]] = None,
     default_cooldown: float = 300.0,
+    anonymous: bool = False,
 ) -> None:
     """Record that Nous Portal is rate-limited in the shared state file.
 
@@ -78,15 +81,15 @@ def record_nous_rate_limit(
 
     state = {"reset_at": reset_at, "recorded_at": now, "reset_seconds": reset_at - now}
     try:
-        atomic_write_text(_state_path(), json.dumps(state))
+        atomic_write_text(_state_path(anonymous=anonymous), json.dumps(state))
         logger.info("Nous rate limit recorded: resets in %.0fs (at %.0f)", reset_at - now, reset_at)
     except Exception as exc:
         logger.debug("Failed to write Nous rate limit state: %s", exc)
 
 
-def nous_rate_limit_remaining() -> Optional[float]:
+def nous_rate_limit_remaining(*, anonymous: bool = False) -> Optional[float]:
     """Seconds remaining until reset, or None if not rate-limited (expired state is removed)."""
-    path = _state_path()
+    path = _state_path(anonymous=anonymous)
     try:
         with open(path, encoding="utf-8") as f:
             state = json.load(f)
@@ -100,10 +103,10 @@ def nous_rate_limit_remaining() -> Optional[float]:
         return None
 
 
-def clear_nous_rate_limit() -> None:
+def clear_nous_rate_limit(*, anonymous: bool = False) -> None:
     """Clear the rate limit state (e.g., after a successful Nous request)."""
     try:
-        os.unlink(_state_path())
+        os.unlink(_state_path(anonymous=anonymous))
     except FileNotFoundError:
         pass
     except OSError as exc:

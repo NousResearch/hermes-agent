@@ -52,8 +52,26 @@ describe('transcript provenance', () => {
     const state = createClientSessionState('stored-1')
     state.messages = [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }]
 
-    expect(suppressTranscriptForView(state, false)).toBe(state)
-    expect(suppressTranscriptForView(state, true).messages).toEqual([])
+    // No gate held: the state reaches the view verbatim.
+    expect(suppressTranscriptForView(state, null)).toBe(state)
+
+    // Gate held with no captured prefix: fail-closed, everything hides.
+    expect(suppressTranscriptForView(state, { cutoffIds: new Set() }).messages).toEqual([])
     expect(state.messages).toHaveLength(1)
+  })
+
+  it('drops only the cached prefix and keeps rows appended after the arm (#117867)', () => {
+    const state = createClientSessionState('stored-1')
+    state.messages = [
+      { id: 'cached-1', role: 'user', parts: [{ type: 'text', text: 'old' }] },
+      { id: 'live-1', role: 'assistant', parts: [{ type: 'text', text: 'streaming' }] }
+    ]
+
+    const suppressed = suppressTranscriptForView(state, { cutoffIds: new Set(['cached-1']) })
+
+    expect(suppressed.messages.map(message => message.id)).toEqual(['live-1'])
+
+    // Nothing else in the state is touched, and the input is not mutated.
+    expect(state.messages).toHaveLength(2)
   })
 })

@@ -34,6 +34,13 @@ def _handshake_rejected_as_modern(exc: BaseException) -> bool:
         code=getattr(exc, "code", None)) or _is_method_not_found_error(exc)
 
 
+def _handshake_answered_with_unsupported_version(exc: BaseException) -> bool:
+    """True when ``initialize`` SUCCEEDED on the wire (HTTP 200, a valid InitializeResult) but the SDK
+    refused the ``protocolVersion`` the server named — its ``RuntimeError("Unsupported protocol version
+    from the server: ...")``. Distinct from a JSON-RPC -32022 rejection, where the server refused us."""
+    return "unsupported protocol version from the server" in str(_unwrap_exception_group(exc)).lower()
+
+
 def _is_method_not_found_error(exc: BaseException) -> bool:
     """True if *exc* is a JSON-RPC ``method not found`` (-32601; ``ping`` is optional in MCP). The
     substring fallback includes "Unknown method: <name>" — without it the ping→list_tools keepalive
@@ -80,6 +87,49 @@ def _is_streamable_http_rejection(exc: BaseException) -> bool:
         return True
     code = getattr(getattr(root, "error", None), "code", None)
     return code == -32603 and "server returned an error response" in str(root).lower()
+
+
+_HTTP_REJECTION_BODY_CHARS = 300
+
+
+def _make_http_rejection_recorder(sink: dict):
+    """httpx response hook for the owned Streamable HTTP client: remembers the last 4xx/5xx the server
+    sent (status, method, URL, head of the body). mcp >= 2.0 folds a non-2xx whose body it cannot
+    parse as a JSON-RPC error into the opaque ``-32603 Server returned an error response`` — the
+    status and the server's own words (e.g. ``400 {"code":-32020,"message":"Unsupported
+    MCP-Protocol-Version"}``) never reach the exception, so this is the only place they can be
+    observed. SSE bodies are never read (a stream would block the hook)."""
+
+    async def _record(response):
+        if response.status_code < 400:
+            return
+        body = ""
+        if response.headers.get("content-type", "").split(";")[0].strip().lower() != "text/event-stream":
+            try:
+                raw = await response.aread()  # buffered: the SDK's own aread() afterwards sees the same bytes
+                body = " ".join(raw[:_HTTP_REJECTION_BODY_CHARS * 4].decode("utf-8", "replace").split())
+            except Exception:  # the failure itself is still reported, just without the body
+                body = ""
+        sink.update(status=response.status_code, method=response.request.method,
+                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS])
+
+    return _record
+
+
+def _describe_http_failure(exc: BaseException, rejection: dict) -> str:
+    """``str(root cause)`` of a Streamable HTTP connect failure; when that root is the SDK's opaque
+    ``-32603 Server returned an error response`` and the recorder saw the rejection, the HTTP status,
+    request URL and body head are appended so the message names what the server actually said."""
+    root = _unwrap_exception_group(exc)
+    text = str(root)
+    opaque = (getattr(getattr(root, "error", None), "code", None) == -32603
+              and "server returned an error response" in text.lower())
+    if not (opaque and rejection):
+        return text
+    detail = f"HTTP {rejection['status']} from {rejection['method']} {rejection['url']}"
+    if rejection["body"]:
+        detail += f": {rejection['body']}"
+    return f"{text} ({detail})"
 
 
 def _unwrap_exception_group(exc: BaseException) -> BaseException:
@@ -212,24 +262,43 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     return headers
 
 
-def _make_redirect_header_stripper(original_url, *, strict: bool = False,
+def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = False,
                                    configured_header_names: "set[str] | frozenset[str]" = frozenset()):
-    """httpx response hook: strips ``Authorization`` when a redirect leaves the original origin;
-    with *strict* (Agent Plugins v1 ``strict_redirect_headers``) every configured header (lowercase
-    names in *configured_header_names*) is stripped too — v1 forbids forwarding them cross-origin."""
+    """Client factory enforcing the redirect credential boundary: on a cross-origin redirect
+    follow-up it strips ``Authorization``; with *strict* (Agent Plugins v1 ``strict_redirect_headers``)
+    every configured header (lowercase names in *configured_header_names*) is stripped too — v1 forbids
+    forwarding them cross-origin.
+
+    The factory builds ``httpx_mod.AsyncClient(**kwargs)`` — resolved at call time, so the proxy
+    ``mounts=`` / ``transport=`` the caller passes reach the SDK's real client class (and anything a
+    caller swapped in for it) unchanged — and installs the boundary on that instance's
+    ``_build_redirect_request``. This MUST live on ``_build_redirect_request``: ``response.next_request``
+    is unset when response event hooks fire (httpx populates it later in the redirect loop), so a
+    response hook can never mutate the follow-up; and a *request* hook would fire on non-redirect traffic
+    too — the OAuth auth flow yields token/metadata/registration requests through the same client, often
+    to a different-origin authorization server whose own credentials must NOT be stripped."""
     origin = (original_url.scheme, original_url.host, original_url.port)
 
-    async def _strip_on_cross_origin_redirect(response):
-        target = response.next_request.url if response.is_redirect and response.next_request else None
-        if target is None or (target.scheme, target.host, target.port) == origin:
-            return
-        headers = response.next_request.headers
-        headers.pop("authorization", None)
-        headers.pop("Authorization", None)
-        for _name in configured_header_names if strict else ():
-            while _name in headers:
-                del headers[_name]
-    return _strip_on_cross_origin_redirect
+    def _build_client(**kwargs):
+        client = httpx_mod.AsyncClient(**kwargs)
+        base_build = getattr(type(client), "_build_redirect_request", None)
+
+        def _build_redirect_request(request, response):
+            next_request = base_build(client, request, response)
+            target = next_request.url
+            if (target.scheme, target.host, target.port) != origin:
+                headers = next_request.headers
+                headers.pop("authorization", None)
+                headers.pop("Authorization", None)
+                for _name in configured_header_names if strict else ():
+                    while _name in headers:
+                        del headers[_name]
+            return next_request
+
+        client._build_redirect_request = _build_redirect_request
+        return client
+
+    return _build_client
 
 
 # Wire-body cap, applied at the httpx transport before the SDK buffers/JSON-parses a response. A
@@ -240,7 +309,12 @@ def _make_redirect_header_stripper(original_url, *, strict: bool = False,
 # stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
 # flow through the ordinary transport teardown/reconnect path (#66092).
 _MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
-_SSE_EVENT_BOUNDARIES = (b"\n\n", b"\r\n\r\n")
+# An SSE event ends at a blank line: two consecutive line terminators. The spec allows CR,
+# LF, or CRLF terminators and permits mixing them, so the boundary is any of \n\n, \r\r,
+# \n\r, \r\n\r\n, \r\n\n, \r\n\r, \n\r\n, \r\r\n. "\r\n" alone is ONE terminator, not two:
+# the lookahead keeps a plain CRLF line ending from backtracking into a \r + \n boundary.
+_SSE_BOUNDARY_RE = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
+_SSE_BOUNDARY_CARRY = 3  # longest boundary ("\r\n\r\n") minus one byte
 
 
 def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
@@ -256,18 +330,24 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
 
         async def __aiter__(self):
             counted = 0
+            tail = b""  # last _SSE_BOUNDARY_CARRY stream bytes; a boundary can straddle chunks
             async for chunk in self._inner:
                 if self._is_sse:
-                    # Bytes up to the last completed event boundary belong to finished events (they must
-                    # still fit the per-event cap together with the carried prefix); the remainder starts
-                    # the next event's budget.
-                    boundary_end = max(chunk.rfind(sep) + len(sep) if sep in chunk else -1 for sep in _SSE_EVENT_BOUNDARIES)
-                    if boundary_end != -1:
-                        if counted + boundary_end > limit:
+                    # Charge each completed event once: the carried prefix plus bytes up to its
+                    # boundary must fit the cap, then the next event starts after it. Scan the
+                    # carried suffix plus this chunk so a boundary split across chunks is still
+                    # seen; bytes before len(tail) were already counted into `counted`.
+                    window = tail + chunk
+                    pos = 0
+                    for match in _SSE_BOUNDARY_RE.finditer(window):
+                        end = match.end()
+                        if end <= len(tail):
+                            continue  # boundary completed inside the carried suffix: already counted
+                        if counted + end - max(pos, len(tail)) > limit:
                             raise self._reject("SSE event")
-                        counted = len(chunk) - boundary_end
-                    else:
-                        counted += len(chunk)
+                        counted, pos = 0, end
+                    counted += len(window) - max(pos, len(tail))
+                    tail = window[-_SSE_BOUNDARY_CARRY:]
                 else:
                     counted += len(chunk)
                 if counted > limit:
@@ -299,31 +379,66 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
     return _BodyCapTransport(inner_transport)
 
 
+# Node budget for ``_iter_exception_nodes`` (the visited set breaks cycles; this bounds acyclic blow-ups).
+# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
+_EXC_TRAVERSAL_MAX_NODES = 10_000
+
+
 def _exc_children(exc: BaseException) -> List[BaseException]:
-    """Sub-exceptions of a group, else ``__cause__``/``__context__`` when they are exceptions."""
-    nested = getattr(exc, "exceptions", None)
-    return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
+    """A group's sub-exceptions (if any) followed by ``__cause__``/``__context__`` when they are exceptions — a
+    group raised inside an ``except`` block carries the caught error as ``__context__``, so the chain is never
+    skipped."""
+    nested = getattr(exc, "exceptions", None) or ()
+    return [*nested, *(c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException))]
+
+
+def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
+    """Pre-order, left-to-right walk of an exception tree/chain, each node once. ``__cause__``/``__context__``
+    can point back at an ancestor (a raised-and-caught pair does this routinely, e.g. the same OAuth error
+    raised on the Streamable-HTTP attempt and again on the SSE fallback), so a naive recursive walk dies with
+    RecursionError and hides the real connect error; the visited set breaks cycles, the budget bounds acyclic
+    blow-ups."""
+    stack = [exc]
+    seen: set[int] = set()
+    ordered: List[BaseException] = []
+    while stack and len(ordered) < _EXC_TRAVERSAL_MAX_NODES:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        ordered.append(current)
+        stack.extend(reversed(_exc_children(current)))
+    return ordered
 
 
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
-    def _find_missing(current: BaseException) -> Optional[str]:
-        if isinstance(current, FileNotFoundError):
-            if getattr(current, "filename", None):
-                return str(current.filename)
-            match = re.search(r"No such file or directory: '([^']+)'", str(current))
-            if match:
-                return match.group(1)
-        return next(filter(None, map(_find_missing, _exc_children(current))), None)
+    nodes = _iter_exception_nodes(exc)
 
-    def _flatten_messages(current: BaseException) -> List[str]:
-        # A group's own str() is opaque — only its children speak.
-        text = "" if getattr(current, "exceptions", None) else str(current).strip()
-        messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
-        return messages or [current.__class__.__name__]
-    missing = _find_missing(exc)
+    def _find_missing() -> Optional[str]:
+        for current in nodes:
+            if isinstance(current, FileNotFoundError):
+                if getattr(current, "filename", None):
+                    return str(current.filename)
+                match = re.search(r"No such file or directory: '([^']+)'", str(current))
+                if match:
+                    return match.group(1)
+        return None
+
+    def _flatten_messages() -> List[str]:
+        messages: List[str] = []
+        for current in nodes:
+            # A group's own str() is opaque — only its children speak; a message-less leaf still names its type.
+            text = "" if getattr(current, "exceptions", None) else str(current).strip()
+            if text:
+                messages.append(text)
+            elif not _exc_children(current):
+                messages.append(current.__class__.__name__)
+        return messages or [exc.__class__.__name__]
+
+    missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "
@@ -378,34 +493,20 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "unknown session", "session terminated", "closedresourceerror", "closed resource",
     "transport is closed", "connection closed", "broken pipe", "end of file")
 
-# Node budget for ``_is_session_expired_error`` (the visited set breaks cycles; this bounds acyclic blow-ups).
-# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
-_EXC_TRAVERSAL_MAX_NODES = 10_000
-
 
 def _is_session_expired_error(exc: BaseException) -> bool:
     """True if ``exc`` looks like a transport session expiry (Streamable-HTTP servers GC session state on idle TTL /
     restart / pod rotation while the OAuth token stays valid) — the fix is a transport reconnect, not an OAuth
-    refresh. Iterative walk over ``exceptions`` / ``__cause__`` / ``__context__`` with a visited set AND a node
-    budget; every reachable node is inspected so an InterruptedError anywhere overrides transport markers, and the
-    chain walk matters because SDK wrappers raise a generic RuntimeError *from* a message-less ClosedResourceError."""
+    refresh. Every node ``_iter_exception_nodes`` reaches is inspected so an InterruptedError anywhere overrides
+    transport markers; the chain walk matters because SDK wrappers raise a generic RuntimeError *from* a
+    message-less ClosedResourceError."""
     # AnyIO stream exceptions are often message-less, so type checks complement marker matching.
     transport_error_types = tuple(_optional_types("anyio", "BrokenResourceError", "ClosedResourceError", "EndOfStream"))
-    stack: "list[BaseException | None]" = [exc]
-    seen: set[int] = set()
     found = False
-    budget = _EXC_TRAVERSAL_MAX_NODES
-    while stack and budget > 0:
-        current = stack.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        budget -= 1
+    for current in _iter_exception_nodes(exc):
         if isinstance(current, InterruptedError):
             return False
         # Messages vary across SDK versions/servers: a narrow allow-list of stable substrings avoids false positives.
         msg = str(current).lower()
         found = found or isinstance(current, transport_error_types) or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
-        stack.extend((*getattr(current, "exceptions", ()), getattr(current, "__cause__", None),
-                      getattr(current, "__context__", None)))
     return found

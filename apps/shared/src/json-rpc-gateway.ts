@@ -4,6 +4,7 @@ import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
   JsonRpcRequestChannel,
+  type JsonRpcRequestChannelOptions,
   type JsonRpcTransport,
   type ServerRequestHandler,
   wireFrameText
@@ -21,6 +22,10 @@ export interface GatewayClientOptions {
   createRequestId?: (nextId: number) => GatewayRequestId
   heartbeatDeadlineMs?: number
   heartbeatIntervalMs?: number
+  /** A server→client request handler threw; the channel already answered `-32603`. */
+  onRequestHandlerError?: JsonRpcRequestChannelOptions['onRequestHandlerError']
+  /** No handler accepted a server→client request; the channel already answered `-32601`. */
+  onUnhandledRequest?: JsonRpcRequestChannelOptions['onUnhandledRequest']
   /** Return true to intercept the default closed-state transition. */
   onSocketClose?: (event: { code: number }) => boolean | void
   /** Fetch `session.events.since` after a reconnect (default). Off for notification-only feeds whose peer never answers RPCs. */
@@ -109,6 +114,8 @@ export class JsonRpcGatewayClient {
   private lastSeenSeq = new Map<string, number>()
   /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
   private replayInFlight = false
+  /** Invalidates an interrupted replay so its async cleanup cannot own a replacement socket. */
+  private replayGeneration = 0
   /**
    * While a replay fetch is in flight, live seq'd frames for the sessions
    * being replayed are parked here instead of dispatching immediately.
@@ -126,8 +133,10 @@ export class JsonRpcGatewayClient {
    */
   private replayEpoch: string | null = null
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
-  private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
-    Pick<GatewayClientOptions, 'socketFactory'>
+  private readonly options: Required<
+    Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
+  > &
+    Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
 
   constructor(options: GatewayClientOptions = {}) {
     this.options = {
@@ -141,6 +150,8 @@ export class JsonRpcGatewayClient {
       onSocketClose: options.onSocketClose ?? (() => false),
       replay: options.replay ?? true,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
+      onRequestHandlerError: options.onRequestHandlerError,
+      onUnhandledRequest: options.onUnhandledRequest,
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       socketFactory: options.socketFactory
     }
@@ -148,11 +159,14 @@ export class JsonRpcGatewayClient {
       createRequestId: this.options.createRequestId,
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
       heartbeatIntervalMs: this.options.heartbeatIntervalMs,
-      // Desktop/web have always counted any inbound frame as liveness; the
-      // TUI (stdio/attach owner) keeps its stricter pong-based contract.
+      // Desktop/web and the TUI alike count any inbound frame as liveness
+      // (#115251): streamed deltas are life; only a silent drop trips the
+      // deadline.
       heartbeatLiveness: 'any-inbound',
       onEvent: event => this.handleEvent(event),
       onHeartbeatFailure: error => this.invalidate(error.message),
+      onRequestHandlerError: this.options.onRequestHandlerError,
+      onUnhandledRequest: this.options.onUnhandledRequest,
       requestTimeoutMs: this.options.requestTimeoutMs
     })
   }
@@ -239,6 +253,9 @@ export class JsonRpcGatewayClient {
         void this.fetchReplay()
       }
 
+      // Every rejection below names its failure class. The boot overlay renders this message verbatim, and
+      // a bare connectErrorMessage collapses "server refused the token", "TLS/DNS/refused before open" and
+      // "nothing answered" into one sentence nobody can act on (#41566).
       const onError = () => {
         if (settled || this.socket !== socket) {
           return
@@ -247,7 +264,8 @@ export class JsonRpcGatewayClient {
         settled = true
         cleanup()
         this.setState('error')
-        reject(new Error(this.options.connectErrorMessage))
+        // A browser/renderer 'error' event carries no detail; the class is the message.
+        reject(this.connectFailure('WebSocket error before open'))
       }
 
       // A server that closes during the handshake (auth gate, 4401/4403)
@@ -257,7 +275,7 @@ export class JsonRpcGatewayClient {
       // and moved the generation to 'closed'; the branch below only runs
       // when `onSocketClose` intercepted that transition and left the
       // half-open socket bound.
-      const onClose = () => {
+      const onClose = (event: CloseEvent) => {
         if (settled) {
           return
         }
@@ -270,7 +288,11 @@ export class JsonRpcGatewayClient {
           this.setState('error')
         }
 
-        reject(new Error(this.options.connectErrorMessage))
+        reject(
+          this.connectFailure(
+            `WebSocket closed during handshake: code ${event.code}${event.reason ? ` ${event.reason}` : ''}`
+          )
+        )
       }
 
       socket.addEventListener('open', onOpen, { once: true })
@@ -299,10 +321,14 @@ export class JsonRpcGatewayClient {
             this.setState('error')
           }
 
-          reject(new Error(this.options.connectErrorMessage))
+          reject(this.connectFailure(`no WebSocket open within ${this.options.connectTimeoutMs} ms`))
         }, this.options.connectTimeoutMs)
       }
     })
+  }
+
+  private connectFailure(detail: string): Error {
+    return new Error(`${this.options.connectErrorMessage} (${detail})`)
   }
 
   close(): void {
@@ -438,6 +464,7 @@ export class JsonRpcGatewayClient {
     }
 
     this.replayInFlight = true
+    const replayGeneration = ++this.replayGeneration
     // Park live frames for the sessions we're about to replay so a frame
     // racing the replay response can't dispatch ahead of (or duplicate) the
     // gap events. Sessions without watermarks are unaffected.
@@ -464,6 +491,13 @@ export class JsonRpcGatewayClient {
         )
       )
 
+      // The socket that owned this replay was dropped while its requests were
+      // settling. Its results and cleanup must not consume the replacement
+      // socket's replay window.
+      if (this.replayGeneration !== replayGeneration) {
+        return
+      }
+
       for (const result of results) {
         if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
           continue
@@ -489,14 +523,16 @@ export class JsonRpcGatewayClient {
             continue
           }
 
-          this.dispatchIfNewer(event as GatewayEvent)
+          this.dispatchIfNewer({ ...event, replayed: true } as GatewayEvent)
         }
       }
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.
     } finally {
-      this.flushReplayHold()
-      this.replayInFlight = false
+      if (this.replayGeneration === replayGeneration) {
+        this.flushReplayHold()
+        this.replayInFlight = false
+      }
     }
   }
 
@@ -549,20 +585,29 @@ export class JsonRpcGatewayClient {
 
     for (const parked of hold.values()) {
       for (const event of parked) {
-        this.dispatchIfNewer(event)
+        this.dispatchIfNewer({ ...event, replayed: true })
       }
     }
   }
 
   /** Forget the current socket generation, fail its calls, and go 'closed'. */
   private dropSocket(error: Error): void {
+    // A replay belongs to the socket that started it. Detaching that socket
+    // rejects its requests asynchronously, so clear its ownership now; the
+    // next open can immediately schedule a replay of its own.
+    this.replayGeneration += 1
+    this.replayInFlight = false
+    this.replayHold = null
     this.socket = null
     this.channel.detach(error)
     this.setState('closed')
   }
 
   private dispatchEvent(event: GatewayEvent): void {
-    this.events.dispatch(event)
+    // Tag the frame with the process epoch this socket adopted so a consumer
+    // holding several sockets to one backend can recognise the same event
+    // arriving on each of them; the epoch is per process, not per socket.
+    this.events.dispatch(this.replayEpoch ? { ...event, replayEpoch: this.replayEpoch } : event)
   }
 
   private setState(state: ConnectionState): void {

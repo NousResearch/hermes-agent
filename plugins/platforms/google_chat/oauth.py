@@ -195,7 +195,8 @@ def _chmod_quiet(path: Path, mode: int) -> None:
 
 def _write_private_json(path: Path, data: Any) -> None:
     """Atomically write JSON with 0o600 permissions (0o700 parent) where supported."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
     _chmod_quiet(path.parent, 0o700)
     # mkstemp's 0o600 temp + atomic rename never exposes the token at process umask.
     atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), create_mode=0o600)

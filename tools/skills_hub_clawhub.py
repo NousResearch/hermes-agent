@@ -13,7 +13,7 @@ from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
-    _validate_bundle_rel_path,
+    _validate_bundle_rel_path, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -298,8 +298,12 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         gathered (browse's cold-start fallback renders one page); ``0`` walks
         to exhaustion (offline index builder). Only a COMPLETE walk (cursor
         exhausted or page cap) is written to the shared ``clawhub_catalog_v1``
-        cache — a walk cut by ``max_items`` or the wall-clock budget would
-        poison it with a partial slice.
+        cache — a walk cut by ``max_items``, the wall-clock budget, or a
+        failed page fetch would poison it with a partial slice.
+
+        ``_get_json`` returns ``None`` on timeout/non-200. That is a hole in the
+        walk, not catalog exhaustion: the same cursor is retried a few times
+        before the walk gives up (partial, uncached).
         """
         cache_key = "clawhub_catalog_v1"
         cached = _cached_metas(cache_key)
@@ -314,12 +318,22 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         # (max_items=0) must walk everything or it trips the deploy health floor.
         deadline = time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS if max_items > 0 else None
         partial = False
+        fetch_failures = 0
         for _ in range(750):
             if deadline is not None and time.monotonic() > deadline:
                 partial = True
                 break
             params: Dict[str, Any] = {"limit": 200, "cursor": cursor} if cursor else {"limit": 200}
             data = self._get_json(f"{self.BASE_URL}/skills", timeout=30, params=params)
+            if data is None:
+                fetch_failures += 1
+                if fetch_failures >= self.CATALOG_PAGE_RETRIES:
+                    partial = True
+                    break
+                # Interactive browse stays inside its 12 s budget; the index builder backs off.
+                time.sleep(0.5 if deadline is not None else min(2 ** fetch_failures, 8))
+                continue
+            fetch_failures = 0
             items = data.get("items", []) if isinstance(data, dict) else []
             if not isinstance(items, list) or not items:
                 break
@@ -367,7 +381,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         for attempt in range(max_attempts):
             delay = 2.0 * (2 ** attempt)
             try:
-                resp = httpx.get(url, timeout=20)
+                resp = hub()._skills_hub_http_get(url, timeout=20)
             except (httpx.HTTPError, OSError):
                 reason = "transport error"
             else:

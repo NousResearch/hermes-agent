@@ -16,9 +16,9 @@ import {
   setNativeNotifyKind
 } from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
-import { $approvalRequest, setApprovalRequest } from './prompts'
+import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
-import { $activeSessionId, setActiveSessionId } from './session'
+import { setActiveSessionId } from './session'
 import { dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -158,28 +158,12 @@ describe('dispatchNativeNotification preferences', () => {
     dispatchNativeNotification({ kind: 'turnError', sessionId, title: 'boom' })
     expect(notify).toHaveBeenCalledTimes(1)
   })
-
-  it('forwards kind and sessionId to the bridge', () => {
-    setActiveSessionId('abc')
-    dispatchNativeNotification({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
-    expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
-    )
-  })
 })
 
 describe('dispatchNativeNotification post-connect baseline', () => {
   it('suppresses a prompt replayed right after a socket opens', () => {
     markNativeNotifyBaseline()
     dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
-    expect(notify).not.toHaveBeenCalled()
-  })
-
-  it('suppresses a completion replayed right after a socket opens', () => {
-    const sessionId = freshSession()
-    setActiveSessionId(sessionId)
-    markNativeNotifyBaseline()
-    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
     expect(notify).not.toHaveBeenCalled()
   })
 
@@ -316,17 +300,11 @@ describe('sendTestNativeNotification', () => {
   })
 })
 
-describe('$activeSessionId wiring', () => {
-  it('reflects the setter used for gating', () => {
-    setActiveSessionId('xyz')
-    expect($activeSessionId.get()).toBe('xyz')
-  })
-})
-
 describe('respondToApprovalAction', () => {
   const request = vi.fn().mockResolvedValue({ resolved: true })
 
   beforeEach(() => {
+    clearAllPrompts()
     request.mockClear()
     $gateway.set({ request } as unknown as ReturnType<typeof $gateway.get>)
   })
@@ -341,13 +319,29 @@ describe('respondToApprovalAction', () => {
 
     await respondToApprovalAction('bg', 'approve')
 
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'bg' })
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('answers the exact notification request without clearing the rest of its stack', async () => {
+    setActiveSessionId('bg')
+    setApprovalRequest({ command: 'first', description: 'first', requestId: 'r1', sessionId: 'bg' })
+    setApprovalRequest({ command: 'second', description: 'second', requestId: 'r2', sessionId: 'bg' })
+    await respondToApprovalAction('bg', 'approve:r1')
+    expect(request).toHaveBeenCalledWith('approval.respond', {
+      all: false,
+      choice: 'once',
+      request_id: 'r1',
+      session_id: 'bg'
+    })
+    expect($approvalRequest.get()?.requestId).toBe('r2')
+    await respondToApprovalAction('bg', 'approve:r1')
+    expect($approvalRequest.get()?.requestId).toBe('r2')
   })
 
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'bg' })
   })
 
   it('ignores unknown action ids', async () => {

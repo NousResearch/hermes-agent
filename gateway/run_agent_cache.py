@@ -16,7 +16,8 @@ from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.run_shutdown import _log_suppressed
-from hermes_cli.config import cfg_get
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -46,18 +47,21 @@ class GatewayAgentCacheMixin:
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
-        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. Missing keys /
-        non-dict sections yield None (still enters the signature). Includes the live tool registry
+        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``
+        is the raw file (no DEFAULT_CONFIG merge), so absent keys and non-dict sections take the
+        DEFAULT_CONFIG value — what the agent was actually built with — while an explicit ``null`` stays
+        None so opting out of a non-None default still rebuilds. Includes the live tool registry
         generation: MCP reloads mutate the registry without touching config.yaml."""
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
+            default = cfg_get(DEFAULT_CONFIG, section, key)
             section_val = cfg.get(section)
             if section == "checkpoints" and isinstance(section_val, bool):
                 # Legacy ``checkpoints: true``: a live toggle must still rebuild the cached agent.
-                out[f"{section}.{key}"] = section_val if key == "enabled" else None
+                out[f"{section}.{key}"] = section_val if key == "enabled" else default
             else:
-                out[f"{section}.{key}"] = section_val.get(key) if isinstance(section_val, dict) else None
+                out[f"{section}.{key}"] = cfg_get(cfg, section, key, default=default)
         try:
             from tools.registry import registry
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
@@ -156,18 +160,28 @@ class GatewayAgentCacheMixin:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
+        from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+        if is_foreign_provider_endpoint(provider, override.get("base_url")):
+            override["base_url"] = None  # left over from a switch that kept the previous provider's URL
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
-            # falls back to env resolution and layers model/provider.
+            # retries the resolution for that provider on each turn (default route + notice meanwhile).
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})
                 override["capabilities"] = dict(runtime.get("capabilities") or {})
-                if not override.get("base_url"):
+                if not override.get("base_url") or provider.strip().lower() in LLAMACPP_ALIASES:
+                    # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
+                    # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
+                from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+                if opencode_provider_family(provider) is not None and override.get("base_url"):
+                    # api_mode was just re-derived from the target model; a relay URL persisted by an older
+                    # build for another wire (/v1-stripped) or the other family is healed to match (#96066).
+                    override["base_url"] = normalize_opencode_base_url(provider, override.get("api_mode"), override["base_url"])
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "
@@ -407,13 +421,16 @@ class GatewayAgentCacheMixin:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)
         return generation
 
+    def _current_session_run_generation(self, session_key: str) -> int:
+        """Current run generation for ``session_key`` (0 when the key tracks no run)."""
+        state = self._peek_session_state(session_key)
+        return int(state.persistent.run_generation) if state is not None else 0
+
     def _is_session_run_current(self, session_key: str, generation: int) -> bool:
         """Return True when ``generation`` is still current for ``session_key``."""
         if not session_key:
             return True
-        state = self._peek_session_state(session_key)
-        current = state.persistent.run_generation if state is not None else 0
-        return int(current) == int(generation)
+        return self._current_session_run_generation(session_key) == int(generation)
 
     def _bind_adapter_run_generation(self, adapter: Any, session_key: str, generation: int | None) -> None:
         """Bind a gateway run generation to the adapter's active-session event."""
@@ -424,10 +441,14 @@ class GatewayAgentCacheMixin:
             if interrupt_event is not None:
                 interrupt_event._hermes_run_generation = int(generation)
 
-    def _interrupt_running_turn(self, session_key: str, *, interrupt_reason: str, invalidation_reason: str) -> int:
+    def _interrupt_running_turn(
+        self, session_key: str, *, interrupt_reason: str, invalidation_reason: str, tool_reason: str | None = None,
+    ) -> int:
         """Sync core shared by /stop, /new and eviction: request a hard interrupt on the in-flight
         agent, invalidate its run generation, and reap the tool processes that turn spawned.
+        ``tool_reason`` names a system issuer (eviction); ``None`` keeps the user attribution of /stop and /new.
         Returns the post-bump generation."""
+        from contextvars import copy_context
         from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
@@ -437,7 +458,7 @@ class GatewayAgentCacheMixin:
             # bump and release below are the cleanup that matters.
             with _log_suppressed(logging.WARNING, "Failed to interrupt running agent for %s; continuing",
                                  session_key, exc_info=True):
-                request_hard_interrupt(running_agent, interrupt_reason)
+                request_hard_interrupt(running_agent, interrupt_reason, tool_reason=tool_reason)
             _process_task_id = getattr(running_agent, "_gateway_turn_process_task_id", "")
             _process_baseline = getattr(running_agent, "_gateway_turn_process_baseline", None)
         # Bump the generation BEFORE scheduling the reap thread and capture the post-bump value:
@@ -447,8 +468,8 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         if _process_task_id and _process_baseline is not None:
             threading.Thread(
-                target=_reap_gateway_turn_processes,
-                args=(_process_task_id, _process_baseline),
+                target=copy_context().run,
+                args=(_reap_gateway_turn_processes, _process_task_id, _process_baseline),
                 kwargs={
                     "source": "gateway_turn_interrupt",
                     "is_still_current": lambda: self._is_session_run_current(session_key, _generation_at_interrupt),
@@ -471,6 +492,13 @@ class GatewayAgentCacheMixin:
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
         from gateway.run import _AGENT_PENDING_SENTINEL
+        # The turn's hard interrupt reaches only its in-turn children; background delegations were
+        # detached at dispatch and would otherwise run to completion and wake the session later.
+        # Each interrupted unit still returns as a completion (status=interrupted, partial output).
+        from tools.async_delegation import interrupt_for_session
+        interrupt_for_session(
+            session_key=session_key, reason=invalidation_reason,
+            parent_session_id=str(getattr(running_agent, "session_id", "") or ""))
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
             # the loop will never consume) learn the turn is gone. Fires for /stop and the /new
@@ -488,7 +516,7 @@ class GatewayAgentCacheMixin:
                 )
             except Exception:
                 logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         interrupt_session_activity = getattr(type(adapter), "interrupt_session_activity", None)
         if adapter and callable(interrupt_session_activity):
             metadata = self._thread_metadata_for_source(source)
@@ -497,7 +525,23 @@ class GatewayAgentCacheMixin:
             else:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+            # Discard a stale human follow-up (the slot held only user text when /stop started doing
+            # this, 59575d6a917) — but an internal wake (async-delegation completion, notify+wake)
+            # shares the slot now and was claim-settled on admission, so dropping it loses it for
+            # good and the session idles until the next user message (#114456). Leave it parked for
+            # the adapter's post-command drain; a wake queued behind a discarded human head is
+            # promoted out of the overflow FIFO for the same reason. Whether a wake may still run
+            # against a session /new just closed is decided where it is processed
+            # (_resolve_async_delegation_session fails closed), not here.
+            parked = adapter.get_pending_message(session_key)
+            wake = parked if getattr(parked, "internal", False) else None
+            if wake is None:
+                overflow = self._overflow_queue(session_key) or []
+                wake = next((e for e in overflow if getattr(e, "internal", False)), None)
+                if wake is not None:
+                    overflow.remove(wake)
+            if wake is not None:
+                adapter._pending_messages[session_key] = wake
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 
 EXCLUDED_SKILL_DIRS = frozenset((
-    ".git", ".github", ".hub", ".archive", ".curator_backups",
+    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -206,6 +206,28 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
         return True
     tags = [str(env).lower().strip() for env in (environments if isinstance(environments, list) else [environments])]
     return any(_detect_environment(tag) for tag in tags if tag)
+
+
+def skill_matches_apps(frontmatter: Dict[str, Any]) -> bool:
+    """True when every app named in ``requires_apps:`` has a registered declaration this host satisfies.
+
+    Names resolve through ``hermes_platform.declaration`` (registered by whoever owns the server,
+    e.g. the plugin loader); the check is the same ``availability()`` the MCP check_fn uses. An
+    unknown name hides the skill (fail closed). Offer-time filter, like ``environments:``.
+    """
+    names = frontmatter.get("requires_apps")
+    if not names:
+        return True
+    from hermes_platform import declaration
+    from hermes_platform.resolver.availability import availability
+
+    for name in names if isinstance(names, list) else [names]:
+        decl = declaration.lookup(str(name).strip())
+        if decl is None or decl.app is None:
+            return False
+        if not availability(decl).offerable:
+            return False
+    return True
 
 
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
@@ -419,20 +441,20 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
-    cron/API surfaces inherit an interactive trust decision by project identity.
-
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    Without *start*, the surface's effective working directory wins over the process cwd — the same
+    ladder every other cwd consumer reads (``resolve_agent_cwd``: session-bound cwd, then the scope's
+    ``TERMINAL_CWD``, then the process cwd). The session cwd comes first because a multi-session host
+    (TUI/desktop gateway) pins each session's workspace there while its terminal scope resolves a
+    placeholder ``terminal.cwd`` to ``$HOME``; reading only the scope made every project skill invisible
+    on those surfaces (#114359). ``TERMINAL_CWD`` is the per-surface workdir the terminal tool and cron
+    jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the scheduler process),
+    which lets non-interactive surfaces inherit a prior interactive trust decision by project identity —
+    and a surface with no workdir in a trusted repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None

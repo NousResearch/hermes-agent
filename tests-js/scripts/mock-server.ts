@@ -34,6 +34,9 @@ export interface MockServerOptions {
   /** Choose distinct replies from the latest input without replaying history. */
   replyForPrompt?: (prompt: string) => string
 
+  /** Extra ids listed by GET /v1/models beside `mock-model` (a pickable second model). */
+  extraModels?: string[]
+
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
 /** Pause the first completion whose request JSON contains this text. */
@@ -54,6 +57,8 @@ export interface MockServer {
   port: number
   url: string
   receivedPrompts: string[]
+  /** The `model` field of every chat completion request, in arrival order. */
+  receivedModels: string[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -346,6 +351,28 @@ const TASK_PANEL_RESUME_SCRIPT: ScriptedTurn[] = [
   },
 ]
 
+/**
+ * A marker that makes the mock answer the completion with a non-retryable
+ * provider failure (401 invalid key). The gateway then fails the member's
+ * turn and RETAINS it under `session.resume.inflight` as `{ status: 'error' }`
+ * — the tombstone a Bot Mode room must read as "finished", not "still busy".
+ */
+export const PROVIDER_FAILURE_TRIGGER = 'E2E_PROVIDER_FAILURE_TRIGGER'
+export const PROVIDER_FAILURE_MESSAGE = 'E2E invalid_api_key: the mock refused this completion on purpose'
+
+/**
+ * The same provider failure one step later: the first completion says
+ * TOOL_THEN_FAILURE_TEXT and calls a tool, the completion after the tool
+ * result is the 401. That pre-tool text is not the member's reply.
+ */
+export const TOOL_THEN_FAILURE_TRIGGER = 'E2E_TOOL_THEN_PROVIDER_401'
+export const TOOL_THEN_FAILURE_TEXT = 'Let me note the plan before answering.'
+
+const TOOL_THEN_FAILURE_TURN: ScriptedTurn = {
+  text: TOOL_THEN_FAILURE_TEXT,
+  toolCalls: [{ name: 'todo', args: { todos: [{ id: '1', content: 'Answer the room', status: 'in_progress' }] } }],
+}
+
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
   toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
@@ -386,6 +413,38 @@ function includesBatchClarifyTrigger(value: unknown): boolean {
 }
 
 /**
+ * A marker that makes the mock run a recursive delete through the real
+ * `terminal` tool. Under `approvals: mode: "manual"` the backend parks the
+ * turn behind a command-approval prompt (once/session/always/deny), which is
+ * how a Bot Mode group room gets its approval card. The path is a scratch
+ * directory so an approved run is harmless; once the tool result is in the
+ * history the mock falls through to the canned reply.
+ */
+export const APPROVAL_COMMAND_TRIGGER = 'E2E_APPROVAL_COMMAND_TRIGGER'
+export const APPROVAL_COMMAND = 'rm -rf /tmp/hermes-e2e-approval-probe'
+
+const APPROVAL_COMMAND_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'terminal', args: { command: APPROVAL_COMMAND } }],
+}
+
+function includesApprovalCommandTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(APPROVAL_COMMAND_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesApprovalCommandTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesApprovalCommandTrigger)
+  }
+
+  return false
+}
+
+/**
  * Per-speaker scripted line for Bot Mode group rooms. A room turn prompt opens
  * with `You are @<handle>` and quotes the user's message verbatim, so one user
  * send can script every member's reply:
@@ -413,6 +472,43 @@ export function groupScriptedLine(userText: string, history: string[] = []): str
   return '(pass)'
 }
 
+/**
+ * One scripted tool call driven by the user's own text, for specs that need the
+ * agent to exercise a REAL tool once (e.g. Bot Mode's `message_agent`):
+ * `E2E_CALL(message_agent)[{"target":"scribe","message":"ping"}]`. The first
+ * completion of that turn emits the call; once its tool result is in the
+ * history the turn ends with `E2E_CALL_RESULT: <tool result>` so the spec can
+ * assert on what the tool actually returned. Later turns (a completion
+ * notification waking the same chat) carry a different last user message and
+ * fall through to the canned reply.
+ */
+export function directToolCallTurn(userText: string, messages: any[]): ScriptedTurn | null {
+  const match = /E2E_CALL\(([a-z_][a-z0-9_]*)\)\[(\{.*\})\]/s.exec(userText)
+
+  if (!match) {
+    return null
+  }
+
+  const toolResults = messages.filter(m => m?.role === 'tool')
+
+  if (toolResults.length === 0) {
+    let args: Record<string, unknown> = {}
+
+    try {
+      args = JSON.parse(match[2]) as Record<string, unknown>
+    } catch {
+      return null
+    }
+
+    return { text: '', toolCalls: [{ name: match[1], args }] }
+  }
+
+  const last = toolResults[toolResults.length - 1]
+  const content = typeof last?.content === 'string' ? last.content : JSON.stringify(last?.content ?? '')
+
+  return { text: `E2E_CALL_RESULT: ${content}` }
+}
+
 function includesBlockingClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BLOCKING_CLARIFY_TRIGGER)
@@ -437,6 +533,7 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
+    const receivedModels: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -469,14 +566,12 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         res.end(
           JSON.stringify({
             object: 'list',
-            data: [
-              {
-                id: 'mock-model',
-                object: 'model',
-                created: 0,
-                owned_by: 'mock',
-              },
-            ],
+            data: ['mock-model', ...(options.extraModels ?? [])].map(id => ({
+              id,
+              object: 'model',
+              created: 0,
+              owned_by: 'mock',
+            })),
           }),
         )
 
@@ -510,6 +605,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+          receivedModels.push(model)
 
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
@@ -571,6 +667,23 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
+          if (includesApprovalCommandTrigger(parsed.messages)) {
+            // First completion scripts the gated command; once its tool
+            // result is in the history, fall through to the canned reply.
+            const hasToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+
+            if (!hasToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
+              }
+
+              return
+            }
+          }
+
           if (includesBatchClarifyTrigger(parsed.messages)) {
             // Only the FIRST completion of the conversation scripts the batch
             // clarify. The trigger text stays in message history, so once the
@@ -596,6 +709,23 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
             }
+
+            return
+          }
+
+          if (userText.includes(TOOL_THEN_FAILURE_TRIGGER) && !messages.some(message => message?.role === 'tool')) {
+            if (stream) {
+              streamScriptedTurn(res, model, TOOL_THEN_FAILURE_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, TOOL_THEN_FAILURE_TURN)
+            }
+
+            return
+          }
+
+          if (userText.includes(PROVIDER_FAILURE_TRIGGER) || userText.includes(TOOL_THEN_FAILURE_TRIGGER)) {
+            res.writeHead(401, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: PROVIDER_FAILURE_MESSAGE, type: 'invalid_request_error' } }))
 
             return
           }
@@ -680,6 +810,18 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
+          const directCall = directToolCallTurn(userText, messages)
+
+          if (directCall !== null) {
+            if (stream) {
+              streamScriptedTurn(res, model, directCall)
+            } else {
+              nonStreamingScriptedTurn(res, model, directCall)
+            }
+
+            return
+          }
+
           const groupLine = groupScriptedLine(
             userText,
             messages.flatMap(m => (m?.role === 'user' && typeof m?.content === 'string' ? [m.content] : [])),
@@ -754,6 +896,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         port,
         url,
         receivedPrompts,
+        receivedModels,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),

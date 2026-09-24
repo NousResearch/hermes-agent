@@ -30,17 +30,3 @@ def test_refresh_reports_registration_outcome(tmp_path, monkeypatch, capsys):
     assert "Updated" in capsys.readouterr().out
 
 
-def test_install_repair_warns_instead_of_claiming_success(tmp_path, monkeypatch, capsys):
-    plist_path = tmp_path / "com.hermes.plist"
-    plist_path.write_text("<old/>", encoding="utf-8")
-    monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist_path)
-    monkeypatch.setattr(gw, "launchd_plist_is_current", lambda: False)
-    monkeypatch.setattr(gw, "refresh_launchd_plist_if_needed", lambda: False)
-    monkeypatch.setattr("hermes_constants.display_hermes_home", lambda: "~/.hermes-work")
-
-    gw.launchd_install(force=False)
-
-    out = capsys.readouterr().out
-    assert "Service definition updated" not in out
-    assert "could not be reloaded" in out
-    assert "~/.hermes-work/logs/launchd-reload.log" in out

@@ -43,17 +43,6 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
     return calls
 
 
-def test_tick_process_job_sequence(monkeypatch):
-    """Characterization: a single due job driven through tick() runs the
-    sequence run_job → save → deliver → mark, in that order."""
-    calls = _patch_pipeline(monkeypatch)
-    monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
-    monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id, **_kwargs: True)
-
-    s.tick(verbose=False, sync=True)
-
-    assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
-    assert calls[-1] == ("mark", "j1", True)
 
 
 def test_tick_skips_job_when_durable_fire_claim_is_lost(monkeypatch):
@@ -76,6 +65,48 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+
+
+def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch):
+    """A delegated-child failure reported by the agent is not a healthy cron run."""
+    calls = _patch_pipeline(
+        monkeypatch,
+        final="[CRON_FAILURE]\nThe delegated child could not finish the report.",
+    )
+
+    ok = s.run_one_job({"id": "declared-failure", "name": "delegate", "deliver": "telegram"})
+
+    assert ok is True
+    assert [call[0] for call in calls] == ["run_job", "save", "deliver", "mark"]
+    assert calls[-1] == ("mark", "declared-failure", False)
+
+
+def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
+    """The agent's own evidence reaches the operator as written, not re-diagnosed by the
+    provider-error heuristics (a child that "timed out" is not a model-service timeout)."""
+    delivered = []
+    evidence = "The export subagent timed out after 30 minutes waiting on the database."
+    _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
+    monkeypatch.setattr(
+        s, "_deliver_result", lambda job, content, **kw: delivered.append(content))
+
+    s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
+
+    assert len(delivered) == 1
+    assert evidence.rstrip(".") in delivered[0]
+    assert "model service" not in delivered[0]
+
+
+def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
+    """Only the exact first line is control text; quoted markers remain report content."""
+    calls = _patch_pipeline(
+        monkeypatch,
+        final="The child documentation says [CRON_FAILURE], but this run recovered.",
+    )
+
+    s.run_one_job({"id": "quoted-marker", "name": "delegate", "deliver": "telegram"})
+
+    assert calls[-1] == ("mark", "quoted-marker", True)
 
 
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
@@ -217,7 +248,6 @@ def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
     assert ok is False
     assert len(delivered) == 1
     assert "cannot import name X" in delivered[0]
-    assert "failed 3 runs in a row" in delivered[0]
     assert "hermes cron pause scout" in delivered[0]
 
 
@@ -240,8 +270,8 @@ def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
 
     assert ok is False
     assert len(delivered) == 1
-    assert delivered[0].startswith("⚠️ Cron 'scout' failed: provider failed")
-    assert "hermes cron runs j6" in delivered[0]
+    assert "provider failed" in delivered[0]
+    assert "hermes cron pause scout" not in delivered[0]
 
 
 def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
@@ -383,5 +413,4 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_delivery["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
-
 

@@ -149,6 +149,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $model: computed($state, state => state?.model ?? ''),
     $provider: computed($state, state => state?.provider ?? ''),
     $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
+    $reasoningEffortWire: computed($state, state => state?.reasoningEffortWire ?? ''),
     $runtimeId,
     // Constant for the tile's lifetime — a plain atom, not a computed.
     $storedId: atom(storedSessionId),
@@ -225,9 +226,19 @@ function TileChat({
       $awaitingInput: sessionAwaitingInput(runtimeId),
       $messages: view.$messages,
       attachments,
+      connectionId: ownerRoute?.connectionId || undefined,
+      profile: ownerRoute?.targetProfile || ownerRoute?.profile || undefined,
       target: `tile:${storedSessionId}`
     }),
-    [attachments, runtimeId, storedSessionId, view.$messages]
+    [
+      attachments,
+      ownerRoute?.connectionId,
+      ownerRoute?.profile,
+      ownerRoute?.targetProfile,
+      runtimeId,
+      storedSessionId,
+      view.$messages
+    ]
   )
 
   // Tile actions must keep the persisted owner route. The ambient gateway hook
@@ -330,7 +341,6 @@ function TileChat({
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
           onAttachPastedText={composer.attachPastedText}
-          onAttachPrCommentUrl={composer.attachPrCommentUrl}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}

@@ -9,11 +9,16 @@ import os
 import platform
 import shutil
 import subprocess
+import tempfile
+import time
 import urllib.request
 import zipfile
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from hermes_platform.host import facts
 
 
 logger = logging.getLogger(__name__)
@@ -65,9 +70,10 @@ def runtimes_root() -> Path:
 def manifest_verified(manifest: Path) -> bool:
     """True when an install manifest records a verified_version (missing/damaged -> False)."""
     try:
-        return bool(json.loads(manifest.read_text(encoding="utf-8")).get("verified_version"))
+        data = json.loads(manifest.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return False
+    return isinstance(data, dict) and bool(data.get("verified_version"))
 
 
 def _release_number(tag: str) -> int:
@@ -88,16 +94,10 @@ def installed_tags() -> list[str]:
 
 
 def _host_os_arch() -> tuple[str, str]:
-    """(os, arch) normalized to release-asset vocabulary. PITFALL: PROCESSOR_ARCHITECTURE lies
-    under x64 emulation on ARM64 Windows, and platform.machine() reads the same env on some
-    Pythons — so on Windows prefer PROCESSOR_IDENTIFIER's text when present."""
+    """Return the host OS and architecture in release-asset vocabulary."""
     system = platform.system().lower()
     os_name = {"windows": "win", "darwin": "macos", "linux": "ubuntu"}.get(system, system)
-    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
-    if os_name == "win":
-        ident = os.environ.get("PROCESSOR_IDENTIFIER", "").lower()
-        if "armv8" in ident or "arm " in ident:
-            arch = "arm64"
+    arch = "arm64" if facts.native_arch() == "arm64" else "x64"
     return os_name, arch
 
 
@@ -180,24 +180,66 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# How long a finished download may wait for another process to let go of it before the
+# download is reported as failed.
+_RELEASE_WAIT_SECONDS = 60.0
+
+
+def replace_when_released(tmp: Path, dest: Path, *, timeout: float = _RELEASE_WAIT_SECONDS) -> None:
+    """Rename a finished download into place, waiting out a transient hold on the file.
+
+    On Windows a file whose last write handle just closed is often still open to an antivirus
+    or indexing scan, and renaming it fails with a permission error until the scan lets go —
+    for a multi-gigabyte model that can take many seconds. ``os.replace`` is retried through
+    that window; it never falls back to copying (``shutil.move`` does, which duplicates the whole
+    file and then reports the leftover's failed delete as the download's failure). A hold that
+    outlasts the window raises a plain-language error.
+    """
+    deadline = time.monotonic() + timeout
+    delay = 0.1
+    while True:
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"The download finished, but another program (usually an antivirus scan) kept "
+                    f"{tmp.name} open and it could not be renamed into place. Please try again.") from exc
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
+
+
 def _download(url: str, dest: Path,
               progress: "Callable[[int, int], None] | None" = None) -> None:
     """Stream url -> dest. ``progress(done_bytes, total_bytes)`` ticks per chunk (total 0 when
     the server sends no Content-Length) — a several-hundred-MB archive must never look hung."""
     logger.info("downloading %s", url)
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        while True:
-            chunk = r.read(1 << 20)
-            if not chunk:
-                break
-            f.write(chunk)
-            done += len(chunk)
-            if progress is not None:
-                progress(done, total)
-    tmp.replace(dest)
+    staging = tempfile.NamedTemporaryFile(
+        mode="wb", dir=dest.parent, prefix=f"{dest.name}.", suffix=".part", delete=False)
+    tmp = Path(staging.name)
+    try:
+        with staging as f, urllib.request.urlopen(url, timeout=120) as r:
+            length = r.headers.get("Content-Length")
+            total = int(length) if length is not None else 0
+            done = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if progress is not None:
+                    progress(done, total)
+            # Chunked reads can return EOF without raising IncompleteRead.
+            if length is not None and done != total:
+                raise BinaryResolutionError(
+                    f"incomplete download for {dest.name}: expected {total} bytes, got {done}")
+        replace_when_released(tmp, dest)
+    finally:
+        # Best effort: a leftover that cannot be removed must not hide the error that left it.
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def _extract(archive: Path, dest: Path,

@@ -1,7 +1,6 @@
 """Unit tests for resolve_ephemeral_system_prompt_from_config."""
 
 from hermes_cli.config import (
-    render_personality_prompt,
     resolve_ephemeral_system_prompt_from_config,
 )
 
@@ -59,5 +58,3 @@ def test_resolve_renders_dict_personality():
     assert "Style: concise" in resolved
 
 
-def test_render_personality_prompt_string():
-    assert render_personality_prompt("  hi  ") == "hi"

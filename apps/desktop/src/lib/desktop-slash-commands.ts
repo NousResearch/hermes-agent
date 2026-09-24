@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n/runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
@@ -66,6 +67,7 @@ export type DesktopActionId =
   | 'new'
   | 'pet'
   | 'profile'
+  | 'reasoning'
   | 'skin'
   | 'stop'
   | 'title'
@@ -189,6 +191,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
   { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
   {
+    name: '/reasoning',
+    description: 'Reasoning effort or display [<level> [--global]|show|hide|full|clamp]',
+    surface: action('reasoning'),
+    argumentMode: 'options'
+  },
+  {
     name: '/wake',
     description: 'Control the desktop wake-word listener [on|off|status]',
     surface: action('wake'),
@@ -291,7 +299,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
  * the JSON drifts from either side, so the Python registry stays the single
  * place a command's desktop disposition is authored.
  */
-const REGISTRY_DESKTOP_SURFACE: Readonly<Record<string, string>> = desktopSlashRegistry
+const REGISTRY_DESKTOP_SURFACE: Readonly<Record<string, string | null>> = desktopSlashRegistry
 
 /**
  * Commands the Python registry has never heard of, so they cannot ride the
@@ -311,26 +319,50 @@ export const TS_ONLY_NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readon
 
 const LOCAL_SPEC_NAMES = new Set(DESKTOP_COMMAND_SPECS.flatMap(spec => [spec.name, ...(spec.aliases ?? [])]))
 
-/** Registry rows with a real unavailability reason. `hidden` (e.g. `/model`) is
- *  a popover flag on an executable command and is read from the live catalog
- *  by `specFromCatalog`; a local spec always wins over the dump. */
-function registryUnavailableSpecs(): DesktopCommandSpec[] {
+/** Registry rows the local table doesn't already curate. A row with a real
+ *  unavailability reason blocks the command; a `null` row is an OFFERED
+ *  built-in (`/context`, `/usage`, …) and becomes a plain `exec` spec, so the
+ *  desktop recognizes every registry command offline — otherwise, before the
+ *  first `commands.catalog` round-trip (or against an older gateway whose
+ *  `complete.slash` rows carry no `kind`), `/context` read as a skill: Skills
+ *  group in the popover, skill chip on paste, extension dispatch (#116159).
+ *  `hidden` (e.g. `/model`) is a popover flag on an executable command and is
+ *  read from the live catalog by `specFromCatalog`; a local spec always wins
+ *  over the dump. */
+function registryDerivedSpecs(): DesktopCommandSpec[] {
   return Object.entries(REGISTRY_DESKTOP_SURFACE).flatMap(([name, value]) => {
+    if (LOCAL_SPEC_NAMES.has(name)) {
+      return []
+    }
+
+    if (value === null) {
+      return [{ name, surface: exec() }]
+    }
+
     const reason = asUnavailableReason(value)
 
-    return reason && !LOCAL_SPEC_NAMES.has(name) ? [{ name, surface: unavailable(reason) }] : []
+    return reason ? [{ name, surface: unavailable(reason) }] : []
   })
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [
   ...DESKTOP_COMMAND_SPECS,
-  ...registryUnavailableSpecs(),
+  ...registryDerivedSpecs(),
   ...(Object.entries(TS_ONLY_NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
     ([reason, names]) => names.map(name => ({ name, surface: unavailable(reason) }))
   )
 ]
 
 const SPEC_BY_NAME = new Map<string, DesktopCommandSpec>(ALL_SPECS.map(spec => [spec.name, spec]))
+
+/** Names whose only local spec is the dump's offline `exec` placeholder. The
+ *  live catalog knows more about these (argument mode, `hidden`), so it wins
+ *  once it has answered; the placeholder only covers the cold gap. */
+const REGISTRY_OFFERED_NAMES = new Set(
+  Object.entries(REGISTRY_DESKTOP_SURFACE).flatMap(([name, value]) =>
+    value === null && !LOCAL_SPEC_NAMES.has(name) ? [name] : []
+  )
+)
 
 const ALIAS_TO_CANONICAL = new Map<string, string>(
   ALL_SPECS.flatMap(spec => (spec.aliases ?? []).map(alias => [alias, spec.name] as const))
@@ -457,7 +489,14 @@ export function canonicalDesktopSlashCommand(command: string): string {
 
 /** Resolve a command (or alias) to its desktop spec, or null for unknown/extension commands. */
 export function resolveDesktopCommand(command: string): DesktopCommandSpec | null {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command)) ?? specFromCatalog(command)
+  const canonical = canonicalDesktopSlashCommand(command)
+  const local = SPEC_BY_NAME.get(canonical)
+
+  if (local && REGISTRY_OFFERED_NAMES.has(canonical)) {
+    return specFromCatalog(command) ?? local
+  }
+
+  return local ?? specFromCatalog(command)
 }
 
 function isKnownHermesSlashCommand(command: string): boolean {
@@ -573,7 +612,19 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+  const canonical = canonicalDesktopSlashCommand(command)
+  const key = `composer.commandDescs.${canonical}`
+  const translated = translateNow(key)
+  const description = translated !== key ? translated : SPEC_BY_NAME.get(canonical)?.description
+
+  if (!description) {
+    return fallback
+  }
+
+  // Keep backend-owned flags and placeholders verbatim when replacing prose.
+  const usage = fallback.match(/\s+\(usage:\s+(.+)\)$/s)?.[0] ?? ''
+
+  return `${description}${usage}`
 }
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {

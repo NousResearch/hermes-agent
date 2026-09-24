@@ -21,6 +21,7 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "billing_unverified": ("The model provider reports no credit left", "Top up the account or switch with /model."),
     "rate_limit": ("The model provider is rate-limiting requests", "Wait a moment, then /retry."),
     "upstream_rate_limit": ("The model provider is rate-limiting requests", "Wait a moment, then /retry."),
+    "upstream_blocked": ("A firewall/CDN in front of the model provider blocked the request", "Set a User-Agent via the provider's extra_headers, or switch with /model."),
     "overloaded": ("The model provider is overloaded", "Wait a moment, then /retry."),
     "server_error": ("The model provider had an internal error", "Wait a moment, then /retry."),
     "timeout": ("The model provider did not answer in time", "Try /retry; if it keeps happening, switch with /model."),
@@ -98,6 +99,14 @@ def agent_init_failed_message(exc: Any) -> str:
 AGENT_STILL_STARTING = (
     "Hermes is still starting this session (loading tools), so this command could not run yet. "
     "Wait for the status bar to show ready and try again.")
+
+# A deferred build that finished WITHOUT attaching an agent (its session record was replaced or
+# closed while it ran) leaves ``agent_ready`` set and ``agent`` None; this is the recorded cause.
+AGENT_BUILD_ABANDONED = "agent build aborted: the session record was replaced before the build finished"
+# Turn refusal when the record still has no agent at admission time (reason unknown).
+AGENT_MISSING_FOR_TURN = (
+    "Hermes could not start the assistant for this session, so your message was not run. "
+    "Reopen the session (or start a new one with /new) and send it again.")
 
 
 def resume_failed_message(exc: Any) -> str:

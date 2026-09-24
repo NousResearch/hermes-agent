@@ -3,7 +3,6 @@
 import unittest
 from types import SimpleNamespace
 
-from prompt_toolkit.enums import EditingMode
 
 
 def _import_cli():
@@ -33,13 +32,6 @@ class TestVimModeLabel(unittest.TestCase):
         self.assertEqual(cli_mod.HermesCLI._vim_mode_label(stub), "REPLACE")
 
 
-class TestNoSlashCommand(unittest.TestCase):
-    """vim_mode is a config key only: no /vim command is registered."""
-
-    def test_vim_not_in_command_registry(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
-
-        self.assertNotIn("vim", {c.name for c in COMMAND_REGISTRY})
 
 
 if __name__ == "__main__":

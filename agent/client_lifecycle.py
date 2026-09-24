@@ -77,16 +77,13 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
         is_anthropic = fb_provider == "anthropic"
-        effective_key = credential or (resolve_anthropic_token() if is_anthropic else None) or ""
+        effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
-        agent._is_anthropic_oauth = (
-            _is_oauth_token(effective_key)
-            if is_anthropic and isinstance(effective_key, str) else False
-        )
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
     agent.api_key = credential
@@ -123,7 +120,17 @@ class ClientLifecycleMixin:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
+        def forget_file_state() -> None:
+            # File tools key their read stamps / writer claims by the per-turn task_id (cron:
+            # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
+            # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
+            from tools.file_tools import clear_file_ops_cache
+            for owner in getattr(self, "_process_owner_task_ids", ()):
+                if owner and owner != task_id:
+                    clear_file_ops_cache(owner)
+
+        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+                     release_computer_use, forget_file_state):
             _quietly(step)
 
     def _client_log_context(self) -> str:
@@ -409,6 +416,10 @@ class ClientLifecycleMixin:
             if cache["client"] is client:
                 cache["poisoned"] = True
         try:
+            # Non-HTTP providers cancel without closing owner-thread file descriptors.
+            if callable(getattr(type(client), "cancel", None)):
+                client.cancel()
+                return
             shutdown_count = self._force_close_tcp_sockets(client)
             # Zero sockets shut down means the worker stays blocked — WARN, not success.
             # tcp_force_closed=0 means the stranger-thread abort found no sockets to shut down — the worker
@@ -482,9 +493,9 @@ class ClientLifecycleMixin:
         return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
-        """OAuth flag only on native Anthropic; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import _is_oauth_token
-        return _is_oauth_token(token) if self.provider == "anthropic" else False
+        """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
+        from agent.anthropic_credentials import anthropic_route_is_oauth
+        return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
@@ -861,15 +872,24 @@ class ClientLifecycleMixin:
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
         # and Azure use static keys — a refresh would pick up the ~/.claude OAuth token and break auth.
+        anthropic_base_url = getattr(self, "_anthropic_base_url", "") or ""
         if (
             self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key")
-            or self.provider != "anthropic"
-            or base_url_host_matches(getattr(self, "_anthropic_base_url", "") or "", "azure.com")
+            or self.provider != "anthropic" or base_url_host_matches(anthropic_base_url, "azure.com")
         ):
+            return False
+        # Off the official hosts (a /anthropic proxy the resolver accepts, or a URL-bearing alias,
+        # #28660) rotate only a credential the endpoint already holds: swapping a custom key for
+        # ANTHROPIC_API_KEY / the OAuth token would leak it (#17829). Hostname match, not substring,
+        # so ``proxy.example/anthropic.com`` stays foreign.
+        official_host = not anthropic_base_url or any(
+            base_url_host_matches(anthropic_base_url, host) for host in ("anthropic.com", "claude.com"))
+        current_key = str(self._anthropic_api_key or "")
+        if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token()
+            new_token = resolve_anthropic_token(model=self.model)
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False

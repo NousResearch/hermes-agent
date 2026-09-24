@@ -250,3 +250,46 @@ def decide_acceptance(
         )
     return Decision(ALLOW, f"assigned by {authorizer or 'an operator'}, a person rather than an agent",
                     rule="operator-directed")
+
+
+# -- file access -------------------------------------------------------------
+#
+# The runtime's file tools can read and write anywhere its OS user can, and its own guard
+# says so: "defense-in-depth, NOT a security boundary" (agent/file_safety.py). It keeps an
+# agent out of credential files, not out of *other agents'* conversation history, the
+# shared board, the audit log — or its own compiled policy, which a write_file would
+# replace. Found on a live run: a worker searching for refund data listed every state.db
+# on the host. So file tools are held to an allow-list: the task's workspace, read and
+# write; the agent's own profile, read only; nothing else.
+
+#: Tool -> whether it writes. A tool not listed here is not a file tool.
+FILE_TOOLS = {"read_file": False, "search_files": False, "write_file": True, "patch": True}
+
+
+def _under(path: str, root: str) -> bool:
+    root = root.rstrip("/") or "/"
+    return path == root or path.startswith(root + "/")
+
+
+def decide_paths(
+    tool: str,
+    paths: "list[str]",
+    *,
+    writable_roots: "list[str]",
+    readable_roots: "list[str]",
+) -> Decision:
+    """May ``tool`` touch every one of ``paths``? Paths and roots arrive fully resolved."""
+    writes = FILE_TOOLS.get(tool, False)
+    allowed = list(writable_roots) + ([] if writes else list(readable_roots))
+    for path in paths:
+        if not any(_under(path, root) for root in allowed if root):
+            where = "the task's workspace" + ("" if writes else " or this agent's own profile")
+            return Decision(
+                DENY,
+                f"{tool} may only {'write' if writes else 'read'} inside {where}; {path} is "
+                "outside it. Work on copies inside the workspace, or use the knowledge tool "
+                "for documents",
+                tool=tool,
+                rule="file-outside-scope",
+            )
+    return Decision(ALLOW, f"{tool} stays inside its scope", tool=tool, rule="file-in-scope")

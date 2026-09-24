@@ -448,6 +448,15 @@ def test_the_supervised_gateway_is_told_to_come_up_on_a_fresh_volume():
     )
 
 
+def test_workers_may_write_their_task_workspaces():
+    """The image sets HERMES_WRITE_SAFE_ROOT=/opt/data, its own default home. This deployment
+    moves the home to the state volume, so without overriding the root every file write a
+    worker made — into its own task workspace included — was refused by the runtime."""
+    body = _user_data()
+    worker = body[body.index("nova-worker.service"):]
+    assert "HERMES_WRITE_SAFE_ROOT=${state_mount}/home/kanban/workspaces" in worker
+
+
 def test_no_standalone_dispatcher_races_the_gateways():
     """`hermes kanban daemon` is deprecated precisely because two dispatchers double the
     reclaim frequency and race for claims on one kanban.db."""

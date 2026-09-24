@@ -31,13 +31,13 @@ from typing import Any, Dict, Optional
 
 try:  # installed layout: the copied decision module sits beside this file
     from ._decide import (
-        ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, REFUSED_TASK_TOOLS, REQUIRE_APPROVAL,
-        Decision, decide, decide_acceptance, decide_assignment,
+        ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, FILE_TOOLS, REFUSED_TASK_TOOLS,
+        REQUIRE_APPROVAL, Decision, decide, decide_acceptance, decide_assignment, decide_paths,
     )
 except ImportError:  # in-tree layout, for tests that import this module directly
     from nova.policy.decide import (
-        ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, REFUSED_TASK_TOOLS, REQUIRE_APPROVAL,
-        Decision, decide, decide_acceptance, decide_assignment,
+        ALLOW, ASSIGNEE_ARG, ASSIGNING_TOOL, DENY, FILE_TOOLS, REFUSED_TASK_TOOLS,
+        REQUIRE_APPROVAL, Decision, decide, decide_acceptance, decide_assignment, decide_paths,
     )
 
 #: Written beside the profile's configuration by the runtime adapter.
@@ -165,6 +165,70 @@ def _acceptance(policy: Dict[str, Any]) -> Optional[Decision]:
     return decision
 
 
+#: V4A patch headers name the files a ``patch`` in patch mode touches.
+_PATCH_HEADER = re.compile(r"^\*\*\* (?:Update|Add|Delete|Move) File: (.+)$", re.MULTILINE)
+
+
+def _absolute_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    return os.path.realpath(value) if value and os.path.isabs(value) else ""
+
+
+def _file_scope() -> tuple[list[str], list[str], str]:
+    """``(writable roots, readable roots, base for relative paths)``, all resolved.
+
+    Writable: the task's workspace (``HERMES_KANBAN_WORKSPACE``, which the dispatcher also
+    makes the terminal cwd). Readable in addition: this agent's own profile. Outside a task
+    — a chat session — there is no workspace, so nothing is writable. The profiles
+    directory is never writable, workspace or not: the compiled policy and this plugin
+    live there, and an agent that could write them could rewrite its own rules.
+    """
+    workspace = _absolute_env("HERMES_KANBAN_WORKSPACE")
+    profile = str(Path(__file__).resolve().parents[2])
+    profiles = str(Path(__file__).resolve().parents[3])
+    writable = [workspace] if workspace and not (workspace + "/").startswith(profiles + "/") else []
+    readable = [profile]
+    # The task's own attachments, which a worker reads by absolute path.
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if task_id and _PROFILE_NAME.match(task_id):
+        roots = [_absolute_env("HERMES_KANBAN_ATTACHMENTS_ROOT")]
+        board_dir = os.path.dirname(_absolute_env("HERMES_KANBAN_DB"))
+        if board_dir:
+            roots += [os.path.join(board_dir, "kanban", "attachments"), os.path.join(board_dir, "attachments")]
+        readable += [os.path.join(root, task_id) for root in roots if root]
+    base = workspace or _absolute_env("TERMINAL_CWD") or os.getcwd()
+    return writable, readable, base
+
+
+def _paths_of(tool_name: str, args: Dict[str, Any], base: str) -> list[str]:
+    raw = [args.get("path")]
+    if tool_name == "search_files" and not args.get("path"):
+        raw = ["."]  # the tool's own default: the working directory
+    if tool_name == "patch" and isinstance(args.get("patch"), str):
+        for named in _PATCH_HEADER.findall(args["patch"]):
+            # "*** Move File: a -> b" names two files; both must be in scope.
+            raw.extend(part.strip() for part in named.split(" -> "))
+    resolved = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        path = os.path.expanduser(item.strip())
+        if not os.path.isabs(path):
+            path = os.path.join(base, path)
+        resolved.append(os.path.realpath(path))
+    return resolved
+
+
+def _file_decision(tool_name: str, args: Dict[str, Any]) -> Optional[Decision]:
+    if tool_name not in FILE_TOOLS:
+        return None
+    writable, readable, base = _file_scope()
+    return decide_paths(
+        tool_name, _paths_of(tool_name, args or {}, base),
+        writable_roots=writable, readable_roots=readable,
+    )
+
+
 def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
     """Append a governance record for a refusal or an escalation.
 
@@ -236,6 +300,10 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, **
             assignment = decide_assignment(policy, (args or {}).get(ASSIGNEE_ARG))
             if assignment.effect == DENY:
                 decision = assignment
+        if decision.effect in (ALLOW, REQUIRE_APPROVAL):
+            scoped = _file_decision(tool_name, args or {})
+            if scoped is not None and scoped.effect == DENY:
+                decision = scoped
     except Exception as exc:  # noqa: BLE001 — a policy bug must never permit a call
         return {
             "action": "block",

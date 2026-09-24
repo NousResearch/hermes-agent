@@ -131,6 +131,7 @@ ExecStartPre=-/usr/bin/docker rm -f nova-worker
 ExecStart=/usr/bin/docker run --rm --name nova-worker \
   --env-file /etc/nova.env \
   --env HERMES_HOME=${state_mount}/home \
+  --env HERMES_WRITE_SAFE_ROOT=${state_mount}/home/kanban/workspaces \
   --env HERMES_UID=10001 \
   --env HERMES_GATEWAY_BOOTSTRAP_STATE=running \
   --env AWS_REGION=${region} \

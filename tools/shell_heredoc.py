@@ -67,7 +67,7 @@ def _parse_heredoc_operator(command: str, index: int):
         return None
     delimiter: list[str] = []
     quoted = False
-    while cursor < len(command) and not (command[cursor].isspace() or command[cursor] in ";&|<>()"):
+    while cursor < len(command) and not (command[cursor] in " \t\n" or command[cursor] in ";&|<>()"):
         char = command[cursor]
         if char == "\\":  # backslash-escaped char: quoted, literal
             if cursor + 1 >= len(command) or command[cursor + 1] in "\r\n":
@@ -135,7 +135,7 @@ def _scan_heredoc_command_unit(command: str, start: int):
         elif char in "'\"`":
             quote = char
             cursor += 1
-        elif char == "#" and (cursor == start or command[cursor - 1].isspace()
+        elif char == "#" and (cursor == start or command[cursor - 1] in " \t\n"
                               or command[cursor - 1] in ";&|()"):
             comment = True
             cursor += 1

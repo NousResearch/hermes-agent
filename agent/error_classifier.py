@@ -1400,8 +1400,19 @@ def _headers_of(exc: Any) -> Any:
 
 
 def _extract_status_code(error: Exception) -> Optional[int]:
-    """HTTP status code from the error or its cause chain."""
-    return _from_cause_chain(error, _status_of, None)
+    """HTTP status code from the error, its cause chain, or an SSE error body.
+
+    OpenAI-compatible relays can return an HTTP-200 stream whose terminal
+    error payload carries the upstream HTTP status as ``error.code``.  The
+    SDK exposes that payload as a status-less APIError, so preserve a native
+    status attribute when present and otherwise recover only a numeric HTTP
+    code from the structured body.
+    """
+    status = _from_cause_chain(error, _status_of, None)
+    if status is not None:
+        return status
+    code = _error_obj(_extract_error_body(error)).get("code")
+    return code if isinstance(code, int) and not isinstance(code, bool) and 100 <= code < 600 else None
 
 
 def _extract_error_body(error: Exception) -> dict:

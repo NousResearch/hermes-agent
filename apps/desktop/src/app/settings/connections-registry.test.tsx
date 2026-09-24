@@ -109,6 +109,37 @@ describe('ConnectionsRegistrySection', () => {
     })
   })
 
+  it('signs a hand-registered Cloud connection in and saves it as oauth (#89529)', async () => {
+    const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ connected: true, ok: true })
+    Object.assign(window.hermesDesktop!, { oauthLoginConnectionConfig })
+
+    render(<ConnectionsRegistrySection />)
+
+    await screen.findByText('Homelab')
+    fireEvent.click(screen.getByText('Add connection'))
+    fireEvent.click(screen.getByRole('button', { name: 'Hermes Cloud' }))
+    fireEvent.change(screen.getByPlaceholderText('Homelab'), { target: { value: 'Team cloud' } })
+    fireEvent.change(screen.getByPlaceholderText('http://homelab.lan:9119'), {
+      target: { value: 'https://team.hermes.cloud' }
+    })
+
+    // Cloud never takes a pasted token: no token box, a sign-in button instead.
+    expect(screen.queryByPlaceholderText('Paste session token')).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://team.hermes.cloud'))
+
+    fireEvent.click(screen.getByText('Save connection').closest('button')!)
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      authMode: 'oauth',
+      kind: 'cloud',
+      label: 'Team cloud',
+      url: 'https://team.hermes.cloud'
+    })
+    expect(save.mock.calls[0][0].token).toBeUndefined()
+  })
+
   it('saves a custom remote Hermes path for SSH connections', async () => {
     render(<ConnectionsRegistrySection />)
 

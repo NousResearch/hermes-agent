@@ -769,3 +769,38 @@ class TestSafeStderr:
 
 
 
+class TestLineBufferPipedStdout:
+    """A piped stdout is line-buffered so headless log streams track the
+    agent loop incrementally (#92281); a TTY stdout is left alone."""
+
+    def _fake_stdout(self, isatty: bool):
+        from unittest.mock import MagicMock
+
+        stream = MagicMock()
+        stream.isatty.return_value = isatty
+        stream.reconfigure = MagicMock()
+        return stream
+
+    def test_tty_none_or_reconfigure_less_stdout_left_alone(self, monkeypatch):
+        from types import SimpleNamespace
+
+        tty = self._fake_stdout(isatty=True)
+        monkeypatch.setattr(sys, "stdout", tty)
+        hermes_logging._line_buffer_piped_stdout()
+        tty.reconfigure.assert_not_called()
+
+        monkeypatch.setattr(sys, "stdout", None)
+        hermes_logging._line_buffer_piped_stdout()  # must not raise
+        # A stream without reconfigure() (e.g. a print-redirect shim).
+        monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: False))
+        hermes_logging._line_buffer_piped_stdout()
+
+    def test_setup_logging_applies_it_to_piped_stdout(self, tmp_path, monkeypatch):
+        stream = self._fake_stdout(isatty=False)
+        monkeypatch.setattr(sys, "stdout", stream)
+        hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
+        # setup_logging runs per AIAgent build: a second call must not re-flush/reconfigure.
+        hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
+        stream.reconfigure.assert_called_once_with(line_buffering=True)
+
+

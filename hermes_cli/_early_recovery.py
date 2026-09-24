@@ -732,9 +732,9 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         # updater inside the marker-to-install window — never race it. A dead owner MUST be
         # recovered even when this launch is itself `hermes update`: CLI and Desktop retries keep
         # that argv, and skipping solely on argv recreates the self-lock loop.
-        # Bounded retries: a persistently failing install must not hammer every launch, so attempts past the
-        # ceiling are left for main.py's post-import recovery path (which can safely probe-import after this
-        # process already holds whatever extensions it needs). See #83569.
+        # Bounded retries: a persistently failing install must not hammer every launch. The budget
+        # is shared with main.py's post-import recovery, which past it prints the manual command
+        # instead of reinstalling. See #83569, #81594.
         if core_marker.exists():
             if _marker_owner_is_live(core_marker):
                 return
@@ -771,10 +771,12 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         pass  # Never block launch — the import of main.py will surface the truth.
 
 
-# Cap on automatic early-pass install retries: a persistently failing install (network down) must
-# not reinstall-hammer every launch. Past this the marker is left to main.py's post-import recovery,
-# which presents the manual command. The counter lives in the marker's JSON body.
-_EARLY_CORE_INSTALL_MAX_ATTEMPTS = 3
+# Cap on automatic core-install retries, shared by this early pass and main.py's post-import
+# recovery: a persistently failing install (network down, a .pyd another Hermes process maps) must
+# not reinstall-hammer every launch. Past it the post-import path presents the manual command. The
+# counter lives in the marker's JSON body; an update that reaches the dependency sync rewrites
+# the marker, re-arming it.
+_CORE_INSTALL_MAX_ATTEMPTS = 3
 
 
 def _claim_recovery_lock(root: Path) -> bool:
@@ -822,10 +824,9 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
 
         # Read attempts before claiming the lock so a persistently-failing install stops early.
         attempts = _read_marker_attempts(core_marker)
-        if attempts >= _EARLY_CORE_INSTALL_MAX_ATTEMPTS:
+        if attempts >= _CORE_INSTALL_MAX_ATTEMPTS:
             print("⚠ Pending interrupted-update install has already failed "
-                  f"{attempts} times in the early pass — leaving it for the "
-                  "post-import recovery path.", file=sys.stderr)
+                  f"{attempts} times — skipping the automatic retry.", file=sys.stderr)
             return False
         if not _claim_recovery_lock(root):
             return False
@@ -837,9 +838,10 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
         except Exception as exc:
             new_attempts = ir.bump_marker_attempts(core_marker)
             print(f"  ✗ Early interrupted-install completion failed (attempt "
-                  f"{new_attempts}/{_EARLY_CORE_INSTALL_MAX_ATTEMPTS}): {exc}", file=sys.stderr)
-            print("  The next launch will retry; hermes will keep working from "
-                  "the current venv in the meantime.", file=sys.stderr)
+                  f"{new_attempts}/{_CORE_INSTALL_MAX_ATTEMPTS}): {exc}", file=sys.stderr)
+            if new_attempts < _CORE_INSTALL_MAX_ATTEMPTS:
+                print("  The next launch will retry; hermes will keep working from "
+                      "the current venv in the meantime.", file=sys.stderr)
             return False
         finally:
             _release_recovery_lock(root)

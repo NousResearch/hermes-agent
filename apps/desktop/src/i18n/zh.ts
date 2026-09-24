@@ -379,6 +379,7 @@ export const zh = defineLocale({
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',
       'composer.voice': '开始 / 停止语音对话',
+      'composer.dictate': '开始 / 停止听写',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
@@ -522,6 +523,7 @@ export const zh = defineLocale({
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
+      sessions: '会话',
       about: '关于',
       billing: '账单',
       notifications: '通知',
@@ -853,8 +855,6 @@ export const zh = defineLocale({
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
         roamTitle: '漫游',
         roamDesc: '空闲时让宠物自己在窗口内四处走动。',
-        on: '开启',
-        off: '关闭',
         chooseTitle: '选择宠物',
         chooseDesc: '选择后会自动安装（如需）并设为当前宠物。',
         searchPlaceholder: '搜索宠物…',
@@ -946,7 +946,6 @@ export const zh = defineLocale({
         maxSnapshots: '检查点上限'
       },
       voice: {
-        recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
         autoTts: '朗读回复',
         voiceChatMode: '语音聊天模式',
@@ -1301,11 +1300,17 @@ export const zh = defineLocale({
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
       disableF12Title: '禁用 F12 开发者工具',
       disableF12Desc: '阻止 F12 打开开发者工具。Ctrl+Shift+I（Mac 上为 Cmd+Opt+I）仍然可用。',
+      alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',
+      alwaysExternalLinksDesc:
+        '点击的每个链接都在系统浏览器中打开，而不是应用内浏览器。右键菜单中的“在应用内浏览器中打开”仍然可用。',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      voiceShortcutHintTitle: '语音录制快捷键',
+      voiceShortcutHintDesc:
+        '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
       showOptions: '显示选项'
     },
     hudModifier: {
@@ -1927,9 +1932,10 @@ export const zh = defineLocale({
         notice: {
           loggedOut: {
             title: '连接你的 Nous 账户',
-            message: '在 TUI 中运行 /portal，或打开 Nous 门户连接账户。',
-            action: '打开门户 ↗'
+            message: '登录你的 Nous 账户，即可在此查看余额、套餐和用量。',
+            action: '登录'
           },
+          openPortal: '打开门户 ↗',
           noCard: {
             title: '尚未添加支付方式',
             message: '添加银行卡后才能购买额度和使用自动充值。请在门户中添加。',
@@ -4311,6 +4317,11 @@ export const zh = defineLocale({
     remotePickerTitle: '选择远程文件夹',
     remotePickerDescription: '浏览已连接后端上的文件夹。',
     remotePickerSelect: '选择文件夹',
+    remotePickerNewFolder: '新建文件夹',
+    remotePickerFolderName: '文件夹名称',
+    remotePickerCreateFolder: '创建文件夹',
+    remotePickerInvalidFolderName: '请输入单个文件夹名称，不要包含斜杠。',
+    remotePickerCreateFolderFailed: error => `无法创建文件夹 (${error})。`,
     folderTip: cwd => cwd,
     openFolder: '打开文件夹',
     refreshTree: '刷新文件树',

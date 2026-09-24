@@ -830,6 +830,7 @@ export const de = defineLocale({
       keysSettings: 'Einstellungen',
       mcp: 'MCP',
       archivedChats: 'Archivierte Chats',
+      sessions: 'Sessions',
       about: 'Über',
       billing: 'Abrechnung',
       notifications: 'Benachrichtigungen',
@@ -1206,8 +1207,6 @@ export const de = defineLocale({
           'Adoptieren Sie ein animiertes Petdex-Maskottchen, das über der App schwebt und darauf reagiert, was Hermes gerade tut – es rennt, während Tools laufen, feiert bei Erfolg und schmollt bei Fehlern.',
         restartHint:
           'Haustiere erfordern einen kurzen Neustart – die laufende App wurde gestartet, bevor diese Funktion hinzugefügt wurde. Schließen Sie Hermes, öffnen Sie es erneut und kehren Sie dann hierher zurück.',
-        on: 'An',
-        off: 'Aus',
         scaleTitle: 'Größe',
         scaleDesc: 'Ändert die Größe des schwebenden Maskottchens. Wirkt überall sofort.',
         roamTitle: 'Herumstreifen',
@@ -1303,7 +1302,6 @@ export const de = defineLocale({
         maxSnapshots: 'Checkpoint-Limit'
       },
       voice: {
-        recordKey: 'Sprach-Tastenkürzel',
         maxRecordingSeconds: 'Maximale Aufnahmelänge',
         autoTts: 'Antworten vorlesen',
         voiceChatMode: 'Sprachchat-Modus',
@@ -2387,9 +2385,10 @@ export const de = defineLocale({
         notice: {
           loggedOut: {
             title: 'Nous-Konto verbinden',
-            message: 'Führen Sie /portal in der TUI aus oder öffnen Sie das Nous-Portal, um Ihr Konto zu verbinden.',
-            action: 'Portal öffnen ↗'
+            message: 'Melden Sie sich mit Ihrem Nous-Konto an, um hier Guthaben, Tarif und Nutzung zu sehen.',
+            action: 'Anmelden'
           },
+          openPortal: 'Portal öffnen ↗',
           noCard: {
             title: 'Keine Zahlungsmethode hinterlegt',
             message:
@@ -5061,6 +5060,11 @@ export const de = defineLocale({
     remotePickerTitle: 'Remote-Ordner wählen',
     remotePickerDescription: 'Ordner auf dem verbundenen Backend durchsuchen.',
     remotePickerSelect: 'Ordner auswählen',
+    remotePickerNewFolder: 'Neuer Ordner',
+    remotePickerFolderName: 'Ordnername',
+    remotePickerCreateFolder: 'Ordner erstellen',
+    remotePickerInvalidFolderName: 'Gib einen einzelnen Ordnernamen ohne Schrägstriche ein.',
+    remotePickerCreateFolderFailed: error => `Der Ordner konnte nicht erstellt werden (${error}).`,
     folderTip: cwd => cwd,
     openFolder: 'Ordner öffnen',
     refreshTree: 'Baum aktualisieren',

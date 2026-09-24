@@ -311,6 +311,7 @@ export const ar = defineLocale({
       'composer.focus': 'التركيز على المحرّر',
       'composer.modelPicker': 'فتح منتقي النموذج',
       'composer.voice': 'بدء / إيقاف المحادثة الصوتية',
+      'composer.dictate': 'بدء / إيقاف الإملاء',
       'view.toggleSidebar': 'تبديل الشريط الجانبي للجلسات',
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
@@ -437,6 +438,7 @@ export const ar = defineLocale({
       keysSettings: 'الإعدادات',
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
+      sessions: 'الجلسات',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -692,8 +694,6 @@ export const ar = defineLocale({
           'تبنَّ تعويذة petdex متحركة تطفو فوق التطبيق وتتفاعل مع ما يفعله Hermes — تجري أثناء تنفيذ الأدوات، وتحتفل عند النجاح، وتعبس عند الأخطاء.',
         restartHint:
           'تحتاج الحيوانات الأليفة إلى إعادة تشغيل سريعة — بدأ التطبيق العامل قبل إضافة هذه الميزة. أغلق Hermes وأعد فتحه، ثم ارجع إلى هنا.',
-        on: 'تشغيل',
-        off: 'إيقاف',
         scaleTitle: 'الحجم',
         scaleDesc: 'غيّر حجم التعويذة الطافية. يُطبّق في كل مكان فورا.',
         chooseTitle: 'اختر حيوانا أليفا',
@@ -762,7 +762,6 @@ export const ar = defineLocale({
       'browser.autoLocalForPrivateUrls': 'متصفح محلي للروابط الخاصة',
       'checkpoints.enabled': 'نقاط حفظ الملفات',
       'checkpoints.maxSnapshots': 'حد نقاط الحفظ',
-      'voice.recordKey': 'اختصار الصوت',
       'voice.maxRecordingSeconds': 'أقصى مدة للتسجيل',
       'voice.autoTts': 'قراءة الردود صوتياً',
       'stt.enabled': 'تحويل الكلام إلى نص',
@@ -908,7 +907,10 @@ export const ar = defineLocale({
       failedLoad: 'فشل تحميل الإعدادات',
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
-      invalidJson: 'JSON غير صالح'
+      invalidJson: 'JSON غير صالح',
+      voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
+      voiceShortcutHintDesc:
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -2858,6 +2860,11 @@ export const ar = defineLocale({
     remotePickerTitle: 'اختر مجلدا بعيدا',
     remotePickerDescription: 'استعرض المجلدات على الخادم الخلفي المتصل.',
     remotePickerSelect: 'تحديد المجلد',
+    remotePickerNewFolder: 'مجلد جديد',
+    remotePickerFolderName: 'اسم المجلد',
+    remotePickerCreateFolder: 'إنشاء المجلد',
+    remotePickerInvalidFolderName: 'أدخل اسم مجلد واحد بدون شرطات مائلة.',
+    remotePickerCreateFolderFailed: error => `تعذر إنشاء المجلد: ${error}`,
     folderTip: cwd => cwd,
     openFolder: 'فتح مجلد',
     refreshTree: 'تحديث الشجرة',

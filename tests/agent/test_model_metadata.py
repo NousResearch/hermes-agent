@@ -23,6 +23,7 @@ from agent.model_metadata import (
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
@@ -69,6 +70,17 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([stamped]) == (
             estimate_messages_tokens_rough([msg])
         )
+
+    def test_display_only_fields_do_not_change_estimate(self):
+        """An edit row's inline_diff rides display_metadata, which the request builder strips;
+        pricing it would compact early and break the prompt cache."""
+        wire = {"role": "tool", "tool_call_id": "call-1", "name": "write_file",
+                "content": '{"bytes_written": 18000}'}
+        rich = {**wire, "_row_id": 42, "display_kind": "tool_result",
+                "display_metadata": {"tool_result_metadata": {"inline_diff": "\x1b[32m+ line\x1b[0m\n" * 600}}}
+
+        assert estimate_messages_tokens_rough([rich]) == estimate_messages_tokens_rough([wire])
+        assert estimate_request_tokens_rough([rich]) == estimate_request_tokens_rough([wire])
 
     def test_message_with_list_content(self):
         """Vision messages with multimodal content arrays.

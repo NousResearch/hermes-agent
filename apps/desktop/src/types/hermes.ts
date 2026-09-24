@@ -1,5 +1,7 @@
 import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
 
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+
 export type StoredToolCallLabels = Record<string, ToolLabel[]>
 
 export interface ConfigFieldSchema {
@@ -505,6 +507,7 @@ export interface SessionCreateResponse {
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
+  messages_omitted?: boolean
   session_id: string
   stored_session_id?: string
 }
@@ -603,6 +606,7 @@ export type TimelineDisplayMetadata =
     }
   | { display_text: string }
   | { reactions: MessageReaction[] }
+  | { tool_result_metadata: ToolResultMetadata }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -835,6 +839,9 @@ export interface StarmapMemoryCard {
   timestamp?: null | number
   title: string
   body: string
+  /** Digest of the card's text, carried in its node id so an edit names this card and not
+   *  whatever now sits at its index. Absent on an imported or pre-fingerprint graph. */
+  fingerprint?: string
 }
 
 export interface StarmapGraph {

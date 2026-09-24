@@ -381,6 +381,7 @@ export const zhHant = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
+      sessions: '工作階段',
       about: '關於',
       billing: '帳單',
       notifications: '通知',
@@ -643,8 +644,6 @@ export const zhHant = defineLocale({
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
         roamTitle: '漫遊',
         roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
-        on: '開啟',
-        off: '關閉',
         chooseTitle: '選擇寵物',
         chooseDesc: '選擇後會自動安裝（如需）並設為目前寵物。',
         searchPlaceholder: '搜尋寵物…',
@@ -736,7 +735,6 @@ export const zhHant = defineLocale({
         maxSnapshots: '檢查點上限'
       },
       voice: {
-        recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
         autoTts: '朗讀回覆',
         voiceChatMode: '語音聊天模式',
@@ -1088,6 +1086,9 @@ export const zhHant = defineLocale({
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      voiceShortcutHintTitle: '語音錄製快捷鍵',
+      voiceShortcutHintDesc:
+        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
       showOptions: '顯示選項'
     },
     hudModifier: {
@@ -1574,9 +1575,10 @@ export const zhHant = defineLocale({
         notice: {
           loggedOut: {
             title: '連接你的 Nous 帳戶',
-            message: '在 TUI 中執行 /portal，或開啟 Nous 入口網站連接帳戶。',
-            action: '開啟入口網站 ↗'
+            message: '登入你的 Nous 帳戶，即可在此查看餘額、方案和用量。',
+            action: '登入'
           },
+          openPortal: '開啟入口網站 ↗',
           noCard: {
             title: '尚未新增付款方式',
             message: '新增銀行卡後才能購買額度和使用自動儲值。請在入口網站中新增。',
@@ -3555,6 +3557,11 @@ export const zhHant = defineLocale({
     remotePickerTitle: '選擇遠端資料夾',
     remotePickerDescription: '瀏覽已連線後端上的資料夾。',
     remotePickerSelect: '選擇資料夾',
+    remotePickerNewFolder: '新增資料夾',
+    remotePickerFolderName: '資料夾名稱',
+    remotePickerCreateFolder: '建立資料夾',
+    remotePickerInvalidFolderName: '請輸入單一資料夾名稱，不要包含斜線。',
+    remotePickerCreateFolderFailed: error => `無法建立資料夾 (${error})。`,
     folderTip: cwd => cwd,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',

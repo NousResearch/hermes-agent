@@ -723,5 +723,10 @@
     "path": "tools/bot_desktop/runtime.py",
     "symbol": "package_manager",
     "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "installable",
+    "kind": "bare_which"
   }
 ]

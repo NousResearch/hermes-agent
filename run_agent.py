@@ -137,7 +137,7 @@ from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
+from agent.api_error_summary import ApiErrorSummaryMixin, is_provider_stream_parse_error
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -299,6 +299,7 @@ class AIAgent(
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
         side_agent: bool = False, memory_manager=None,
+        tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -514,9 +515,7 @@ class AIAgent(
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """True for a malformed Anthropic event-stream frame (surfaced by the SDK as a plain ``ValueError``);
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
-        return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
-                and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
+        return getattr(self, "api_mode", None) == "anthropic_messages" and is_provider_stream_parse_error(error)
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")

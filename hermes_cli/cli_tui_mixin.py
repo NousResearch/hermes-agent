@@ -1933,6 +1933,11 @@ class CLITuiMixin:
         self._agent_running = False
         self._pending_input = queue.Queue()     # normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # messages typed while the agent is running
+        # Plugin injection queue (queue-safe host seam): external text lands here and is
+        # transferred to _pending_input by the process loop — busy messages are delivered
+        # at the next safe boundary and never cancel an active tool. See
+        # CLISessionMixin.inject_message.
+        self._injected_input = queue.Queue()
         # Seeded -q handoff: main() can't put directly into _pending_input (this reinit would
         # discard it), so the seeded first message rides in on an attribute and is enqueued here.
         _seed_msg = getattr(self, "_seeded_first_message", None)

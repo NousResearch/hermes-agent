@@ -31,6 +31,13 @@ class CLITuiRuntimeMixin:
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         while not self._should_exit:
             try:
+                # Transfer plugin injections to the live input queue — idle ones
+                # start a new turn, busy ones deliver at the next safe boundary.
+                while True:
+                    try:
+                        self._pending_input.put(self._injected_input.get_nowait())
+                    except queue.Empty:
+                        break
                 try:
                     user_input = self._pending_input.get(timeout=0.1)
                 except queue.Empty:

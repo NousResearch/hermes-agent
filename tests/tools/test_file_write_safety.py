@@ -498,6 +498,7 @@ class TestBomHandling:
         assert dst.read_bytes() == b"PRECIOUS DESTINATION\n"
         assert not (tmp_path / "new-src.txt").exists()
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX only: needs os.mkfifo and SIGALRM")
     def test_native_byte_exact_read_never_opens_a_non_regular_file(self, tmp_path: Path, monkeypatch):
         # The native fast path bypasses the backend timeout, so a blocking open there hangs the
         # thread with nothing to interrupt it. The shell path below has a timeout and is allowed

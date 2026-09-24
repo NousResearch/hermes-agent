@@ -1,0 +1,19 @@
+name: skill-retrieval
+repo: https://github.com/moonlight-lupin/agent-skills
+sha: 439c37d2b27bc9344ac07ea33ac19e841b5641c9
+subdir: plugins/skill-retrieval
+description: >-
+  BM25-based skill retrieval — injects top-K relevant skill descriptions per turn via a
+  pre_llm_call hook, replacing the full skill list in the system prompt. Token optimization
+  for large skill libraries. No API keys; runs locally, no network.
+maintainer: moonlight-lupin
+tier: community
+category: tools
+requires_hermes: ">=0.20.0"
+version: "0.2.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_llm_call
+  provides_middleware: []
+  requires_env: []

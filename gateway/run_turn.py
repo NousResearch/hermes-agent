@@ -27,7 +27,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
-    SessionSource, _session_key_namespace, build_channel_continuity_note,
+    SessionContext, SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
@@ -3886,21 +3886,32 @@ class GatewayTurnMixin:
         from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+        # The recursion runs in this task, where the OUTER turn's HERMES_SESSION_* binding —
+        # whoever's turn was live when the follow-up was queued — is still in effect. In a shared
+        # group/thread session the queued message can belong to a different member, so tools
+        # authorizing by HERMES_SESSION_USER_ID would decide for the wrong person (#121977).
+        # Re-bind from the follow-up's own source like the cold path (_hmwa_prepare_turn); the
+        # prompt is already built, so a minimal context carrying the env-facing fields is enough
+        # (build_session_context's connected/home lookups serve prompt rendering, not env).
+        followup_env_context = SessionContext(
+            source=next_source, connected_platforms=[], home_channels={})
+        followup_env_context.session_key = next_session_key
         # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
         # (the helper's own ``except Exception`` does not catch cancellation).
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
 
-            followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-                source=next_source, session_id=session_id, session_key=next_session_key,
-                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
-                persist_user_message=next_persist_message,
-                persist_user_display_kind=next_display_kind,
-                persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
-            )
+            with self._session_env_scope(followup_env_context):
+                followup_result = await self._run_agent(
+                    message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                    source=next_source, session_id=session_id, session_key=next_session_key,
+                    run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                    event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                    channel_prompt=next_channel_prompt, message_type=next_message_type,
+                    persist_user_message=next_persist_message,
+                    persist_user_display_kind=next_display_kind,
+                    persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
+                )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))

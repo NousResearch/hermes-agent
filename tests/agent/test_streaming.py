@@ -1290,7 +1290,8 @@ class TestAnthropicStreamCallbacks:
             {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
 
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert "old_tool" not in (response.choices[0].message.content or "")
+        # anthropic_messages partial stubs are Messages-shaped (#45908).
+        assert "old_tool" not in "".join(getattr(b, "text", "") for b in response.content)
         assert not any("old_tool" in t for t in emitted)
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")

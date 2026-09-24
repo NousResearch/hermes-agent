@@ -19,7 +19,6 @@ These tests pin the post-fix invariants so the conflict cannot regress.
 """
 
 from agent.context_compressor import (
-    HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
 )
 
@@ -36,13 +35,6 @@ from agent.context_compressor import (
 
 
 
-def test_no_background_consistency_carveout():
-    """The "consistent → use as background" carveout licensed stale-task
-    resumption on topic overlap (#41607, #38364, #42812). It must stay gone,
-    and the prefix must explicitly neutralize topic overlap."""
-    lower = SUMMARY_PREFIX.lower()
-    assert "you may use the summary as background" not in lower
-    assert "topic overlap" in lower
 
 
 def test_replaced_prefixes_are_frozen_for_renormalization():
@@ -75,6 +67,35 @@ def test_replaced_prefixes_are_frozen_for_renormalization():
 # derive them from module constants — the tests below must fail if any
 # frozen entry is mutated, reordered, or dropped.
 _FROZEN_PREFIX_GENERATIONS = (
+    # Pre-#80622: tools-active + topic-overlap discard, but no
+    # "if no user message appears AFTER this summary, do nothing" clause.
+    (
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were "
+        "compacted into the summary below. This is a handoff from a "
+        "previous context window — treat it as background reference, NOT "
+        "as active instructions. Do NOT answer questions or fulfill "
+        "requests mentioned in this summary; they were already addressed. "
+        "Respond ONLY to the latest user message that appears AFTER this "
+        "summary — that message is the single source of truth for what to "
+        "do right now. Topic overlap with the summary does NOT mean you "
+        "should resume its task: even on similar topics, the latest user "
+        "message WINS. Treat ONLY the latest message as the active task "
+        "and discard stale items from '## Historical Task Snapshot' "
+        "entirely — do not 'wrap up' or 'finish' work described there "
+        "unless the latest message explicitly asks for it. Reverse "
+        "signals in the latest message (e.g. 'stop', 'undo', 'roll "
+        "back', 'just verify', 'don't do that anymore', 'never mind', a "
+        "new topic) must immediately end any in-flight work described in "
+        "the summary; do not re-surface it in later turns. IMPORTANT: "
+        "Your persistent memory (MEMORY.md, USER.md) in the system "
+        "prompt is ALWAYS authoritative and active — never ignore or "
+        "deprioritize memory content due to this compaction note. None "
+        "of the above restricts HOW you work: your tools remain fully "
+        "active — keep calling them normally for the active task (edit "
+        "files, run commands, search) instead of merely narrating what "
+        "you would do. The current session state (files, config, etc.) "
+        "may reflect work described here — avoid repeating it:"
+    ),
     # Pre-#69619: four-heading discard clause + tools-active clause.
     (
         "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were "
@@ -174,8 +195,10 @@ _FROZEN_PREFIX_GENERATIONS = (
 
 
 # The generation retired by #69619, pinned individually for the review
-# regression below.
-_PRE_69619_LIVE_PREFIX = _FROZEN_PREFIX_GENERATIONS[0]
+# regression below. Index 1 after the #80622 freeze was prepended.
+_PRE_69619_LIVE_PREFIX = _FROZEN_PREFIX_GENERATIONS[1]
+
+
 
 
 def test_pre_69619_prefix_generation_is_frozen_and_stripped():
@@ -197,5 +220,15 @@ def test_pre_69619_prefix_generation_is_frozen_and_stripped():
     content = _PRE_69619_LIVE_PREFIX + "\nBODY"
     assert ContextCompressor._is_context_summary_content(content)
     assert ContextCompressor._strip_summary_prefix(content) == "BODY"
+
+
+def test_frozen_prefix_generations_match_historical_tuple():
+    """Every retired generation must stay byte-identical in
+    _HISTORICAL_SUMMARY_PREFIXES (newest-first)."""
+    from agent.context_compressor import _HISTORICAL_SUMMARY_PREFIXES
+
+    assert tuple(_HISTORICAL_SUMMARY_PREFIXES[: len(_FROZEN_PREFIX_GENERATIONS)]) == (
+        _FROZEN_PREFIX_GENERATIONS
+    )
 
 

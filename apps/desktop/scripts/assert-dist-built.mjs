@@ -11,9 +11,20 @@
 // inherits it. It fails loud and early instead of shipping a broken bundle.
 // See issues #39484 (renderer blank page) and #41327 / #39472 (dashboard 404).
 
-import { existsSync, statSync, readdirSync } from "fs"
+import { existsSync, readFileSync, statSync, readdirSync } from "fs"
+import { spawnSync } from "child_process"
 import { join, resolve } from "path"
 import { isMain } from "./utils.mjs"
+
+const ROUTER_CONTEXT_ERROR = "may be used only in the context of a"
+
+// @tanstack/react-query carries module-level React context (QueryClientContext).
+// The entry's QueryClientProvider and every lazy chunk's useQuery must share ONE
+// runtime instance; if a build ever emits a second copy, the provider's context
+// is invisible to the other copy and useQuery throws "No QueryClient set" — the
+// packaged app error-boundaries on launch (#95560). Same single-instance
+// invariant as the react-router check above, same failure class.
+const QUERY_CLIENT_CONTEXT_ERROR = "No QueryClient set, use QueryClientProvider to set one"
 
 // Pure check — returns { ok: true } or { ok: false, error: "..." }.
 // Kept side-effect-free so it can be unit tested without spawning a process.
@@ -41,6 +52,78 @@ export function checkDistBuilt(distDir) {
     return { ok: false, error: `dist/assets has no built JS bundle (expected vite output under ${assetsDir})` }
   }
 
+  const routerContextAssets = readdirSync(assetsDir)
+    .filter(name => name.endsWith(".js"))
+    .filter(name => readFileSync(join(assetsDir, name), "utf8").includes(ROUTER_CONTEXT_ERROR))
+
+  if (routerContextAssets.length > 1) {
+    return {
+      ok: false,
+      error: `react-router context invariant found in multiple JS assets: ${routerContextAssets.join(", ")}`
+    }
+  }
+
+  const queryClientContextAssets = readdirSync(assetsDir)
+    .filter(name => name.endsWith(".js"))
+    .filter(name => readFileSync(join(assetsDir, name), "utf8").includes(QUERY_CLIENT_CONTEXT_ERROR))
+
+  if (queryClientContextAssets.length > 1) {
+    return {
+      ok: false,
+      error:
+        `@tanstack/react-query context invariant found in multiple JS assets: ` +
+        `${queryClientContextAssets.join(", ")} — duplicate react-query runtimes make the ` +
+        `QueryClientProvider's context invisible to useQuery in other chunks (` +
+        `"No QueryClient set" on launch, #95560)`
+    }
+  }
+
+  // Parse-validate every emitted chunk as an ES module. Corrupted-silent-fail
+  // bundles (a dropped identifier token mid-file) produce invalid syntax that
+  // only explodes at module-evaluation time in Electron's renderer.
+  const chunkParse = verifyChunksParse(assetsDir)
+  if (!chunkParse.ok) {
+    return chunkParse
+  }
+
+  return { ok: true }
+}
+
+// Renderer chunks are emitted as ESM (`<script type="module">` in index.html).
+// A silent bundler failure can emit syntactically invalid chunks that parse fine
+// as CJS-ish text but throw on module evaluation in Electron — the app then
+// white-screens with `Uncaught SyntaxError` in the renderer console (observed
+// 2026-09: the update-produced bundle was missing a 10-byte identifier token,
+// `{$:n,}` vs `{categories:n,}`, leaving an invalid destructuring pattern).
+// Parse each emitted chunk as an ES module before packaging so a corrupted
+// build fails loudly and the update retry rebuilds instead of shipping it.
+function verifyChunksParse(assetsDir) {
+  const nodeBin = process.env.NODE ||
+    (process.execPath && process.execPath.endsWith("node") ? process.execPath : "node")
+  const chunks = readdirSync(assetsDir).filter(name => name.endsWith(".js"))
+  for (const name of chunks) {
+    const file = join(assetsDir, name)
+    const probe = spawnSync(nodeBin, ["--input-type=module", "--check"], {
+      input: readFileSync(file),
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 60_000,
+    })
+    if (probe.error) {
+      return {
+        ok: false,
+        error: `could not run node to syntax-check ${name}: ${probe.error.message}`,
+      }
+    }
+    if (probe.status !== 0) {
+      const detail = String(probe.stderr || "").trim().split("\n").slice(0, 4).join(" / ")
+      return {
+        ok: false,
+        error: `built chunk is not valid ES module syntax: ${name} — ${detail}. ` +
+          `A renderer chunk failed to parse, so packaging would ship an app that ` +
+          `white-screens with "Uncaught SyntaxError" on launch. Re-run the build.`,
+      }
+    }
+  }
   return { ok: true }
 }
 

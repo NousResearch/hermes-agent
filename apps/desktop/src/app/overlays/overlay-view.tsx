@@ -1,8 +1,8 @@
 import { type CSSProperties, type ReactNode, useEffect } from 'react'
 
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { translateNow } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
@@ -21,8 +21,15 @@ interface OverlayViewProps {
   onClose: () => void
   closeLabel?: string
   contentClassName?: string
+  /** Chrome pinned to the card's top edge, horizontally centered and riding
+   *  the border half-in half-out (e.g. the Settings search pill). Rendered
+   *  beside the card, not inside it — the card clips its own overflow. */
+  edgeBadge?: ReactNode
   headerContent?: ReactNode
   rootClassName?: string
+  /** Controls rendered on the close button's row, to its left. They ride the
+   *  titlebar strip, so keep them titlebar-sized and quiet. */
+  titlebarActions?: ReactNode
 }
 
 export function OverlayView({
@@ -30,8 +37,10 @@ export function OverlayView({
   onClose,
   closeLabel = translateNow('common.close'),
   contentClassName,
+  edgeBadge,
   headerContent,
-  rootClassName
+  rootClassName,
+  titlebarActions
 }: OverlayViewProps) {
   const closeOverlay = () => {
     triggerHaptic('close')
@@ -93,34 +102,49 @@ export function OverlayView({
       // the edges. Re-pin the real height at the overlay root.
       style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
     >
-      <div
-        className={cn(
-          'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
-          rootClassName
-        )}
-      >
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
-          {headerContent && (
-            <div className="pointer-events-auto absolute left-1/2 top-[calc(0.5rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]">
-              {headerContent}
-            </div>
+      <div className="relative h-full min-h-0">
+        <div
+          className={cn(
+            'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
+            rootClassName
           )}
+          // Marks the card as a RAISED surface for window glass: while the field
+          // behind it thins to show the desktop, this card stays near-opaque
+          // (see the [data-glass-raised] rules in styles.css). Inert otherwise.
+          data-glass-raised=""
+        >
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
+            {headerContent && (
+              <div className="pointer-events-auto absolute left-1/2 top-[calc(0.5rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]">
+                {headerContent}
+              </div>
+            )}
 
-          <Button
-            aria-label={closeLabel}
-            className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
-            onClick={closeOverlay}
-            size="icon-titlebar"
-            variant="ghost"
-          >
-            <Codicon name="close" size="1rem" />
-          </Button>
+            <div className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]">
+              {titlebarActions}
+
+              <Button
+                aria-label={closeLabel}
+                className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+                onClick={closeOverlay}
+                size="icon-titlebar"
+                variant="ghost"
+              >
+                <TitlebarIcon name="close" />
+              </Button>
+            </div>
+          </div>
+
+          {/* No top padding here: the split-layout columns own their own
+              titlebar clearance so their backgrounds run flush to the card top
+              (otherwise the card surface shows as a gap above the sidebar). */}
+          <div className={cn('min-h-0 flex flex-1 flex-col', contentClassName)}>{children}</div>
         </div>
 
-        {/* No top padding here: the split-layout columns own their own
-            titlebar clearance so their backgrounds run flush to the card top
-            (otherwise the card surface shows as a gap above the sidebar). */}
-        <div className={cn('min-h-0 flex flex-1 flex-col', contentClassName)}>{children}</div>
+        {/* Sibling of the card, not a child: the card clips its own overflow
+            (rounded corners), and the badge deliberately straddles the top
+            border — half above, half below. */}
+        {edgeBadge && <div className="absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-1/2">{edgeBadge}</div>}
       </div>
     </div>
   )

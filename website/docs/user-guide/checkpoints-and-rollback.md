@@ -40,7 +40,8 @@ In-session slash commands:
 | Command | Description |
 |---------|-------------|
 | `/rollback` | List all checkpoints with change stats |
-| `/rollback <N>` | Restore to checkpoint N (also undoes last chat turn) |
+| `/rollback <N>` | Restore to checkpoint N, keeping your hand-edits (also undoes last chat turn) |
+| `/rollback <N> --all` | Full restore — overwrites your hand-edits too |
 | `/rollback diff <N>` | Preview diff between checkpoint N and current state |
 | `/rollback <N> <file>` | Restore a single file from checkpoint N |
 
@@ -93,14 +94,17 @@ checkpoints:
   max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
   max_file_size_mb: 10        # skip any single file larger than this
 
-  # Auto-maintenance (on by default): sweep ~/.hermes/checkpoints/ at startup
-  # and delete project entries whose last_touch is older than retention_days.
-  # Runs at most once per min_interval_hours, tracked via a .last_prune
-  # marker. This sweep never deletes "orphan" entries (working directory not
-  # found) — a missing workdir at startup is ambiguous (deleted project vs.
-  # an unmounted external volume / network share / VPN not yet up), so
-  # orphan cleanup is only ever done via the explicit
-  # `hermes checkpoints prune` command below, with a confirmation prompt.
+  # Auto-maintenance (on by default): sweep ~/.hermes/checkpoints/ in the
+  # background — the CLI on a helper thread right after launch, the gateway
+  # on its housekeeping tick — and delete project entries whose last_touch is
+  # older than retention_days. Runs at most once per min_interval_hours,
+  # tracked via a .last_prune marker. It never blocks the prompt or gateway
+  # startup: the `git gc` that reclaims space can take tens of seconds on a
+  # large store. This sweep never deletes "orphan" entries (working directory
+  # not found) — a missing workdir is ambiguous (deleted project vs. an
+  # unmounted external volume / network share / VPN not yet up), so orphan
+  # cleanup is only ever done via the explicit `hermes checkpoints prune`
+  # command below, with a confirmation prompt.
   auto_prune: true
   retention_days: 7
   min_interval_hours: 24
@@ -133,7 +137,8 @@ Hermes responds with a formatted list showing change statistics:
   2. eaf4c1f  2026-03-16 04:35  before write_file
   3. b3f9d2e  2026-03-16 04:34  before terminal: sed -i s/old/new/ config.py  (1 file, +1/-1)
 
-  /rollback <N>             restore to checkpoint N
+  /rollback <N>             restore to checkpoint N (keeps your hand-edits)
+  /rollback <N> --all       full restore, overwriting your hand-edits too
   /rollback diff <N>        preview changes since checkpoint N
   /rollback <N> <file>      restore a single file from checkpoint N
 ```
@@ -191,8 +196,33 @@ Behind the scenes, Hermes:
 
 1. Verifies the target commit exists in the shadow store.
 2. Takes a **pre-rollback snapshot** of the current state so you can "undo the undo" later.
-3. Restores tracked files in your working directory.
+3. Restores tracked files in your working directory — **preserving your hand-edits** (see below).
 4. **Undoes the last conversation turn** so the agent's context matches the restored filesystem state.
+
+### User hand-edits are preserved by default
+
+`/rollback <N>` restores only the files Hermes itself changed. Every successful
+`write_file` / `patch` records the file's content hash in an **agent-write
+ledger**; at restore time, any file whose current contents no longer match what
+Hermes last wrote (you edited it afterwards, or Hermes never touched it) is
+**skipped** instead of overwritten, and listed in the output:
+
+```
+✅ Restored to checkpoint a1b2c3d4: before write_file
+↷ Kept your hand-edits: src/config.py, notes.md
+Use /rollback <N> --all to restore those too.
+```
+
+To force the classic full restore that reverts everything — including your own
+edits — add `--all`:
+
+```
+/rollback 1 --all
+```
+
+If the ledger is empty (a store created before this feature, or Hermes hasn't
+written any files in the project yet), `/rollback` falls back to the full
+restore automatically.
 
 ## Single-File Restore
 
@@ -204,12 +234,16 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 
 ## Safety and Performance Guards
 
+### Container Backends
+
+With a container terminal backend (`docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or a container plugin), file paths belong to the sandbox rather than the host. Hermes therefore does not take checkpoints or record the agent-write ledger for those paths, and `/rollback` explains the limitation: it still lists existing host checkpoints but refuses diff and restore, on the CLI and in messaging-gateway chats alike; `/diff session` answers with the same reason. The TUI and Desktop behave the same: `/rollback list` still works while `/rollback diff` and `/rollback <N>` are refused with that reason. Local and SSH backends are unaffected. To point `terminal.cwd` at the container-side view of a mounted directory see [`terminal.docker_mount_cwd_to_workspace`](./configuration.md).
+
 - **Git availability** — if `git` is not found on `PATH`, checkpoints are transparently disabled.
 - **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).
 - **Repository size** — directories with more than 50,000 files are skipped.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
-- **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin until under the cap.
-- **Real pruning** — `max_snapshots` is enforced by rewriting the per-project ref and running `git gc --prune=now` afterwards, so loose objects don't accumulate.
+- **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), each checkpoint drops the oldest commit of every project that still has more than one snapshot (one round per checkpoint), and the periodic prune repeats drop → gc → re-measure until the store fits. A project is never reduced below one snapshot, so a store of many large projects can legitimately sit above the cap.
+- **Real pruning, off the hot path** — `max_snapshots` and the size cap are enforced by rewriting the per-project ref at checkpoint time (cheap); the store is then marked `.gc-pending` and the periodic prune runs `git gc --prune=now` once, so loose objects don't accumulate and a tool call never waits on a full repack.
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
 - **Non-fatal errors** — all errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
 
@@ -222,6 +256,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
   │   ├── refs/hermes/<hash> # per-project branch tip
   │   ├── indexes/<hash>     # per-project git index
   │   ├── projects/<hash>.json  # workdir + created_at + last_touch
+  │   ├── .gc-pending        # refs rewritten since the last gc; cleared by the next prune
   │   └── info/exclude
   ├── .last_prune            # auto-prune idempotency marker
   └── legacy-<ts>/           # archived pre-v2 per-project shadow repos

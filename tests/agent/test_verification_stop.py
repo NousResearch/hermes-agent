@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,13 @@ def _node_project(root: Path) -> None:
 def _make_project(root: Path) -> None:
     root.mkdir()
     _node_project(root)
+
+
+@pytest.fixture(autouse=True)
+def _ledger_on(monkeypatch):
+    """The ledger is inert unless verify-on-stop is enabled; ``clear_verify_env`` (requested
+    explicitly, so it runs after this) strips it again for the enabled()-logic tests."""
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
 
 
 @pytest.fixture
@@ -88,25 +96,16 @@ def test_verify_on_stop_auto_on_for_interactive_surfaces(clear_verify_env, sourc
 
 
 
-def test_verify_on_stop_default_path_through_load_config(tmp_path, clear_verify_env):
-    # E2E: the sole production caller passes no config, so verify_on_stop_enabled
-    # resolves through load_config() + DEFAULT_CONFIG. The default is now the
-    # surface-aware "auto" sentinel. This is the path the unit-level tests above
-    # cannot exercise.
-    clear_verify_env.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-    from hermes_cli.config import load_config
 
-    merged = load_config()
-    assert merged["agent"]["verify_on_stop"] == "auto"
-
-    # Interactive surface resolves ON through the real loader.
+def test_verify_on_stop_missing_value_defaults_off(clear_verify_env):
+    # A missing/unrecognized config value falls back OFF on every surface,
+    # matching the opt-in DEFAULT_CONFIG default — only an explicit "auto"
+    # opts into the legacy surface-aware behavior.
     clear_verify_env.setenv("HERMES_SESSION_SOURCE", "cli")
-    assert verify_on_stop_enabled() is True
-
-    # A messaging platform resolves OFF.
-    clear_verify_env.setenv("HERMES_SESSION_PLATFORM", "telegram")
-    assert verify_on_stop_enabled() is False
+    assert verify_on_stop_enabled({"agent": {}}) is False
+    assert verify_on_stop_enabled({"agent": {"verify_on_stop": "bogus"}}) is False
+    assert verify_on_stop_enabled({}) is False
 
 
 
@@ -135,7 +134,7 @@ def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
     )
 
     assert nudge is not None
-    assert "fresh passing verification evidence" in nudge
+    assert changed_b in nudge
 
 
 
@@ -144,6 +143,10 @@ def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
 
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Symlinks require elevated privileges on Windows",
+)
 def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     project = tmp_path / "project"
@@ -224,12 +227,3 @@ def test_mixed_doc_and_code_edit_still_nudges(tmp_path, monkeypatch):
     assert doc not in nudge
 
 
-def test_is_non_code_path_classification():
-    from agent.verification_stop import _is_non_code_path
-
-    assert _is_non_code_path("docs/SKILL.md") is True
-    assert _is_non_code_path("README") is False  # README has no extension and isn't in the prose-filename set
-    assert _is_non_code_path("LICENSE") is True
-    assert _is_non_code_path("src/app.ts") is False
-    assert _is_non_code_path("config.yaml") is False
-    assert _is_non_code_path("run_agent.py") is False

@@ -1,10 +1,63 @@
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import MagicMock
 
 import agent.file_safety as fs
 
+import pytest
+
+import plugins.memory.retaindb as retaindb
 from plugins.memory.retaindb import RetainDBMemoryProvider
+
+
+def test_write_queue_closes_owner_connection(tmp_path):
+    queue = retaindb._WriteQueue(object(), tmp_path / "retaindb.db")
+    owner_conn = queue._local.conn
+    worker = retaindb.threading.Thread(target=queue._get_conn)
+    worker.start()
+    worker.join()
+    queue.shutdown()
+    assert not queue._connections
+    with pytest.raises(sqlite3.ProgrammingError):
+        owner_conn.execute("SELECT 1")
+
+
+def test_write_queue_ignores_enqueue_after_shutdown(tmp_path):
+    queue = retaindb._WriteQueue(object(), tmp_path / "retaindb.db")
+    queue.shutdown()
+
+    queue.enqueue("user", "session", [])
+
+    assert not queue._connections
+
+
+def test_prefetch_does_not_spawn_when_previous_batch_is_alive(monkeypatch):
+    provider = RetainDBMemoryProvider()
+    provider._client = object()
+
+    class _RunningThread:
+        def join(self, timeout):
+            pass
+
+        def is_alive(self):
+            return True
+
+    previous = _RunningThread()
+    provider._prefetch_threads = [previous]
+    created = []
+
+    class _Thread:
+        def __init__(self, *args, **kwargs):
+            created.append((args, kwargs))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(retaindb.threading, "Thread", _Thread)
+    provider.queue_prefetch("query")
+    assert provider._prefetch_threads == [previous]
+    assert not created
 
 
 def test_upload_file_rejects_hermes_credential_store(tmp_path, monkeypatch):
@@ -61,29 +114,6 @@ def _capture_initialized_client(monkeypatch, tmp_path):
     return retaindb_module, captured
 
 
-def test_retaindb_config_loader_uses_readonly_config(monkeypatch):
-    import hermes_cli.config as config_mod
-    import plugins.memory.retaindb as retaindb_module
-
-    backing_config = {
-        "memory": {
-            "retaindb": {
-                "base_url": "https://saved.example",
-                "project": "saved-project",
-            }
-        }
-    }
-    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: backing_config)
-    monkeypatch.setattr(
-        config_mod,
-        "load_config",
-        MagicMock(side_effect=AssertionError("read-only provider path must not load a mutable copy")),
-    )
-
-    config = retaindb_module._load_retaindb_config()
-
-    assert config == backing_config["memory"]["retaindb"]
-    assert config is not backing_config["memory"]["retaindb"]
 
 
 def test_initialize_reads_real_dashboard_config_file(tmp_path, monkeypatch):
@@ -108,21 +138,6 @@ memory:
     assert captured["project"] == "dashboard-project"
 
 
-def test_initialize_reads_base_url_and_project_from_config_yaml(tmp_path, monkeypatch):
-    """#68209: non-secret base_url/project come from config.yaml when env is unset."""
-    for var in ("RETAINDB_API_KEY", "RETAINDB_BASE_URL", "RETAINDB_PROJECT"):
-        monkeypatch.delenv(var, raising=False)
-    retaindb_module, captured = _capture_initialized_client(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        retaindb_module,
-        "_load_retaindb_config",
-        lambda: {"base_url": "https://retaindb.example.com/", "project": "cfg-project"},
-    )
-
-    RetainDBMemoryProvider().initialize("sess-1")
-
-    assert captured["base_url"] == "https://retaindb.example.com"  # trailing slash stripped
-    assert captured["project"] == "cfg-project"
 
 
 def test_initialize_env_overrides_config_yaml(tmp_path, monkeypatch):

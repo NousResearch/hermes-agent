@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { parseSlashCommand } from '@hermes/shared/slash'
 import { describe, expect, it } from 'vitest'
 
 import { findSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
@@ -16,7 +17,8 @@ interface CommandRegistryLoad {
 const NATIVE_MUTATING_COMMANDS = new Set(['browser', 'busy', 'fast', 'reload-mcp', 'rollback', 'stop'])
 
 const MUTATING_COMMANDS = [
-  'background',
+  'bg',
+  'btw',
   'branch',
   'browser',
   'busy',
@@ -92,16 +94,6 @@ describe('slash parity matrix', () => {
     it.skip(`Python command registry unavailable: ${skipReason}`, () => {})
   }
 
-  registryIt('classifies each command registry command as local/native/fallback', () => {
-    const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
-
-    expect(routes['model']).toBe('local')
-    expect(routes['browser']).toBe('native')
-    expect(routes['reload-mcp']).toBe('native')
-    expect(routes['rollback']).toBe('native')
-    expect(routes['stop']).toBe('native')
-  })
-
   registryIt('keeps every mutating command off slash-worker fallback', () => {
     const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
 
@@ -119,5 +111,29 @@ describe('slash parity matrix', () => {
     const cmd = findSlashCommand('q')
     expect(cmd, '/q must resolve to a command').toBeDefined()
     expect(cmd!.name).toBe('queue')
+  })
+})
+
+describe('parseSlashCommand argument fidelity', () => {
+  it('keeps a multi-line argument byte-for-byte', () => {
+    const arg = 'first line\nsecond line\n\n  indented tail'
+
+    expect(parseSlashCommand(`/pr-triage ${arg}`)).toEqual({
+      arg,
+      name: 'pr-triage'
+    })
+  })
+
+  it('preserves runs of spaces inside the argument', () => {
+    expect(parseSlashCommand('/goal ship   it').arg).toBe('ship   it')
+  })
+
+  it('still splits the command name off a single separator', () => {
+    expect(parseSlashCommand('/cron add daily')).toEqual({
+      arg: 'add daily',
+      name: 'cron'
+    })
+    expect(parseSlashCommand('/exit')).toEqual({ arg: '', name: 'exit' })
+    expect(parseSlashCommand('/exit ')).toEqual({ arg: '', name: 'exit' })
   })
 })

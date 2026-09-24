@@ -1,29 +1,17 @@
 """Tests for the Windows half-updated-venv hardening (July 2026 incident).
 
-Covers three additions to ``hermes update``:
-
-1. ``_venv_core_imports_healthy`` — the venv health probe that lets an
-   "Already up to date" checkout still repair a broken dependency install.
-2. ``_detect_venv_python_processes`` — the venv-interpreter process guard
-   that refuses to mutate the venv while a desktop backend / stray python
-   holds .pyd files mapped.
-3. The commit_count == 0 repair branch wiring in ``_cmd_update_impl``.
-
-All Windows-specific paths are exercised via ``_is_windows`` patching so
-they run on any host (same approach as test_update_concurrent_quarantine).
+Covers the commit_count == 0 repair branch: an "Already up to date" checkout
+must still re-sync a venv whose installed distribution lags the checkout.
 """
 
 from __future__ import annotations
 
-import subprocess
-import sys
-import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from hermes_cli import main as cli_main
+from hermes_cli import update_cmd
 
 
 # ---------------------------------------------------------------------------
@@ -44,116 +32,57 @@ def _fake_venv_python(tmp_path, *, windows: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# _detect_venv_python_processes
+# "Already up to date" must not hide a venv the last pull never re-synced (#97208)
 # ---------------------------------------------------------------------------
 
 
-def _proc(pid: int, exe: str, name: str, cmdline: list[str] | None = None, cwd: str = ""):
-    proc = MagicMock()
-    proc.info = {
-        "pid": pid,
-        "exe": exe,
-        "name": name,
-        "cmdline": cmdline or [],
-        "cwd": cwd,
-    }
-    return proc
+def test_venv_dependency_set_stale_compares_installed_distribution_with_checkout(tmp_path):
+    """Reporter's state: git current at 0.21.2, venv metadata still 0.20.6 (the hand-off child
+    refused the sync); core imports pass, so only the distribution version reveals the drift."""
+    from hermes_cli import update_cmd_deps
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "hermes-agent"\nversion = "0.21.2"\n', encoding="utf-8")
+    venv_python = _fake_venv_python(tmp_path)
+    probes = []
+
+    def fake_run(cmd, **kwargs):
+        probes.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=f"{fake_run.installed}\n", stderr="")
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(cli_main, "_is_windows", return_value=False), \
+            patch.object(update_cmd_deps.subprocess, "run", fake_run):
+        fake_run.installed = "0.20.6"
+        assert update_cmd._venv_dependency_set_stale() == (True, "installed hermes-agent 0.20.6, checkout is 0.21.2")
+        fake_run.installed = "0.21.2"
+        assert update_cmd._venv_dependency_set_stale() == (False, "")
+    # Asked in the venv's own interpreter (the updater may run under another Python).
+    assert {cmd[0] for cmd in probes} == {str(venv_python)}
 
 
+def test_current_checkout_with_stale_dependency_set_runs_the_sync(monkeypatch, capsys):
+    """Drift on the commit_count == 0 path triggers the same repair as an unhealthy venv instead
+    of ``✓ Already up to date!``; a synced venv keeps the cheap node-only path."""
+    from hermes_cli import main as hm
 
+    calls = []
+    monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, ""))
+    monkeypatch.setattr(hm, "_is_windows", lambda: False)
+    monkeypatch.delenv(hm._UPDATE_REEXEC_ENV, raising=False)
+    monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda **kwargs: None)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **kwargs: "uv")
+    monkeypatch.setattr(update_cmd, "_repair_venv_on_current_checkout",
+                        lambda **kwargs: calls.append("sync") or True)
+    monkeypatch.setattr(update_cmd, "_repair_node_deps_on_current_checkout",
+                        lambda *a, **kwargs: calls.append(kwargs["completion_message"]) or True)
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
-    import os as _os
+    def run(stale):
+        monkeypatch.setattr(update_cmd, "_venv_dependency_set_stale", lambda: stale)
+        return update_cmd._repair_current_checkout(
+            assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False, active_lazy_features=[], active_tool_dependencies=[],
+            upstream_checked=True, _windows_gateway_resume=None)
 
-    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
-    parent = MagicMock()
-    parent.pid = 555
-    me = MagicMock()
-    me.parents.return_value = [parent]
-    fake_psutil = types.SimpleNamespace(
-        process_iter=lambda attrs: iter(
-            [
-                _proc(_os.getpid(), venv_py, "python.exe"),
-                _proc(555, venv_py, "hermes.exe"),
-            ]
-        ),
-        Process=lambda *a, **k: me,
-    )
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
-        sys.modules, {"psutil": fake_psutil}
-    ):
-        assert cli_main._detect_venv_python_processes() == []
-
-
-
-
-# ---------------------------------------------------------------------------
-# --force vs --force-venv gating of the venv-holder guard
-# ---------------------------------------------------------------------------
-
-
-def _update_args(**overrides):
-    defaults = dict(
-        gateway=False,
-        check=False,
-        no_backup=True,
-        backup=False,
-        yes=True,
-        branch=None,
-        force=False,
-        force_venv=False,
-    )
-    defaults.update(overrides)
-    return SimpleNamespace(**defaults)
-
-
-def _run_update_until_guard(args):
-    """Drive _cmd_update_impl just far enough to hit the venv-holder guard.
-
-    Everything before the guard is stubbed; the guard firing is observed via
-    SystemExit(2). The first statement AFTER the guard is
-    ``git_dir = PROJECT_ROOT / ".git"`` — a PROJECT_ROOT sentinel whose
-    ``__truediv__`` raises marks 'guard passed'."""
-
-    class _PastGuard(Exception):
-        pass
-
-    class _RootSentinel:
-        def __truediv__(self, _other):
-            raise _PastGuard
-
-    with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
-        cli_main, "_venv_scripts_dir", return_value=None
-    ), patch.object(cli_main, "_run_pre_update_backup"), patch.object(
-        cli_main, "_pause_windows_gateways_for_update", return_value=None
-    ), patch.object(
-        cli_main, "_resume_windows_gateways_after_update"
-    ), patch.object(
-        cli_main,
-        "_detect_venv_python_processes",
-        return_value=[(101, "python.exe", "python.exe -m hermes_cli.main serve")],
-    ), patch.object(
-        cli_main, "PROJECT_ROOT", _RootSentinel()
-    ):
-        try:
-            cli_main._cmd_update_impl(args, gateway_mode=False)
-        except _PastGuard:
-            return "past_guard"
-        except SystemExit as exc:
-            return f"exit_{exc.code}"
-    return "returned"
-
-
-@pytest.mark.parametrize(
-    "force,force_venv,expected",
-    [
-        (False, False, "exit_2"),   # guard fires
-        (True, False, "exit_2"),    # plain --force does NOT bypass the venv guard
-        (False, True, "past_guard"),  # --force-venv is the explicit escape hatch
-        (True, True, "past_guard"),
-    ],
-)
-def test_venv_holder_guard_force_semantics(force, force_venv, expected, capsys):
-    result = _run_update_until_guard(_update_args(force=force, force_venv=force_venv))
-    assert result == expected, capsys.readouterr().out
+    assert run((True, "installed hermes-agent 0.20.6, checkout is 0.21.2")) is True
+    assert calls == ["sync"]
+    assert run((False, "")) is True
+    assert calls == ["sync", "✓ Already up to date!"]

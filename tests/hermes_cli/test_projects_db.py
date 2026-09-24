@@ -78,6 +78,49 @@ def test_project_for_path_skips_archived(conn):
     assert pdb.project_for_path(conn, "/www/app/src").id == pid
 
 
+def test_create_dedups_by_primary_path(conn):
+    pid = pdb.create_project(conn, name="GeoTrace", folders=["/www/geotrace"])
+
+    # Same folder again (any name): refused, existing project named in error.
+    with pytest.raises(ValueError, match="already belongs to project 'geotrace'"):
+        pdb.create_project(conn, name="GeoTrace", folders=["/www/geotrace"])
+    with pytest.raises(ValueError, match="already belongs"):
+        pdb.create_project(conn, name="Other Name", primary_path="/www/geotrace")
+
+    # Trailing-separator spelling of the same folder is still a duplicate.
+    with pytest.raises(ValueError, match="already belongs"):
+        pdb.create_project(conn, name="GeoTrace", primary_path="/www/geotrace/")
+
+    # Deliberate duplicates stay possible.
+    dup = pdb.create_project(
+        conn, name="GeoTrace", folders=["/www/geotrace"], allow_duplicate_path=True
+    )
+    assert dup != pid
+    assert len(pdb.list_projects(conn)) == 2
+
+
+def test_create_dedup_ignores_archived_and_other_paths(conn):
+    pid = pdb.create_project(conn, name="App", folders=["/www/app"])
+    pdb.archive_project(conn, pid)
+
+    # Archived project no longer blocks the path.
+    fresh = pdb.create_project(conn, name="App", folders=["/www/app"])
+    assert fresh != pid
+
+    # Different folder is never a collision; folder-less projects don't match.
+    pdb.create_project(conn, name="Elsewhere", folders=["/www/other"])
+    pdb.create_project(conn, name="No Folder")
+
+
+def test_find_by_primary_path(conn):
+    pid = pdb.create_project(conn, name="App", folders=["/www/app"])
+
+    assert pdb.find_by_primary_path(conn, "/www/app").id == pid
+    assert pdb.find_by_primary_path(conn, "/www/app/").id == pid
+    assert pdb.find_by_primary_path(conn, "/www/nope") is None
+    assert pdb.find_by_primary_path(conn, "") is None
+
+
 
 
 

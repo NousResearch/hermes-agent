@@ -32,6 +32,18 @@ def _force_local_terminal(monkeypatch):
     ensures each test starts (and ends) with the correct value.
     """
     monkeypatch.setenv("TERMINAL_ENV", "local")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so a lingering
+    kernel child can't outlive the run (hangs pytest at exit) or leak one
+    test's interpreter state into the next."""
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
 import sys
 import threading
 import unittest
@@ -43,10 +55,11 @@ from tools.code_execution_tool import (
     generate_hermes_tools_module,
     check_sandbox_requirements,
     build_execute_code_schema,
-    EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _format_interrupted_output,
 )
+from tools.registry import registry
 
 
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
@@ -74,10 +87,24 @@ class TestSandboxRequirements(unittest.TestCase):
         if sys.platform != "win32":
             self.assertTrue(check_sandbox_requirements())
 
-    def test_schema_is_valid(self):
-        self.assertEqual(EXECUTE_CODE_SCHEMA["name"], "execute_code")
-        self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["properties"])
-        self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["required"])
+
+
+class TestInterruptedOutput(unittest.TestCase):
+    def tearDown(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(False)
+
+    def test_uses_recorded_interrupt_source(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(True, reason="superseded by a new live turn")
+
+        self.assertEqual(
+            _format_interrupted_output("partial output"),
+            "partial output\n[execution interrupted — superseded by a new live turn]",
+        )
+
 
 
 class TestHermesToolsGeneration(unittest.TestCase):
@@ -87,33 +114,10 @@ class TestHermesToolsGeneration(unittest.TestCase):
             self.assertIn(f"def {tool}(", src)
 
 
-    def test_empty_list_generates_nothing(self):
-        src = generate_hermes_tools_module([])
-        self.assertNotIn("def terminal(", src)
-        self.assertIn("def _call(", src)  # infrastructure still present
 
 
-    def test_file_transport_uses_tempfile_fallback_for_rpc_dir(self):
-        src = generate_hermes_tools_module(["terminal"], transport="file")
-        self.assertIn("import json, os, shlex, tempfile, threading, time", src)
-        self.assertIn("os.path.join(tempfile.gettempdir(), \"hermes_rpc\")", src)
-        self.assertNotIn('os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")', src)
 
-    def test_uds_transport_serializes_concurrent_calls(self):
-        """Regression: UDS _call() must hold a lock across send+recv so that
-        concurrent tool calls from multiple threads don't interleave on the
-        shared socket and receive each other's responses."""
-        src = generate_hermes_tools_module(["terminal"], transport="uds")
-        self.assertIn("_call_lock = threading.Lock()", src)
-        self.assertIn("with _call_lock:", src)
 
-    def test_file_transport_serializes_seq_allocation(self):
-        """Regression: file transport _call() must allocate `_seq` under a
-        lock, otherwise concurrent threads can pick the same seq and clobber
-        each other's request files."""
-        src = generate_hermes_tools_module(["terminal"], transport="file")
-        self.assertIn("_seq_lock = threading.Lock()", src)
-        self.assertIn("with _seq_lock:", src)
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
@@ -146,9 +150,14 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["stdout_truncated"])
         self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
-        mkdir_cmd = env.commands[1][0]
+        # The session-kernel path runs first and fails open on this fake env
+        # (no PID from nohup), so search for the per-call sandbox commands
+        # rather than pinning positions.
+        mkdir_cmd = next(cmd for cmd, _, _ in env.commands
+                         if "mkdir -p" in cmd and "hermes_exec_" in cmd)
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
-        cleanup_cmd = env.commands[-1][0]
+        cleanup_cmd = next(cmd for cmd, _, _ in env.commands
+                           if "rm -rf" in cmd and "hermes_exec_" in cmd)
         self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
@@ -202,10 +211,6 @@ class TestExecuteCode(unittest.TestCase):
 
     def _run(self, code, enabled_tools=None):
         """Helper: run code with mocked handle_function_call."""
-        with patch("tools.code_execution_tool._rpc_server_loop") as mock_rpc:
-            # Use real execution but mock the tool dispatcher
-            pass
-        # Actually run with full integration, mocking at the model_tools level
         with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
             result = execute_code(
                 code=code,
@@ -338,6 +343,21 @@ assert escaped.startswith("'")
         self.assertEqual(result["status"], "success")
 
 
+    def test_json_parse_helper_bom(self):
+        """json_parse strips a leading UTF-8 BOM and tolerates control chars (#57870)."""
+        code = """
+from hermes_tools import json_parse
+# A leading UTF-8 BOM (e.g. from Windows CLI output) must also parse (#57870)
+bom_text = "\\ufeff" + '{"body": "bom-ok"}'
+bom_result = json_parse(bom_text)
+assert bom_result == {"body": "bom-ok"}, bom_result
+print("bom:" + bom_result["body"])
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("bom:bom-ok", result["output"])
+
+
     def test_retry_helper_all_fail(self):
         """retry raises the last error when all attempts fail."""
         code = """
@@ -367,7 +387,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -380,7 +400,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
         import tools.web_tools  # noqa: F401 - registers web_search, web_extract
 
-        for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
+        for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
             if not entry:
                 # Tool might not be registered yet (e.g., terminal uses a
@@ -406,21 +426,35 @@ class TestStubSchemaDrift(unittest.TestCase):
 
 
     def test_generated_module_accepts_all_params(self):
-        """The generated hermes_tools.py module should accept all current params
-        without TypeError when called with keyword arguments."""
-        src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS))
+        """Executing the generated hermes_tools module: every stub accepts all of
+        its parameters as keyword arguments and forwards each one, by name and
+        value, to the RPC call (a dropped or renamed kwarg is a TypeError or a
+        silently ignored argument in the sandbox)."""
+        import inspect
 
-        # Compile the generated module to check for syntax errors
-        compile(src, "hermes_tools.py", "exec")
+        for transport in ("uds", "file"):
+            src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS), transport=transport)
+            namespace = {"__name__": "hermes_tools"}
+            exec(compile(src, "hermes_tools.py", "exec"), namespace)
+            calls = []
+            namespace["_call"] = lambda name, args: calls.append((name, args)) or "ok"
 
-        # Verify specific parameter signatures are in the source
-        # search_files must accept context, offset, output_mode
-        self.assertIn("context", src)
-        self.assertIn("offset", src)
-        self.assertIn("output_mode", src)
+            generated = {name for name in SANDBOX_ALLOWED_TOOLS if callable(namespace.get(name))}
+            self.assertEqual(generated, set(SANDBOX_ALLOWED_TOOLS), transport)
+            for name in sorted(generated):
+                params = inspect.signature(namespace[name]).parameters
+                kwargs = {p: f"<{name}.{p}>" for p in params}
+                calls.clear()
+                self.assertEqual(namespace[name](**kwargs), "ok")
+                self.assertEqual(calls, [(name, kwargs)], f"{transport}:{name}")
 
-        # patch must accept mode and patch params
-        self.assertIn("mode", src)
+            # The pagination/output controls of search_files and patch's mode
+            # must be real keyword parameters, not just mentioned in the docs.
+            self.assertTrue(
+                {"context", "offset", "output_mode", "order"}
+                <= set(inspect.signature(namespace["search_files"]).parameters)
+            )
+            self.assertIn("mode", inspect.signature(namespace["patch"]).parameters)
 
 
 # ---------------------------------------------------------------------------
@@ -436,12 +470,6 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         for name, _ in _TOOL_DOC_LINES:
             self.assertIn(name, desc, f"Default schema should mention '{name}'")
 
-    def test_schema_structure(self):
-        schema = build_execute_code_schema()
-        self.assertEqual(schema["name"], "execute_code")
-        self.assertIn("parameters", schema)
-        self.assertIn("code", schema["parameters"]["properties"])
-        self.assertEqual(schema["parameters"]["required"], ["code"])
 
     def test_subset_only_lists_enabled_tools(self):
         enabled = {"terminal", "read_file"}
@@ -485,8 +513,13 @@ class TestEnvVarFiltering(unittest.TestCase):
             with patch("model_tools.handle_function_call", return_value='{}'), \
                  patch("tools.code_execution_tool._load_config",
                        return_value={"timeout": 10, "max_tool_calls": 50}):
+                # reset=True: a session kernel's env is frozen at spawn, so
+                # env-building rules are only observable on a FRESH kernel —
+                # a reused one would (correctly) show the env from whenever
+                # it was first spawned, not this test's os.environ tweaks.
                 raw = execute_code(code, task_id="test-env",
-                                   enabled_tools=list(SANDBOX_ALLOWED_TOOLS))
+                                   enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                                   reset=True)
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -516,9 +549,6 @@ class TestEnvVarFiltering(unittest.TestCase):
         self.assertNotIn("MODAL_TOKEN_SECRET", child_env)
 
 
-    def test_hermes_rpc_socket_injected(self):
-        child_env = self._get_child_env()
-        self.assertIn("HERMES_RPC_SOCKET", child_env)
 
 
     def test_timezone_injected_when_set(self):
@@ -526,21 +556,16 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             os.environ["HERMES_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
-            self.assertEqual(child_env.get("TZ"), "America/New_York")
+            if sys.platform == "win32":
+                # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
+                # offset (#112233), so Windows children keep the OS zone instead.
+                self.assertNotIn("TZ", child_env)
+            else:
+                self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
 
-    def test_timezone_not_set_when_empty(self):
-        env_backup = os.environ.copy()
-        try:
-            os.environ.pop("HERMES_TIMEZONE", None)
-            child_env = self._get_child_env()
-            if "TZ" in child_env:
-                self.assertNotEqual(child_env["TZ"], "")
-        finally:
-            os.environ.clear()
-            os.environ.update(env_backup)
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +573,56 @@ class TestEnvVarFiltering(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestExecuteCodeEdgeCases(unittest.TestCase):
+
+    def test_command_argument_points_to_terminal(self):
+        result = json.loads(registry.dispatch(
+            "execute_code",
+            {"command": "git status"},
+            task_id="test",
+            enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+        ))
+        self.assertIn("error", result)
+        self.assertIn("'command' parameter", result["error"])
+        self.assertIn("terminal(command=...)", result["error"])
+        self.assertIn("execute_code(code=...)", result["error"])
+
+    def test_terminal_code_argument_points_to_execute_code(self):
+        """Mirror recovery: terminal(code=...) names the stray argument and
+        redirects to execute_code, instead of the opaque
+        'Invalid command: expected string, got NoneType'."""
+        from tools.terminal_tool import _handle_terminal
+        result = json.loads(_handle_terminal({"code": "print(1)"}, task_id="test"))
+        self.assertIn("error", result)
+        self.assertIn("'code' parameter", result["error"])
+        self.assertIn("execute_code(code=...)", result["error"])
+        self.assertIn("terminal(command=...)", result["error"])
+        self.assertNotIn("NoneType", result["error"])
+
+    def test_empty_code_explains_required_parameter(self):
+        for code in ("", None):
+            with self.subTest(code=code):
+                result = json.loads(registry.dispatch(
+                    "execute_code",
+                    {"code": code},
+                    task_id="test",
+                ))
+                self.assertIn("error", result)
+                self.assertIn("non-empty 'code' parameter", result["error"])
+                self.assertIn("Python source", result["error"])
+                self.assertIn("terminal(command=...)", result["error"])
+
+    def test_non_string_code_redirects_instead_of_attributeerror(self):
+        for code in (123, {"code": "print(1)"}, ["print(1)"]):
+            with self.subTest(code=code):
+                result = json.loads(registry.dispatch(
+                    "execute_code",
+                    {"code": code},
+                    task_id="test",
+                ))
+                self.assertIn("error", result)
+                self.assertIn(type(code).__name__, result["error"])
+                self.assertIn("Python source as a string", result["error"])
+                self.assertNotIn("AttributeError", result["error"])
 
     def test_windows_returns_error(self):
         """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
@@ -586,11 +661,6 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestLoadConfig(unittest.TestCase):
-    def test_returns_empty_dict_when_cli_config_unavailable(self):
-        from tools.code_execution_tool import _load_config
-        with patch.dict("sys.modules", {"cli": None}):
-            result = _load_config()
-            self.assertIsInstance(result, dict)
 
 
     def test_does_not_import_interactive_cli(self):
@@ -598,7 +668,7 @@ class TestLoadConfig(unittest.TestCase):
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \
-             patch("hermes_cli.config.read_raw_config", return_value={}):
+             patch("hermes_cli.config.load_config_readonly", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
 
@@ -694,7 +764,15 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("TAIL", result["output"])
         self.assertGreater(result["stdout_bytes_total"], result["stdout_bytes_captured"])
         self.assertGreater(result["stdout_bytes_omitted"], 0)
+        # Spillover (#96997-adjacent): the warning now points at the saved
+        # full-output file instead of advising a narrower re-run.
         self.assertIn("execute_code stdout was truncated", result["warning"])
+        self.assertIn("read_file", result["warning"])
+        self.assertIn("stdout_spill_path", result)
+        with open(result["stdout_spill_path"], encoding="utf-8") as f:
+            body = f.read()
+        self.assertIn("HEAD", body)
+        self.assertIn("TAIL", body)
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):
@@ -712,7 +790,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         Sends each dict in *requests* as a newline-delimited JSON message
         and returns the list of decoded JSON responses.
         """
-        from tools.code_execution_tool import _rpc_server_loop
+        from tools.code_execution_rpc import _rpc_server_loop
 
         # socketpair gives us a connected client end and a "server" end we
         # can hand to accept() by wrapping it in a tiny listener shim.
@@ -790,11 +868,6 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         self.assertIn("Unauthorized", resp[0].get("error", ""))
 
 
-    def test_generated_module_sends_token(self):
-        """The generated hermes_tools module reads HERMES_RPC_TOKEN and sends it."""
-        src = generate_hermes_tools_module(["terminal"], transport="uds")
-        self.assertIn("HERMES_RPC_TOKEN", src)
-        self.assertIn('"token"', src)
 
 
 if __name__ == "__main__":

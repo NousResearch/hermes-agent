@@ -1090,6 +1090,13 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "Register an :class:`agent.transcription_provider.TranscriptionProvider`; ``provider.name`` is "
      "matched by ``stt.provider`` unless it is a built-in name (rejected) or a ``stt.providers.<name>: "
      "type: command`` entry shares it (command-providers win).", {"normalize": "lower"}),
+    ("register_streaming_transcription_provider", "streaming_transcription_provider",
+     "agent.streaming_transcription_registry",
+     "agent.streaming_transcription_provider:StreamingTranscriptionProvider",
+     "streaming transcription provider",
+     "Register an :class:`agent.streaming_transcription_provider.StreamingTranscriptionProvider`; "
+     "``provider.name`` is matched by ``stt.provider`` for the live ``/api/audio/transcribe-stream`` "
+     "WebSocket (partial-transcript STT).", {"normalize": "lower"}),
 )
 
 _NAME_NORMALIZERS: Dict[Optional[str], Optional[Callable[[str], str]]] = {

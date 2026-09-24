@@ -74,6 +74,33 @@ def _audio_extension_for_mime(mime_type: str) -> str:
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
 
 
+@router.websocket("/api/audio/transcribe-stream")
+async def transcribe_audio_stream(ws: WebSocket):
+    """Live partial-transcript STT: authenticated PCM stream for the desktop voice loop.
+
+    Resolves the active streaming backend through the streaming transcription registry by
+    ``stt.provider`` (provider-neutral; see :mod:`tools.transcription_stream` for the wire
+    protocol). Provider-specific configuration is passed under the provider's own name — the
+    router never knows a concrete provider.
+    """
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+    from tools.transcription_tools import _load_stt_config
+    from tools.transcription_stream import serve_transcription
+    profile = (ws.query_params.get("profile") or "").strip() or None
+    try:
+        config = await _run_config_scoped(profile, _load_stt_config)
+        await serve_transcription(ws, config)
+    finally:
+        with contextlib.suppress(RuntimeError, WebSocketDisconnect):
+            await ws.close()
+
+
 @router.post("/api/audio/transcribe")
 async def transcribe_audio_upload(
     payload: AudioTranscriptionRequest, profile: Optional[str] = None
@@ -161,7 +188,19 @@ async def get_client_voice_config(profile: Optional[str] = None):
         fallback = {"mode": "relay", "reason": "resolution error"}
         return {"ok": True, "stt": fallback, "tts": dict(fallback)}
 
-    return {"ok": True, **result}
+    streaming = False
+    try:
+        from tools.transcription_tools import _load_stt_config, is_stt_enabled
+        from agent.streaming_transcription_registry import get_provider as _get_streaming_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        stt_config = await _run_config_scoped(profile, _load_stt_config)
+        _ensure_plugins_discovered()
+        streaming = bool(is_stt_enabled(stt_config)
+                         and _get_streaming_provider(stt_config.get("provider")))
+    except Exception:
+        pass
+
+    return {"ok": True, "stt_streaming": streaming, **result}
 
 
 @router.get("/api/audio/voice-live/status")

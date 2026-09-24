@@ -162,7 +162,11 @@ def _primary_profile_routes_for_current_home() -> list:
             return []
 
         from hermes_cli.config import read_user_config_raw
-        raw = read_user_config_raw(config_path)  # raw primary file, not the merged current-profile config
+        from hermes_cli.managed_scope import apply_managed_overlay
+        # Read only the primary user's file, then layer the machine-wide policy
+        # over it.  Do not load the current profile's merged config: satellites
+        # must remain isolated from one another and from primary credentials.
+        raw = apply_managed_overlay(read_user_config_raw(config_path))
         routes_raw = raw.get("profile_routes")
         if routes_raw is None and isinstance(raw.get("gateway"), dict):
             routes_raw = raw["gateway"].get("profile_routes")

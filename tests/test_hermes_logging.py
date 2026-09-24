@@ -260,7 +260,8 @@ class TestSetupLogging:
         hermes_logging.flush_log_queue()
 
         assert (profile_home / "logs" / "agent.log").read_text().count("once please") == 1
-        assert "once please" not in (hermes_home / "logs" / "agent.log").read_text()
+        launch_log = hermes_home / "logs" / "agent.log"
+        assert not launch_log.exists() or "once please" not in launch_log.read_text()
 
     def test_a_component_log_added_after_routing_is_routed_too(self, hermes_home, tmp_path):
         """setup_logging(mode="gateway") for an already-known home AFTER a second home turned
@@ -721,7 +722,16 @@ class TestExternalRotationRecovery:
         assert "AFTER rotation" not in rotated.read_text()
 
 
-def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
+def _replace_log_stream_factory(handler, patcher, factory):
+    """Fault the native backend's open seam, including Windows' lazy CLH stream."""
+    if handler.stream is not None:
+        handler.stream.close()
+    handler.stream = None
+    open_method = "do_open" if hasattr(handler, "do_open") else "_builtin_open"
+    patcher.setattr(handler, open_method, lambda *_a, **_kw: factory())
+
+
+def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys, monkeypatch):
     """A failing log destination is named once (no per-record traceback) and writes resume
     once the file is reachable again."""
 
@@ -740,10 +750,10 @@ def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsy
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
     try:
-        handler.stream.close()
-        handler.stream = _SickStream()
-        for i in range(5):
-            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
+        with monkeypatch.context() as failed_device:
+            _replace_log_stream_factory(handler, failed_device, _SickStream)
+            for i in range(5):
+                handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
         err = capsys.readouterr().err
         assert "--- Logging error ---" not in err
         assert err.count(str(path)) == 1 and "Input/output error" in err
@@ -751,11 +761,17 @@ def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsy
         # Stream dropped, so the next emit reopens the real file and logging resumes.
         handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, "recovered", (), None))
         assert "recovered" in path.read_text(encoding="utf-8")
+        # A separate outage after a successful write must be reported again,
+        # even when the native backend closes its stream after every record.
+        with monkeypatch.context() as failed_again:
+            _replace_log_stream_factory(handler, failed_again, _SickStream)
+            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, "sick again", (), None))
+        assert capsys.readouterr().err.count(str(path)) == 1
     finally:
         handler.close()
 
 
-def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys):
+def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys, monkeypatch):
     """The reported case: open() succeeds but every write/seek/flush raises EIO. Reopening must
     not re-arm the notice, or a stuck device prints the path once per record."""
 
@@ -774,9 +790,7 @@ def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys)
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
     try:
-        handler._builtin_open = lambda *_a, **_kw: _SickStream()
-        handler.stream.close()
-        handler.stream = _SickStream()
+        _replace_log_stream_factory(handler, monkeypatch, _SickStream)
         for i in range(25):
             handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
         err = capsys.readouterr().err

@@ -110,7 +110,9 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _line_rows,
     _luminance_from_hex,
     _maybe_remap_for_light_mode,
+    _output_history_lines,
     _output_history_recording,
+    _output_history_rows,
     _output_tail_fitting,
     _painted_columns,
     _PaintedLine,
@@ -652,35 +654,6 @@ def _suspend_output_history():
         yield
     finally:
         _OUTPUT_HISTORY_SUPPRESSED = old_value
-
-
-def _output_history_lines() -> list[str]:
-    """The recorded output as the lines a replay paints (callable entries render now)."""
-    rendered_lines = []
-    for entry in tuple(_OUTPUT_HISTORY):
-        lines = [entry]
-        if callable(entry):
-            try:
-                lines = entry()
-            except Exception:
-                continue
-            if isinstance(lines, str):
-                lines = lines.splitlines()
-        rendered_lines.extend(line if isinstance(line, str) else str(line) for line in lines)
-    return rendered_lines
-
-
-def _output_history_rows(limit: int, columns: int, painted: bool):
-    """Rows the whole recorded output fills (counted as ``_output_tail_fitting`` does), or
-    ``None`` when that is ``limit`` rows or more."""
-    if not _OUTPUT_HISTORY_ENABLED:
-        return None
-    total = 0
-    for line in reversed(_output_history_lines()):
-        total += _line_rows(line, (getattr(line, "width", None) if painted else None) or columns)
-        if total >= limit:
-            return None
-    return total
 
 
 def _replay_output_history(fit=None, output=None) -> None:

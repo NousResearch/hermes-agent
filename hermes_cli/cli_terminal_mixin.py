@@ -14,6 +14,7 @@ import time
 from hermes_cli.cli_render import (
     _chrome_floor,
     _hold_paints,
+    _output_history_rows,
     _release_paints,
     _set_chrome_floor,
     _set_paint_gate,
@@ -221,7 +222,7 @@ class CLITerminalMixin:
         drawn from there to the bottom (``_set_chrome_floor``), where the next count assumes it.
         A clear that fails replays nothing: the history is already on screen or in scrollback.
         """
-        from cli import _output_history_rows, _terminal_reflows
+        from cli import _terminal_reflows
         if getattr(self, "_terminal_io_broken", False):
             return _NO_REPLAY
         try:

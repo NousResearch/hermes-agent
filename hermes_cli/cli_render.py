@@ -616,6 +616,35 @@ def _output_tail_fitting(lines: list[str], max_rows: int, columns: int, painted:
     return kept
 
 
+def _output_history_lines() -> list[str]:
+    """The recorded output as the lines a replay paints (callable entries render now)."""
+    rendered_lines = []
+    for entry in tuple(_cli()._OUTPUT_HISTORY):
+        lines = [entry]
+        if callable(entry):
+            try:
+                lines = entry()
+            except Exception:
+                continue
+            if isinstance(lines, str):
+                lines = lines.splitlines()
+        rendered_lines.extend(line if isinstance(line, str) else str(line) for line in lines)
+    return rendered_lines
+
+
+def _output_history_rows(limit: int, columns: int, painted: bool):
+    """Rows the whole recorded output fills (counted as ``_output_tail_fitting`` does), or
+    ``None`` when that is ``limit`` rows or more."""
+    if not _cli()._OUTPUT_HISTORY_ENABLED:
+        return None
+    total = 0
+    for line in reversed(_output_history_lines()):
+        total += _line_rows(line, (getattr(line, "width", None) if painted else None) or columns)
+        if total >= limit:
+            return None
+    return total
+
+
 def _pt_print_ansi(text: str) -> None:
     """``_pt_print(ANSI(text))``, falling back to ``print`` when stdout is not a real console."""
     from cli import _PT_ANSI, _pt_print

@@ -220,6 +220,19 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
     def _run(args, timeout: float = 20):
         return _git(args, repo_root, timeout=timeout, stdin=subprocess.DEVNULL, env=noninteractive_git_env())
 
+    def _run_scrubbed(args, timeout: float = 20):
+        """Like ``_run``, but stderr is stripped of any embedded credential URL.
+
+        A repo whose recorded remote carries a PAT makes git echo that URL on a
+        failed fetch; this text reaches the worktree label and the log.
+        """
+        from hermes_cli.git_credentials import without_credentials
+
+        proc = _run(args, timeout=timeout)
+        if getattr(proc, "stderr", None):
+            proc.stderr = without_credentials(proc.stderr)
+        return proc
+
     def _ref_exists(ref: str) -> bool:
         try:
             return _run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"]).returncode == 0
@@ -244,14 +257,15 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
         if age is not None and age < freshness_window and _ref_exists(ref):
             return ref, f"{ref} (fetched {int(age)}s ago)"
         try:
-            fetched = _run(["fetch", remote, branch], timeout=fetch_timeout)
+            fetched = _run_scrubbed(["fetch", remote, branch], timeout=fetch_timeout)
             if fetched.returncode == 0:
                 return ref, f"{ref} (fetched)"
             reason = "fetch failed"
         except subprocess.TimeoutExpired:
             reason = f"fetch timed out after {fetch_timeout:g}s"
         except Exception as e:
-            reason = f"fetch error: {e}"
+            from hermes_cli.git_credentials import without_credentials
+            reason = without_credentials(f"fetch error: {e}")
         if _ref_exists(ref):
             logger.debug("worktree base: %s — using cached %s", reason, ref)
             return ref, f"{ref} (cached — {reason})"

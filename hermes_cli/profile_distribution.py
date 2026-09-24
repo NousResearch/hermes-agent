@@ -248,7 +248,7 @@ def _looks_like_git_url(s: str) -> bool:
 def _git_clone(url: str, dest: Path) -> None:
     if _GITHUB_SHORTHAND_RE.match(url):
         url = f"https://{url.rstrip('/')}"
-    from hermes_cli.git_credentials import run_git_with_credential_fallback
+    from hermes_cli.git_credentials import run_git_with_credential_fallback, without_credentials
     try:
         result = run_git_with_credential_fallback(
             ["git", "clone", "--depth", "1", url, str(dest)], url, env=noninteractive_git_env(),
@@ -257,7 +257,7 @@ def _git_clone(url: str, dest: Path) -> None:
     except FileNotFoundError as exc:
         raise DistributionError("git is required for git-URL installs") from exc
     if result.returncode != 0:
-        raise DistributionError(f"git clone failed: {(result.stderr or '').strip()}")
+        raise DistributionError(f"git clone failed: {without_credentials((result.stderr or '').strip())}")
 
 
 def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:

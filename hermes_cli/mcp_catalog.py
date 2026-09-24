@@ -420,24 +420,25 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     git = shutil.which("git")
     if not git:
         raise CatalogError("git is required to install this MCP but was not found on PATH")
+    # Never hang on a credential prompt: installs run from CLI/dashboard flows nobody can answer.
+    from hermes_cli.git_credentials import run_git_with_credential_fallback, without_credentials
+
     if dest.exists():
         # Fresh checkout each install — the manifest ref is the source of truth.
         _say(f"  Removing existing install at {dest}", Colors.DIM)
         rmtree_readonly(dest)
-    _say(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN)
+    _say(f"  Cloning {without_credentials(install.url)} ({install.ref}) → {dest}", Colors.CYAN)
 
     # `git clone --branch` only accepts branches/tags, NOT commit SHAs; detect SHA-shaped refs
     # upfront so the fast path doesn't always fail noisily before the full-clone fallback.
     is_sha_ref = bool(re.fullmatch(r"[0-9a-f]{7,40}", install.ref))
-    # Never hang on a credential prompt: installs run from CLI/dashboard flows nobody can answer.
-    from hermes_cli.git_credentials import run_git_with_credential_fallback
 
     def _git(*args: str) -> int:
         result = run_git_with_credential_fallback(
             [git, *args], install.url, env=noninteractive_git_env(),
             capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0 and (result.stderr or "").strip():
-            _say(result.stderr.strip(), Colors.DIM)
+            _say(without_credentials(result.stderr.strip()), Colors.DIM)
         return result.returncode
 
     if not is_sha_ref and _git("clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)) != 0:
@@ -447,7 +448,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
         is_sha_ref = True
     if is_sha_ref:
         if _git("clone", install.url, str(dest)) != 0:
-            raise CatalogError(f"git clone failed for {install.url}")
+            raise CatalogError(f"git clone failed for {without_credentials(install.url)}")
         if _git("-C", str(dest), "checkout", install.ref) != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 

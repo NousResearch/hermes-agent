@@ -701,6 +701,10 @@ export function mergeSessionPage(
   return interleaved
 }
 
+// Error scope for a failed unified read (Electron's primary fan-out): every
+// profile in the aggregate went unread, not a profile literally named `all`.
+const ALL_PROFILES_SCAN = 'all'
+
 function sidebarProfileKey(session: Pick<SessionInfo, 'profile'>): string {
   return (session.profile ?? '').trim() || 'default'
 }
@@ -735,7 +739,11 @@ export function carryForwardFailedProfileSessions(
   for (const session of previous) {
     // A hidden row (canonical Bot Chat) is LISTED-NEVER by design: the
     // failed-slice carry must not ride it back into the sidebar (#113273).
-    if (session.hidden || !failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+    if (
+      session.hidden ||
+      !(failed.has(ALL_PROFILES_SCAN) || failed.has(sidebarProfileKey(session))) ||
+      incomingIds.has(sessionListIdentity(session))
+    ) {
       continue
     }
 
@@ -765,6 +773,10 @@ export function keepFailedProfileMeta<T>(
 ): Record<string, T> {
   if (!errors?.length) {
     return incoming
+  }
+
+  if (errors.some(error => error.profile?.trim() === ALL_PROFILES_SCAN)) {
+    return previous
   }
 
   const next = { ...incoming }

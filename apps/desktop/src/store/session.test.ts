@@ -777,6 +777,14 @@ describe('carryForwardFailedProfileSessions', () => {
 
     expect(carried.map(s => s.id)).toEqual(['idle'])
   })
+
+  it('keeps every profile when the unified (all) read failed', () => {
+    const previous = [session({ id: 'home', profile: 'default' }), session({ id: 'job', profile: 'work' })]
+
+    expect(
+      carryForwardFailedProfileSessions(previous, [], [{ profile: 'all', error: 'timed out' }]).map(s => s.id)
+    ).toEqual(['home', 'job'])
+  })
 })
 
 describe('keepFailedProfileMeta', () => {
@@ -794,6 +802,12 @@ describe('keepFailedProfileMeta', () => {
       default: { cost_usd: 4, tokens: 40 },
       work: { cost_usd: 2, tokens: 20 }
     })
+  })
+
+  it('keeps all previous meta when the unified (all) read failed', () => {
+    const previous = { default: true, work: false }
+
+    expect(keepFailedProfileMeta(previous, {}, [{ profile: 'all' }])).toBe(previous)
   })
 })
 

@@ -235,11 +235,14 @@ def deliver_to_live_owner(
     pinned = _owner(profile_home, owner)
     if not isinstance(message, str):
         raise ValueError("message must be a string")
+    if notification_category not in ('result', 'diagnostic'):
+        raise ValueError("invalid notification category")
     home = Path(profile_home).resolve()
     return authority_delivery(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
         profile=home.name if home.parent.name == "profiles" else "default",
         message=message, **({"session_id": pinned["session_id"]} if pinned["session_id"] else {}),
-        **({"author": dict(author)} if author else {})))
+        **({"author": dict(author)} if author else {}),
+        **({"notification_category": "diagnostic"} if notification_category == "diagnostic" else {})))
 
 
 def claim_pending_delivery(profile_home, owner):
@@ -281,10 +284,12 @@ def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str
     record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
     if record is not None and record.get('admission_id'):
         home = Path(profile_home).resolve()
-        # The authority compares the stored author to the retry payload; omitting it is a conflict.
+        # Readback replays the immutable envelope; dropping category or author conflicts.
         return authority_delivery(home, dict(id=delivery_id,
             profile=home.name if home.parent.name == 'profiles' else 'default', message=record['message'],
-            **({'author': dict(record['author'])} if record.get('author') else {})))
+            **({'author': dict(record['author'])} if record.get('author') else {}),
+            **({'notification_category': record['notification_category']}
+               if 'notification_category' in record else {})))
     return record
 
 

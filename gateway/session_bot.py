@@ -146,7 +146,8 @@ async def _migrate(authority, actor, home, root):
             _write(path, record)
             continue
         await _admit(authority, actor, home, root, _delivery_id(record['delivery_id']),
-                     record['message'], ref, live, entry, author=parse_turn_author(record.get('author')), legacy=record)
+                     record['message'], ref, live, entry, author=parse_turn_author(record.get('author')), legacy=record,
+                     notification_category=record.get('notification_category', 'result'))
 
 
 async def recover_bot_deliveries(authority):
@@ -191,8 +192,11 @@ def _watch_reply(authority, home, key, admission_id):
 async def deliver(connection, params):
     authority, actor = connection.authority, connection.actor
     home = _home(authority, actor, params.get('profile'))
-    if set(params) - {'id', 'profile', 'message', 'session_id', 'author'}:
+    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category'}:
         raise RuntimeStoreError('invalid_params')
+    from gateway.session_automation import automation_notification_metadata
+    notification = automation_notification_metadata(params)
+    category = notification.get('notification_category', 'result')
     try:
         key = _delivery_id(params.get('id'))
     except ValueError as exc:
@@ -209,7 +213,8 @@ async def deliver(connection, params):
         record = _read(path)
         if record is not None and record.get('admission_id'):
             if (record['message'] != message or record['principal_id'] != actor.subject
-                    or record.get('author') != author):
+                    or record.get('author') != author
+                    or record.get('notification_category', 'result') != category):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             return _result(authority, record)
@@ -217,7 +222,8 @@ async def deliver(connection, params):
         record = _read(path)
         if record is not None and record.get('admission_id'):
             if (record['message'] != message or record['principal_id'] != actor.subject
-                    or record.get('author') != author):
+                    or record.get('author') != author
+                    or record.get('notification_category', 'result') != category):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             return _result(authority, record)
@@ -226,20 +232,26 @@ async def deliver(connection, params):
         ref, live, entry = _target(authority, actor)
         if params.get('session_id', entry.session_id) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
-        return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author)
+        return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
+                            notification_category=category)
 
 
-async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None):
+async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None,
+                 notification_category='result'):
+    from gateway.session_automation import automation_notification_metadata
+    notification = automation_notification_metadata({'notification_category': notification_category})
     path = root / f'{key}.json'
     event = MessageEvent(text=message, source=live.source, internal=True,
         message_id='bot:' + key, metadata={'gateway_session_key': live.route,
                                          'gateway_session_id': entry.session_id})
+    event.metadata.update(notification)
     if author is not None:
         event.metadata['turn_author'] = dict(author)
     # Pin the physical target before committing. A process death in this
     # two-store window leaves an explicit unknown record, never a new target.
     record = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,
         principal_id=actor.subject, message=message, status='ambiguous')
+    record.update(notification)
     if author is not None:
         record['author'] = dict(author)
     _write(path, record)

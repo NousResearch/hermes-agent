@@ -151,6 +151,8 @@ def restore_native(payload, runner=None):
             event._heartbeat_session_id = envelope['automation']['heartbeat']
         event.metadata = {'gateway_session_key': envelope['route'],
                           'gateway_session_id': envelope['automation']['owner']}
+        from gateway.session_automation import automation_notification_metadata
+        event.metadata.update(automation_notification_metadata(envelope['automation']))
     return event
 
 

@@ -71,6 +71,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     """
     from hermes_cli.local_runtime.bootstrap import (
         get_supervisor, refresh_local_runtime, staged_models)
+    from hermes_cli.config import load_config_readonly
     from hermes_cli.local_runtime.context_policy import growth_decision
     from hermes_cli.local_runtime.estimator import profile_from_gguf
     from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
@@ -97,6 +98,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         server_idle = False
 
     budget = probe_budget(planning=True)
+    context_floor = ((load_config_readonly() or {}).get("local_runtime") or {}).get("context_floor")
     decision = growth_decision(
         # Capacity budget, not live-free: growth executes via a server bounce, so the grown
         # instance loads onto a freed card. Live-free is distorted by the very model being grown
@@ -110,12 +112,14 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         # fired on its own threshold. Two separately-derived edges must not deadlock into
         # compress-before-grow.
         occupancy_confirmed=True,
+        floor=context_floor,
     )
     if decision.action != "grow" or not decision.next_window:
         logger.debug("growth %s: %s (%s)", model_id, decision.action, decision.reason)
         return None
 
-    plan = preset_for_model(gguf, budget, set(), requested_window=decision.next_window)
+    plan = preset_for_model(gguf, budget, set(), requested_window=decision.next_window,
+                            context_floor=context_floor)
     if plan is None or plan.refusal or plan.window < decision.next_window:
         logger.debug("growth %s: complete launch footprint does not admit the next rung", model_id)
         return None

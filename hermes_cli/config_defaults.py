@@ -2626,7 +2626,7 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
     # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
-    # llama-server in router mode. No context/VRAM knobs by design.
+    # llama-server in router mode.
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
@@ -2635,6 +2635,9 @@ DEFAULT_CONFIG = {
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
+        # Initial context window in tokens. Lower this on constrained GPUs to keep model weights
+        # resident; invalid values retain the 64K default.
+        "context_floor": 64 * 1024,
         "models_max": 4,  # Router process: how many models may be resident at once.
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).

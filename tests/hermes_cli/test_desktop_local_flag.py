@@ -1,10 +1,8 @@
 """The desktop subcommand's --local launch flag.
 
-Local models ship on main behind this flag: `hermes desktop --local` (or
-`Hermes.exe --local` directly) shows the local-models GUI surfaces; without
-it the desktop hides them all, even when local models are configured. These
-tests pin the argparse contract; the pass-through to the Electron argv lives
-in cmd_gui's launch paths.
+The flag remains accepted for compatibility and is passed through to Electron.
+Desktop local-model surfaces are available by default on supported platforms;
+the Electron launch-policy tests cover that visibility contract.
 """
 
 import argparse
@@ -30,5 +28,4 @@ def test_local_flag_defaults_off():
     args = _parser().parse_args(["desktop"])
 
     assert args.local is False
-
 

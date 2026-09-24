@@ -52,18 +52,19 @@ what a hardware upgrade would unlock.
 
 ## How memory management works
 
-Local models live or die by memory placement, so Hermes manages it
-end-to-end and exposes no knobs:
+Local models live or die by memory placement, so Hermes manages the
+default policy end-to-end:
 
 - **Models start at a context window that fully fits your GPU** and grow
   toward their native maximum as your conversation needs more room. You
   may see "Context window grown" in the status feed during long sessions
   — that's the window expanding, not an error.
-- **Every recommended model gets at least a 64K context window.** When a
+- **Every recommended model starts with a 64K context window by default.** When a
   model is larger than your GPU's memory, Hermes deliberately places the
   overflow in system RAM in the order that hurts least (expert weights
   first, never the attention cache), trading some speed to protect the
-  context guarantee.
+  default context guarantee. On a constrained GPU, lower
+  `local_runtime.context_floor` to prefer a smaller resident context window.
 - **Memory fit includes the launch configuration**, not just the model file:
   context state, runtime buffers, the vision projector, and MTP buffers all
   count. For multi-token prediction (MTP), Hermes uses smaller batches when
@@ -121,6 +122,8 @@ local_runtime:
   enabled: false     # true = start the managed server with Hermes.
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
+  context_floor: 65536  # initial context window in tokens; lower (for example,
+                        # 16384) to keep a model resident on a smaller GPU
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
   detect_ports: [8081]  # extra ports to probe for a llama-server you run

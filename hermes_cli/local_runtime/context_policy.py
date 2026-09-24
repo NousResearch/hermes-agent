@@ -1,8 +1,9 @@
 """Context policy — the window ladder for managed local models.
 
 One contract: any model runs at any window up to its native max; hardware and session depth only
-change tokens/s. Constants, not knobs — nothing in this module reads config. The policy encodes
-behavior measured on real hardware (llama.cpp, discrete NVIDIA on Windows/WDDM, unified-memory).
+change tokens/s. The configured initial floor lets constrained GPUs prefer residency over context.
+The policy encodes behavior measured on real hardware (llama.cpp, discrete NVIDIA on Windows/WDDM,
+unified-memory).
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ from dataclasses import dataclass, field, replace
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes, physics_check)
 
-FLOOR = 64 * 1024                     # = target; one internal constant
+FLOOR = 64 * 1024                     # Default target; callers may lower it for constrained GPUs.
+MINIMUM_FLOOR = 4 * 1024
 _LADDER_GROWTH = 1.5
 _GROW_AT_OCCUPANCY = 0.85             # of the current window, at turn boundary
 SPEED_FLOOR_TOK_S = 6.0               # deepest measured spill bottomed near this
@@ -32,10 +34,18 @@ TARGET_WINDOW = 144 * 1024
 RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
 
 
-def ladder(native: int) -> list[int]:
-    """64K -> 96K -> 128K -> ... -> native (native always the last rung)."""
+def configured_floor(value: object) -> int:
+    """Return a safe configured initial window, retaining the default on invalid input."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= MINIMUM_FLOOR:
+        return value
+    return FLOOR
+
+
+def ladder(native: int, *, floor: int = FLOOR) -> list[int]:
+    """Configured floor -> larger rungs -> native (native is always the last rung)."""
     rungs: list[int] = []
-    step = float(FLOOR)
+    floor = configured_floor(floor)
+    step = float(min(floor, native))
     while step < native:
         rungs.append(int(step))
         step *= _LADDER_GROWTH
@@ -56,21 +66,23 @@ class WindowDecision:
 
 
 def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_attention: bool = True,
-                   overhead_bytes: int = 0) -> WindowDecision | PhysicsRefusal:
-    """The launch decision: largest cheap rung, never below the floor.
+                   overhead_bytes: int = 0, floor: int = FLOOR) -> WindowDecision | PhysicsRefusal:
+    """The launch decision: largest cheap rung, never below the configured floor.
 
     Zero-spill rung: weights + ctx + overhead fit usable VRAM entirely. Bounded-early-cost rung
     (weights already exceed VRAM): largest rung whose ctx stays <= ~15% of usable VRAM. Floor
     everywhere, capped at native. ``overhead_bytes`` is runtime cost beyond weights+KV; zero keeps
     this pure physics for decision-table tests, production callers pass it.
     """
-    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention,
+    floor = configured_floor(floor)
+    effective_floor = min(floor, profile.n_ctx_train or floor)
+    refusal = physics_check(profile, budget, effective_floor, flash_attention=flash_attention,
                             overhead_bytes=overhead_bytes)
     if refusal:
         return refusal
 
-    native = profile.n_ctx_train or FLOOR
-    rungs = ladder(native)
+    native = profile.n_ctx_train or effective_floor
+    rungs = ladder(native, floor=effective_floor)
 
     def kv(rung: int) -> int:
         return ctx_bytes(profile, rung, flash_attention=flash_attention)
@@ -85,14 +97,14 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
             break
         best_zero_spill = rung
 
-    if best_zero_spill is not None and best_zero_spill >= min(FLOOR, native):
+    if best_zero_spill is not None and best_zero_spill >= effective_floor:
         window = best_zero_spill
         reason = f"largest zero-spill rung ({window // 1024}K)"
     else:
         # Weights spill from turn one (steep-curve model on a small card) — hold the floor, bound
         # the early ctx cost.
         cap = int(budget.usable_vram_bytes * _EARLY_COST_CTX_FRACTION)
-        window = min(FLOOR, native)
+        window = effective_floor
         for rung in rungs:
             if rung < window:
                 continue
@@ -117,7 +129,7 @@ class LaunchPlan:
 
 def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: bool = False,
                 fixed_overhead: int = RUNTIME_OVERHEAD_BYTES,
-                requested_window: int | None = None) -> LaunchPlan:
+                requested_window: int | None = None, floor: int = FLOOR) -> LaunchPlan:
     """Window first, then prefill; price both postures at the effective window.
 
     A restored window may fit only under lean MTP. Evaluate it before discarding it because
@@ -131,7 +143,7 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
     def candidate(stacked: bool) -> LaunchPlan:
         overhead = fixed_overhead + ub_logits_bytes(
             profile.n_vocab, mtp_capable=mtp_capable, mtp_prefill=stacked)
-        decision = initial_window(profile, budget, overhead_bytes=overhead)
+        decision = initial_window(profile, budget, overhead_bytes=overhead, floor=floor)
         initial[stacked] = decision
         if isinstance(decision, WindowDecision) and requested_window:
             target = min(requested_window, profile.n_ctx_train or requested_window)
@@ -176,7 +188,7 @@ class GrowthDecision:
 def growth_decision(profile: ModelProfile, budget: HardwareBudget, *,
                     current_window: int, session_tokens: int, measured_decode_tok_s: float | None,
                     server_idle: bool, flash_attention: bool = True,
-                    occupancy_confirmed: bool = False) -> GrowthDecision:
+                    occupancy_confirmed: bool = False, floor: int = FLOOR) -> GrowthDecision:
     """One growth evaluation, END-OF-TURN ONLY (recurrent state cannot rewind mid-sequence).
 
     Gate order: occupancy (~85%) → native cap → idleness (growth only on an otherwise-idle
@@ -202,7 +214,7 @@ def growth_decision(profile: ModelProfile, budget: HardwareBudget, *,
                     f"~{SPEED_FLOOR_TOK_S:.0f} tok/s floor; growth is now an "
                     "explicit per-session choice"))
 
-    next_rung = next((r for r in ladder(native) if r > current_window), native)
+    next_rung = next((r for r in ladder(native, floor=floor) if r > current_window), native)
 
     # Re-fit against live free memory: allocation beyond residency is the slow path, so a rung
     # that no longer fits doesn't get granted.

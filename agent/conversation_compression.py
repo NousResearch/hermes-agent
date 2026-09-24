@@ -3452,9 +3452,9 @@ def _finish_compaction_boundary(
 
     # Providers refresh cached per-session state; reset=False, conversation goes on.
     # Fires in BOTH modes so buffers don't double-count dropped turns in-place.
-    with _swallow('memory manager on_session_switch (compression): %s'):
+    with _swallow('memory manager on_session_switch_async (compression): %s'):
         if (bool(_old_sid) or in_place) and agent._memory_manager:
-            agent._memory_manager.on_session_switch(
+            agent._memory_manager.on_session_switch_async(
                 agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
             )
 

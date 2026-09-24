@@ -126,7 +126,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   /** Refresh the active profile's messaging-platform sidebar slice. */
   const refreshMessagingSessions = useCallback(async () => {
     const sessionProfile = sidebarProfileForScope(profileScope)
-    const activationEpoch = gatewayActivationEpoch()
 
     // A callback captured before a profile switch may still be queued by an
     // event subscription. Do not let it start a request against the old scope.
@@ -137,16 +136,27 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     const requestId = refreshMessagingSessionsRequestRef.current + 1
     refreshMessagingSessionsRequestRef.current = requestId
 
-    try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
+    const owns = () =>
+      refreshMessagingSessionsRequestRef.current === requestId &&
+      sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+
+    const fetchPage = () =>
+      listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
 
-      if (
-        refreshMessagingSessionsRequestRef.current !== requestId ||
-        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
-        gatewayActivationEpoch() !== activationEpoch
-      ) {
+    try {
+      let activationEpoch = gatewayActivationEpoch()
+      let result = await fetchPage()
+
+      // Same re-read as refreshSessions: a mid-request activation voids this
+      // page, and nothing else asks again when the route atoms did not move.
+      while (owns() && gatewayActivationEpoch() !== activationEpoch) {
+        activationEpoch = gatewayActivationEpoch()
+        result = await fetchPage()
+      }
+
+      if (!owns()) {
         return
       }
 
@@ -167,7 +177,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const loadMoreMessagingForPlatform = useCallback(
     async (platform: string) => {
       const sessionProfile = sidebarProfileForScope(profileScope)
-      const activationEpoch = gatewayActivationEpoch()
 
       if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
         return
@@ -183,27 +192,31 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfile(s)
       const loaded = $messagingSessions.get().filter(inPlatform).length
 
+      const owns = () =>
+        loadMoreMessagingRequestRef.current[requestKey] === requestId &&
+        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+
+      const fetchPage = () =>
+        listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
+          source: platform
+        })
+
       let result
 
       try {
-        result = await listAllProfileSessions(
-          loaded + SIDEBAR_SESSIONS_PAGE_SIZE,
-          1,
-          'exclude',
-          'recent',
-          sessionProfile,
-          { source: platform }
-        )
+        let activationEpoch = gatewayActivationEpoch()
+        result = await fetchPage()
+
+        while (owns() && gatewayActivationEpoch() !== activationEpoch) {
+          activationEpoch = gatewayActivationEpoch()
+          result = await fetchPage()
+        }
       } catch {
         // Non-fatal: leave the platform's loaded rows and total unchanged.
         return
       }
 
-      if (
-        loadMoreMessagingRequestRef.current[requestKey] !== requestId ||
-        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
-        gatewayActivationEpoch() !== activationEpoch
-      ) {
+      if (!owns()) {
         return
       }
 
@@ -244,7 +257,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const refreshSessions = useCallback(
     async (shouldPublish: () => boolean = () => true) => {
       const sessionProfile = sidebarProfileForScope(profileScope)
-      const activationEpoch = gatewayActivationEpoch()
 
       if (!shouldPublish() || sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
         return
@@ -262,6 +274,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setSessionsLoading(true)
       }
 
+      const owns = () =>
+        shouldPublish() &&
+        refreshSessionsRequestRef.current === requestId &&
+        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+
       try {
         const limit = $sessionsLimit.get()
 
@@ -278,21 +295,33 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Batched: one request opens each profile DB once and returns all three
         // source-scoped slices, instead of three separate listAllProfileSessions
         // calls that each reopened + re-counted every profile DB per refresh.
-        const result = await listSidebarSessions({
-          recentsProfile: sessionProfile,
-          recentsLimit: limit,
-          recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
-          cronLimit: CRON_SECTION_LIMIT,
-          messagingLimit: MESSAGING_SECTION_LIMIT,
-          messagingExclude: MESSAGING_EXCLUDED_SOURCES
-        })
+        const fetchPage = () =>
+          listSidebarSessions({
+            recentsProfile: sessionProfile,
+            recentsLimit: limit,
+            recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
+            cronLimit: CRON_SECTION_LIMIT,
+            messagingLimit: MESSAGING_SECTION_LIMIT,
+            messagingExclude: MESSAGING_EXCLUDED_SOURCES
+          })
 
-        if (
-          shouldPublish() &&
-          refreshSessionsRequestRef.current === requestId &&
-          sidebarProfileForScope(profileScopeRef.current) === sessionProfile &&
-          gatewayActivationEpoch() === activationEpoch
-        ) {
+        let activationEpoch = gatewayActivationEpoch()
+        let result = await fetchPage()
+
+        // A gateway activation that landed mid-request voids this page: it may
+        // describe the source the window just left. But every activation bumps
+        // the epoch, including a re-activation of the route already in front
+        // (a resume or profile click through ensureGatewayAgent), and those
+        // move no route atom, so no effect asks for the list again. Dropping
+        // the page there left the sidebar on "No sessions" while the backend
+        // held the rows (#67600). Still the newest refresh for this scope, so
+        // re-read under the current epoch instead.
+        while (owns() && gatewayActivationEpoch() !== activationEpoch) {
+          activationEpoch = gatewayActivationEpoch()
+          result = await fetchPage()
+        }
+
+        if (owns()) {
           const recents = result.recents
 
           setCorruptSessionStores(result.storage)

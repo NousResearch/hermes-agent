@@ -6,8 +6,10 @@ import json
 import os
 import re
 import secrets
+import stat
 import time
 import urllib.request
+from copy import deepcopy
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict
@@ -19,6 +21,13 @@ from hermes_cli.config import cfg_get
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 _SUBSCRIPTIONS_FILE_MODE = 0o600
+# Replacement routes keep plugin/custom metadata, but omitted optional fields
+# from the old command/form must not remain active after an update.
+_ROUTE_FORM_FIELDS = frozenset({
+    "description", "events", "prompt", "skills", "deliver", "created_at",
+    "secret", "profile", "deliver_only", "mirror_to_session", "cron_job",
+    "script", "deliver_extra",
+})
 
 
 def _subscriptions_path() -> Path:
@@ -42,6 +51,17 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
     # rename (no umask window) and re-asserts the mode on the destination afterwards.
     atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
 
+def _existing_route(subs: dict, name: str) -> dict:
+    """A writer must not silently replace a damaged route it is targeting."""
+    route = subs[name]
+    if not isinstance(route, dict):
+        raise ValueError(f"Webhook subscription '{name}' is not an object.")
+    return route
+
+def _replace_route(existing: dict, route: dict) -> dict:
+    return {**{key: value for key, value in existing.items()
+               if key not in _ROUTE_FORM_FIELDS}, **route}
+
 
 @contextmanager
 def _subscription_transaction():
@@ -54,8 +74,14 @@ def _subscription_transaction():
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(path.parent)
     lock_path = path.with_name(path.name + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    # The plugin uses the same persistent sibling inode. Never follow a planted
+    # lock symlink: fchmod below would otherwise change its unrelated target.
+    if not hasattr(os, "O_NOFOLLOW") and lock_path.is_symlink():
+        raise ValueError("Webhook subscriptions lock must not be a symlink.")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Webhook subscriptions lock must be a regular file.")
         if os.name == "nt":
             import msvcrt
             # Lock one byte of the persistent file; seek before every operation.
@@ -70,10 +96,14 @@ def _subscription_transaction():
                 data = json.loads(path.read_text(encoding="utf-8"))
             except FileNotFoundError:
                 data = {}
+            except (json.JSONDecodeError, UnicodeError) as exc:
+                raise ValueError("Webhook subscriptions registry is invalid JSON.") from exc
             if not isinstance(data, dict):
-                raise ValueError(f"Webhook subscriptions registry is not an object: {path}")
+                raise ValueError("Webhook subscriptions registry is not an object.")
+            original = deepcopy(data)
             yield data
-            atomic_json_write(path, data, mode=_SUBSCRIPTIONS_FILE_MODE, fsync_dir=True)
+            if data != original:
+                atomic_json_write(path, data, mode=_SUBSCRIPTIONS_FILE_MODE, fsync_dir=True)
         finally:
             if os.name == "nt":
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -216,14 +246,18 @@ def _cmd_subscribe(args):
         route["script"] = script
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
-    with _subscription_transaction() as subs:
-        is_update = name in subs
-        existing = subs.get(name, {})
-        profile = existing.get("profile", "default") if profile_arg is None else profile
-        secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
-        route["profile"] = profile
-        route["secret"] = secret
-        subs[name] = route
+    try:
+        with _subscription_transaction() as subs:
+            is_update = name in subs
+            existing = _existing_route(subs, name) if is_update else {}
+            profile = existing.get("profile", "default") if profile_arg is None else profile
+            secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
+            route["profile"] = profile
+            route["secret"] = secret
+            subs[name] = _replace_route(existing, route)
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not update webhook subscriptions: {exc}")
+        return
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
@@ -278,12 +312,17 @@ def _cmd_list(args):
 
 def _cmd_remove(args):
     name = args.name.strip().lower()
-    with _subscription_transaction() as subs:
-        if name not in subs:
-            print(f"  No subscription named '{name}'.")
-            print("  Note: Static routes from config.yaml cannot be removed here.")
-            return
-        del subs[name]
+    try:
+        with _subscription_transaction() as subs:
+            if name not in subs:
+                print(f"  No subscription named '{name}'.")
+                print("  Note: Static routes from config.yaml cannot be removed here.")
+                return
+            _existing_route(subs, name)
+            del subs[name]
+    except (ValueError, OSError) as exc:
+        print(f"Error: Could not update webhook subscriptions: {exc}")
+        return
     print(f"  Removed webhook subscription: {name}")
 
 

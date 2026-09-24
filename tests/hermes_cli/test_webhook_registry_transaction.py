@@ -11,6 +11,7 @@ from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from fastapi import HTTPException
 
 from hermes_cli import webhook as wh
 from hermes_cli.web_routers import ops
@@ -46,7 +47,7 @@ def test_plugin_lock_serializes_cli_and_dashboard_mutations(tmp_path, monkeypatc
 import fcntl, json, os, sys
 from pathlib import Path
 p = Path(sys.argv[1]); lock = p.with_name(p.name + ".lock")
-fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
 print("LOCKED", flush=True)
 sys.stdin.readline()
@@ -58,8 +59,13 @@ fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)
                                  text=True, env={**os.environ, "HERMES_HOME": str(tmp_path)})
         try:
             assert child.stdout.readline().strip() == "LOCKED"
+            started = threading.Event()
+            def run_action():
+                started.set()
+                action()
             with ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(action)
+                future = pool.submit(run_action)
+                assert started.wait(timeout=10)
                 # Release before asserting: executor shutdown must not strand a waiter.
                 threading.Event().wait(0.15)
                 completed_while_locked = future.done()
@@ -83,19 +89,88 @@ fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)
 
 
 @pytest.mark.parametrize("bad", ["{broken", "[]", "null"])
-def test_mutations_fail_closed_on_corrupt_registry(tmp_path, monkeypatch, bad):
+def test_mutations_fail_closed_on_corrupt_registry(tmp_path, monkeypatch, bad, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
     path = wh._subscriptions_path()
     path.write_text(bad)
-    actions = [lambda: _cli("subscribe", "new"), lambda: _cli("remove", "old"),
-               lambda: asyncio.run(ops.create_webhook(WebhookCreate(name="new"))),
+    for action in (lambda: _cli("subscribe", "new"), lambda: _cli("remove", "old")):
+        action()
+        assert "Error: Could not update webhook subscriptions" in capsys.readouterr().out
+        assert path.read_text() == bad
+    actions = [lambda: asyncio.run(ops.create_webhook(WebhookCreate(name="new"))),
                lambda: asyncio.run(ops.delete_webhook("old")),
                lambda: asyncio.run(ops.set_webhook_enabled("old", WebhookEnabledToggle(enabled=False)))]
     for action in actions:
-        with pytest.raises((ValueError, json.JSONDecodeError)):
+        with pytest.raises(HTTPException) as error:
             action()
+        assert error.value.status_code == 409
+        assert "registry" in error.value.detail
         assert path.read_text() == bad
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW unavailable")
+def test_planted_lock_symlink_does_not_chmod_target_or_write_registry(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    path.write_text('{"keep":{"secret":"safe"}}')
+    target = tmp_path / "unrelated"
+    target.write_text("untouched")
+    target.chmod(0o644)
+    path.with_name(path.name + ".lock").symlink_to(target)
+    _cli("subscribe", "new")
+    assert "Error: Could not update webhook subscriptions" in capsys.readouterr().out
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(ops.create_webhook(WebhookCreate(name="new")))
+    assert error.value.status_code == 500
+    assert target.read_text() == "untouched"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert json.loads(path.read_text()) == {"keep": {"secret": "safe"}}
+
+def test_malformed_target_refused_without_clobbering_other_routes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    initial = {"bad": "bad-route", "good": {"secret": "old", "custom": {"x": 1},
+                                            "script": "/old/script", "deliver_only": True}}
+    path.write_text(json.dumps(initial))
+    for action in (lambda: _cli("subscribe", "bad"), lambda: _cli("remove", "bad")):
+        action()
+        assert "not an object" in capsys.readouterr().out
+        assert json.loads(path.read_text()) == initial
+    for action in (lambda: ops.create_webhook(WebhookCreate(name="bad")),
+                   lambda: ops.delete_webhook("bad"),
+                   lambda: ops.set_webhook_enabled("bad", WebhookEnabledToggle(enabled=False))):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(action())
+        assert error.value.status_code == 409
+        assert "not an object" in error.value.detail
+        assert json.loads(path.read_text()) == initial
+    _cli("subscribe", "good")
+    updated = json.loads(path.read_text())["good"]
+    assert updated["custom"] == {"x": 1}
+    assert "script" not in updated and "deliver_only" not in updated
+    asyncio.run(ops.create_webhook(WebhookCreate(name="good")))
+    result = json.loads(path.read_text())
+    assert result["good"]["custom"] == {"x": 1}
+    assert result["bad"] == "bad-route"
+
+def test_absent_cli_remove_does_not_replace_registry_inode(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wh, "_is_webhook_enabled", lambda: True)
+    path = wh._subscriptions_path()
+    contents = '{"kept": {"secret": "old"}}\n'
+    path.write_text(contents)
+    inode = path.stat().st_ino
+    _cli("remove", "missing")
+    assert "No subscription named 'missing'" in capsys.readouterr().out
+    assert path.stat().st_ino == inode
+    assert path.read_text() == contents
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(ops.delete_webhook("missing"))
+    assert error.value.status_code == 404
+    assert path.stat().st_ino == inode
+    assert path.read_text() == contents
 
 
 def test_dashboard_profile_a_b_a_registry_isolation(tmp_path, monkeypatch):

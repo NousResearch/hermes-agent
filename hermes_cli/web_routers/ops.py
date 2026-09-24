@@ -227,10 +227,11 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
 
     def _save():
         with wh._subscription_transaction() as subs:
-            subs[name] = route
+            existing = wh._existing_route(subs, name) if name in subs else {}
+            subs[name] = wh._replace_route(existing, route)
         return _webhook_route_summary(name, route, wh._get_webhook_base_url())
 
-    summary = await config_scoped_to_thread(profile, _save)
+    summary = await _webhook_write(profile, _save)
     summary["secret"] = secret  # surfaced exactly once, on create
     return summary
 
@@ -240,7 +241,19 @@ def _webhook_subs_with(subs: dict, name: str):
     key = (name or "").strip().lower()
     if key not in subs:
         raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
+    import hermes_cli.webhook as wh
+    wh._existing_route(subs, key)
     return key
+
+async def _webhook_write(profile, action):
+    """Present damaged registries as a conflict, not an internal traceback."""
+    try:
+        return await config_scoped_to_thread(profile, action)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        _log.exception("Could not update webhook subscriptions")
+        raise HTTPException(status_code=500, detail="Could not update webhook subscriptions.") from exc
 
 
 @router.delete("/api/webhooks/{name}")
@@ -252,7 +265,7 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
         with wh._subscription_transaction() as subs:
             del subs[_webhook_subs_with(subs, name)]
 
-    await config_scoped_to_thread(profile, _run)
+    await _webhook_write(profile, _run)
     return {"ok": True}
 
 
@@ -267,7 +280,7 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
             subs[key]["enabled"] = bool(body.enabled)
             return key
 
-    key = await config_scoped_to_thread(profile, _run)
+    key = await _webhook_write(profile, _run)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}
 
 

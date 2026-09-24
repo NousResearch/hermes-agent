@@ -534,3 +534,17 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_UNLINK_SCHEMA = _schema(
+    "kanban_unlink",
+    (
+        "Remove an existing parent→child dependency edge. Use this to correct "
+        "a dependency linked in the wrong direction; the former child is "
+        "immediately re-evaluated for readiness."
+    ),
+    {
+        "parent_id": {"type": "string", "description": "Parent task id."},
+        "child_id": {"type": "string", "description": "Child task id."},
+    },
+    ["parent_id", "child_id"],
+)

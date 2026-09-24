@@ -605,6 +605,49 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
         assert kb.parent_ids(conn, foreign_child) == []
 
 
+def test_worker_can_unlink_wrong_direction_dependency_through_registry(worker_env):
+    """A worker can undo a reversed dependency through the registered tool.
+
+    Workers may create and link follow-up cards.  If the follow-up is linked
+    as a child instead of a parent, it is gated by the running worker card;
+    the same worker needs an in-tool recovery path rather than a CLI handoff.
+    """
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools  # noqa: F401 -- register the real tool handlers
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    names = {item["function"].get("name") for item in schema if "function" in item}
+    assert "kanban_unlink" in names
+
+    with kbc.connect() as conn:
+        prerequisite = kb.create_task(conn, title="prerequisite", assignee="peer")
+
+    linked = json.loads(registry.dispatch("kanban_link", {
+        "parent_id": worker_env,
+        "child_id": prerequisite,
+    }))
+    assert linked["ok"] is True
+    assert linked["gated"] is True
+
+    unlinked = json.loads(registry.dispatch("kanban_unlink", {
+        "parent_id": worker_env,
+        "child_id": prerequisite,
+    }))
+    assert unlinked == {"ok": True, "parent_id": worker_env, "child_id": prerequisite}
+
+    missing_child = json.loads(registry.dispatch("kanban_unlink", {"parent_id": worker_env}))
+    assert missing_child.get("ok") is not True
+    assert "both parent_id and child_id are required" in missing_child["error"]
+
+    with kbc.connect() as conn:
+        assert kb.parent_ids(conn, prerequisite) == []
+        assert kb.get_task(conn, prerequisite).status == "ready"
+
+
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb

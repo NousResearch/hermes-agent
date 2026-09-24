@@ -41,5 +41,10 @@ def record_acceptance(conn, task_id, acceptance):
     _append_event(conn, task_id, "pr_acceptance", receipt, run_id=snapshot[0])
     if not receipt["ok"]:
         detail = f"PR acceptance {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
-        conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (detail, task_id))
+        # Keep an independent auth fingerprint; rejection is its own hold.
+        conn.execute(
+            "UPDATE tasks SET acceptance_rejected=1, "
+            "last_failure_error=COALESCE(last_failure_error, ?) WHERE id=?",
+            (detail, task_id),
+        )
     return receipt["ok"]

@@ -489,7 +489,7 @@ def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
 
 
 def _gemini_audio_tags_enabled(gemini_config: Dict[str, Any], model: str) -> bool:
-    """Audio tags are opt-in and only Gemini 3.1 TTS models are known to honor them."""
+    """Audio tags are opt-in for Gemini 3.1 and 3.8 TTS models."""
     raw = gemini_config.get("audio_tags")
     if isinstance(raw, dict):
         raw = raw.get("enabled")
@@ -498,9 +498,17 @@ def _gemini_audio_tags_enabled(gemini_config: Dict[str, Any], model: str) -> boo
     normalized = (model or "").strip().lower().rsplit("/", 1)[-1]
     if "gemini-3.1" in normalized and "tts" in normalized:
         return True
+    if _is_gemini_38_tts_model(normalized):
+        return True
     logger.warning("Gemini TTS audio_tags enabled, but model %s is not known to support "
                    "Gemini audio tags; skipping hidden tag rewrite", model)
     return False
+
+
+def _is_gemini_38_tts_model(model: str) -> bool:
+    """Whether *model* uses Gemini 3.8's verbatim-transcript TTS schema."""
+    normalized = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return normalized in {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"}
 
 
 def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
@@ -525,6 +533,21 @@ def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
                    f"TRANSCRIPT TO TAG:\n{transcript}")
     return _rewrite_with_auxiliary_model(system_prompt, user_prompt, text, label="Gemini TTS",
                                          fallback_label="untagged text", level=logging.WARNING)
+
+
+def _rewrite_gemini_38_tts_audio_tags(text: str) -> str:
+    """Insert only momentary Gemini 3.8 vocal events, never sustained style direction."""
+    transcript = text.strip()
+    if not transcript:
+        return text
+    system_prompt = (
+        "You rewrite transcripts for Gemini 3.8 TTS by inserting only momentary vocal events.\n\n"
+        "Use angle-bracket events such as <laugh>, <sigh>, <cough>, <breath>, or <short pause>. "
+        "Do not add sustained delivery instructions, square-bracket tags, SSML, or XML.\n\n"
+        + _TAG_REWRITE_RULES + _TAG_REWRITE_TAIL)
+    return _rewrite_with_auxiliary_model(
+        system_prompt, f"TRANSCRIPT TO TAG:\n{transcript}", text, label="Gemini 3.8 TTS",
+        fallback_label="untagged text", level=logging.WARNING)
 
 
 def _compose_gemini_tts_prompt(text: str, gemini_config: Dict[str, Any], persona_prompt: Optional[str] = None) -> str:
@@ -556,9 +579,11 @@ def _gemini_error_detail(response: Any) -> str:
     return message or raw_body.decode("utf-8", errors="replace")[:300]
 
 
-def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_gemini_tts(
+    text: str, output_path: str, tts_config: Dict[str, Any], instructions: Optional[str] = None,
+) -> str:
     """Generate audio via Gemini ``generateContent`` (``responseModalities=["AUDIO"]``). The reply is
-    base64 24kHz mono 16-bit PCM, wrapped as WAV and ffmpeg-converted to the requested container."""
+    base64 audio. Legacy models return PCM; Gemini 3.8 returns WAV by default."""
     origin = _origin()
     api_key = origin._resolve_provider_key("GEMINI_API_KEY", "gemini") or origin._resolve_provider_key(
         "GOOGLE_API_KEY", "gemini")
@@ -567,16 +592,19 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     gemini_config = _section(tts_config, "gemini")
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+    is_38_tts = _is_gemini_38_tts_model(model)
     from hermes_cli.config import get_env_value
     from agent.gemini_native_adapter import normalize_gemini_base_url
     base_url = normalize_gemini_base_url(
         gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
     )
-    persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    # Gemini 3.8 accepts verbatim transcript text; legacy persona notes must never enter it.
+    persona_prompt = "" if is_38_tts else _read_gemini_persona_prompt(gemini_config)
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):
-        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
-    prompt_text = _compose_gemini_tts_prompt(
+        tts_script = (_rewrite_gemini_38_tts_audio_tags(text) if is_38_tts
+                      else _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt))
+    prompt_text = tts_script if is_38_tts else _compose_gemini_tts_prompt(
         tts_script, gemini_config, persona_prompt=persona_prompt)
     max_len = origin._resolve_max_text_length("gemini", tts_config)
     if len(prompt_text) > max_len:
@@ -585,11 +613,18 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
             "prompt or lower tts.gemini.max_text_length so long-form text is "
             "split with enough prompt headroom.")
+    part: Dict[str, Any] = {"text": prompt_text}
+    if is_38_tts:
+        style = instructions if isinstance(instructions, str) and instructions.strip() else gemini_config.get("style")
+        if isinstance(style, str) and style.strip():
+            part["speech_metadata"] = {"style": style.strip()}
+    voice_config = ({"voice": voice} if is_38_tts
+                    else {"prebuiltVoiceConfig": {"voiceName": voice}})
     payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": prompt_text}]}],
+        "contents": [{"parts": [part]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+            "speechConfig": {"voiceConfig": voice_config},
         },
     }
     headers = {"Content-Type": "application/json"}
@@ -609,9 +644,13 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
         if audio_part is None:
             raise RuntimeError("Gemini TTS response contained no audio data")
-        audio_b64 = (audio_part.get("inlineData") or audio_part.get("inline_data") or {}).get("data", "")
+        inline_data = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
+        audio_b64 = inline_data.get("data", "")
+        mime_type = str(inline_data.get("mimeType") or inline_data.get("mime_type") or "").lower()
     except (KeyError, IndexError, TypeError) as e:
         raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
     if not audio_b64:
         raise RuntimeError("Gemini TTS returned empty audio data")
-    return _write_wav_bytes_as(_wrap_pcm_as_wav(base64.b64decode(audio_b64)), output_path)
+    audio_bytes = base64.b64decode(audio_b64)
+    wav_bytes = audio_bytes if mime_type.split(";", 1)[0] in {"audio/wav", "audio/x-wav"} else _wrap_pcm_as_wav(audio_bytes)
+    return _write_wav_bytes_as(wav_bytes, output_path)

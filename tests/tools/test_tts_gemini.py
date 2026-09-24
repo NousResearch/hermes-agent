@@ -155,6 +155,70 @@ class TestGenerateGeminiTts:
         )
         assert voice == "Puck"
 
+    def test_38_uses_verbatim_transcript_metadata_voice_and_wav(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression for #121082: Gemini 3.8 must not speak legacy persona notes."""
+        from tools.tts_tool import _generate_gemini_tts
+
+        wav = b"RIFF\x10\x00\x00\x00WAVEfmt " + b"already-a-wav"
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"inlineData": {
+                "mimeType": "audio/wav", "data": base64.b64encode(wav).decode(),
+            }}]}}],
+        }
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {
+            "model": "gemini-3.8-flash-tts", "voice": "voice_designed",
+            "style": "warm and measured",
+        }}
+
+        with patch("tools.tts_tool_providers._read_gemini_persona_prompt", return_value="DO NOT SPEAK"), \
+             patch("requests.post", return_value=response) as mock_post:
+            _generate_gemini_tts("Hello there.", str(tmp_path / "test.wav"), config)
+
+        part = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]
+        assert part == {
+            "text": "Hello there.",
+            "speech_metadata": {"style": "warm and measured"},
+        }
+        assert mock_post.call_args.kwargs["json"]["generationConfig"]["speechConfig"] == {
+            "voiceConfig": {"voice": "voice_designed"},
+        }
+        assert (tmp_path / "test.wav").read_bytes() == wav
+
+    def test_38_instructions_override_configured_style(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import text_to_speech_tool
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        with patch("tools.tts_tool._load_tts_config", return_value={
+            "provider": "gemini", "gemini": {
+                "model": "gemini-3.8-flash-lite-tts", "style": "calm",
+            },
+        }), patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            result = text_to_speech_tool(
+                "Hello.", output_path=str(tmp_path / "test.wav"), instructions="bright and quick")
+
+        assert '"success": true' in result
+        part = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]
+        assert part["speech_metadata"] == {"style": "bright and quick"}
+
+    def test_38_audio_tags_use_angle_events(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="Hello <sigh>."))]
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        with patch("agent.auxiliary_client.call_llm", return_value=response) as rewrite, \
+             patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hello.", str(tmp_path / "test.wav"), {
+                "gemini": {"model": "gemini-3.8-flash-tts", "audio_tags": True},
+            })
+
+        assert mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"] == "Hello <sigh>."
+        assert "angle-bracket events" in rewrite.call_args.kwargs["messages"][0]["content"]
+
 
     def test_audio_tag_rewrite_failure_falls_back_to_original_text(
         self, tmp_path, monkeypatch, mock_gemini_response, caplog

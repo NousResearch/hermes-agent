@@ -230,6 +230,8 @@ def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[
         _run_edge_tts(text, file_str, tts_config)
     elif engine == "openai":
         _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
+    elif engine == "gemini":
+        _generate_gemini_tts(text, file_str, tts_config, instructions=instructions)
     else:
         globals()[entry[2]](text, file_str, tts_config)
 

@@ -15,6 +15,7 @@ import {
   migrateProfileScopedDesktopPlugins,
   reconcileUnifiedDesktopHalves
 } from './desktop-plugins-root'
+import { DESKTOP_PROFILE_NAME_RE } from './desktop-profile'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
 
@@ -99,8 +100,12 @@ export function registerFsIpc({
   // Profile-scoped roots (agent plugins, logs) live under profiles/<name>/ for a
   // named Desktop profile — they belong to THAT agent. 'default'/unset pins the
   // global root.
-  async function localPluginsRoot(dirName: string): Promise<string> {
-    const profile = readActiveDesktopProfile()
+  async function localPluginsRoot(dirName: string, requestedProfile?: unknown): Promise<string> {
+    // A renderer request may identify the profile that owns its chat. Keep the
+    // launch-profile fallback for callers that have no session scope, and
+    // reject malformed renderer input so this IPC cannot escape profiles/.
+    const requested = typeof requestedProfile === 'string' ? requestedProfile.trim() : ''
+    const profile = requested && DESKTOP_PROFILE_NAME_RE.test(requested) ? requested : readActiveDesktopProfile()
     const base = profile && profile !== 'default' ? path.join(hermesHome, 'profiles', profile) : hermesHome
 
     return ensureDir(path.join(base, dirName))
@@ -134,7 +139,7 @@ export function registerFsIpc({
   // card's "Open Logs" action reveals agent.log/gateway.log without the user
   // knowing where HERMES_HOME lives. Same Electron-local resolution as the
   // plugin roots: valid in every connection mode, created on demand.
-  ipcMain.handle('hermes:fs:logsRoot', async () => localPluginsRoot('logs'))
+  ipcMain.handle('hermes:fs:logsRoot', async (_event, profile) => localPluginsRoot('logs', profile))
 
   ipcMain.handle('hermes:plugin:probe', async (_event, payload) => {
     const identifier = String(payload?.identifier || payload?.repo || '').trim()

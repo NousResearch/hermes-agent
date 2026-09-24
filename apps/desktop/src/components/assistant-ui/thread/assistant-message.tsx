@@ -778,6 +778,7 @@ const ErrorRecoveryActions: FC = () => {
   // the label says "Open Desktop logs" there instead of implying it opens the
   // runtime's logs.
   const remoteConnection = connection?.mode === 'remote'
+  const { profile: composerProfile } = useComposerScope()
 
   // One table decides which buttons this failure gets (lib/error-surface.ts).
   const plan = errorRecoveryPlan(surface)
@@ -788,6 +789,7 @@ const ErrorRecoveryActions: FC = () => {
   // reload.env → model confirm). Scoped to the gateway profile the failed
   // session runs on, so a Bot profile's grant is renewed, not the primary's.
   const gatewayProfile = useStore($activeGatewayProfile)
+  const logsProfile = normalizeProfileKey(composerProfile ?? gatewayProfile)
 
   const signInAgain = useCallback(() => {
     if (!isOAuthReauthSurface(surface)) {
@@ -809,25 +811,28 @@ const ErrorRecoveryActions: FC = () => {
   // Reveal a local folder through Electron; `logsRoot` is the profile's
   // HERMES_HOME/logs, and its parent is the Hermes data folder itself (what
   // the user needs to see to free space after a disk-full failure).
-  const openLocalDir = useCallback(async (resolve: (logsRoot: string) => string, failedMessage: string) => {
-    try {
-      const root = await window.hermesDesktop?.logsRoot?.()
+  const openLocalDir = useCallback(
+    async (resolve: (logsRoot: string) => string, failedMessage: string) => {
+      try {
+        const root = await window.hermesDesktop?.logsRoot?.(logsProfile)
 
-      if (!root) {
-        notifyError(new Error('logs root unavailable'), failedMessage)
+        if (!root) {
+          notifyError(new Error('logs root unavailable'), failedMessage)
 
-        return
+          return
+        }
+
+        const result = await window.hermesDesktop?.openDir?.(resolve(root))
+
+        if (result && !result.ok) {
+          notifyError(new Error(result.error || 'open failed'), failedMessage)
+        }
+      } catch (error) {
+        notifyError(error, failedMessage)
       }
-
-      const result = await window.hermesDesktop?.openDir?.(resolve(root))
-
-      if (result && !result.ok) {
-        notifyError(new Error(result.error || 'open failed'), failedMessage)
-      }
-    } catch (error) {
-      notifyError(error, failedMessage)
-    }
-  }, [])
+    },
+    [logsProfile]
+  )
 
   const openLogs = useCallback(
     () => openLocalDir(root => root, copy.errorOpenLogsFailed),

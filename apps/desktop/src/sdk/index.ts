@@ -103,7 +103,6 @@ import {
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
-import { setSidebarNavHidden, setSidebarNavOrder } from '@/store/sidebar-nav'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
@@ -922,33 +921,6 @@ export const host = {
 
   /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
   sessions: sessionsHost,
-
-  /** Sidebar nav preferences — hide or re-order the sidebar's nav rows (core
-   *  built-ins and contributed rows alike), the way a sidebar-manager plugin
-   *  wants to. Core still owns rendering: a preference only ever moves or drops
-   *  a row that would otherwise render, and an id naming a row that no longer
-   *  exists is inert.
-   *
-   *  Preferences PERSIST (a disable → enable cycle must not scramble the layout
-   *  the user chose), which means they also outlive the plugin that wrote them:
-   *  a row this call hid stays hidden after the plugin is removed. Clearing one
-   *  is the writer's job — `hide(id, false)` / `setOrder([])` — since the store
-   *  does not yet record which plugin wrote a preference.
-   *
-   *  Ids are the rows' own ids (`SIDEBAR_NAV` built-ins like `'capabilities'`,
-   *  or a contributed nav contribution's id). */
-  sidebar: {
-    /** Hide or show one nav row. */
-    hide: (navId: string, hidden = true): void => {
-      setSidebarNavHidden(navId, hidden)
-    },
-
-    /** Replace the manual nav order with `ids`. Rows the order does not name
-     *  keep their default relative order after the named ones. */
-    setOrder: (ids: string[]): void => {
-      setSidebarNavOrder(ids)
-    }
-  },
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
@@ -1940,6 +1912,10 @@ export { cn } from '@/lib/utils'
  *  is gone. Pass the owning profile — a hidden session has no row to read it
  *  from, and the persisted half is bucketed per profile. */
 export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
+/** `sidebarNav.prefs`: hide / re-order the sidebar's nav rows by CONTRIBUTING a
+ *  preference (union of hides; first-registered order wins). A contribution,
+ *  not a `host.sidebar` verb, so it is attributed and dropped on disable. */
+export { SIDEBAR_NAV_PREFS_AREA, type SidebarNavPrefsContribution } from '@/store/sidebar-nav'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the
  *  authored palette. Deliberately not persisted: it is an authoring knob, not

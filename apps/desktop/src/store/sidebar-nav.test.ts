@@ -1,63 +1,24 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import {
-  $sidebarHiddenNavIds,
-  $sidebarNavOrderIds,
-  orderSidebarNav,
-  setSidebarNavHidden,
-  setSidebarNavOrder
-} from './sidebar-nav'
+import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from './sidebar-nav'
 
-afterEach(() => {
-  $sidebarHiddenNavIds.set([])
-  $sidebarNavOrderIds.set([])
-})
+const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }]
 
-const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]
+const prefs = (id: string, data: { hide?: string[]; order?: string[] }) => ({ area: SIDEBAR_NAV_PREFS_AREA, id, data })
 
-describe('orderSidebarNav', () => {
-  it('keeps the default order when nothing is hidden or ordered', () => {
-    expect(orderSidebarNav(rows, [], []).map(r => r.id)).toEqual(['a', 'b', 'c', 'd'])
-  })
+describe('applySidebarNavPrefs', () => {
+  // The arbitration rule two plugins live under: neither can un-hide the
+  // other's row; the first-registered order owns the placement it names and a
+  // later order only places what is still unplaced; unknown ids are inert;
+  // rows nobody names keep their default relative order after the named ones.
+  it('unions hides and lets the first-registered order win', () => {
+    const merged = applySidebarNavPrefs(rows, [
+      prefs('first', { hide: ['b'], order: ['d', 'a'] }),
+      prefs('second', { hide: ['c', 'missing'], order: ['a', 'd', 'b', 'nope'] })
+    ])
 
-  it('drops hidden ids and ignores unknown ones', () => {
-    expect(orderSidebarNav(rows, ['b', 'missing'], []).map(r => r.id)).toEqual(['a', 'c', 'd'])
-  })
-
-  it('names ordered ids first, in that order; unnamed rows keep their default order after', () => {
-    expect(orderSidebarNav(rows, [], ['c', 'a']).map(r => r.id)).toEqual(['c', 'a', 'b', 'd'])
-  })
-
-  it('an ordered id that is also hidden stays hidden (hide wins)', () => {
-    expect(orderSidebarNav(rows, ['c'], ['c', 'a']).map(r => r.id)).toEqual(['a', 'b', 'd'])
-  })
-
-  it('preserves the row objects themselves, not copies', () => {
-    const [first] = orderSidebarNav(rows, [], ['b'])
-
-    expect(first).toBe(rows[1])
-  })
-})
-
-describe('sidebar nav preference setters', () => {
-  it('hide is idempotent and reversible', () => {
-    setSidebarNavHidden('cron')
-    setSidebarNavHidden('cron')
-    expect($sidebarHiddenNavIds.get()).toEqual(['cron'])
-
-    setSidebarNavHidden('cron', false)
-    setSidebarNavHidden('cron', false)
-    expect($sidebarHiddenNavIds.get()).toEqual([])
-  })
-
-  it('ignores blank ids', () => {
-    setSidebarNavHidden('   ')
-    expect($sidebarHiddenNavIds.get()).toEqual([])
-  })
-
-  it('setOrder trims, drops blanks and dedupes', () => {
-    setSidebarNavOrder([' b ', '', 'a', 'b'])
-
-    expect($sidebarNavOrderIds.get()).toEqual(['b', 'a'])
+    expect(merged.map(r => r.id)).toEqual(['d', 'a', 'e'])
+    expect(merged[0]).toBe(rows[3])
+    expect(applySidebarNavPrefs(rows, []).map(r => r.id)).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
 })

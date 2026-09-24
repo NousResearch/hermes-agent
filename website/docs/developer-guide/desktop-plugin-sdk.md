@@ -640,6 +640,64 @@ jsx(Contribute, {
 
 It registers on mount and disposes on unmount automatically.
 
+### Sidebar nav visibility and order (`SIDEBAR_NAV_PREFS_AREA`)
+
+A plugin hides or re-orders the sidebar's top nav rows by **contributing a
+preference**, not by writing a setting. Core merges every `sidebarNav.prefs`
+contribution at render and applies the result to the rows it would otherwise
+show; the default list itself never changes.
+
+```ts
+import { SIDEBAR_NAV_PREFS_AREA, type SidebarNavPrefsContribution } from '@hermes/plugin-sdk'
+
+// Payload (`data`) of a sidebarNav.prefs contribution
+interface SidebarNavPrefsContribution {
+  hide?: string[]   // rows to drop
+  order?: string[]  // rows to place first, in this order
+}
+
+ctx.register({
+  id: 'prefs',
+  area: SIDEBAR_NAV_PREFS_AREA,
+  data: { hide: ['cron'], order: ['capabilities', 'new-session'] } satisfies SidebarNavPrefsContribution
+})
+```
+
+Nav ids are the rows' own ids. Core rows: `new-session`, `capabilities`,
+`messaging`, `artifacts`, `cron` (the `SidebarNavId` type; `artifacts` and
+`cron` only render in Advanced mode). A contributed row's id is its
+`SIDEBAR_NAV_AREA` contribution id.
+
+**Arbitration.** Hidden rows are the **union** of every contribution's `hide`
+(no plugin can un-hide another's row; hide beats order). Order is
+**first-registered wins**: the first contribution's `order` places its rows,
+later contributions place only ids not yet placed, rows no order names keep
+their default relative order after the named ones. Unknown ids are inert.
+
+**Teardown.** The contribution lives in the registry, so disabling or reloading
+the plugin disposes it and the rows come straight back — nothing to clear.
+This is why it is not a `host.sidebar.hide()` verb: `host` is a singleton that
+cannot attribute a write, a persisted preference would outlive the plugin, and
+two plugins would overwrite each other's order.
+
+**Persisting the user's choice** is the plugin's job, in its own
+`ctx.storage`: read the saved prefs on `register`, contribute them, and on every
+edit save + dispose + re-contribute (re-registering the same `id` replaces it).
+
+```ts
+// sidebar-manager: replaces `[data-sbm-off] { display:none }` + re-parenting <li>s
+let dispose = () => {}
+const apply = (prefs: SidebarNavPrefsContribution) => {
+  dispose()
+  dispose = ctx.register({ id: 'prefs', area: SIDEBAR_NAV_PREFS_AREA, data: prefs })
+}
+apply(ctx.storage.get('navPrefs', {}))
+// in the editor's onChange:
+ctx.storage.set('navPrefs', next); apply(next)
+```
+
+Session sections (Pinned, Recents, Cron jobs) are not covered — nav rows only.
+
 ## Host API
 
 Everything on `host` is reachable from anywhere in a plugin. State atoms are
@@ -702,9 +760,6 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
-host.sidebar.hide(navId, hidden?)          // hide/show a sidebar nav row (built-in or contributed)
-host.sidebar.setOrder(ids)                 // nav rows in `ids` order first; unnamed rows keep
-                                           //   their default order after them
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -1206,8 +1261,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS` |
-| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA` |
+| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |

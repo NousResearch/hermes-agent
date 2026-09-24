@@ -1,73 +1,55 @@
-import { Codecs, persistentAtom } from '@/lib/persisted'
+import type { Contribution } from '@/contrib/types'
 
-// Sidebar-nav preferences — the store behind `host.sidebar`. A plugin (the
-// sidebar manager) hides rows or re-orders them; core still owns rendering, so
-// a preference only ever moves or drops a row that would otherwise render, and
-// an id naming a row that no longer exists is inert.
+// Sidebar-nav preferences — the `sidebarNav.prefs` registry area. A plugin
+// (the sidebar manager) hides nav rows or re-orders them by CONTRIBUTING a
+// preference; core still owns rendering and merges every contribution at
+// render, so a preference only ever moves or drops a row that would otherwise
+// render, and an id naming a row that does not exist is inert.
 //
-// These PERSIST, deliberately: a disable → enable cycle must not scramble the
-// layout the user chose. The consequence is that they outlive the plugin that
-// wrote them — a row hidden by a plugin stays hidden after that plugin is
-// removed, and there is no core UI that restores it. The escape hatch is the
-// API that wrote it (`host.sidebar.hide(id, false)`, or clearing
-// `hermes.desktop.sidebarNavHidden.v1` / `...NavOrder.v1`), which means the
-// plugin that owns the preference is the one that can hand it back. Scoping a
-// preference to its writer needs the plugin's identity in this store, which the
-// host API does not carry yet.
-export const $sidebarHiddenNavIds = persistentAtom<string[]>(
-  'hermes.desktop.sidebarNavHidden.v1',
-  [],
-  Codecs.stringArray
-)
+// Why a contribution and not a persisted `host.sidebar.hide()` store: the
+// `host` singleton cannot tell which plugin wrote a preference, so a persisted
+// write would outlive the plugin that made it (a hidden row with nothing left
+// to restore it) and two plugins would overwrite each other's order. A
+// contribution is attributed, merged with a stated rule, and dropped by the
+// loader's per-plugin disposer on disable/reload — the rows come back on their
+// own. The USER's choices persist in the plugin's own `ctx.storage`; the plugin
+// re-contributes them on register.
 
-export const $sidebarNavOrderIds = persistentAtom<string[]>('hermes.desktop.sidebarNavOrder.v1', [], Codecs.stringArray)
+export const SIDEBAR_NAV_PREFS_AREA = 'sidebarNav.prefs'
 
-/** Hide or show one nav row (idempotent; empty ids are ignored). */
-export function setSidebarNavHidden(navId: string, hidden = true): void {
-  const id = navId.trim()
-
-  if (!id) {
-    return
-  }
-
-  const prev = $sidebarHiddenNavIds.get()
-  const present = prev.includes(id)
-
-  if (present === hidden) {
-    return
-  }
-
-  $sidebarHiddenNavIds.set(hidden ? [...prev, id] : prev.filter(existing => existing !== id))
+/** Payload (`data`) of a `sidebarNav.prefs` contribution. Ids are the nav rows'
+ *  own ids: the core rows `'new-session' | 'capabilities' | 'messaging' |
+ *  'artifacts' | 'cron'` (see `SidebarNavId`) or a `sidebar.nav` contribution's id. */
+export interface SidebarNavPrefsContribution {
+  /** Rows to drop. Merged as the UNION across contributions. */
+  hide?: string[]
+  /** Rows to place first, in this order. The first-registered contribution's
+   *  order wins; later ones place only ids not yet placed. */
+  order?: string[]
 }
 
-/** Replace the manual nav order with `ids` (deduped, blanks dropped). Rows the
- *  order does not name keep their default relative order after the named ones. */
-export function setSidebarNavOrder(ids: string[]): void {
-  const seen = new Set<string>()
-  const next: string[] = []
+const cleanIds = (ids: unknown): string[] =>
+  Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string' && id.trim() !== '') : []
 
-  for (const raw of ids) {
-    const id = (raw || '').trim()
-
-    if (id && !seen.has(id)) {
-      seen.add(id)
-      next.push(id)
-    }
-  }
-
-  $sidebarNavOrderIds.set(next)
-}
-
-/** Apply hidden + order to the nav rows. Pure so the semantics are testable
- *  without a DOM: hidden ids drop out; ids named in `order` come first in that
- *  exact order; rows the order does not name keep their default relative order
- *  after them. Unknown ids in either list are inert. */
-export function orderSidebarNav<T extends { id: string }>(
+/** Apply every `sidebarNav.prefs` contribution to the nav rows. Pure so the
+ *  arbitration is testable without a DOM: hidden = union of every `hide`
+ *  (hide beats order); `order` = first-registered contribution first, later
+ *  contributions place only ids not yet placed; rows no order names keep their
+ *  default relative order after the named ones; unknown ids are inert. */
+export function applySidebarNavPrefs<T extends { id: string }>(
   items: readonly T[],
-  hidden: readonly string[],
-  order: readonly string[]
+  contributions: readonly Contribution[]
 ): T[] {
-  const hiddenSet = new Set(hidden)
+  const hidden = new Set<string>()
+  const order: string[] = []
+
+  for (const c of contributions) {
+    const prefs = c.data as SidebarNavPrefsContribution | undefined
+
+    cleanIds(prefs?.hide).forEach(id => hidden.add(id))
+    order.push(...cleanIds(prefs?.order))
+  }
+
   const byId = new Map(items.map(item => [item.id, item]))
   const placed = new Set<string>()
   const ordered: T[] = []
@@ -75,14 +57,14 @@ export function orderSidebarNav<T extends { id: string }>(
   for (const id of order) {
     const item = byId.get(id)
 
-    if (item && !hiddenSet.has(id) && !placed.has(id)) {
+    if (item && !hidden.has(id) && !placed.has(id)) {
       ordered.push(item)
       placed.add(id)
     }
   }
 
   for (const item of items) {
-    if (!hiddenSet.has(item.id) && !placed.has(item.id)) {
+    if (!hidden.has(item.id) && !placed.has(item.id)) {
       ordered.push(item)
     }
   }

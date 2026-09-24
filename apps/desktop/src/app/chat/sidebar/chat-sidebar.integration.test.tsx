@@ -20,7 +20,7 @@ import {
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $sidebarHiddenNavIds } from '@/store/sidebar-nav'
+import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
@@ -112,7 +112,6 @@ describe('ChatSidebar navigation activity', () => {
     $removedSessionIds.set(new Set())
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
-    $sidebarHiddenNavIds.set([])
   })
 
   it('keeps navigation and session activity coherent with the focused pane', () => {
@@ -177,20 +176,22 @@ describe('ChatSidebar navigation activity', () => {
     expectOnlySelectedSession(null)
   })
 
-  it('drops a nav row hidden through the nav preference (host.sidebar.hide)', () => {
+  // Teardown proof: the loader disposes a plugin's contributions on disable,
+  // and that disposer alone must bring the row back — no store to clear.
+  it('hides a nav row while a sidebarNav.prefs contribution is registered and restores it on dispose', () => {
     renderSidebar('/kanban', 'extension')
     expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
 
+    let dispose = () => {}
+
     act(() => {
-      $sidebarHiddenNavIds.set(['kanban-nav'])
+      dispose = registry.register({ area: SIDEBAR_NAV_PREFS_AREA, id: 'prefs', data: { hide: ['kanban-nav'] } })
     })
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     // A hidden row is a preference, not a removal: the sibling nav row stays.
     expect(screen.getByRole('button', { name: 'Reports' })).toBeTruthy()
 
-    act(() => {
-      $sidebarHiddenNavIds.set([])
-    })
+    act(() => dispose())
     expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
   })
 })

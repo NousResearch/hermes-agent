@@ -86,6 +86,27 @@ async def test_normal_event_after_suppressed_event_delivers_normally():
 
 
 @pytest.mark.asyncio
+async def test_suppress_blocks_active_session_bypass_command_response():
+    adapter = _adapter()
+    event = _event()
+    event.text = "/approve"
+    key = build_session_key(event.source)
+    adapter._active_sessions[key] = asyncio.Event()
+
+    async def gated_handler(gated_event):
+        gated_event.delivery_mode = "suppress"
+        return "approval confirmed publicly"
+
+    adapter._message_handler = AsyncMock(side_effect=gated_handler)
+
+    await adapter.handle_message(event)
+
+    adapter._message_handler.assert_awaited_once_with(event)
+    assert event.delivery_mode == "suppress"
+    adapter._send_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_suppress_drops_errors_and_post_delivery_callbacks():
     adapter = _adapter()
     key = _session_key()
@@ -190,6 +211,7 @@ async def test_suppress_runs_agent_and_tool_without_progress_interim_stream_or_e
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)

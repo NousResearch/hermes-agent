@@ -4586,7 +4586,7 @@ class BasePlatformAdapter(ABC):
             # condition fix — issue #18912).  Previously the send happened
             # after cancel_session_processing, which could silently drop the
             # "/new" confirmation when an agent was actively running.
-            if _text:
+            if _text and event.delivery_mode != "suppress":
                 logger.info(
                     "[%s] Sending command '/%s' response (%d chars) to %s",
                     self.name,
@@ -4700,7 +4700,7 @@ class BasePlatformAdapter(ABC):
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
-                    if _text:
+                    if _text and event.delivery_mode != "suppress":
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,

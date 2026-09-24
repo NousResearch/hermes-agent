@@ -74,6 +74,9 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  // Relative chunk URLs keep dynamic imports below an X-Forwarded-Prefix
+  // mount; index.html's initial assets are rewritten by the Python server.
+  base: "./",
   plugins: [
     react(),
     babel({ presets: [compilerPreset()] }),

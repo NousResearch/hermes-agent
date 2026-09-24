@@ -218,6 +218,18 @@ _AUTH_COPY: Dict[str, str] = {
         "Settings → Providers, or run `hermes setup` in a terminal."
     ),
 }
+# Vertex has no API key: 401 is the service account, 403 is IAM or the project/region (#121295).
+_VERTEX_AUTH_SLUGS = frozenset({"vertex", "google-vertex"})
+_VERTEX_AUTH_COPY: Dict[int, str] = {
+    403: (
+        "{label} denied this request for the project, so the model can't be reached. "
+        "Grant the service account the Vertex AI User role, or fix vertex.project_id and vertex.region."
+    ),
+    401: (
+        "{label} rejected the service-account credentials, so the model can't be reached. "
+        "Check VERTEX_CREDENTIALS_PATH, or run `gcloud auth application-default login`."
+    ),
+}
 
 CONTENT_POLICY_NEXT_STEPS = (
     "Try rewording your message or removing sensitive attachments, or switch to another "
@@ -402,6 +414,14 @@ def relogin_command_hint(provider: Any) -> str:
     return f"hermes {profile_cli_selector()}auth add {slug}"
 
 
+def _vertex_auth_template(provider: Any, classified: Any) -> Optional[str]:
+    """Service-account guidance for Vertex. Other providers keep the API-key or OAuth sentence."""
+    if str(provider or "").strip().lower() not in _VERTEX_AUTH_SLUGS:
+        return None
+    status = getattr(classified, "status_code", None)
+    return _VERTEX_AUTH_COPY[403] if status == 403 else _VERTEX_AUTH_COPY[401]
+
+
 def nonretryable_copy(
     classified: Any, *, provider: Any, model: Any, summary: str, prefix_suggestion: Optional[str] = None,
 ) -> str:
@@ -410,7 +430,7 @@ def nonretryable_copy(
     if getattr(classified, "is_auth", False):
         from agent.error_surface import auth_kind
 
-        template = _AUTH_COPY[auth_kind(str(provider or ""))]
+        template = _vertex_auth_template(provider, classified) or _AUTH_COPY[auth_kind(str(provider or ""))]
     else:
         template = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
     prefix_hint = (

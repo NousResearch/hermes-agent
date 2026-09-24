@@ -24,6 +24,8 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -99,6 +101,104 @@ def run_selftest(root: Path) -> str:
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip().splitlines()[-1]
+
+
+def run_daemon_python_selftest(root: Path, system_python: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HERMES_DESKTOP_UPDATE_SYSTEM_PYTHON"] = str(system_python)
+    return subprocess.run(
+        ["/bin/bash", str(POSIX_SH), "--self-test-daemon-python", "--no-ui",
+         "--install-root", str(root)],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=60, env=env,
+    )
+
+
+def run_developer_dir_selftest(
+    root: Path, xcodebuild: Path, command_line_tools: Path
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop("DEVELOPER_DIR", None)
+    env["HERMES_DESKTOP_UPDATE_UNAME"] = "Darwin"
+    env["HERMES_DESKTOP_UPDATE_XCODEBUILD"] = str(xcodebuild)
+    env["HERMES_DESKTOP_UPDATE_CLT_DIR"] = str(command_line_tools)
+    return subprocess.run(
+        ["/bin/bash", str(POSIX_SH), "--self-test-developer-dir", "--no-ui",
+         "--install-root", str(root)],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=60, env=env,
+    )
+
+
+@requires_bash
+def test_unlicensed_xcode_falls_back_to_command_line_tools(tmp_path):
+    """Desktop rebuilds must not inherit an unusable full-Xcode selection."""
+    root = make_venv(tmp_path, python=GOOD_STUB, python3=GOOD_STUB, marker=None)
+    blocked_xcodebuild = tmp_path / "xcodebuild"
+    _write_exe(blocked_xcodebuild, "#!/bin/bash\nexit 69\n")
+    command_line_tools = tmp_path / "CommandLineTools"
+    (command_line_tools / "usr" / "bin").mkdir(parents=True)
+    _write_exe(command_line_tools / "usr" / "bin" / "clang", "#!/bin/bash\nexit 0\n")
+
+    proc = run_developer_dir_selftest(root, blocked_xcodebuild, command_line_tools)
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().splitlines()[-1] == (
+        f"developer_dir={command_line_tools} state=fallback-command-line-tools"
+    )
+
+
+@requires_bash
+def test_daemon_launcher_falls_back_when_system_python_cannot_boot(tmp_path):
+    """The Desktop hand-off must survive macOS' Xcode-license Python shim.
+
+    ``/usr/bin/python3`` can exist and still exit 69 before running code when
+    the Xcode license is pending.  A bootable install-venv interpreter must be
+    selected instead so the detached orchestrator actually starts.
+    """
+    root = make_venv(tmp_path, python=GOOD_STUB, python3=GOOD_STUB, marker=None)
+    broken_system_python = tmp_path / "system-python3"
+    _write_exe(
+        broken_system_python,
+        "#!/bin/bash\n"
+        "echo 'You have not agreed to the Xcode license agreements.' >&2\n"
+        "exit 69\n",
+    )
+
+    proc = run_daemon_python_selftest(root, broken_system_python)
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().splitlines()[-1] == f"daemon_python={root}/venv/bin/python3"
+
+
+@requires_bash
+def test_daemon_launcher_reaches_daemonized_handoff_with_venv_python(tmp_path):
+    """Exercise the real nohup + os.setsid + bash re-exec path end to end."""
+    root = tmp_path / "hermes-agent"
+    bin_dir = root / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python3").symlink_to(sys.executable)
+    broken_system_python = tmp_path / "system-python3"
+    _write_exe(broken_system_python, "#!/bin/bash\nexit 69\n")
+    env = os.environ.copy()
+    env["HERMES_DESKTOP_UPDATE_SYSTEM_PYTHON"] = str(broken_system_python)
+
+    launcher = subprocess.run(
+        ["/bin/bash", str(POSIX_SH), "--install-root", str(root),
+         "--no-ui", "--no-marker-cleanup", "--self-test-marker"],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=60, env=env,
+    )
+    assert launcher.returncode == 0, launcher.stderr
+
+    marker = tmp_path / ".hermes-update-in-progress"
+    log = tmp_path / "logs" / "desktop-update-handoff.log"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not (marker.exists() and log.exists()):
+        time.sleep(0.05)
+
+    assert marker.exists(), "the detached --daemonized child did not claim the update marker"
+    assert "hand-off start:" in log.read_text(encoding="utf-8")
 
 
 @requires_bash

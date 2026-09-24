@@ -1725,18 +1725,19 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
-        """Delete a bot-posted message so stream-consumer fallback/fresh-final can
-        remove a truncated edit bubble instead of leaving it next to the full send.
-
-        Feishu has no ``delete_message`` today, so ``_delete_previews`` no-ops and a
-        failed finalize-edit + fallback send (#103068) keeps both bubbles.
-        """
+        """Delete a bot-posted message (used by stream-consumer preview cleanup)."""
         if not self._client or not message_id:
             return False
         try:
             request = self._build_delete_message_request(message_id)
             response = await self._run_blocking(self._client.im.v1.message.delete, request)
-            return self._response_succeeded(response)
+            if self._response_succeeded(response):
+                return True
+            logger.debug(
+                "[Feishu] Delete of message %s rejected: code=%s msg=%s",
+                message_id, getattr(response, "code", None), getattr(response, "msg", None),
+            )
+            return False
         except Exception:
             logger.debug("[Feishu] Failed to delete message %s", message_id, exc_info=True)
             return False

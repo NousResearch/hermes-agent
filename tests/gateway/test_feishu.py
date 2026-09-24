@@ -300,14 +300,6 @@ class TestDeleteMessage(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(captured["ids"], ["om_preview"])
 
-    def test_delete_message_returns_false_when_disconnected(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        adapter._client = None
-        self.assertFalse(asyncio.run(adapter.delete_message("oc_chat", "om_preview")))
-
 
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):

@@ -12,7 +12,7 @@ from contextlib import contextmanager, nullcontext
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
+from hermes_cli.config import DEFAULT_CONFIG
 from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 from hermes_cli.web_server_mcp import _normalize_mcp_server_create
@@ -59,24 +59,39 @@ def serving_profile_name() -> str:
     risking a wrong-profile write.
     """
     from hermes_cli import profiles as profiles_mod
+    from hermes_constants import get_process_hermes_home
+    from tui_gateway.launch_profile_policy import launch_authority
+
     try:
-        name = (profiles_mod.get_active_profile_name() or "").strip()
-        if not name or name == "custom":
-            return ""
-        return name if profiles_mod.profile_matches_home(name, get_process_hermes_home()) else ""
+        authority = launch_authority()
+        home = authority.home
+        if home.parent.name == "profiles":
+            name = home.name
+            profiles_mod.validate_profile_name(name)
+            return name if profiles_mod.named_profile_is_live(home) else ""
+        without_explicit_home = dict(authority.env)
+        without_explicit_home.pop("HERMES_HOME", None)
+        return (
+            "default"
+            if home.resolve() == get_process_hermes_home(without_explicit_home).resolve()
+            else ""
+        )
     except Exception:
         return ""
 
 
 def _is_other_profile(profile: Optional[str]) -> bool:
-    """True when ``profile`` names a profile other than this process's own."""
+    """True when ``profile`` names a profile other than this process's launch profile."""
     if _is_current_profile(profile):
         return False
+    from tui_gateway.launch_profile_policy import launch_home
+
+    own_home = launch_home()
     try:
-        target = _resolve_profile_dir(profile.strip())
+        target = _resolve_profile_dir(profile.strip(), launch_home=own_home)
     except HTTPException:
         return True
-    return target.resolve() != get_process_hermes_home().resolve()
+    return target.resolve() != own_home.resolve()
 
 
 def _approval_mode_of(config: Dict[str, Any]) -> str:
@@ -187,16 +202,27 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     return profiles
 
 
-def _resolve_profile_dir(name: str) -> Path:
-    """Validate ``name`` and resolve to its directory or raise an HTTPException."""
+def _resolve_profile_dir(
+    name: str, *, launch_home: Optional[Path] = None
+) -> Path:
+    """Validate ``name`` and resolve it from the optional launch authority."""
     from hermes_cli import profiles as profiles_mod
     try:
         profiles_mod.validate_profile_name(name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(name):
+    if launch_home is None:
+        profile_dir = profiles_mod.get_profile_dir(name)
+    else:
+        root = (
+            launch_home.parent.parent
+            if launch_home.parent.name == "profiles"
+            else launch_home
+        )
+        profile_dir = root if name == "default" else root / "profiles" / name
+    if name != "default" and not profiles_mod.named_profile_is_live(profile_dir):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
-    return profiles_mod.get_profile_dir(name)
+    return profile_dir
 
 
 def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
@@ -274,7 +300,10 @@ def _profile_scope(profile: Optional[str]):
 
 
 @contextmanager
-def _config_profile_scope(profile: Optional[str]):
+def _config_profile_scope(
+    profile: Optional[str], *, launch_home: "str | Path | None" = None,
+    resolved_profile_dir: Optional[Path] = None,
+):
     """Await-safe profile scope: the task-local HERMES_HOME contextvar PLUS the profile's secret
     scope, never the process-global skills-module attributes ``_profile_scope`` swaps (holding
     those across an ``await`` lets a concurrent request restore THIS request's dir on its
@@ -293,13 +322,24 @@ def _config_profile_scope(profile: Optional[str]):
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+    from tui_gateway.launch_profile_policy import (
+        activate_multi_profile_hosting,
+        launch_home as authoritative_launch_home,
+        launch_secret_scope,
+    )
 
-    process_home = get_process_hermes_home()
+    explicit_launch_home = Path(launch_home) if launch_home is not None else None
+    process_home = explicit_launch_home or authoritative_launch_home()
     if _is_current_profile(profile):
         profile_dir, scoped = None, None  # the dashboard's own profile: no home override
     else:
-        profile_dir = _resolve_profile_dir(profile.strip())
+        assert profile is not None
+        if resolved_profile_dir is not None:
+            profile_dir = resolved_profile_dir
+        else:
+            profile_dir = _resolve_profile_dir(
+                profile.strip(), launch_home=process_home
+            )
         scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
     if scoped is not None:
         activate_multi_profile_hosting()

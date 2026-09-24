@@ -9,7 +9,7 @@ import re
 import shutil
 import stat
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -43,19 +43,76 @@ def get_hermes_home_override() -> str | None:
     return str(override) if override is not _UNSET and override else None
 
 
-def _expand_hermes_home(path: str) -> Path:
-    """Expand environment and user-home syntax in a Hermes home path."""
-    return Path(os.path.expanduser(os.path.expandvars(path)))
+def _expand_hermes_home(
+    path: str, env: Mapping[str, str] | None = None
+) -> Path:
+    """Expand environment and user-home syntax in a Hermes home path.
 
+    An explicit mapping remains authoritative, so expansion cannot observe a
+    later process-environment mutation.
+    """
+    if env is None:
+        return Path(os.path.expanduser(os.path.expandvars(path)))
 
-def _get_platform_default_hermes_home() -> Path:
-    """Return the platform default with the literal data-directory suffix."""
-    suffix = os.environ.get("HERMES_DATA_DIR_SUFFIX", "")
+    def _replace_var(match: re.Match[str]) -> str:
+        name = next(group for group in match.groups() if group is not None)
+        return env.get(name, match.group(0))
+
+    pattern = r"\$(\w+)|\$\{([^}]+)\}"
     if sys.platform == "win32":
-        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        pattern += r"|%([^%]+)%"
+    expanded = re.sub(pattern, _replace_var, path)
+    if expanded == "~" or expanded.startswith(("~/", "~\\")):
+        user_home = env.get("HOME", "").strip() or env.get("USERPROFILE", "").strip()
+        if user_home:
+            expanded = user_home + expanded[1:]
+    result = Path(expanded)
+    unresolved = re.search(r"\$(?:\w+|\{[^}]+\})|%[^%]+%", expanded)
+    captured_cwd = env.get("PWD", "").strip()
+    if (
+        not result.is_absolute()
+        and not expanded.startswith("~")
+        and unresolved is None
+        and captured_cwd
+        and Path(captured_cwd).is_absolute()
+    ):
+        result = Path(captured_cwd) / result
+    return result
+
+
+def _get_platform_default_hermes_home(env: Mapping[str, str] | None = None) -> Path:
+    """Return the platform default with the literal data-directory suffix.
+
+    An explicit environment is authoritative: derive both its platform home and
+    suffix from that snapshot rather than consulting later process mutations.
+    """
+    source = os.environ if env is None else env
+    suffix = source.get("HERMES_DATA_DIR_SUFFIX", "")
+    if sys.platform == "win32":
+        local_appdata = source.get("LOCALAPPDATA", "").strip()
+        if local_appdata:
+            base = Path(local_appdata)
+        elif env is None:
+            base = Path.home() / "AppData" / "Local"
+        else:
+            user_home = (
+                source.get("USERPROFILE", "").strip()
+                or source.get("HOME", "").strip()
+            )
+            if not user_home:
+                drive = source.get("HOMEDRIVE", "").strip()
+                home_path = source.get("HOMEPATH", "").strip()
+                user_home = f"{drive}{home_path}" if drive and home_path else ""
+            if not user_home:
+                raise ValueError("explicit environment has no Windows platform home")
+            base = Path(user_home) / "AppData" / "Local"
         return base / ("hermes" + suffix)
-    return Path.home() / (".hermes" + suffix)
+    if env is None:
+        return Path.home() / (".hermes" + suffix)
+    home = source.get("HOME", "").strip()
+    if not home:
+        raise ValueError("explicit environment has no POSIX platform home")
+    return Path(home) / (".hermes" + suffix)
 
 
 def sudo_invoker_default_home() -> Path | None:
@@ -157,16 +214,22 @@ def reset_hermes_home_key_cache() -> None:
     _HOME_KEY_CACHE.clear()
 
 
-def get_process_hermes_home() -> Path:
+def get_process_hermes_home(env: Mapping[str, str] | None = None) -> Path:
     """Hermes home of the running process, ignoring task overrides.
 
-    For process-level assets (theme YAML, dashboard plugin manifests) that must stay visible while a
-    request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``). Follows
-    ``HERMES_HOME`` live on purpose: routed-profile DECISIONS compare against
-    :func:`get_routing_process_hermes_home` instead (#119242).
+    With no explicit environment, follows ``HERMES_HOME`` live for process-level assets;
+    routed-profile decisions use :func:`get_routing_process_hermes_home`. With an explicit
+    snapshot, resolves the launch home without rereading mutable process state.
     """
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
+    source = os.environ if env is None else env
+    val = source.get("HERMES_HOME", "").strip()
+    if val:
+        return _expand_hermes_home(val, None if env is None else source)
+    return (
+        _get_platform_default_hermes_home()
+        if env is None
+        else _get_platform_default_hermes_home(source)
+    )
 
 
 # Host-pinned identity of the profile this process serves as its own (None: follow HERMES_HOME).
@@ -196,10 +259,11 @@ def process_hermes_home_is_pinned() -> bool:
     return _PINNED_PROCESS_HERMES_HOME is not None
 
 
-def get_routing_process_hermes_home() -> Path:
-    """Launch home for routed-profile decisions: the pinned home, else :func:`get_process_hermes_home`."""
+def get_routing_process_hermes_home(env: Mapping[str, str] | None = None) -> Path:
+    """Launch home for routed-profile decisions: the pinned home, else
+    :func:`get_process_hermes_home` resolved from *env* when supplied."""
     pinned = _PINNED_PROCESS_HERMES_HOME
-    return _expand_hermes_home(pinned) if pinned else get_process_hermes_home()
+    return _expand_hermes_home(pinned) if pinned else get_process_hermes_home(env)
 
 
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
@@ -616,67 +680,114 @@ def secure_parent_dir(path: Path) -> None:
         os.chmod(parent, 0o700)
 
 
-def _norm_home_path(path: str | None) -> str:
-    """Return a comparable absolute path string, or ``""`` for empty input."""
+def _norm_home_path(
+    path: str | None, *, env: Mapping[str, str] | None = None
+) -> str:
+    """Return a comparable path string, or ``""`` for empty input."""
     raw = (path or "").strip()
     if not raw:
         return ""
     try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+        if env is None:
+            normalized = os.path.abspath(os.path.expanduser(raw))
+        else:
+            normalized = os.path.normpath(_expand_hermes_home(raw, env))
+        return os.path.normcase(str(normalized))
     except Exception:
         return os.path.normcase(raw)
 
 
-def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
+def _profile_home_path(
+    env: dict[str, str] | None = None, *, allow_process_fallback: bool = True
+) -> str | None:
     """Return ``{HERMES_HOME}/home`` when the profile-home directory exists."""
-    hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
+    hermes_home = (env or {}).get("HERMES_HOME")
+    if allow_process_fallback:
+        hermes_home = get_hermes_home_override() or hermes_home or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
-    profile_home = str(_expand_hermes_home(hermes_home) / "home")
+    expansion_env = None if allow_process_fallback else env
+    profile_home = str(_expand_hermes_home(hermes_home, expansion_env) / "home")
+    if not allow_process_fallback and not Path(profile_home).is_absolute():
+        return profile_home
     return profile_home if os.path.isdir(profile_home) else None
 
 
-def _is_profile_home(candidate: str | None, profile_home: str | None) -> bool:
-    return bool(candidate and profile_home and _norm_home_path(candidate) == _norm_home_path(profile_home))
+def _is_profile_home(
+    candidate: str | None,
+    profile_home: str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    return bool(
+        candidate
+        and profile_home
+        and _norm_home_path(candidate, env=env)
+        == _norm_home_path(profile_home, env=env)
+    )
 
 
-def _env_get(env: dict[str, str], key: str, default: str = "") -> str:
-    """Stripped *key* from *env*, falling back to the process environment."""
-    return str(env.get(key) or os.getenv(key, default)).strip()
+def _env_get(
+    env: dict[str, str], key: str, default: str = "", *, allow_process_fallback: bool = True
+) -> str:
+    """Stripped *key* from *env*, optionally falling back to the process environment."""
+    value = env.get(key)
+    if allow_process_fallback and not value:
+        value = os.getenv(key, default)
+    elif value is None:
+        value = default
+    return str(value).strip()
 
 
-def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
+def _iter_real_home_candidates(
+    env: dict[str, str] | None = None, *, allow_process_fallback: bool = True
+) -> list[str]:
     """Return likely OS-user home candidates in trust order."""
     env = env or {}
-    candidates = [_env_get(env, "HERMES_REAL_HOME"), _env_get(env, "HOME")]
-    with contextlib.suppress(Exception):
-        import pwd
-        candidates.append(pwd.getpwuid(os.getuid()).pw_dir.strip())  # windows-footgun: ok — POSIX-only module inside try/except
-    candidates.append(_env_get(env, "USERPROFILE"))
-    drive, path = _env_get(env, "HOMEDRIVE"), _env_get(env, "HOMEPATH")
+    candidates = [
+        _env_get(env, "HERMES_REAL_HOME", allow_process_fallback=allow_process_fallback),
+        _env_get(env, "HOME", allow_process_fallback=allow_process_fallback),
+    ]
+    if allow_process_fallback:
+        with contextlib.suppress(Exception):
+            import pwd
+            candidates.append(pwd.getpwuid(os.getuid()).pw_dir.strip())  # windows-footgun: ok — POSIX-only module inside try/except
+    candidates.append(
+        _env_get(env, "USERPROFILE", allow_process_fallback=allow_process_fallback)
+    )
+    drive = _env_get(env, "HOMEDRIVE", allow_process_fallback=allow_process_fallback)
+    path = _env_get(env, "HOMEPATH", allow_process_fallback=allow_process_fallback)
     if drive and path:
         candidates.append(f"{drive}{path}" if path.startswith(("\\", "/")) else os.path.join(drive, path))
-    expanded = os.path.expanduser("~")
-    if expanded != "~":
-        candidates.append(expanded)
+    if allow_process_fallback:
+        expanded = os.path.expanduser("~")
+        if expanded != "~":
+            candidates.append(expanded)
     return [c for c in candidates if c]
 
 
-def get_real_home(env: dict[str, str] | None = None) -> str:
+def get_real_home(
+    env: dict[str, str] | None = None, *, allow_process_fallback: bool = True
+) -> str:
     """The OS user's real home, avoiding the Hermes profile HOME.
 
     ``HOME`` belongs to the OS account and external CLIs keeping credentials under ``~``; a parent
     already running with ``HOME={HERMES_HOME}/home`` is repaired back when possible.
     """
-    profile_home = _profile_home_path(env)
+    profile_home = _profile_home_path(env, allow_process_fallback=allow_process_fallback)
+    expansion_env = None if allow_process_fallback else env
     seen: set[str] = set()
-    for candidate in _iter_real_home_candidates(env):
-        key = _norm_home_path(candidate)
+    for candidate in _iter_real_home_candidates(
+        env, allow_process_fallback=allow_process_fallback
+    ):
+        key = _norm_home_path(candidate, env=expansion_env)
         if not key or key in seen:
             continue
         seen.add(key)
-        if not _is_profile_home(candidate, profile_home):
+        if not _is_profile_home(candidate, profile_home, env=expansion_env):
             return candidate
+    if not allow_process_fallback:
+        return "/tmp"  # no-tmp: ok — deterministic fallback for an explicit snapshot with no home
     import tempfile
     try:
         return tempfile.gettempdir()
@@ -689,42 +800,57 @@ _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile
                       "host": "real", "user": "real", "real_home": "real", "real-home": "real"}
 
 
-def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
+def get_subprocess_home(
+    env: dict[str, str] | None = None, *, allow_process_fallback: bool = True
+) -> str | None:
     """Subprocess ``HOME`` override, or ``None``.
 
     ``auto``: hosts keep real HOME (repairing a profile-home parent), containers use
     ``{HERMES_HOME}/home``; ``real``: always real HOME; ``profile``: always the profile home.
     """
     env = env or {}
-    profile_home = _profile_home_path(env)
-    mode = _env_get(env, "TERMINAL_HOME_MODE", "auto").lower() or "auto"
+    profile_home = _profile_home_path(env, allow_process_fallback=allow_process_fallback)
+    mode = _env_get(
+        env, "TERMINAL_HOME_MODE", "auto", allow_process_fallback=allow_process_fallback
+    ).lower() or "auto"
     mode = _HOME_MODE_ALIASES.get(mode, mode)
 
     if mode == "profile":
         return profile_home
-    real_home = get_real_home(env)
-    current_home = _env_get(env, "HOME")
-    repaired = real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
+    real_home = get_real_home(env, allow_process_fallback=allow_process_fallback)
+    current_home = _env_get(env, "HOME", allow_process_fallback=allow_process_fallback)
+    expansion_env = None if allow_process_fallback else env
+    repaired = (
+        real_home
+        if _norm_home_path(real_home, env=expansion_env)
+        != _norm_home_path(current_home, env=expansion_env)
+        else None
+    )
     if mode == "real":
         return repaired
 
-    if profile_home and is_container():
+    container = is_container() if allow_process_fallback else _detect_container(env)
+    if profile_home and container:
         return profile_home
-    if not current_home or _is_profile_home(current_home, profile_home):
+    if not current_home or _is_profile_home(
+        current_home, profile_home, env=expansion_env
+    ):
         return repaired
     return None
 
 
-def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
+def apply_subprocess_home_env(
+    env: MutableMapping[str, str], *, allow_process_fallback: bool = True
+) -> None:
     """Apply Hermes' subprocess HOME contract to *env* in-place: ``HOME``/``HERMES_REAL_HOME``
-    per the home mode, and the temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
-    real_home = get_real_home(env)
+    per the home mode, and temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
+    real_home = get_real_home(env, allow_process_fallback=allow_process_fallback)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
-    home = get_subprocess_home(env)
+    home = get_subprocess_home(env, allow_process_fallback=allow_process_fallback)
     if home:
         env["HOME"] = home
-    apply_scratch_tmp_env(env)
+    apply_scratch_tmp_env(env, allow_process_fallback=allow_process_fallback)
 
 
 # --- Scratch dir: Hermes' own temp space, never the system /tmp ---
@@ -950,14 +1076,17 @@ def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
     return total
 
 
-def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
+def apply_scratch_tmp_env(
+    env: MutableMapping[str, str], *, allow_process_fallback: bool = True
+) -> bool:
     """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
 
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
     respected and nothing changes. A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
     profile's home gets that home's scratch dir rather than its parent's. Returns True when
-    the vars were (re)written.
+    the vars were (re)written. Strict callers may disable process fallback so the explicit
+    environment snapshot is the only authority.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
     for key in SCRATCH_TMP_ENV_VARS:
@@ -966,7 +1095,15 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:
-        scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+        if home:
+            resolved_home = _expand_hermes_home(
+                home, None if allow_process_fallback else env
+            )
+        elif allow_process_fallback:
+            resolved_home = get_process_hermes_home()
+        else:
+            return False
+        scratch = str(get_scratch_dir(resolved_home))
     except (RuntimeError, OSError):
         # No HERMES_HOME and no resolvable user home (a child env built from nothing on
         # Windows): there is no scratch dir to point at; the child keeps the OS default.
@@ -1150,11 +1287,11 @@ def is_container() -> bool:
     return detect()
 
 
-def _detect_container() -> bool:
+def _detect_container(env: Mapping[str, str] | None = None) -> bool:
     """Keep the historical test seam while delegating canonical detection."""
     from hermes_platform.host.runtime import _detect_container as detect
 
-    return detect()
+    return detect(env)
 
 
 def windows_path_to_wsl(path: str) -> str | None:

@@ -62,3 +62,55 @@ def test_vision_base_url_override_keeps_explicit_provider():
     assert model == "glm-4v"
     assert mock_resolve.call_args.args[0] == "zai"
     assert mock_resolve.call_args.kwargs["explicit_base_url"] == "https://open.bigmodel.cn/api/paas/v4"
+
+
+def test_zai_vision_prefers_active_coding_plan_endpoint():
+    """The active Z.ai Coding Plan session must precede pay-as-you-go URLs."""
+    from agent.auxiliary_client import resolve_vision_provider_client
+
+    client = MagicMock()
+    runtime = {
+        "provider": "zai",
+        "model": "glm-5.3-flash",
+        "base_url": "https://api.z.ai/api/coding/paas/v4",
+        "api_key": "coding-plan-key",
+    }
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("zai", "glm-5.3-flash", None, None, None),
+    ), patch(
+        "agent.auxiliary_client._get_cached_client",
+        return_value=(client, "glm-5.3-flash"),
+    ) as mock_cached:
+        provider, resolved_client, model = resolve_vision_provider_client(main_runtime=runtime)
+
+    assert (provider, resolved_client, model) == ("zai", client, "glm-5.3-flash")
+    assert mock_cached.call_args.kwargs["base_url"] == runtime["base_url"]
+    assert mock_cached.call_args.kwargs["api_mode"] == "chat_completions"
+
+
+def test_zai_vision_falls_back_to_pay_as_you_go_urls_after_coding_plan():
+    """An unavailable active Coding Plan endpoint keeps the legacy fallback ordering."""
+    from agent.auxiliary_client import resolve_vision_provider_client
+
+    client = MagicMock()
+    runtime = {
+        "provider": "zai",
+        "model": "glm-5.3-flash",
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "api_key": "coding-plan-key",
+    }
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("zai", "glm-5.3-flash", None, None, None),
+    ), patch(
+        "agent.auxiliary_client._get_cached_client",
+        side_effect=[(None, None), (client, "glm-5.3-flash")],
+    ) as mock_cached:
+        provider, resolved_client, model = resolve_vision_provider_client(main_runtime=runtime)
+
+    assert (provider, resolved_client, model) == ("zai", client, "glm-5.3-flash")
+    assert [call.kwargs["base_url"] for call in mock_cached.call_args_list] == [
+        runtime["base_url"],
+        "https://open.bigmodel.cn/api/paas/v4",
+    ]

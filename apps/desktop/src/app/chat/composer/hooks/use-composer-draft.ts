@@ -45,8 +45,10 @@ import {
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import {
+  caretOffsetInEditor,
   composerPlainText,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
   placeCaretEnd,
   REF_RE,
   renderComposerContents
@@ -161,14 +163,28 @@ export function useComposerDraft({
       const editor = editorRef.current
 
       if (editor) {
+        // A reconnect can reconcile the durable composer scope while this
+        // editor stays focused, but another surface temporarily owns the
+        // focus-routing bus. Replacing the text nodes resets the browser's
+        // native selection to the start in that shape. DOM focus, rather than
+        // routing ownership, decides whether this editor owns its selection.
+        const caretOffset =
+          visibleRef.current && document.activeElement === editor && !isElementInHiddenPane(editor)
+            ? caretOffsetInEditor(editor)
+            : null
+
         renderComposerContents(editor, next, { trailingCommitted: true })
+
+        if (caretOffset !== null) {
+          placeCaretAtOffset(editor, Math.min(caretOffset, composerPlainText(editor).length))
+        }
 
         // Selection is document-global: a keep-alive composer in a hidden tab
         // may repaint when its background session updates, but moving its caret
         // here steals the selection from the visible composer without changing
         // document.activeElement. The foreground then still looks focused while
         // printable keydowns produce no input.
-        if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editor)) {
+        if (caretOffset === null && visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editor)) {
           placeCaretEnd(editor)
         }
       }

@@ -96,6 +96,43 @@ async def test_marker_survives_until_a_served_profile_is_reachable(multiplex_run
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notifies_each_served_profile_home_with_its_own_bot(multiplex_runner):
+    """Shutdown fan-out must not route a secondary profile through the launch bot."""
+    runner, _marker = multiplex_runner
+    launch, coder = _adapter(), _adapter()
+    runner.config = _home_config(Platform.TELEGRAM, "launch-home")
+    runner.adapters = {Platform.TELEGRAM: launch}
+    runner._profile_configs = {"coder": _home_config(Platform.TELEGRAM, "coder-home")}
+    runner._profile_adapters = {"coder": {}}
+    runner._profile_adapters["coder"][Platform.TELEGRAM] = coder
+    runner._running_agents = {}
+    runner._restart_requested = False
+    runner._restart_command_source = None
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    launch.send.assert_awaited_once()
+    coder.send.assert_awaited_once(), "the served profile's home must receive the shutdown notice"
+    assert launch.send.await_args.args[0] == "launch-home"
+    assert coder.send.await_args.args[0] == "coder-home"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_skips_disconnected_secondary_profile_home(multiplex_runner):
+    """A disconnected secondary remains fail-closed and cannot borrow the launch bot."""
+    runner, _marker = multiplex_runner
+    launch = _adapter()
+    runner.adapters[Platform.DISCORD] = launch
+    runner._running_agents = {}
+    runner._restart_requested = False
+    runner._restart_command_source = None
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    launch.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypatch):
     """One host process restarting once owes a shared chat ONE notice, not one per profile.
 

@@ -285,7 +285,7 @@ class CLIStreamMixin:
             _cprint(line)
 
     def _close_reasoning_box(self) -> None:
-        """Close the live reasoning box if it's open, then flush deferred content."""
+        """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
         from cli import _DIM, _RST, _cprint
         if not getattr(self, "_reasoning_box_opened", False):
             return
@@ -298,10 +298,6 @@ class CLIStreamMixin:
         self._reasoning_box_opened = False
         if not getattr(self, "_stream_box_live", False):
             self._release_held_status_lines()
-        deferred = getattr(self, "_deferred_content", "")
-        if deferred:
-            self._deferred_content = ""
-            self._emit_stream_text(deferred)
 
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
@@ -531,7 +527,6 @@ class CLIStreamMixin:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
-        self._deferred_content = ""
         # A batch cancelled/errored before any tool.started would otherwise mute the next turn's line.
         self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []

@@ -1500,7 +1500,11 @@ def check_respawn_guard(
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
+    (quota/auth pattern; the breaker still trips eventually — skipped when
+    the latest run already reached a successful terminal outcome
+    ``completed`` / ``review_requested`` / ``changes_requested``, because
+    ``last_failure_error`` is then historical residue, not a diagnosis),
+    then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
@@ -1554,7 +1558,17 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    # A successful terminal outcome supersedes stale blocker text: the error
+    # is historical residue (e.g. an old rate-limit requeue stamp), not a
+    # current diagnosis. Without this skip, a card that recovered to
+    # review_requested / changes_requested / completed stays parked forever
+    # even though its latest run already reached a successful terminal state.
+    if (
+        err
+        and latest_outcome
+        not in ("crashed", "completed", "review_requested", "changes_requested")
+        and _RESPAWN_BLOCKER_RE.search(err)
+    ):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

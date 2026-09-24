@@ -551,6 +551,46 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+@pytest.mark.parametrize(
+    "terminal_outcome",
+    ["completed", "review_requested", "changes_requested"],
+)
+def test_respawn_guard_skips_blocker_auth_after_successful_terminal_outcome(
+    kanban_home, monkeypatch, terminal_outcome,
+):
+    """A successful terminal outcome supersedes stale blocker text.
+
+    ``last_failure_error`` is historical residue (e.g. an old rate-limit
+    requeue stamp) once the latest run reached ``completed`` /
+    ``review_requested`` / ``changes_requested`` — it must NOT keep the card
+    parked in ``blocker_auth`` forever (09-24 incident: 5 cards held 21h+,
+    latest runs already review_requested / changes_requested yet the stamped
+    quota text still matched the blocker RE on every tick).
+    """
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale-residue", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome=?, status='succeeded', ended_at=? "
+            "WHERE id=?",
+            (terminal_outcome, 5_000_000, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        # Stale quota text + successful terminal outcome → allowed, not
+        # trapped by blocker_auth.
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

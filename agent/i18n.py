@@ -47,7 +47,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
     "arabic": "ar", "العربية": "ar",
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
-    "indonesian": "id", "indonesia": "id", "bahasa indonesia": "id", "id-id": "id",
+    "indonesian": "id", "indonesia",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

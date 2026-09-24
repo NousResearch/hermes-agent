@@ -53,6 +53,10 @@ class TestCommandRegistry:
 # ---------------------------------------------------------------------------
 
 
+    def test_steer_and_stop_short_aliases_resolve_to_their_commands(self):
+        assert resolve_command("s").name == "steer"
+        assert resolve_command("i").name == "stop"
+
 
 # ---------------------------------------------------------------------------
 # Derived dicts (backwards compat)

@@ -242,19 +242,45 @@ class _Trunc(TruncationVerdict):
         return getattr(self.response, "id", "") == PARTIAL_STREAM_STUB_ID
 
 
-def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tuple]:
+def _abort_reason(
+    agent: Any, content: Any, has_tool_calls: bool, *,
+    reasoning: Any = None, reasoning_content: Any = None,
+) -> Optional[tuple]:
     """``(vprint, user response, error)`` when continuation must NOT be attempted:
-    thinking exhausted the budget (reasoning blocks with no visible text after them —
-    ``content=None`` from non-<think> models is normal truncation), or a repetition loop
-    burned the budget on one fragment (reasoning stripped first)."""
+    thinking exhausted the budget (a ``<think>`` block with no visible text after
+    it, or ``finish_reason=length`` with empty visible content and a non-empty
+    ``reasoning`` / ``reasoning_content`` side channel), or a repetition loop
+    burned the budget on one fragment (reasoning stripped first). Empty content
+    with no side-channel reasoning is still a normal truncation."""
     if has_tool_calls:
         return None
     if content and _THINK_TAG_RE.search(content) and not agent._has_content_after_think_block(content):
+        return _THINKING_EXHAUSTED
+    if _visible_content_empty(agent, content) and (
+        _nonempty_side_channel(reasoning) or _nonempty_side_channel(reasoning_content)
+    ):
         return _THINKING_EXHAUSTED
     visible = agent._strip_think_blocks(content) if isinstance(content, str) else content
     if visible and is_repetition_dominated(visible):
         return _REPETITION_DOMINATED
     return None
+
+
+def _nonempty_side_channel(value: Any) -> bool:
+    """True when a reasoning side channel actually carried text. No model id."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) > 0
+    return bool(value)
+
+
+def _visible_content_empty(agent: Any, content: Any) -> bool:
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not (agent._strip_think_blocks(content) or "").strip()
+    return not content
 
 
 def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
@@ -493,7 +519,11 @@ def recover_from_truncation(
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
-    abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
+    abort = _abort_reason(
+        agent, _trunc_content, _trunc_has_tool_calls,
+        reasoning=getattr(_trunc_msg, "reasoning", None) if _trunc_msg else None,
+        reasoning_content=getattr(_trunc_msg, "reasoning_content", None) if _trunc_msg else None,
+    )
     if abort is not None:
         line, user_response, error = abort
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)

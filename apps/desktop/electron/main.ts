@@ -79,6 +79,7 @@ import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verify
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
@@ -3599,7 +3600,14 @@ function killHermesOwnedVenvDaemons(updateRoot) {
 
     if (Number.isInteger(pid) && pid > 0) {
       rememberLog(`[updates] stopping Hermes-owned venv daemon (hindsight) PID ${pid} before hand-off`)
-      forceKillProcessTree(pid)
+
+      try {
+        forceKillProcessTree(pid)
+      } catch (error) {
+        // Update hand-off only. Close/stop must not swallow this; see
+        // windowsCloseStopOwnedBackends.
+        rememberLog(`[updates] taskkill PID ${pid} failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
 }
@@ -3608,9 +3616,11 @@ function killHermesOwnedVenvDaemons(updateRoot) {
 // only signals the direct child, so on Windows a backend `hermes.exe` that
 // spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
 // gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
-// the whole tree synchronously. Windows-only: this is called solely from the
-// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
-// not a process-group leader — a POSIX negative-pgid kill would be meaningless
+// the whole tree synchronously. The command is not widened: one owned PID,
+// /T /F, nothing else. Failures propagate — close/stop must not discard them.
+// Windows-only: this is called solely from the Windows shim-unlock and
+// close/stop paths, and the backend is NOT spawned detached (so it's not a
+// process-group leader — a POSIX negative-pgid kill would be meaningless
 // here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
 function forceKillProcessTree(pid) {
   if (!IS_WINDOWS) {
@@ -3621,11 +3631,113 @@ function forceKillProcessTree(pid) {
     return
   }
 
+  execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
+}
+
+function holderPidsFromLockFile(lockPath: string): Pick<RuntimeLock, 'holderPids' | 'held'> {
   try {
-    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
+    const raw = fs.readFileSync(lockPath, 'utf8').trim()
+
+    if (!raw) {
+      return { holderPids: [] }
+    }
+
+    let pid = Number(raw)
+
+    if (!Number.isInteger(pid)) {
+      const parsed = JSON.parse(raw) as { pid?: unknown }
+      pid = Number(typeof parsed === 'object' && parsed ? parsed.pid : parsed)
+    }
+
+    return Number.isInteger(pid) && pid > 0 ? { holderPids: [pid] } : { holderPids: [] }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+
+    // Can't read the file: a live holder may be why. Do not clear it.
+    if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+      return { holderPids: [], held: true }
+    }
+
+    return { holderPids: [] }
+  }
+}
+
+function collectCloseStopLocks(): RuntimeLock[] {
+  const roots = [HERMES_HOME]
+  const profilesRoot = path.join(HERMES_HOME, 'profiles')
+
+  try {
+    for (const name of fs.readdirSync(profilesRoot)) {
+      roots.push(path.join(profilesRoot, name))
+    }
   } catch {
-    // Already gone, or no permission — best effort; the unlock wait below is
-    // the real gate.
+    // No profiles directory — the default home lock is enough.
+  }
+
+  const locks: RuntimeLock[] = []
+
+  for (const root of roots) {
+    const lockPath = path.join(root, 'gateway.lock')
+
+    try {
+      if (!fs.statSync(lockPath).isFile()) {
+        continue
+      }
+    } catch {
+      continue
+    }
+
+    locks.push({ path: lockPath, ...holderPidsFromLockFile(lockPath) })
+  }
+
+  return locks
+}
+
+function collectOwnedBackendPids(): number[] {
+  const pids: number[] = []
+  const primary = backendConnectionState.getProcess()
+
+  if (primary && Number.isInteger(primary.pid) && primary.pid > 0) {
+    pids.push(primary.pid)
+  }
+
+  for (const entry of backendPool.values()) {
+    const pid = entry?.process?.pid
+
+    if (Number.isInteger(pid) && pid > 0) {
+      pids.push(pid)
+    }
+  }
+
+  return pids
+}
+
+// Close/stop: same tree-kill as forceKillProcessTree, then inventory the
+// owned PIDs and clear only locks no live holder still owns. A taskkill
+// failure is logged and, when an owned PID is still alive, thrown.
+function windowsCloseStopOwnedBackends() {
+  if (!IS_WINDOWS) {
+    return
+  }
+
+  const result = finishWindowsCloseStop(collectOwnedBackendPids(), collectCloseStopLocks(), {
+    killTree: forceKillProcessTree,
+    isPidAlive: isPidAliveWindows,
+    clearLock: lockPath => {
+      fs.rmSync(lockPath, { force: true })
+    }
+  })
+
+  for (const failure of result.taskkillFailures) {
+    rememberLog(`[close-stop] taskkill PID ${failure.pid} failed: ${failure.error}`)
+  }
+
+  if (result.clearedLocks.length) {
+    rememberLog(`[close-stop] cleared unheld lock(s): ${result.clearedLocks.join(', ')}`)
+  }
+
+  if (result.liveFailure) {
+    throw new Error(closeStopFailureMessage(result))
   }
 }
 
@@ -3735,7 +3847,18 @@ async function stopOwnedBackend(identity) {
   }
 
   if (IS_WINDOWS) {
-    forceKillProcessTree(identity.pid)
+    try {
+      forceKillProcessTree(identity.pid)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      const stillThere = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
+
+      if (stillThere !== false) {
+        throw new Error(`taskkill failed for backend PID ${identity.pid}: ${detail}`)
+      }
+
+      rememberLog(`taskkill reported failure for already-gone backend PID ${identity.pid}: ${detail}`)
+    }
   } else {
     try {
       process.kill(-identity.pid, 'SIGTERM')
@@ -3980,7 +4103,13 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 
         return stragglers
       },
-      killProcessTree: forceKillProcessTree,
+      killProcessTree: pid => {
+        try {
+          forceKillProcessTree(pid)
+        } catch (error) {
+          rememberLog(`[${tag}] taskkill PID ${pid} failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      },
       sleep: (ms: number) => new Promise(r => setTimeout(r, ms)),
       now: () => Date.now(),
       log: rememberLog
@@ -11969,6 +12098,10 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
 }
 
 const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void> => {
+  // Before teardown drops the process handles: inventory those owned PIDs
+  // after the same tree-kill, and refuse to pretend close succeeded.
+  windowsCloseStopOwnedBackends()
+
   const localShutdown = localBackendLifecycle.shutdown()
   const primary = backendConnectionState.getProcess()
   const primaryStop = teardownPrimaryBackendAndWait()

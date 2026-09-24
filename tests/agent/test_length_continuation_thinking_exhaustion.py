@@ -142,6 +142,27 @@ def _thinking_only_length_response():
     )
 
 
+def _side_channel_length_response(*, reasoning=None, reasoning_content=None, content=""):
+    """finish_reason=length, empty visible content, reasoning parked off to
+    the side. Model id is irrelevant — the field is the signal."""
+    from tests.agent.test_run_agent import _mock_assistant_msg
+
+    return SimpleNamespace(
+        id="chatcmpl-reasoning-side-channel",
+        model="test/model",
+        choices=[SimpleNamespace(
+            index=0,
+            message=_mock_assistant_msg(
+                content=content,
+                reasoning=reasoning,
+                reasoning_content=reasoning_content,
+            ),
+            finish_reason=FINISH_REASON_LENGTH,
+        )],
+        usage=None,
+    )
+
+
 def _full_response(content):
     from tests.agent.test_run_agent import _mock_response
 
@@ -320,3 +341,38 @@ class TestReasoningOffReachesTheWire:
         calls = loop_agent.client.chat.completions.create.call_args_list
         first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
         assert first == {"enabled": True, "effort": "high"}, first
+
+
+class TestReasoningSideChannelBudgetAbort:
+    """finish_reason=length with nothing visible and a non-empty reasoning
+    side channel is the existing thinking-budget abort, not a continuation.
+    No model id is consulted."""
+
+    @pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
+    def test_empty_visible_content_aborts_on_side_channel(self, loop_agent, field):
+        kwargs = {field: "the model spent the whole budget here"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _side_channel_length_response(**kwargs),
+            _full_response("this continuation must not run"),
+        ]
+        result = _run(loop_agent, "write me a long report")
+
+        assert result["completed"] is False
+        assert "Thinking Budget Exhausted" in (result["final_response"] or "")
+        assert loop_agent.client.chat.completions.create.call_count == 1, (
+            "A length stop with empty visible content and a non-empty "
+            f"{field} field must abort, not continue."
+        )
+
+    def test_visible_answer_with_reasoning_still_continues(self, loop_agent):
+        loop_agent.client.chat.completions.create.side_effect = [
+            _side_channel_length_response(
+                content="partial answer ",
+                reasoning="some leftover reasoning",
+            ),
+            _full_response("and the rest."),
+        ]
+        result = _run(loop_agent, "write me a long report")
+
+        assert result["completed"] is True
+        assert "partial answer" in (result["final_response"] or "")

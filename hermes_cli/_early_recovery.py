@@ -673,7 +673,7 @@ def _uv_isolation_env(base_env: dict | None = None) -> dict:
 
 
 def _find_uv_binary() -> str | None:
-    """Locate a ``uv`` binary without importing third-party modules.
+    """Recovery-only uv lookup (R31/§11.4.1), without third-party imports.
 
     uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so
     the stdlib ``pip`` fallback below refuses to touch them.  In that state

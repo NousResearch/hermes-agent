@@ -104,11 +104,11 @@ def _pip_install_vercel(package):
     """uv when Hermes has one ($HERMES_HOME/uv is never on PATH, so which() misses it and
     bootstrapping mid-wizard is fine), else pip — a `uv venv` venv may not even have pip."""
     import subprocess
-    from hermes_cli.managed_uv import ensure_uv, managed_uv_env
+    from hermes_cli.managed_uv import ensure_uv, profile_uv_env
     uv_bin = ensure_uv()
     cmd = ([uv_bin, "pip", "install", "--python", sys.executable, package] if uv_bin
            else [sys.executable, "-m", "pip", "install", package])
-    env = managed_uv_env() if uv_bin else None
+    env = profile_uv_env() if uv_bin else None
     return subprocess.run(cmd, env=env, **_RUN_KW)
 
 

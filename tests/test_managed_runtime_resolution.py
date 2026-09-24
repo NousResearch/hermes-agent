@@ -75,15 +75,10 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("tools/environments/local.py", "uv"): (
-        "_pin_managed_uv_state_when_managed_uv_would_run()'s PATH probe: the "
-        "question really is 'does a user uv shadow the managed one on the "
-        "terminal PATH', so it must ask that PATH (with the managed dir "
-        "removed) — resolve_uv() would answer about the managed copy instead."
-    ),
     ("hermes_cli/update_cmd_deps.py", "uv"): (
-        "Termux fallback: a pkg-installed uv lands on PATH but not in the "
-        "managed dir, and it is checked only after resolve_uv() misses."
+        "Recovery-only Termux fallback: a pkg-installed uv may land on PATH "
+        "but is accepted only inside Android/Termux dependency repair, after "
+        "the managed resolver misses."
     ),
     ("hermes_cli/update_cmd_deps.py", "npm"): (
         "WSL diagnostic: deliberately inspects what PATH resolves so it can "
@@ -349,4 +344,3 @@ def test_allowlist_has_no_stale_entries():
         "fixed or moved. Remove them:\n"
         + "\n".join(f"  {rel} ({cmd})" for rel, cmd in stale)
     )
-

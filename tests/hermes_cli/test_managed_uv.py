@@ -203,15 +203,18 @@ class TestPerProfileLayout:
         monkeypatch.setattr("hermes_cli.managed_uv.get_hermes_home", lambda: profile)
 
         from hermes_cli.managed_uv import (
-            managed_tool_bin_dir, managed_tool_dir, managed_uv_env)
+            managed_tool_bin_dir, managed_tool_dir, managed_tool_python_dir, managed_uv_env)
 
         assert managed_tool_dir() == root / "uv" / "tools"
         assert managed_tool_bin_dir() == root / "bin"
+        assert managed_tool_python_dir() == root / "uv" / "python"
 
         env = managed_uv_env(tool_dir=managed_tool_dir(),
-                             tool_bin_dir=managed_tool_bin_dir())
+                             tool_bin_dir=managed_tool_bin_dir(),
+                             python_install_dir=managed_tool_python_dir())
         assert env["UV_TOOL_DIR"] == str(root / "uv" / "tools")
         assert env["UV_TOOL_BIN_DIR"] == str(root / "bin")
+        assert env["UV_PYTHON_INSTALL_DIR"] == str(root / "uv" / "python")
 
 
 class TestUvInstallLock:
@@ -245,7 +248,7 @@ class TestUvInstallLock:
                   side_effect=[None, str(tmp_path / "uv" / _BIN_UV)]),
             patch("hermes_cli.managed_uv._uv_runs", return_value=True),
             patch("hermes_cli.managed_uv._install_uv") as mock_install,
-            patch("hermes_cli.managed_uv._acquire_uv_install_lock", return_value=None),
+            patch("hermes_cli.managed_uv._acquire_uv_install_lock", return_value=17),
             patch("hermes_cli.managed_uv._release_uv_install_lock"),
         ):
             from hermes_cli.managed_uv import _ensure_uv_path
@@ -254,6 +257,34 @@ class TestUvInstallLock:
 
         assert result == str(tmp_path / "uv" / _BIN_UV)
         mock_install.assert_not_called()
+
+    def test_lock_timeout_never_enters_installer(self, tmp_path):
+        with (
+            patch("hermes_cli.managed_uv.resolve_uv", return_value=None),
+            patch("hermes_cli.managed_uv._acquire_uv_install_lock", return_value=None),
+            patch("hermes_cli.managed_uv._migrate_legacy_managed_uv") as migrate,
+            patch("hermes_cli.managed_uv._install_uv") as install,
+            patch("hermes_cli.managed_uv.managed_uv_path", return_value=tmp_path / "uv" / _BIN_UV),
+        ):
+            from hermes_cli.managed_uv import _ensure_uv_path
+
+            assert _ensure_uv_path() is None
+
+        migrate.assert_not_called()
+        install.assert_not_called()
+
+    def test_lock_timeout_never_enters_refresh(self, tmp_path):
+        uv = tmp_path / "uv" / _BIN_UV
+        with (
+            patch("hermes_cli.managed_uv.managed_uv_path", return_value=uv),
+            patch("hermes_cli.managed_uv._acquire_uv_install_lock", return_value=None),
+            patch("hermes_cli.managed_uv._install_uv") as install,
+        ):
+            from hermes_cli.managed_uv import _refresh_managed_binary
+
+            assert _refresh_managed_binary(str(uv)) is False
+
+        install.assert_not_called()
 
 
 
@@ -1717,5 +1748,3 @@ class TestVenvPythonUpdateBoundary:
         expected = Path("/opt/hermes/venv/Scripts/python.exe") \
             if sys.platform == "win32" else Path("/opt/hermes/venv/bin/python")
         assert _venv_python(Path("/opt/hermes/venv")) == expected
-
-

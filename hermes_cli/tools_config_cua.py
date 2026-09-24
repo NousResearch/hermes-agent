@@ -151,12 +151,12 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
 
     # Managed uv first: $HERMES_HOME/uv is never on PATH, so a bare which() misses the uv Hermes
     # installed; ensure_uv() (not a pure lookup) because installing uv is in scope during setup.
-    from hermes_cli.managed_uv import ensure_uv, managed_uv_env
+    from hermes_cli.managed_uv import ensure_uv, profile_uv_env
     uv_bin = ensure_uv()
     try:  # a failed uv run falls through to pip — it may have failed for a reason pip can handle
         result = uv_bin and _run_text([uv_bin, "pip", "install", *args], timeout=timeout,
                                       capture_output=capture_output, creationflags=install_flags,
-                                      env=managed_uv_env(base_env={**os.environ, "VIRTUAL_ENV": str(venv_root)}))
+                                      env=profile_uv_env(base_env={**os.environ, "VIRTUAL_ENV": str(venv_root)}))
         if result and result.returncode == 0:
             return result
     except (subprocess.TimeoutExpired, FileNotFoundError):

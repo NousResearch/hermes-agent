@@ -372,28 +372,15 @@ class TestLocalEnvironmentWindowsTempDir:
 
 
 
-class TestLocalEnvironmentPathInjectionGated:
-    """The agent sandbox PATH gains the managed uv dir, never the user PATH.
-
-    ``_append_missing_sane_path_entries`` appends ``$HERMES_HOME/uv`` at the
-    tail on both platforms (POSIX via the sane-merge, Windows via the appended
-    native branch). On Windows this must NOT reorder or rewrite the native
-    ``;``-separated PATH — it only adds the private managed-uv dir, keeping the
-    user's own uv (if any) first-occurrence-wins.
-    """
+class TestLocalEnvironmentPathIsolation:
+    """The agent target PATH never receives Hermes' private uv directory."""
 
     @pytest.mark.windows_only
-    def test_windows_path_appends_managed_uv_dir(self):
-        """``windows_only``: a real Windows ``PATH`` (``;``-separated,
-        drive-lettered) keeps its entries untouched and gains only the
-        private managed-uv dir at the tail. On Linux the ``_IS_WINDOWS``
-        branch is not reached, so this needs a genuine Windows PATH."""
+    def test_windows_path_does_not_append_managed_uv_dir(self):
+        """A native Windows PATH remains unchanged by target construction."""
         from tools.environments.local import _append_missing_sane_path_entries
-        from hermes_constants import get_hermes_home
-
         path = r"C:\Windows\System32;C:\Program Files\Git\bin"
-        uv = str(get_hermes_home() / "uv")
-        assert _append_missing_sane_path_entries(path) == path + os.pathsep + uv
+        assert _append_missing_sane_path_entries(path) == path
 
 
 # ---------------------------------------------------------------------------

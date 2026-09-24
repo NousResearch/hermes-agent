@@ -333,12 +333,12 @@ class TestFindCli:
     """The tests/tools conftest pins _find_cli to None (host isolation);
     exercise the real function via the preserved _find_cli_unpatched."""
 
-    def test_prefers_installed_binary(self, monkeypatch):
+    def test_uses_only_managed_binary(self, monkeypatch):
         monkeypatch.setattr(
             bu_cli.shutil, "which",
-            lambda name, path=None: "/usr/local/bin/browser-use" if name == "browser-use" and path is None else ("/usr/local/bin/uvx" if path is None else None),
+            lambda name, path=None: "/hermes/bin/browser-use" if name == "browser-use" and path else None,
         )
-        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/browser-use"]
+        assert bu_cli._find_cli_unpatched() == ["/hermes/bin/browser-use"]
 
     def test_does_not_use_user_path_uvx(self, monkeypatch):
         monkeypatch.setattr(
@@ -1134,19 +1134,16 @@ class TestFindCliManagedBin:
         monkeypatch.setenv("PATH", str(user_dir))
         assert bu_cli._find_cli_unpatched() is None
 
-    def test_user_local_bin_browser_use_found(self, tmp_path, monkeypatch):
-        # #83788: Desktop/TUI workers spawn with a minimal PATH that omits
-        # the user-level uv tool dir, where `uv tool install browser-use`
-        # links the binary by default — _find_cli must probe it explicitly.
-        # That dir is ~/.local/bin on POSIX and %APPDATA%\uv\bin on Windows.
+    def test_user_local_bin_browser_use_is_not_used(self, tmp_path, monkeypatch):
+        """A user-installed browser-use is not an implicit Hermes capability."""
         if os.name == "nt":
             monkeypatch.setenv("APPDATA", str(tmp_path / "userhome" / "appdata"))
             cli_dir = tmp_path / "userhome" / "appdata" / "uv" / "bin"
         else:
             cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
-        cli = _fake_binary(cli_dir, "browser-use")
-        assert bu_cli._find_cli_unpatched() == [str(cli)]
+        _fake_binary(cli_dir, "browser-use")
+        assert bu_cli._find_cli_unpatched() is None
 
     def test_managed_bin_precedes_user_local_bin(self, tmp_path, monkeypatch):
         """MANAGED-FIRST: Hermes' managed copy wins over a user-level side
@@ -1191,9 +1188,10 @@ class TestInstallCli:
         import types as _types
         fake = _types.ModuleType("hermes_cli.managed_uv")
         fake.ensure_uv = lambda **kw: None
-        fake.managed_uv_env = lambda **kw: dict(os.environ)
+        fake.installation_uv_env = lambda **kw: dict(os.environ)
         fake.managed_tool_bin_dir = lambda: tmp_path / "home" / "bin"
         fake.managed_tool_dir = lambda: tmp_path / "home" / "uv" / "tools"
+        fake.managed_tool_python_dir = lambda: tmp_path / "home" / "uv" / "python"
         monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
         ok, msg = bu_cli.install_cli()
         # No uv available in this fixture, so the attempted managed install
@@ -1218,9 +1216,10 @@ class TestInstallCli:
         import types as _types
         fake = _types.ModuleType("hermes_cli.managed_uv")
         fake.ensure_uv = lambda **kw: None
-        fake.managed_uv_env = lambda **kw: dict(os.environ)
+        fake.installation_uv_env = lambda **kw: dict(os.environ)
         fake.managed_tool_bin_dir = lambda: tmp_path / "home" / "bin"
         fake.managed_tool_dir = lambda: tmp_path / "home" / "uv" / "tools"
+        fake.managed_tool_python_dir = lambda: tmp_path / "home" / "uv" / "python"
         monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
         ok, msg = bu_cli.install_cli()
         assert ok is False
@@ -1243,14 +1242,15 @@ class TestInstallCli:
         import types as _types
         fake = _types.ModuleType("hermes_cli.managed_uv")
         fake.ensure_uv = lambda **kw: str(uv_path)
-        fake.managed_uv_env = lambda **kw: {
+        fake.installation_uv_env = lambda **kw: {
             **dict(os.environ),
-            "UV_TOOL_BIN_DIR": str(kw.get("tool_bin_dir") or ""),
+            "UV_TOOL_BIN_DIR": str(home / "bin"),
         }
         # browser-use is Hermes-managed: install_cli links/keeps it in the
         # SHARED root dirs (every profile resolves one binary).
         fake.managed_tool_bin_dir = lambda: home / "bin"
         fake.managed_tool_dir = lambda: home / "uv" / "tools"
+        fake.managed_tool_python_dir = lambda: home / "uv" / "python"
         monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
         ok, msg = bu_cli.install_cli()
         return ok, msg, bin_dir
@@ -1409,9 +1409,10 @@ class TestInstallCli:
         # root for both.
         fake = _types.ModuleType("hermes_cli.managed_uv")
         fake.ensure_uv = lambda **kw: str(fake_uv)
-        fake.managed_uv_env = real_managed_uv.managed_uv_env
+        fake.installation_uv_env = real_managed_uv.installation_uv_env
         fake.managed_tool_bin_dir = real_managed_uv.managed_tool_bin_dir
         fake.managed_tool_dir = real_managed_uv.managed_tool_dir
+        fake.managed_tool_python_dir = real_managed_uv.managed_tool_python_dir
         monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
 
         results = []

@@ -41,20 +41,12 @@ class TestSilentWhenHealthy:
                             lambda name, path=None: "/usr/local/bin/uv" if name == "uv" else None)
         assert env_probe.get_environment_probe_line() == ""
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows which('uv') resolves the .exe suffix, so a bare `uv` "
-        "file (no .exe, as this fixture creates) is not found; the Windows "
-        "append is covered by TestLocalEnvironmentPathInjectionGated.",
-    )
     def test_managed_only_uv_is_detected(self, monkeypatch, tmp_path):
-        """A managed-only install keeps uv in $HERMES_HOME/uv, which is on the
-        terminal subshell PATH (local.py appends it to the Hermes sandbox shell)
-        but NOT on the agent-process PATH. The probe must ask the terminal PATH,
-        so PEP 668 with a managed uv stays silent instead of claiming uv is
-        missing. POSIX only: on Windows `which('uv')` needs the .exe suffix,
-        which this fixture does not create; the Windows-side append is asserted
-        by TestLocalEnvironmentPathInjectionGated."""
+        """A managed-only uv is private and absent from the target terminal.
+
+        The probe must therefore report the PEP 668 warning instead of claiming
+        that uv is installed merely because Hermes has an internal copy.
+        """
         home = tmp_path / "home"
         uv_dir = home / "uv"
         uv_dir.mkdir(parents=True)
@@ -68,8 +60,10 @@ class TestSilentWhenHealthy:
         monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
         monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
         monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
-        # Real which() against the terminal PATH built by local.py.
-        assert env_probe.get_environment_probe_line() == ""
+        monkeypatch.setattr(env_probe, "_terminal_probe_path", lambda: str(tmp_path / "empty"))
+        line = env_probe.get_environment_probe_line()
+        assert line
+        assert "uv=installed" not in line
 
 
 class TestEmitsOnRealProblems:

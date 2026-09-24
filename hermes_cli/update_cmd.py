@@ -640,17 +640,17 @@ def _repair_venv_on_current_checkout(
     # fresh launch completes it via the marker.
     _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
     _write_update_incomplete_marker()
-    from hermes_cli.managed_uv import ensure_uv, managed_uv_env
+    from hermes_cli.managed_uv import ensure_uv, profile_uv_env
     repair_uv = ensure_uv()
     # Venv gone entirely (repair interrupted after the old one was moved aside): recreate.
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
     venv_python_missing = not venv_python_path(venv_dir, windows=_m()._is_windows()).exists()
     if venv_python_missing and repair_uv:
         print("→ Recreating virtual environment...")
-        # managed_uv_env: uv venv can hit the download cache (and the python store,
+        # profile_uv_env: uv venv can hit the profile-owned download cache (and Python store,
         # if it has to fetch an interpreter) — keep both inside HERMES_HOME.
         subprocess.run([repair_uv, "venv", venv_dir.name], cwd=_m().PROJECT_ROOT, check=False,
-                       env=managed_uv_env())
+                       env=profile_uv_env())
     repair_prefix, repair_env = _pip_install_prefix(repair_uv)
     _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)

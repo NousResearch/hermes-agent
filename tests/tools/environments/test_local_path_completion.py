@@ -39,3 +39,13 @@ def test_missing_user_local_bin_not_appended(monkeypatch, tmp_path):
     monkeypatch.setattr(local_mod, "_managed_runtime_path_entries", lambda: [])
 
     assert ".local" not in _append_missing_sane_path_entries("/usr/bin:/bin")
+
+
+def test_private_managed_uv_directory_is_not_added(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(local_mod, "_managed_runtime_path_entries", lambda: [])
+    monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", lambda: None)
+
+    path = _append_missing_sane_path_entries("/usr/bin:/bin")
+
+    assert str(tmp_path / ".hermes" / "uv") not in path.split(os.pathsep)

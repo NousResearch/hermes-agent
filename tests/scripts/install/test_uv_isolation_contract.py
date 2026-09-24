@@ -38,10 +38,6 @@ _RUNTIME_AXES = (
     "UV_PYTHON_INSTALL_BIN", "UV_PYTHON_INSTALL_REGISTRY",
 )
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason="POSIX shell contract: bash required")
-
-
 def _uv_state_fn(script: Path) -> str:
     text = script.read_text(encoding="utf-8")
     _, marker, rest = text.partition(_SIG)
@@ -90,6 +86,10 @@ def _python_axes(home: Path) -> str:
 
 
 @pytest.mark.parametrize("script", [INSTALL_SH, SETUP_SH], ids=["install.sh", "setup-hermes.sh"])
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="POSIX installer contract requires a POSIX host with bash",
+)
 def test_posix_installer_contract_matches_python(script: Path, tmp_path: Path) -> None:
     home = tmp_path / "hermes"
     assert _shell_axes(script, home) == _python_axes(home)

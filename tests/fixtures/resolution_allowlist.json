@@ -526,11 +526,6 @@
   },
   {
     "path": "tools/environments/local.py",
-    "symbol": "_pin_managed_uv_state_when_managed_uv_would_run",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/environments/local.py",
     "symbol": "_resolve_hermes_bin_dir",
     "kind": "bare_which"
   },

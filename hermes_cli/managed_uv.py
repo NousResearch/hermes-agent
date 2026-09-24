@@ -104,6 +104,16 @@ def managed_tool_bin_dir() -> Path:
     return get_default_hermes_root() / "bin"
 
 
+def managed_tool_python_dir() -> Path:
+    """Return the shared Python store for shared Hermes-managed tools.
+
+    A shared tool environment must not select an interpreter owned by the
+    profile that happened to install it first: deleting that profile would
+    leave every other profile with a shared shim whose interpreter vanished.
+    """
+    return get_default_hermes_root() / "uv" / "python"
+
+
 def _legacy_managed_bin_dir() -> Path:
     """Return the pre-isolation managed-binary dir (the default root's
     ``bin``) — the layout migrated by :func:`_migrate_legacy_managed_uv`."""
@@ -136,8 +146,15 @@ def managed_uv_env(
     base_env: dict[str, str] | None = None,
     tool_bin_dir: Path | str | None = None,
     tool_dir: Path | str | None = None,
+    python_install_dir: Path | str | None = None,
 ) -> dict[str, str]:
-    """Return a sanitized environment for a Hermes-private uv invocation.
+    """Internal parameterized implementation for Hermes uv-family write state.
+
+    New call sites must use a named ownership wrapper such as
+    :func:`installation_uv_env` or :func:`profile_uv_env`; this helper remains
+    the shared implementation beneath those wrappers.
+
+    Return a sanitized environment for a Hermes-private uv invocation.
 
     Pins every directory uv writes to inside Hermes' own tree, so no uv
     operation Hermes runs can touch the user's uv-managed state — their tool
@@ -148,7 +165,9 @@ def managed_uv_env(
     their own ``UV_*`` dirs still has Hermes write only where Hermes owns.
 
     ``tool_bin_dir`` / ``tool_dir`` override where ``uv tool install`` links
-    its shims and keeps the tool environment.  Both default to Hermes' tree
+    its shims and keeps the tool environment. ``python_install_dir`` gives a
+    shared tool a Python store with the same lifetime. These default to the
+    active profile's Hermes tree
     **by default** — ``UV_TOOL_BIN_DIR`` to ``$HERMES_HOME/bin`` and
     ``UV_TOOL_DIR`` to the per-profile ``managed_uv_state_dir()/tools`` — so
     the value is always pinned, never inherited.  (An inherited user
@@ -172,11 +191,37 @@ def managed_uv_env(
                            else managed_uv_state_dir() / "tools"),
         "UV_TOOL_BIN_DIR": str(tool_bin_dir if tool_bin_dir is not None
                               else get_hermes_home() / "bin"),
-        "UV_PYTHON_INSTALL_DIR": str(get_hermes_home() / "python"),
+        "UV_PYTHON_INSTALL_DIR": str(python_install_dir if python_install_dir is not None
+                                     else get_hermes_home() / "python"),
         "UV_PYTHON_INSTALL_BIN": "0",
         "UV_PYTHON_INSTALL_REGISTRY": "0",
     })
     return env
+
+
+def installation_uv_env(*, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for installation-owned Hermes tooling.
+
+    Shared tools must keep their executable, tool environment, and Python
+    store under the default Hermes root so deleting a profile cannot invalidate
+    the capability for another profile. This scopes uv-family write paths, not
+    executable selection or target PATH exposure.
+    """
+    return managed_uv_env(
+        base_env=base_env,
+        tool_bin_dir=managed_tool_bin_dir(),
+        tool_dir=managed_tool_dir(),
+        python_install_dir=managed_tool_python_dir(),
+    )
+
+
+def profile_uv_env(*, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for profile-owned Hermes uv operations.
+
+    Profile ownership applies to mutable state, not to the managed uv binary;
+    all profiles may use the shared installation executable.
+    """
+    return managed_uv_env(base_env=base_env)
 
 
 def resolve_uv() -> Optional[str]:
@@ -240,6 +285,13 @@ def _migrate_legacy_managed_uv() -> bool:
     return moved_uv or moved_uvx
 
 
+def _legacy_managed_uv_exists() -> bool:
+    """Return whether either pre-isolation binary still needs cleanup."""
+    exe = ".exe" if platform.system() == "Windows" else ""
+    legacy = _legacy_managed_bin_dir()
+    return any((legacy / f"{name}{exe}").is_file() for name in ("uv", "uvx"))
+
+
 def managed_pip_install_prefix() -> str:
     """Return the copy-pasteable ``<tool> pip install`` prefix for Hermes' venv.
 
@@ -284,13 +336,18 @@ def managed_python_install_dir(project_root: Path | None = None) -> Path:
 def managed_python_env(
     project_root: Path | None = None, *, install_dir: Path | None = None,
     base_env: dict[str, str] | None = None) -> dict[str, str]:
-    """Return a sanitized environment for Hermes-private uv Python commands."""
+    """Return an installation-owned environment for Hermes runtime Python repair.
+
+    The checkout-scoped runtime store is shared by profiles, so this is an
+    installation variant rather than a profile-owned environment. The target
+    Python directory is then overridden for the repair generation.
+    """
     target = (
         Path(install_dir)
         if install_dir is not None
         else managed_python_install_dir(project_root)
     )
-    env = managed_uv_env(base_env=base_env)
+    env = installation_uv_env(base_env=base_env)
     for key in (
         "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT", "UV_NO_MANAGED_PYTHON",
         "UV_PYTHON", "UV_PYTHON_DOWNLOADS", "UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONHOME",
@@ -397,15 +454,18 @@ def _ensure_uv_path(
     repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
 ) -> Optional[str]:
     """Resolve the managed uv path, installing it if necessary."""
-    _migrate_legacy_managed_uv()
     existing = resolve_uv()
-    if existing and _uv_runs(existing):
+    existing_runs = bool(existing and _uv_runs(existing))
+    if existing_runs and not _legacy_managed_uv_exists():
         return existing
     target = managed_uv_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
     print(f"  → Installing managed uv into {target.parent} ...")
     lock_fd = _acquire_uv_install_lock()
+    if lock_fd is None:
+        logger.warning("Managed uv install deferred: another process owns the install lock")
+        return existing if existing_runs else None
     try:
+        _migrate_legacy_managed_uv()
         # Re-probe under the lock: another thread/process may have installed a
         # runnable uv while we waited, in which case a second installer run is
         # pure waste (and the race this lock exists to prevent).
@@ -556,11 +616,16 @@ def update_managed_uv(
     vulnerable-runtime repair probe below ALWAYS runs — CVE-driven runtime
     repair must never be gated behind the freshness stamp.
     """
-    # A pre-isolation install kept the managed binary in $HERMES_HOME/bin;
-    # migrate it before resolving so a legacy install gets its runtime
-    # repair on THIS update, not the next one (resolve_uv is a pure lookup).
-    _migrate_legacy_managed_uv()
     existing = resolve_uv()
+    if _legacy_managed_uv_exists():
+        lock_fd = _acquire_uv_install_lock()
+        if lock_fd is None:
+            return existing
+        try:
+            _migrate_legacy_managed_uv()
+            existing = resolve_uv()
+        finally:
+            _release_uv_install_lock(lock_fd)
     if not existing:
         # Not installed yet — ensure_uv() will handle that elsewhere.
         return None
@@ -1147,8 +1212,8 @@ def _acquire_uv_install_lock(
     ``flock``/``msvcrt`` exclude by open file description, so this covers both
     threads **and** processes: two profiles/gateways cannot install into the
     shared ``<root>/uv`` at once.  Returns an fd to release, or ``None`` on
-    timeout/error — callers then proceed best-effort (a second installer run
-    is idempotent, and a stale holder must not wedge them forever).
+    timeout/error. Callers may reuse an already validated binary, but must not
+    enter a shared mutation section without ownership.
     """
     path = _uv_install_lock_path()
     try:
@@ -1169,7 +1234,7 @@ def _acquire_uv_install_lock(
                 os.close(fd)
         if time.monotonic() >= deadline:
             logger.warning(
-                "managed uv install lock busy for %.0fs; proceeding without it", timeout)
+                "managed uv install lock busy for %.0fs; deferring mutation", timeout)
             return None
         time.sleep(0.25)
 
@@ -1244,6 +1309,9 @@ def _refresh_managed_binary(uv_bin: str) -> bool:
     # lock held): the order is always repair -> uv, never the reverse, so the
     # two locks cannot deadlock.
     lock_fd = _acquire_uv_install_lock()
+    if lock_fd is None:
+        logger.warning("managed uv refresh deferred: another process owns the install lock")
+        return False
     try:
         before = _uv_version_string(uv_bin)
         try:
@@ -1434,10 +1502,10 @@ def _install_uv(target: Path) -> None:
     cleanly instead of wedging the update.
     """
     system = platform.system()
-    # Override any inherited UV_* (managed_uv_env) rather than letting a user's
+    # Override any inherited UV_* (installation_uv_env) rather than letting a user's
     # own uv configuration steer Hermes' bootstrap, then point the installer at
     # the private dir.
-    env = managed_uv_env(base_env=os.environ)
+    env = installation_uv_env(base_env=os.environ)
     # Tell the astral installer to drop the binary in our dir, not
     # ~/.local/bin.  BOTH vars are set on every platform: UV_INSTALL_DIR
     # controls the location, while UV_UNMANAGED_INSTALL is what stops the

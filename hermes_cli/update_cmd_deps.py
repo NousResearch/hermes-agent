@@ -561,8 +561,12 @@ def _install_psutil_android_compat(
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
-    """Best-effort uv bootstrap on Termux (official installer may fail: glibc vs bionic). Prefer a
-    PATH uv; else wheel-only ``pip install uv`` so the Rust crate is never source-built."""
+    """Recovery-only uv bootstrap for Termux dependency repair.
+
+    The PATH candidate is accepted only on Android/Termux, where the official
+    managed installer may be unusable on bionic. This function is not a normal
+    Hermes resolver and its result must not escape the update repair operation.
+    """
     from hermes_cli.update_cmd import _m
     from hermes_cli.managed_uv import resolve_uv
     existing = resolve_uv()
@@ -570,8 +574,7 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return existing
     if not _m()._is_termux_env():
         return None
-    # Termux-packaged uv is on PATH but not the managed bin dir, so resolve_uv() misses it;
-    # prefer it over pip, which has no Android wheel and would source-build on a small device.
+    # Termux-packaged uv is a bounded recovery candidate, not a managed runtime.
     system_uv = shutil.which("uv")
     if system_uv:
         return system_uv

@@ -626,16 +626,6 @@ def _managed_runtime_path_entries() -> list[str]:
     - ``$HERMES_HOME/node`` (+ ``/bin``) — installed to satisfy the desktop and
       browser toolchain. ``tools/browser_tool.py`` already does this for its own
       subprocesses; the agent's shell deserves the same.
-    - ``<default-root>/uv`` — the managed ``uv``/``uvx`` (the private,
-      per-machine location the installers and the runtime updater keep them
-      in; never put on the user's PATH). Appended here so the agent's own
-      shell is uv-capable even on a managed-only install, while a user's own
-      uv on their PATH still wins (first-occurrence-wins). This is the Hermes
-      sandbox terminal shell, NOT the user's login shell / system PATH, so
-      isolation holds: a user never sees Hermes' uv in their own environment.
-      When the managed copy is the one that would actually run,
-      ``_pin_managed_uv_state_when_managed_uv_would_run`` pins its write dirs
-      so even that fallback cannot touch the user's uv state.
     - ``<default-root>/bin`` — **shared, Hermes-managed CLIs** (browser-use via
       ``UV_TOOL_BIN_DIR``); one install serves every profile, so the sandbox
       must see it for a named profile too.
@@ -652,7 +642,6 @@ def _managed_runtime_path_entries() -> list[str]:
 
         candidates = [
             *iter_hermes_node_dirs(),
-            get_default_hermes_root() / "uv",
             get_default_hermes_root() / "bin",
             get_hermes_home() / "bin",
         ]
@@ -703,28 +692,13 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     byte-identical to the input and ordering is preserved; only the missing
     sane entries are appended.
 
-    On Windows the native PATH must not be reordered — so this is NOT a
-    pass-through: it only appends the private managed-uv dir
-    (``$HERMES_HOME\\uv``) at the tail, where the user's own uv (if any) on
-    their PATH still wins (first-occurrence-wins). ``bin`` and the node dirs
-    are handled by ``_prepend_hermes_bin_dir`` / ``iter_hermes_node_dirs``
-    elsewhere; this closes the gap where ``$HERMES_HOME\\uv`` (post-uv-
-    isolation) would otherwise be unreachable in the agent's terminal shell.
+    On Windows the native PATH must not be reordered. Hermes capability and
+    Node entries are handled by the dedicated helpers elsewhere; the private
+    managed uv directory is deliberately absent from this target PATH.
     """
     if _IS_WINDOWS:
-        try:
-            from hermes_constants import get_default_hermes_root
-
-            uv_dir = str(get_default_hermes_root() / "uv")
-        except Exception:
-            return existing_path
         sep = os.pathsep
         parts = existing_path.split(sep) if existing_path else []
-        # Windows PATH matching is case-insensitive, so guard the dedup with
-        # casefold() — otherwise a differently-cased entry (e.g. the user
-        # having ...\\Hermes\\uv) would append a duplicate alongside it.
-        if uv_dir and uv_dir.casefold() not in [p.casefold() for p in parts]:
-            parts.append(uv_dir)
         return sep.join(parts)
 
     # dict preserves first-occurrence order; empty entries dropped.
@@ -758,42 +732,6 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
-def _pin_managed_uv_state_when_managed_uv_would_run(run_env: dict) -> None:
-    """Pin uv's write dirs into Hermes' tree **only** when the managed uv is the
-    one the sandbox shell would actually run.
-
-    The terminal PATH gets ``<default-root>/uv`` appended so a managed-only
-    install is uv-capable for the model, with a user's own uv still winning
-    (first-occurrence-wins).  That leaves one hole: on a machine with no user
-    uv, the model's ``uv`` is Hermes' managed copy, which — unpinned — writes
-    the *user's* uv state (tool store, cache, python store).  Pin it here when,
-    and only when, no user uv shadows it; when the user's own uv wins it keeps
-    its own state (the documented sandbox contract)."""
-    try:
-        from hermes_constants import get_default_hermes_root
-
-        managed_dir = get_default_hermes_root() / "uv"
-    except Exception:
-        return
-    if not managed_dir.is_dir():
-        return
-    path_key = _path_env_key(run_env)
-    if not path_key:
-        return
-    entries = [p for p in run_env.get(path_key, "").split(os.pathsep) if p]
-    managed = os.path.normcase(str(managed_dir))
-    if not any(os.path.normcase(p) == managed for p in entries):
-        return  # managed uv is not on this PATH; nothing managed can run
-    user_entries = [p for p in entries if os.path.normcase(p) != managed]
-    if shutil.which("uv", path=os.pathsep.join(user_entries)):
-        return  # the user's own uv wins; leave its state alone
-    from hermes_cli.managed_uv import managed_uv_env
-
-    for key, value in managed_uv_env(base_env=run_env).items():
-        if key.startswith("UV_"):
-            run_env[key] = value
-
-
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping. The process env is
     the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
@@ -802,7 +740,6 @@ def _make_run_env(env: dict) -> dict:
     run_env = _scrubbed_env(
         [(dict(strip_launch_profile_env(os.environ.copy()) | env), True)], frozenset(),
         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
-    _pin_managed_uv_state_when_managed_uv_would_run(run_env)
     return run_env
 
 

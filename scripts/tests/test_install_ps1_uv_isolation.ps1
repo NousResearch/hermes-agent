@@ -13,7 +13,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$installPs1 = Join-Path $PSScriptRoot '..' 'install.ps1' | Resolve-Path
+$installPs1 = Join-Path (Join-Path $PSScriptRoot '..') 'install.ps1' | Resolve-Path
 
 function Find-InstallFunction {
     param([string]$Name)

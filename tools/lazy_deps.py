@@ -622,9 +622,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
         # never drives the user's own uv. Pin every uv write dir into Hermes' own tree so this
         # install cannot touch the user's uv tool store / cache / python store either.
         if uv_bin := _uv_binary():
-            from hermes_cli.managed_uv import managed_uv_env
+            from hermes_cli.managed_uv import profile_uv_env
 
-            uv_env.update(managed_uv_env(base_env=uv_env))
+            uv_env.update(profile_uv_env(base_env=uv_env))
             # Bridge pip's index unless any uv index knob is set; PIP_INDEX_URL beats pip.conf, as in
             # pip (see _pip_conf_index_url for why uv needs this at all).
             if not any(uv_env.get(k) for k in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")):

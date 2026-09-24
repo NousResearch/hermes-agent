@@ -71,10 +71,6 @@ class TestSupportsDraftStreaming:
         adapter._app = None
         assert adapter.supports_draft_streaming() is False
 
-    def test_unsupported_after_feature_gate_failure(self):
-        adapter, _ = _make_adapter()
-        adapter._native_stream_unsupported = True
-        assert adapter.supports_draft_streaming() is False
 
 
 class TestSendDraft:

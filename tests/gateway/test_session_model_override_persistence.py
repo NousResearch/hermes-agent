@@ -141,6 +141,80 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
 
 
+def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):
+    """The managed llama.cpp supervisor may come back on an ephemeral port (18434 busy). The persisted
+    loopback URL is a snapshot of the previous boot, so rehydration must take the live endpoint."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "Local.Model-Q4_K_M", "provider": "llamacpp", "base_url": "http://127.0.0.1:51489/v1"})
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={"api_key": "local-key", "base_url": "http://127.0.0.1:18434/v1",
+                      "provider": "custom", "requested_provider": "llamacpp"},
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert override["base_url"] == "http://127.0.0.1:18434/v1"
+    assert override["api_key"] == "local-key"
+
+
+def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_factory):
+    """api_mode is re-resolved from the target model, so a relay URL persisted by an older build for the
+    previous wire (/v1-stripped for anthropic_messages) must be healed to match, not kept verbatim (#96066)."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "deepseek-v4-flash-vision-exp", "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go"})
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={"api_key": "go-key", "api_mode": "chat_completions",
+                      "base_url": "https://opencode.ai/zen/go/v1", "provider": "opencode-go"},
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert (override["api_mode"], override["base_url"]) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+
+
+@pytest.mark.parametrize("codex_on_turn", ["recovers", "still_unavailable"])
+def test_codex_override_never_runs_on_the_default_providers_endpoint(store_factory, codex_on_turn):
+    """A persisted openai-codex override whose credentials fail to re-resolve used to be layered over the
+    DEFAULT provider's runtime (Nous URL + Nous key + chat_completions). The turn runs on ONE coherent
+    route: the override's own provider when it resolves, else the whole default route with a notice."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {"model": "gpt-6-luna-900k", "provider": "openai-codex",
+                                           "base_url": "https://inference-api.nousresearch.com/v1"})
+    runner = _make_runner(store_factory())
+    codex = {"provider": "openai-codex", "api_key": "codex-tok", "api_mode": "codex_responses",
+             "base_url": "https://chatgpt.com/backend-api/codex"}
+    nous = {"provider": "nous", "api_key": "nous-key", "api_mode": "chat_completions",
+            "base_url": "https://inference-api.nousresearch.com/v1"}
+    calls = iter([RuntimeError("refresh blip"), codex if codex_on_turn == "recovers" else RuntimeError("gone")])
+
+    def _for_provider(provider, target_model=None):
+        assert provider == "openai-codex"
+        nxt = next(calls)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return dict(nxt)
+
+    with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=_for_provider), \
+         patch("gateway.run._resolve_runtime_agent_kwargs", return_value=dict(nous)):
+        model, runtime = runner._resolve_session_agent_runtime(
+            session_key=session_key, user_config={"model": {"default": "openai/gpt-6-luna", "provider": "nous"}})
+
+    expected_model, expected = ("gpt-6-luna-900k", codex) if codex_on_turn == "recovers" else ("openai/gpt-6-luna", nous)
+    assert (model, {k: runtime[k] for k in expected}) == (expected_model, expected)
+    assert bool(runner._pre_agent_fallback_notice) is (codex_on_turn == "still_unavailable")
+
+
 def test_sanitize_model_override():
     assert sanitize_model_override(None) is None
     assert sanitize_model_override({}) is None

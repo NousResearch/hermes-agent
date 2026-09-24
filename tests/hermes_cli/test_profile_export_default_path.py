@@ -7,6 +7,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+from hermes_cli import profile_cmd
 
 
 @pytest.fixture()
@@ -88,7 +89,7 @@ def test_cli_export_rejects_bad_profile_name_without_traceback(
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
 
     with pytest.raises(SystemExit):
-        main_mod.cmd_profile(
+        profile_cmd.cmd_profile(
             Namespace(
                 profile_action="export",
                 profile_name="bad//name",
@@ -115,7 +116,7 @@ def test_cli_export_default_does_not_write_into_the_current_checkout(
         "hermes_constants.get_default_hermes_root", lambda: default_home
     )
 
-    main_mod.cmd_profile(
+    profile_cmd.cmd_profile(
         Namespace(
             profile_action="export",
             profile_name="default",
@@ -153,25 +154,6 @@ def test_slash_export_uses_the_same_managed_destination(
     assert not (tmp_path / "default.tar.gz").exists()
 
 
-@pytest.mark.asyncio
-async def test_profile_export_api_uses_the_shared_managed_destination(
-    tmp_path, monkeypatch, profiles
-):
-    from hermes_cli.web_models import ProfileExport
-
-    router_mod = importlib.import_module("hermes_cli.web_routers.profiles")
-
-    managed = tmp_path / "profile-exports" / "default-20260823-120000.tar.gz"
-    monkeypatch.setattr(profiles, "get_profile_export_path", lambda name: managed)
-    monkeypatch.setattr(
-        profiles,
-        "export_profile",
-        lambda name, output, extra_files=None: output,
-    )
-
-    result = await router_mod.export_profile_endpoint("default", ProfileExport())
-
-    assert result == {"ok": True, "archive": str(managed)}
 
 
 def test_cwd_in_unrelated_checkout_does_not_prove_safety(

@@ -39,6 +39,13 @@ import path from 'node:path'
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
+
+// Remote-side watchdog for probe commands, in seconds. runSsh SIGKILLs the
+// LOCAL ssh child on timeout, but the remote command keeps running as an
+// orphan (ppid=1) — a hung remote CLI (e.g. a wedged `hermes --version`)
+// accumulates orphans that busy-loop (#110478). Kept under
+// DEFAULT_EXEC_TIMEOUT_MS so the remote kill lands before the local timeout.
+const REMOTE_PROBE_TIMEOUT_SECS = 15
 // No-mux tunnels are one `ssh -N -L` child each; a transient child death
 // (network blip, sshd restart, laptop resume) used to instantly poison
 // isAlive() and cascade upstream into a full teardown that SIGTERM'd a
@@ -321,6 +328,40 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
   return args
 }
 
+// Wrap a remote probe command in a POSIX watchdog so a hung remote CLI is
+// killed REMOTELY after `timeoutSecs` instead of orphaning when the local ssh
+// child is SIGKILLed (#110478). Pure POSIX sh (dash, macOS sh) — deliberately
+// not GNU `timeout`, which macOS remotes do not ship.
+//
+// The wrapped command must be a SINGLE command: the watchdog kills its direct
+// child, so the exact invocation that can hang must be the direct child —
+// a hung grandchild of a compound wrapper would orphan anyway. (The ownership
+// probe nests the watchdog around the inner `serve --help` inside its
+// `$( ... )` for this reason; note the load-bearing space in `$( (`.)
+// The wrapped command keeps its stdout; the shell exits non-zero when the
+// watchdog fires and the probe's existing failure path handles it.
+//
+// The sleeper's stdio is detached (</dev/null >/dev/null 2>&1): killing the
+// sleeper subshell orphans its `sleep` grandchild, and an orphan holding the
+// session pipes would keep the ssh channel open until the full timeout even on
+// the healthy path. Detached, the orphan is a benign self-reaping `sleep`.
+function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SECS) {
+  const secs = Number.isFinite(timeoutSecs) && timeoutSecs > 0 ? Math.floor(timeoutSecs) : REMOTE_PROBE_TIMEOUT_SECS
+
+  // Job control (`set -m`) puts the probe in its own process group so the
+  // watchdog can also reach a grandchild left behind by a launcher that runs
+  // the CLI without exec. Non-interactive zsh exits when asked to enable
+  // monitor mode, so skip that setup there and fall back to killing the direct
+  // child. Other shells retain the process-group cleanup where supported.
+  return (
+    `[ -n "\${ZSH_VERSION-}" ] || set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
+    `wait $__htp; __htrc=$?; ` +
+    `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +
+    `exit $__htrc`
+  )
+}
+
 // Bind the local end to 127.0.0.1 ONLY — never 0.0.0.0 — so the tunnel does not
 // re-expose the remote dashboard to the client's LAN.
 function forwardSpec(localPort, remotePort, remoteHost = '127.0.0.1') {
@@ -402,8 +443,9 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Spawn helper — runs an ssh invocation, races it against a hard timeout
 
-// Resolves { code, stdout, stderr }. On timeout the child is SIGKILLed and the
-// promise rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
+// Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
+// (null on a normal exit). On timeout the child is SIGKILLed and the promise
+// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
 function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -493,7 +535,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       signal?.removeEventListener('abort', onAbort)
       reject(error)
     })
-    child.on('close', code => {
+    child.on('close', (code, closeSignal) => {
       if (settled) {
         return
       }
@@ -501,9 +543,35 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       settled = true
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ code, stdout, stderr })
+      resolve({ code, signal: closeSignal || null, stdout, stderr })
     })
   })
+}
+
+function sshCloseSignal(value) {
+  if (!value || typeof value === 'string') {
+    return null
+  }
+
+  return typeof value.signal === 'string' && value.signal ? value.signal : null
+}
+
+function sshCloseStderr(value) {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value && typeof value.stderr === 'string') {
+    return value.stderr
+  }
+
+  return value?.message || ''
+}
+
+// A normal exit is code 0 and no close signal. A signal death is not success,
+// even when the caller would otherwise treat a null code as a plain failure.
+function sshCloseOk(result) {
+  return Boolean(result) && !sshCloseSignal(result) && result.code === 0
 }
 
 function stopTunnelChild(child, timeoutMs = 5_000) {
@@ -620,10 +688,28 @@ class SshConnection {
       return err
     }
 
-    const stderr = typeof stderrOrErr === 'string' ? stderrOrErr : stderrOrErr?.message || ''
+    const closeSignal = sshCloseSignal(stderrOrErr)
+    const stderr = sshCloseStderr(stderrOrErr)
+
+    // A signal death with empty stderr is a local process death, not proof the
+    // host was unreachable. Callers that pass UNREACHABLE as the empty-stderr
+    // fallback must not win here.
+    if (closeSignal && !String(stderr).trim()) {
+      const detail = `ssh process exited from signal ${closeSignal}`
+      const err: any = new Error(sshErrorMessage(SSH_ERROR.UNKNOWN, this, detail))
+      err.kind = SSH_ERROR.UNKNOWN
+      err.signal = closeSignal
+
+      return err
+    }
+
     const kind = stderr ? classifySshError(stderr) : fallbackKind
     const err: any = new Error(sshErrorMessage(kind, this, stderr))
     err.kind = kind
+
+    if (closeSignal) {
+      err.signal = closeSignal
+    }
 
     return err
   }
@@ -661,8 +747,8 @@ class SshConnection {
         throw this._fail(error, SSH_ERROR.UNREACHABLE)
       }
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+      if (!sshCloseOk(result)) {
+        throw this._fail(result, SSH_ERROR.UNREACHABLE)
       }
 
       this._opened = true
@@ -709,8 +795,8 @@ class SshConnection {
       throw this._fail(error, SSH_ERROR.UNREACHABLE)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result, SSH_ERROR.UNREACHABLE)
     }
 
     this._opened = true
@@ -731,7 +817,7 @@ class SshConnection {
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -751,7 +837,7 @@ class SshConnection {
         signal
       })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -800,8 +886,8 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
 
     return result.stdout
@@ -994,8 +1080,8 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
   }
 
@@ -1066,8 +1152,8 @@ class SshConnection {
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr)
+      if (!sshCloseOk(result)) {
+        throw this._fail(result)
       }
 
       this._logLine('control master closed')
@@ -1137,6 +1223,7 @@ export {
   hostArgs,
   pickLocalPort,
   redactSecrets,
+  REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
   SSH_ERROR,
   SshConnection,
@@ -1144,5 +1231,6 @@ export {
   stopTunnelChild,
   target,
   validateKeyPath,
-  validateSshTarget
+  validateSshTarget,
+  withRemoteTimeout
 }

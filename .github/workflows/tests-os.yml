@@ -27,6 +27,19 @@ name: OS-specific tests
 
 on:
   workflow_call:
+    inputs:
+      desktop_updater:
+        description: >-
+          Run the Windows desktop-update hand-off integration tests
+          (tests/scripts/desktop_update/test_desktop_update_windows_*.py). These spawn the real
+          scripts/desktop-update/windows.ps1 and poll its loopback server, so
+          they carry process-timing noise a shared runner amplifies; the
+          caller gates them on the classifier's desktop_updater lane so a PR
+          that never touched that surface cannot be failed by it. Push /
+          dispatch runs fail open (classifier sets every lane true).
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -79,7 +92,7 @@ jobs:
         # because it could not build here).
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
 
       - name: Minimize uv cache
         run: uv cache prune --ci
@@ -134,9 +147,23 @@ jobs:
           # would therefore abort the script on any non-zero exit and the
           # exit-5 branch below would be unreachable dead code — the job
           # would still fail red, but the diagnostic would never print.
+          # Desktop-update hand-off integration tests spawn the real
+          # windows.ps1; deselect them unless the PR touched that surface
+          # (see the workflow_call input). ``--ignore-glob`` keeps the file
+          # list above intact, so a renamed test file still trips the
+          # zero-tests guard rather than silently vanishing.
+          # (bash 3.2 on the macOS runner: an empty array under ``set -u`` is
+          # an unbound-variable error, hence the ``${arr[@]+...}`` idiom.)
+          EXTRA_ARGS=()
+          if [ "${{ inputs.desktop_updater }}" != "true" ]; then
+            echo "desktop_updater lane off: skipping tests/scripts/desktop_update/test_desktop_update_windows_*.py"
+            EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')
+          fi
+
           status=0
           uv run --no-sync python -m pytest \
             "$@" \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             -m "${{ matrix.marker }} and not integration" \
             -v --tb=short || status=$?
           if [ "$status" -eq 5 ]; then
@@ -152,3 +179,115 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+  e2e-windows:
+    # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
+    # `hermes serve`, `hermes gateway run/stop`, the tui_gateway stdio process, cron script
+    # jobs, the terminal tool's Git Bash / PowerShell / cmd children and a ConPTY console,
+    # all against the loopback fake provider (tests/fakes/fake_llm_provider.py). Separate
+    # from os-tests above: those are unit-level windows_only tests, these spawn process
+    # trees per test. Every file there is also marked `integration`, so os-tests'
+    # `-m "windows_only and not integration"` never runs them a second time.
+    #
+    # One pytest process per FILE, in parallel (same model as the Linux `e2e` job): the
+    # files spawn their own trees and must not share interpreter state. No retries: a
+    # Windows race that passes on retry is still a race. Tracked Windows bugs are strict
+    # xfails (per-file KNOWN tables), so a fix turns this job red until the entry goes.
+    name: Windows E2E (real processes)
+    # 32-core like os-tests' Windows row: seven files run in parallel and each spawns
+    # process trees; on the 4-vCPU image the suite step took 153-171 s (job 4.7-5.6 min),
+    # here 124 s (job 3.1 min), with headroom against scheduling-starved timeouts.
+    runs-on: windows-latest-32-core
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        # Same extras as os-tests: serve needs the web stack, the gateway the messaging
+        # imports, and the ConPTY case pywinpty (a core dependency on win32).
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Run Windows E2E suite
+        shell: bash
+        run: |
+          set -uo pipefail
+          logs="${RUNNER_TEMP}/e2e-windows"
+          mkdir -p "$logs"
+          files=$(find tests/e2e/core/windows -name 'test_*.py' | sort)
+          if [ -z "$files" ]; then
+            echo "::error::no test files under tests/e2e/core/windows"
+            exit 1
+          fi
+          pids=()
+          names=()
+          start=$SECONDS
+          for f in $files; do
+            # `-m windows_only` replaces pyproject's `not integration` addopts selector.
+            timeout 900 .venv/Scripts/python.exe -m pytest "$f" -m windows_only \
+              -p no:cacheprovider -v --tb=short -rA > "$logs/$(basename "$f" .py).log" 2>&1 &
+            pids+=($!)
+            names+=("$f")
+          done
+          fail=0
+          for i in "${!pids[@]}"; do
+            rc=0
+            wait "${pids[$i]}" || rc=$?
+            f="${names[$i]}"
+            echo "::group::$f (rc=$rc)"
+            cat "$logs/$(basename "$f" .py).log"
+            echo "::endgroup::"
+            if [ "$rc" -eq 5 ]; then
+              echo "::error::$f selected zero tests (marker renamed or selection broken)"
+              fail=1
+            elif [ "$rc" -ne 0 ]; then
+              echo "::error::$f failed (rc=$rc)"
+              grep -E '^(FAILED|ERROR) ' "$logs/$(basename "$f" .py).log" || true
+              fail=1
+            fi
+          done
+          echo "Windows E2E wall: $((SECONDS - start)) s"
+          exit "$fail"
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: No leftover Python / Hermes processes
+        # Backstop for the per-test ownership checks: a file killed by its 900 s timeout,
+        # or a detached grandchild some test's cleanup missed, leaves an interpreter behind
+        # (Windows never re-parents, so nothing reaps it). The runner itself runs no
+        # python.exe / hermes.exe once the suite is done.
+        if: always()
+        shell: pwsh
+        run: |
+          $names = 'python.exe', 'pythonw.exe', 'hermes.exe'
+          $deadline = (Get-Date).AddSeconds(20)
+          do {
+            $left = @(Get-CimInstance Win32_Process | Where-Object { $names -contains $_.Name.ToLower() })
+            if ($left.Count -eq 0) { 'no leftover python/hermes processes'; exit 0 }
+            Start-Sleep -Milliseconds 500
+          } while ((Get-Date) -lt $deadline)
+          foreach ($p in $left) {
+            "::error::leftover pid=$($p.ProcessId) ppid=$($p.ParentProcessId): $($p.CommandLine)"
+          }
+          exit 1

@@ -57,6 +57,7 @@ else
     INSTALL_DIR_EXPLICIT=false
 fi
 PYTHON_VERSION="3.11"
+PYTHON_SUPPORTED_RANGE=">=3.11,<3.14"  # pyproject requires-python; keep in sync
 NODE_VERSION="26"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
@@ -218,7 +219,7 @@ print_banner() {
     echo ""
     echo -e "${MAGENTA}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│             ⚕ Hermes Agent Installer                    │"
+    echo "│             ☤ Hermes Agent Installer                    │"
     echo "├─────────────────────────────────────────────────────────┤"
     echo "│  An open source AI agent by Nous Research.              │"
     echo "└─────────────────────────────────────────────────────────┘"
@@ -280,10 +281,36 @@ discard_update_lockfile_churn() {
     [ -n "$dirty_diff" ] || return 0
 
     local dirty_package_dirs=""
+    local root_lock_protected=0
     while IFS= read -r path; do
         case "$path" in
             *package.json)
-                dirty_package_dirs="${dirty_package_dirs}$(dirname "$path")"$'\n'
+                local pkg_dir
+                pkg_dir=$(dirname "$path")
+                dirty_package_dirs="${dirty_package_dirs}${pkg_dir}"$'\n'
+                # The single root lockfile records every workspace's specs (root
+                # package.json "workspaces" globs), so a dirty workspace manifest
+                # such as apps/desktop/package.json protects it; reverting it there
+                # desyncs spec and lock and every later npm ci fails (#112378). A
+                # manifest outside the graph (website/) has its own lockfile.
+                if [ "$pkg_dir" = "." ]; then
+                    root_lock_protected=1
+                else
+                    # Read the globs line by line: an unquoted $(...) would pathname-expand
+                    # them against the caller's CWD before `case` ever sees the pattern.
+                    # `case` globs match across "/", so a manifest nested under a workspace
+                    # also protects the root lock (fail-safe; Python matches one level).
+                    local ws_glob
+                    while IFS= read -r ws_glob; do
+                        [ -n "$ws_glob" ] || continue
+                        case "$pkg_dir" in
+                            $ws_glob) root_lock_protected=1 ;;
+                        esac
+                    done <<WS_EOF
+$(sed -n '/"workspaces"[[:space:]]*:/,/\]/p' "$repo/package.json" 2>/dev/null \
+        | grep -o '"[^"]*"' | tr -d '"' | grep -v -e '^workspaces$' -e '^packages$')
+WS_EOF
+                fi
                 ;;
         esac
     done <<EOF
@@ -297,9 +324,13 @@ EOF
             *package-lock.json)
                 local lock_dir
                 lock_dir=$(dirname "$path")
-                case $'\n'"$dirty_package_dirs" in
-                    *$'\n'"$lock_dir"$'\n'*) continue ;;
-                esac
+                if [ "$lock_dir" = "." ]; then
+                    [ "$root_lock_protected" -eq 0 ] || continue
+                else
+                    case $'\n'"$dirty_package_dirs" in
+                        *$'\n'"$lock_dir"$'\n'*) continue ;;
+                    esac
+                fi
                 dirty_locks="${dirty_locks}${path}"$'\n'
                 dirty_count=$((dirty_count + 1))
                 ;;
@@ -579,8 +610,8 @@ install_uv() {
     # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
     # and conflates network errors with installer errors.
     local _uv_install_log _uv_installer
-    _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
-    _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+    _uv_install_log="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-install.$$.log")"
+    _uv_installer="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-installer.$$.sh")"
     if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
         log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
         log_info "curl output:"
@@ -618,21 +649,64 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
-        if command -v python >/dev/null 2>&1; then
-            PYTHON_PATH="$(command -v python)"
-            if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-                log_success "Python found: $PYTHON_FOUND_VERSION"
-                return 0
+        # Hermes currently declares requires-python >=3.11,<3.14.  Termux can
+        # expose a newer default `python` before dependencies have compatible
+        # wheels, so do not accept the default interpreter until the upper bound
+        # is verified. Prefer the project's pinned minor when present, then
+        # other explicit compatible interpreters.
+        for python_cmd in python3.11 python3.12 python3.13 python; do
+            if command -v "$python_cmd" >/dev/null 2>&1; then
+                local candidate_path
+                candidate_path="$(command -v "$python_cmd")"
+                if "$candidate_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                    PYTHON_PATH="$candidate_path"
+                    PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                    log_success "Python found: $PYTHON_FOUND_VERSION"
+                    return 0
+                fi
             fi
-        fi
+        done
 
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
-        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-        log_success "Python installed: $PYTHON_FOUND_VERSION"
-        return 0
+        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+            log_success "Python installed: $PYTHON_FOUND_VERSION"
+            return 0
+        fi
+
+        # Termux's default `python` package is outside the supported range
+        # (e.g. 3.14.x before Rust transitives ship cp314 wheels). The Termux
+        # User Repository (TUR) publishes versioned CPython packages
+        # (python3.13, python3.11), so try to provision a supported
+        # interpreter from there before giving up.
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null || true)"
+        log_warn "Termux Python $PYTHON_FOUND_VERSION is outside the supported range (>=3.11,<3.14)"
+        log_info "Trying the Termux User Repository (TUR) for a supported Python..."
+        pkg install -y tur-repo >/dev/null 2>&1 || true
+        local tur_pkg
+        for tur_pkg in python3.13 python3.12 python3.11; do
+            if ! pkg install -y "$tur_pkg" >/dev/null 2>&1; then
+                continue
+            fi
+            if ! command -v "$tur_pkg" >/dev/null 2>&1; then
+                continue
+            fi
+            local tur_path
+            tur_path="$(command -v "$tur_pkg")"
+            if "$tur_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                PYTHON_PATH="$tur_path"
+                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                log_success "Python installed from TUR: $PYTHON_FOUND_VERSION"
+                return 0
+            fi
+        done
+
+        log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+        log_info "Install a supported interpreter and re-run this script:"
+        log_info "  pkg install tur-repo && pkg install python3.13"
+        exit 1
     fi
 
     log_info "Checking Python $PYTHON_VERSION..."
@@ -642,6 +716,18 @@ check_python() {
     if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
+        return 0
+    fi
+
+    # No 3.11, but any interpreter inside requires-python (>=3.11,<3.14) works: reuse it rather
+    # than downloading 3.11 — the download is a hard failure on hosts that cannot reach GitHub
+    # releases, and the user already has a supported Python (#10778).
+    # --system: with the install's own venv activated (a re-run), `uv python find` would return
+    # venv/bin/python3, which setup_venv is about to delete out from under itself.
+    if PYTHON_PATH="$("$UV_CMD" python find --system "$PYTHON_SUPPORTED_RANGE" 2>/dev/null)"; then
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+        PYTHON_VERSION="$PYTHON_PATH"  # uv venv --python / UV_PYTHON pin onto this interpreter
+        log_success "Python found: $PYTHON_FOUND_VERSION (supported; reusing instead of downloading 3.11)"
         return 0
     fi
 
@@ -999,12 +1085,18 @@ install_node_line() {
 
     # Resolve the latest v${node_line}.x.x tarball name from the index page
     local index_url="https://nodejs.org/dist/latest-v${node_line}.x/"
-    local tarball_name
-    tarball_name=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    local tarball_name=""
+    # `tar xf` shells out to xz for .tar.xz; minimal Debian/DietPi/WSL images ship tar without it
+    # and the extract dies mid-way ("xz: Cannot exec"). Only pick .tar.xz when xz is present (#11197).
+    if command -v xz >/dev/null 2>&1; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+            | head -1)
+    else
+        log_info "xz not found — using the .tar.gz Node.js archive"
+    fi
 
-    # Fallback to .tar.gz if .tar.xz not available
+    # Fallback to .tar.gz if .tar.xz not available (or xz is missing)
     if [ -z "$tarball_name" ]; then
         tarball_name=$(curl -fsSL "$index_url" \
             | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
@@ -1232,6 +1324,10 @@ check_network_prerequisites() {
 }
 
 install_system_packages() {
+    # setup_path persists this directory later, but dependency probes must also
+    # see commands that were pre-staged there during a fresh install.
+    local PATH="$(get_command_link_dir):$PATH"
+
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
@@ -1482,6 +1578,21 @@ clone_repo() {
             # fetched remote so bootstrap/install can recover.
             if ! git pull --ff-only origin "$BRANCH"; then
                 log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
+                # Park commits the reset drops behind a rescue ref, same namespace
+                # as ``hermes update`` (which also prunes these refs).
+                local dropped rescue_kind rescue_ref
+                dropped="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)"
+                if [ "${dropped:-0}" -gt 0 ]; then
+                    rescue_kind="diverged"
+                    git merge-base HEAD "origin/$BRANCH" >/dev/null 2>&1 || rescue_kind="orphan"
+                    rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short=12 HEAD)"
+                    if git update-ref "$rescue_ref" HEAD; then
+                        log_warn "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
+                        log_warn "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
+                    else
+                        log_warn "Could not back up local commits (HEAD was $(git rev-parse HEAD))"
+                    fi
+                fi
                 git reset --hard "origin/$BRANCH"
             fi
 
@@ -1692,8 +1803,12 @@ setup_venv() {
         rm -rf venv
     fi
 
-    # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    # uv creates the venv and pins the Python version in one step. Fail loudly: `set -e` does not
+    # reach this line's callers on every path, and a missing venv used to be reported as ready.
+    if ! $UV_CMD venv venv --python "$PYTHON_VERSION" || [ ! -x "venv/bin/python" ]; then
+        log_error "Failed to create the virtual environment with Python $PYTHON_VERSION"
+        exit 1
+    fi
 
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
@@ -1706,7 +1821,7 @@ setup_venv() {
         export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
     fi
 
-    log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+    log_success "Virtual environment ready ($(./venv/bin/python --version 2>/dev/null || echo "Python $PYTHON_VERSION"))"
 }
 
 run_locked_uv_sync() {
@@ -3470,11 +3585,11 @@ install_desktop() {
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
     local _deps_start _deps_remaining
     _deps_start=$(date +%s)
-    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci' _ "$INSTALL_DIR"; then
+    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci --include=optional && node apps/desktop/scripts/ensure-rolldown-binding.mjs' _ "$INSTALL_DIR"; then
         log_success "Desktop workspace dependencies installed"
     elif _deps_remaining=$(( DESKTOP_BUILD_TIMEOUT - ($(date +%s) - _deps_start) )); \
          [ "$_deps_remaining" -lt 30 ] && _deps_remaining=30; \
-         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install' _ "$INSTALL_DIR"; then
+         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install --include=optional && node apps/desktop/scripts/ensure-rolldown-binding.mjs' _ "$INSTALL_DIR"; then
         log_success "Desktop workspace dependencies installed"
     elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
         log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
@@ -3521,7 +3636,7 @@ install_desktop() {
     fi
 
     # (c) GitHub blocked → mirror fallback (#47266).
-    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
+    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ] && ! _electron_dist_ok "$INSTALL_DIR"; then
         log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
         log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
@@ -3537,9 +3652,11 @@ install_desktop() {
         # the binary download is blocked/throttled (firewall, proxy, region) and
         # the mirror fallback above also couldn't reach a host. Try a mirror you
         # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
-        log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
-        log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
-        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        if ! _electron_dist_ok "$INSTALL_DIR"; then
+            log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
+            log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
+            log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        fi
         log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
         return 1
     fi

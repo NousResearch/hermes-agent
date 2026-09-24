@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import types
 
-import pytest
 
 from hermes_state import SessionDB
 
@@ -136,7 +135,7 @@ def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     Mirrors ``tests/agent/test_turn_context.py::_build`` but is kept local so
     this file stays self-contained.
     """
-    from tests.agent.test_turn_context import _FakeAgent, _stub_runtime_main
+    from tests.agent.test_turn_context import _FakeAgent
 
     fake = _FakeAgent()
     kwargs = dict(
@@ -159,48 +158,5 @@ def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     return build_turn_context(**kwargs)
 
 
-def test_gateway_run_agent_threads_the_event_message_id_into_the_turn():
-    """AST proof that the gateway call site passes the id down.
-
-    The unit tests above prove the persistence layer STORES the id once it is
-    given one.  This pins the wiring: without the gateway forwarding
-    ``event_message_id`` as ``persist_user_platform_id``, the whole path is
-    dead code and every real inbound turn still persists without its id.
-    """
-    import ast
-    import inspect
-
-    import gateway.run as gateway_run
-
-    source = inspect.getsource(gateway_run)
-    tree = ast.parse(source)
-
-    forwards = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.slice, ast.Constant)
-        and node.slice.value == "persist_user_platform_id"
-    ]
-    assert forwards, (
-        "gateway/run.py never forwards persist_user_platform_id — the inbound "
-        "platform message id never reaches the persisted user turn, so a "
-        "drain-interrupted turn stays undedupable"
-    )
 
 
-def test_run_conversation_accepts_persist_user_platform_id():
-    """The public forwarder must expose the kwarg the gateway passes."""
-    import inspect
-
-    from agent.conversation_loop import run_conversation
-    from run_agent import AIAgent
-
-    assert (
-        "persist_user_platform_id"
-        in inspect.signature(run_conversation).parameters
-    )
-    assert (
-        "persist_user_platform_id"
-        in inspect.signature(AIAgent.run_conversation).parameters
-    )

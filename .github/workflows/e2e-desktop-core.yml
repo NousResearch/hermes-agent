@@ -78,7 +78,7 @@ jobs:
         working-directory: apps/desktop
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
-            npx playwright test -c e2e/core/playwright.config.ts --reporter=list
+            npx playwright test -c e2e/core/playwright.config.ts
         env:
           CI: 'true'
           OPENROUTER_API_KEY: ''
@@ -87,7 +87,7 @@ jobs:
           ANTHROPIC_API_KEY: ''
 
       - name: Upload failure artifacts
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: desktop-core-e2e-${{ github.sha }}

@@ -11,13 +11,14 @@ import { defineConfig } from '@playwright/test'
  *  - no visual baselines / always-on screenshots; artifacts only on failure.
  *  - one worker: every spec owns a real Electron + `hermes serve`; running
  *    them concurrently on a loaded runner is the timing margin we refuse.
- *  - generous per-test timeout; every wait inside is event-driven with its
- *    own deadline, so a long timeout never slows a green run.
+ *  - 180 s per test (green runs take 6-36 s): a stalled stream fails the one
+ *    test fast instead of the 30-min job timeout cancelling the whole lane
+ *    before it reports.
  */
 export default defineConfig({
   testDir: '.',
   testMatch: '*.spec.ts',
-  timeout: 600_000,
+  timeout: 180_000,
   expect: { timeout: 60_000 },
   retries: 0,
   workers: 1,

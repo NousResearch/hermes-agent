@@ -5,8 +5,9 @@
  * The user picks the local / custom endpoint path and enters the fake
  * provider's URL; the real backend probes it (/v1/models), persists the
  * assignment, and the overlay closes. Then the first chat must obey the same
- * transcript oracle as everything else — this is the path where #120005
- * (every streamed word painted twice) first shipped.
+ * transcript oracle as everything else. A smoke test for onboarding followed
+ * by a first chat; the #120005 double-paint needs a non-default profile and is
+ * guarded by transcript-integrity.spec.ts.
  *
  * Invariants: the onboarding result is what the backend persisted and what
  * the model is actually called with (config base_url == entered URL; the

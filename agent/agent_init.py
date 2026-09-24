@@ -852,6 +852,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     _explicit = (agent.provider or "").strip().lower()
     _refused_entries = []
     for _fb in _fallback_entries(fallback_model):
+        _fb_provider = str(_fb["provider"])
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
@@ -860,20 +861,20 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
             )
         except Exception as _fb_exc:
-            logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
-            _refused_entries.append((str(_fb.get("provider")), str(_fb_exc)))
+            logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
+            # A bare exception (``KeyError()``) stringifies empty; name its type instead.
+            _refused_entries.append((_fb_provider, str(_fb_exc) or type(_fb_exc).__name__))
             continue
         if _fb_client is None:
             # The router returns None when no credentials are usable for the entry — a skip
             # that leaves no trace otherwise, hiding key-less fallback entries from the log.
             logger.debug(
-                "Init-time fallback entry %s resolved no usable credentials",
-                _fb.get("provider"),
+                "Init-time fallback entry %s resolved no usable credentials", _fb_provider
             )
-            _refused_entries.append((str(_fb.get("provider")), "no usable credentials"))
+            _refused_entries.append((_fb_provider, "no usable credentials"))
             continue
         agent._fallback_activated = True
-        if str(_fb["provider"]).strip().lower() == "moa":
+        if _fb_provider.strip().lower() == "moa":
             # The chokepoint handed back the preset's aggregator client, which only proves the
             # preset resolves and its aggregator has credentials. A MoA entry means the preset
             # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.

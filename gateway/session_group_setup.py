@@ -126,7 +126,13 @@ def register_peer(authority, actor, service, params):
         _epoch(conn, epoch)
         service.authorize_room(actor.subject, room_id, conn=conn)
         require_room_work_open(conn, room_id, error=rooms.HostedRoomError)
-        rooms.room_safety._raise_if_quarantined(conn, room_id)
+        # The public Route base predates the lower quarantine helper. Preserve
+        # its fail-closed fence when the lower table exists, without importing
+        # a lower-only module or changing ordinary public-base registration.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_quarantine'").fetchone():
+            if conn.execute('SELECT 1 FROM hosted_room_quarantine WHERE room_id=?',
+                            (room_id,)).fetchone():
+                raise RuntimeStoreError('peer_setup_conflict')
         row = conn.execute('SELECT * FROM hosted_rooms WHERE room_id=?', (room_id,)).fetchone()
         retired = conn.execute('SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?', (room_id,)).fetchone()
         if row is None or row['disbanded_at'] is not None or retired:
@@ -136,9 +142,25 @@ def register_peer(authority, actor, service, params):
         members = json.loads(row['members_json'])
         member = next((m for m in members if m.get('member_id') == member_id), None)
         target = member.get('target', {}) if member else {}
-        if (not member or member['profile'] != profile or target.get('kind') != 'peer'
-                or target.get('profile') != profile or target.get('installation_id') != catalog.installation_id
-                or target.get('capability_digest') != catalog.catalog_digest):
+        imported_remote = (
+            member is not None and isinstance(member.get('source'), dict)
+            and member['source'].get('remote_source') is True
+        )
+        if imported_remote:
+            # Only the lower importer owns the marker and readiness writer. An
+            # ordinary Route checkout has neither and must not query its table.
+            if (not callable(getattr(rooms, 'resolve_imported_peer_member', None))
+                    or member.get('membership', {}).get('state') != 'active'
+                    or conn.execute('SELECT 1 FROM hosted_room_history_imports WHERE room_id=?',
+                                    (room_id,)).fetchone() is None):
+                raise RuntimeStoreError('peer_setup_conflict')
+        pinned_peer = (
+            target.get('kind') == 'peer' and target.get('profile') == profile
+            and target.get('installation_id') == catalog.installation_id
+            and target.get('capability_digest') == catalog.catalog_digest
+        )
+        if (not member or member['profile'] != profile
+                or not (pinned_peer or imported_remote and not target)):
             raise RuntimeStoreError('peer_setup_conflict')
         return dict(authority_epoch=row['authority_epoch'], members=members)
 
@@ -148,7 +170,15 @@ def register_peer(authority, actor, service, params):
 
     def reserve(conn):
         binding = validate(conn)
-        fingerprint = _digest({**intent, **binding})
+        fingerprint_binding = binding
+        if any(isinstance(member.get('source'), dict) and member['source'].get('remote_source') is True
+               for member in binding['members']):
+            # The imported roster's target/readiness is derived by this writer.
+            # Its receipt pins immutable membership instead of that projection.
+            fingerprint_binding = {**binding, 'members': [
+                {k: v for k, v in member.items() if k not in {'target', 'availability'}}
+                for member in binding['members']]}
+        fingerprint = _digest({**intent, **fingerprint_binding})
         prior = receipt(conn)
         current = _route_record(conn, room_id, member_id)
         if prior is not None:

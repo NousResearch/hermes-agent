@@ -362,6 +362,26 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     assert calls == ["stop-1"]
 
 
+def test_send_denies_imported_looking_room_without_lower_provider(tmp_path: Path):
+    db = tmp_path / 'state.db'
+    service = HostedRoomService(_server(), db_path=db)
+    service.local_profiles = lambda: ('default', 'ops')
+    service.create_room(room_id='room-1', name='Room', members=[
+        {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
+        {'member_id': 'two', 'profile': 'ops', 'handle': 'two'}])
+    with hosted_rooms._transaction(db, immediate=True) as conn:
+        row = conn.execute('SELECT members_json FROM hosted_rooms WHERE room_id=?', ('room-1',)).fetchone()
+        members = json.loads(row['members_json'])
+        members[1]['availability'] = {'state': 'authorization_required'}
+        members[1]['source'] = {'remote_source': True}
+        conn.execute('UPDATE hosted_rooms SET members_json=? WHERE room_id=?',
+                     (json.dumps(members), 'room-1'))
+    with pytest.raises(hosted_rooms.HostedRoomError, match='imported member provider unavailable'):
+        service.send(room_id='room-1', event_id='new-work',
+                     payload={'text': '@two work', 'thread_id': 'thread-1'})
+    assert service._events('room-1') == []
+
+
 def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path):
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)

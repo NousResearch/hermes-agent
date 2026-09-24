@@ -25,7 +25,7 @@ def setup_owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(rooms, 'local_authority_gateway_id', lambda: 'home')
     db = SessionDB(tmp_path / 'state.db')
-    authority = SimpleNamespace(db=db, profile_id=str(tmp_path),
+    authority = SimpleNamespace(db=db, profile_id=str(tmp_path), instance_id='test',
         epoch=begin_runtime_epoch(db, instance_id='test'))
     service = CanonicalHostedRoomService(authority, None)
     # No service/worker is started; this fixture supplies only readiness and wakeup.
@@ -44,6 +44,8 @@ def setup_owner(tmp_path, monkeypatch):
         target_profile='ops', grant=grant, catalog=catalog, cancellation_scope_id='cancel', trace_id='trace')
     connection = object.__new__(AuthorityConnection)
     connection.authority = authority
+    from gateway.session_group_state import GroupStateOwner
+    connection._group_state_owner = GroupStateOwner.capture(authority)
     connection.actor = Principal('alice', str(tmp_path), frozenset({'session:control', 'session:read'}), 'transport')
     probe = dict(room_id='room', home_install_id='home', authority_gateway_id='home', authority_epoch=1,
         member_id='remote', target_profile='ops', catalog=catalog)
@@ -70,6 +72,32 @@ def stored(s):
 
 def sql(s, query, values=()):
     return s.db._execute_write(lambda conn: conn.execute(query, values))
+
+
+@pytest.mark.asyncio
+async def test_quarantined_room_denied_on_public_base_before_receipt(setup_owner):
+    s = setup_owner
+    sql(s, 'CREATE TABLE IF NOT EXISTS hosted_room_quarantine(room_id TEXT PRIMARY KEY)')
+    sql(s, 'INSERT INTO hosted_room_quarantine(room_id) VALUES(?)', ('room',))
+    result = await register(s)
+    assert result['error']['message'] == 'peer_setup_conflict', result
+    assert s.calls == []
+    assert stored(s) is None
+
+
+@pytest.mark.asyncio
+async def test_imported_looking_member_without_lower_provider_denies_before_receipt(setup_owner):
+    s = setup_owner
+    sql(s, 'UPDATE hosted_rooms SET members_json=? WHERE room_id=?', (
+        json.dumps([{'member_id': 'remote', 'profile': 'ops', 'handle': 'remote',
+                     'membership': {'state': 'active'}, 'source': {'remote_source': True}}]), 'room'))
+    result = await register(s)
+    assert result['error']['message'] == 'peer_setup_conflict', result
+    assert s.calls == []
+    assert stored(s) is None
+    with s.db._read_ctx() as conn:
+        assert not conn.execute(
+            "SELECT 1 FROM state_meta WHERE key='gateway.hosted.peer.setup.v1:setup-1'").fetchone()
 
 
 @pytest.mark.asyncio

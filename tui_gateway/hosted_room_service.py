@@ -270,6 +270,21 @@ class HostedRoomService:
             def authenticated_save(conn, record):
                 previous = setup_guard(conn, record)
                 if record is not None:
+                    row = conn.execute('SELECT members_json FROM hosted_rooms WHERE room_id=?',
+                                       (room_id,)).fetchone()
+                    members = json.loads(row['members_json'])
+                    member = next((item for item in members if item.get('member_id') == member_id), None)
+                    if (member is not None and isinstance(member.get('source'), dict)
+                            and member['source'].get('remote_source') is True):
+                        resolve = getattr(hosted_rooms, 'resolve_imported_peer_member', None)
+                        if not callable(resolve):
+                            raise hosted_rooms.HostedRoomError('imported peer provider unavailable')
+                        # The lower provider publishes readiness under this same
+                        # authenticated route/receipt transaction, or all roll back.
+                        resolve(conn, room_id=room_id, member_id=member_id,
+                                target_profile=route.target_profile,
+                                installation_id=catalog.installation_id,
+                                capability_digest=catalog.catalog_digest)
                     # Same transaction as canonical setup/renewal's final CAS.
                     # A consumer writer failure cannot turn a committed renewal
                     # into failure or lose its authenticated recovery notification.
@@ -656,8 +671,9 @@ class HostedRoomService:
                 return
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
+            policy_room = self._policy_room(room)
             decision = discussion.plan_next_task(
-                room, list(snapshot.events), local_profiles=self.local_profiles(),
+                policy_room, list(snapshot.events), local_profiles=self.local_profiles(),
                 initial_watermarks=snapshot.watermarks, freeze_input_context=True)
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
@@ -669,10 +685,10 @@ class HostedRoomService:
                     prior_events = self.policy_checkpoint.events_for_task(
                         room_id=binding.room_id, source_event_seq=existing["payload"]["source_event_seq"],
                         input_context=existing["payload"]["input_context"], task_id=existing["identity"].task_id)
-                    discussion.reconstruct_task_plan(room, prior_events, existing, local_profiles=self.local_profiles())
+                    discussion.reconstruct_task_plan(policy_room, prior_events, existing, local_profiles=self.local_profiles())
                     admitted = existing
                 elif existing is not None and existing["payload"] == legacy_payload:
-                    discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
+                    discussion.reconstruct_task_plan(policy_room, list(snapshot.events), existing,
                                                      local_profiles=self.local_profiles())
                     admitted = existing
                 else:
@@ -704,6 +720,35 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
+    def _policy_room(self, room: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Admit only resolved, active imported members to new work."""
+        members = room.get('members')
+        if not isinstance(members, list) or not any(
+                isinstance(member, Mapping) and (
+                    'availability' in member or isinstance(member.get('source'), Mapping)
+                    and member['source'].get('remote_source') is True) for member in members):
+            return room
+        refresh = getattr(hosted_rooms, 'refresh_imported_member_readiness', None)
+        if not callable(refresh):
+            raise hosted_rooms.HostedRoomError('imported member provider unavailable')
+        room = refresh(self.db_path, room_id=room['room_id'], local_profiles=self.local_profiles())
+        members = room.get('members')
+        executable = []
+        for member in members if isinstance(members, list) else []:
+            if not isinstance(member, Mapping):
+                continue
+            membership, availability = member.get('membership'), member.get('availability')
+            if ((isinstance(membership, Mapping) and membership.get('state') != 'active')
+                    or not isinstance(availability, Mapping) or availability.get('state') != 'ready'):
+                continue
+            executable.append({
+                key: member[key] for key in ('member_id', 'profile', 'handle', 'display_name', 'target')
+                if key in member})
+        if not discussion.MIN_DISCUSSION_MEMBERS <= len(executable) <= discussion.MAX_DISCUSSION_MEMBERS:
+            raise hosted_rooms.HostedRoomError(
+                'This imported Group Chat needs at least two authorized local members before new work can continue.')
+        return {**room, 'members': executable}
+
     def send(
         self, *, room_id: str, event_id: str, payload: Any,
         new_event_authorizer: Callable[[Any], Any] | None = None,
@@ -734,8 +779,9 @@ class HostedRoomService:
                     gateway_id=gateway_id, epoch=epoch, existing_only=True)
             except hosted_rooms.EventNotFoundError:
                 pass
-        normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
+        self._policy_room(self._room(room_id))  # Ordinary rooms are unchanged; imported work is gated.
+        normalized = discussion.validate_user_payload(payload)
         from gateway.session_hosted_attachments import append_user_event
         committed = False
         lifetime = (

@@ -1,8 +1,9 @@
 """Truncation recovery (``finish_reason == "length"``) for the conversation turn loop.
 
 Handles thinking-budget exhaustion, repetition-dominated truncation, content-filter stream
-stalls escalated to the fallback chain, text continuation nudges (up to 4, with the ceiling
-exit that drops the fragment trail), truncated tool-call retries with max_tokens boosts, and
+stalls escalated to the fallback chain, text continuation nudges (up to 4 for genuine
+length truncation, up to 8 for mid-stream connection stalls, with the ceiling exit that
+drops the fragment trail), truncated tool-call retries with max_tokens boosts, and
 the final roll-back. Nothing here imports ``agent.conversation_loop`` at module level
 (cycle); loop-internal helpers are imported lazily so tests patching them keep working.
 """
@@ -64,6 +65,23 @@ _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
     "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
+)
+# Continuation caps. Genuine finish_reason='length' truncation degenerates fast (the model
+# re-truncates at the same ceiling), so 4 attempts is enough. A mid-stream connection stall
+# (PARTIAL_STREAM_STUB_ID) is a provider/network failure, not model degeneration — each retry
+# DID recover more text, and the failure window (gateway restart, upstream flap) often
+# outlasts 4 quick retries, so stalls get a larger budget AND a distinct ceiling message
+# instead of the misleading "output length limit" one (2026-09-14: a 7-minute gateway drain
+# surfaced as "Response remained truncated after 4 continuation attempts", sending the user
+# to debug max_tokens for what was a provider outage).
+_LENGTH_CONTINUATION_CAP = 4
+_STALL_CONTINUATION_CAP = 8
+_STALL_CEILING_FINAL = (
+    "⚠️ **The provider connection kept dropping mid-response** — the stream stalled "
+    "before completing {n} times in a row. This is a provider/network failure, not an "
+    "output-length limit.\n\nThe partial text above is everything that arrived.\n\n"
+    "→ Resend your message (the conversation history is preserved)\n"
+    "→ If this persists, check the provider or gateway status"
 )
 # Below this many free tokens the prompt itself filled the window: a continuation nudge +
 # fragment costs ~100 tokens per attempt, so retrying only shrinks the room (#106120).
@@ -240,7 +258,8 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
 
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
-    4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
+    4 for genuine length truncation, 8 for mid-stream connection stalls), then the ceiling
+    exit that drops the fragment trail and keeps the stitched partial.
     Never appends an interim assistant row with NO visible content — strict providers
     reject it with 400 — only the nudge."""
     from agent.conversation_loop import _get_continuation_prompt, _join_truncated_parts
@@ -249,6 +268,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     messages = st.messages
     st.length_continue_retries += 1
     n = st.length_continue_retries
+    cap = _STALL_CONTINUATION_CAP if st.is_stub else _LENGTH_CONTINUATION_CAP
     _interim_content = getattr(assistant_message, "content", None)
     if not _interim_content and not st.is_stub:
         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
@@ -260,17 +280,21 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         st.truncated_response_parts.append(_interim_content)
 
     filled = st.window_filled
-    if n < 4 and filled is None:
+    if n < cap and filled is None:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
         if st.is_stub and _dropped_tools:
             agent._vprint(
                 f"{agent.log_prefix}↻ Stream interrupted mid "
-                f"tool-call ({', '.join(_dropped_tools[:3])}) — requesting chunked retry ({n}/4)...", diagnostic=True,
+                f"tool-call ({', '.join(_dropped_tools[:3])}) — requesting chunked retry ({n}/{cap})...",
+                diagnostic=True,
             )
         elif st.is_stub:
-            agent._vprint(f"{agent.log_prefix}↻ Stream interrupted — requesting continuation ({n}/4)...", diagnostic=True)
+            agent._vprint(
+                f"{agent.log_prefix}↻ Stream interrupted — requesting continuation ({n}/{cap})...",
+                diagnostic=True,
+            )
         else:
-            agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/4)...", diagnostic=True)
+            agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/{cap})...", diagnostic=True)
         append_message(messages, {
             "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
             "_length_continuation_nudge": True,
@@ -282,14 +306,26 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     partial_response = agent._strip_think_blocks(_join_truncated_parts(st.truncated_response_parts)).strip()
     # The one-shot reasoning-off override must not leak into the next turn.
     agent._ephemeral_reasoning_off = False
-    agent._vprint(
-        f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt."
-        if filled is not None else
-        f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempts — "
-        + ("keeping the partial response received so far." if partial_response
-           else "no visible text was produced."),
-        force=True, diagnostic=True,
-    )
+    if filled is not None:
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt.",
+            force=True, diagnostic=True,
+        )
+    elif st.is_stub:
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Response incomplete after {n} continuation attempts — the "
+            "provider stream kept stalling mid-response; "
+            + ("keeping the partial response received so far." if partial_response
+               else "no visible text was produced."),
+            force=True, diagnostic=True,
+        )
+    else:
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempts — "
+            + ("keeping the partial response received so far." if partial_response
+               else "no visible text was produced."),
+            force=True, diagnostic=True,
+        )
     # Unanswered continue nudges made every later turn re-truncate: drop the trail.
     idx = st.current_turn_user_idx
     _turn_start = idx + 1 if isinstance(idx, int) and idx >= 0 else 0
@@ -310,9 +346,16 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             f"{partial_response}\n\n{notice}" if partial_response else notice,
             f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
         )
+    if st.is_stub:
+        _stall_notice = _STALL_CEILING_FINAL.format(n=n)
+        return st.end_turn(
+            f"{partial_response}\n\n{_stall_notice}" if partial_response else _stall_notice,
+            f"Response incomplete after {n} continuation attempts — "
+            "provider stream stalled mid-response each time",
+        )
     return st.end_turn(
         partial_response or _CEILING_NO_TEXT,
-        "Response remained truncated after 4 continuation attempts",
+        f"Response remained truncated after {n} continuation attempts",
     )
 
 

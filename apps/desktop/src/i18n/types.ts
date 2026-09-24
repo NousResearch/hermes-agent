@@ -876,6 +876,8 @@ export interface Translations {
       appActionsDesc: string
       appActionsLeft: string
       appActionsRight: string
+      tabStripWrapTitle: string
+      tabStripWrapDesc: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string

@@ -608,6 +608,9 @@ export const ja = defineLocale({
         '設定・レイアウト・HUD をタイトルバーの左右どちらに置くか。右にするとタブ用のスペースが左に残ります。',
       appActionsLeft: '左',
       appActionsRight: '右',
+      tabStripWrapTitle: 'タブを折り返す',
+      tabStripWrapDesc:
+        'タブを1行でスクロールする代わりに複数行に折り返します。トランスクリプトの高さを消費しますが、ウィンドウ幅がタブ数に対して狭い場合に便利です。',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',

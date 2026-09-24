@@ -32,6 +32,7 @@ import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
+import { $tabStripWrap } from '@/store/tabstrip-prefs'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -252,6 +253,12 @@ export function TreeGroup({
   // missing on an inactive tile tab whose zone-active was the uncloseable
   // workspace).
   const [menuPane, setMenuPane] = useState<string | undefined>(undefined)
+  // App-wide: overflow the strip onto more rows instead of scrolling one.
+  const tabStripWrap = useStore($tabStripWrap)
+  // One source for "is this zone's strip wrapping" — the header wrapper's
+  // sizing and the strip's own prop must never disagree, or the band gets
+  // sized for one row while the strip lays out several.
+  const wrapEnabled = tabStripWrap && !node.minimized
   const panes = useContributions('panes')
   const stableHosts = useStablePaneHosts()
   // Coarse drag flag only (set once at drag start/end). The per-frame drop
@@ -402,11 +409,21 @@ export function TreeGroup({
   // Keep the activated tab — and, on the last one, the trailing "+" — inside
   // the strip's scroll window. Opening a tab past the right edge otherwise
   // left both the new tab and the button that made it out of view.
+  //
+  // A wrapped strip has no scroll window: every tab is on screen by row, so the
+  // effect is disabled rather than writing a scrollLeft that does nothing.
   useActiveTabVisible(tabsRef, activeId, {
-    enabled: headerVisible,
+    enabled: headerVisible && !tabStripWrap,
     last: shown[shown.length - 1] === activeId,
     tabCount: shown.length
   })
+
+  // The header's real height. A single-row strip is always 28px, but a wrapped
+  // one grows with its tab count, so the edit veil (which starts below the
+  // header) has to MEASURE instead of assuming. Only the veil reads this, and
+  // it only renders in edit mode — so the observer is wired to the strip that
+  // exists either way and costs one entry per zone.
+  const headerHeight = useStripHeight(stripRef, headerVisible)
 
   // Zone-menu close targets read the layout tree, but this component must NOT
   // subscribe to it: `useStore($layoutTree)` here wires every zone — and
@@ -555,7 +572,27 @@ export function TreeGroup({
         <div
           className="relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
           data-panel-header=""
-          style={topEdge ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) } : undefined}
+          // A topEdge zone's header is the native titlebar band PLUS, when the
+          // strip sits below the window controls, the strip's own band. That
+          // second band was a hardcoded 28px — which clipped every wrap row the
+          // strip grew. MEASURED instead, with 28 as the floor so the first
+          // paint (before the observer reports) is pixel-identical to the old
+          // constant. The strip is absolutely positioned inside this wrapper,
+          // so its height is content-driven and cannot feed back into itself.
+          //
+          // Tabs hosted IN the titlebar are a third case: the strip is in flow
+          // there, so a fixed height would clip its wrap rows AND measuring it
+          // would loop (wrapper height → strip height → wrapper height). A
+          // minHeight FLOOR with auto height dodges both — the band is exactly
+          // TITLEBAR_HEIGHT with one row and grows a row at a time from there,
+          // with the window controls staying on the first row.
+          style={
+            topEdge
+              ? tabsInTitlebar && wrapEnabled
+                ? { minHeight: TITLEBAR_HEIGHT }
+                : { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? Math.max(28, headerHeight) : 0) }
+              : undefined
+          }
         >
           {topEdge && (
             <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
@@ -592,6 +629,13 @@ export function TreeGroup({
                 ref={stripRef}
                 style={{ cursor: 'grab', WebkitAppRegion: dragging ? 'no-drag' : undefined } as CSSProperties}
                 titlebar={tabsInTitlebar}
+                // Wrap follows the app-wide setting everywhere except a
+                // MINIMIZED zone, which IS its strip and sizes against
+                // one-row tracks (MINIMIZED_TRACK / COLLAPSED_ZONE_PX).
+                // Tabs hosted in the titlebar DO wrap: the band grows with
+                // them (see the header wrapper's minHeight below), keeping
+                // the window controls on row one.
+                wrap={wrapEnabled}
                 trailing={
                   <>
                     {minimizable && (
@@ -857,7 +901,15 @@ export function TreeGroup({
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
             style={{
-              top: topEdge ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) : headerVisible ? 28 : 0,
+              // Ordinary zones MEASURE: a wrapped strip grows a row at a
+              // time, so the old 28px constant let the veil cover its own
+              // tabs.
+              // Same measured band as the header wrapper above — a wrapped
+              // strip in a topEdge zone is taller than the old 28px constant,
+              // and a veil using the constant would cover its own tabs.
+              top: topEdge
+                ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? Math.max(28, headerHeight) : 0)
+                : headerHeight,
               background:
                 'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
               outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'
@@ -881,6 +933,44 @@ export function TreeGroup({
 // ---------------------------------------------------------------------------
 // Tab-strip insertion caret
 // ---------------------------------------------------------------------------
+
+/**
+ * The header strip's measured height, for anything that positions against it.
+ *
+ * A single-row strip is a constant 28px and was hardcoded as one; a WRAPPED
+ * strip grows a row per overflow, so the constant became a lie that let the
+ * edit veil cover its own tabs. Measured, not derived from the tab count: rows
+ * are decided by the browser's flex line-breaking against the zone's width, and
+ * re-deriving that here would be a second, wrong copy of the layout algorithm.
+ *
+ * Falls back to 0 when there is no header, which is what a hidden strip's
+ * consumers want anyway.
+ */
+function useStripHeight(stripRef: RefObject<HTMLDivElement | null>, headerVisible: boolean): number {
+  const [height, setHeight] = useState(0)
+
+  useEffect(() => {
+    const strip = stripRef.current
+
+    if (!headerVisible || !strip) {
+      setHeight(0)
+
+      return
+    }
+
+    // ResizeObserver, not a layout effect: a wrap line appears when the ZONE
+    // resizes (a sash drag, a window resize), with no React render of this
+    // component to hang a measurement off.
+    const observer = new ResizeObserver(() => setHeight(strip.getBoundingClientRect().height))
+
+    observer.observe(strip)
+    setHeight(strip.getBoundingClientRect().height)
+
+    return () => observer.disconnect()
+  }, [headerVisible, stripRef])
+
+  return height
+}
 
 /**
  * The insertion divider for a stack drop: a 2px vertical line at the slot the

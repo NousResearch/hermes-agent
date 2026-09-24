@@ -768,6 +768,9 @@ export const zh = defineLocale({
       appActionsDesc: '设置、布局和 HUD 放在标题栏左侧还是右侧。选右侧可给标签留出左边空间。',
       appActionsLeft: '左侧',
       appActionsRight: '右侧',
+      tabStripWrapTitle: '换行标签页',
+      tabStripWrapDesc:
+        '让标签页换到多行显示，而不是在一行内滚动。会占用对话区高度；当窗口宽度不足以显示所有标签页时很有用。',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',

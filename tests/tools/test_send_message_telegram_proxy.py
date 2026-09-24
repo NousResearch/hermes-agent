@@ -109,6 +109,40 @@ class TestSendTelegramStandaloneProxy:
         # And the bot was actually used to send.
         bot.send_message.assert_awaited_once()
 
+    def test_proxy_attach_error_text_scrubbed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """If HTTPXRequest construction fails with the proxy URL embedded in the
+        exception text, the fallback warning must not echo credentials."""
+        from tools.send_message_tool import _send_telegram
+
+        proxy_url = "http://secretuser:secretpass@proxy.host:3128"
+        monkeypatch.setenv("TELEGRAM_PROXY", proxy_url)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        bot = _make_bot()
+        _install_telegram_mock_with_request(
+            monkeypatch,
+            MagicMock(return_value=bot),
+            MagicMock(side_effect=Exception(f"bad proxy {proxy_url}")),
+        )
+
+        import logging
+        with caplog.at_level(logging.INFO):
+            result: dict[str, Any] = asyncio.run(_send_telegram("tok", "123", "hello"))
+
+        assert result["success"] is True  # fell back to a direct Bot
+        # Scope to the attach-failure WARNING; the INFO "routed through proxy"
+        # line is a separate, upstream-covered surface.
+        warn_text = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+        assert "failed to attach Telegram proxy" in warn_text
+        assert "secretuser" not in warn_text
+        assert "secretpass" not in warn_text
+        assert "proxy.host" in warn_text
+
     def test_no_proxy_env_uses_plain_bot(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

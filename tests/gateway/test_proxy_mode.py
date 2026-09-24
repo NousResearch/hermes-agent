@@ -358,6 +358,135 @@ class TestRunAgentViaProxy:
         assert messages[0]["content"] == "hello"
 
 
+class TestProxyUrlLogSanitization:
+    """GATEWAY_PROXY_URL / gateway.proxy_url may embed userinfo credentials;
+    every log line that mentions the endpoint must go through safe_url_for_log."""
+
+    _CRED_URL = "http://secretuser:secretpass@proxy.host:8642"
+
+    def _runner_and_source(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", self._CRED_URL)
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        return _make_runner(), _make_source()
+
+    def _assert_no_creds(self, caplog):
+        assert "secretuser" not in caplog.text
+        assert "secretpass" not in caplog.text
+        assert "proxy.host" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_connection_error_log_strips_userinfo(self, monkeypatch, caplog):
+        runner, source = self._runner_and_source(monkeypatch)
+
+        class _ErrorSession:
+            def post(self, *args, **kwargs):
+                raise ConnectionError("Connection refused")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with patch("aiohttp.ClientSession", return_value=_ErrorSession()):
+                with patch("aiohttp.ClientTimeout"):
+                    with caplog.at_level("ERROR"):
+                        await runner._run_agent_via_proxy(
+                            message="hi", context_prompt="", history=[],
+                            source=source, session_id="test")
+        self._assert_no_creds(caplog)
+
+    @pytest.mark.asyncio
+    async def test_http_error_log_strips_userinfo(self, monkeypatch, caplog):
+        runner, source = self._runner_and_source(monkeypatch)
+        session = _FakeSession(_FakeSSEResponse(status=500, error_text="boom"))
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with caplog.at_level("WARNING"):
+                        await runner._run_agent_via_proxy(
+                            message="hi", context_prompt="", history=[],
+                            source=source, session_id="test")
+        self._assert_no_creds(caplog)
+
+    @pytest.mark.asyncio
+    async def test_truncated_stream_log_strips_userinfo(self, monkeypatch, caplog):
+        runner, source = self._runner_and_source(monkeypatch)
+        session = _FakeSession(_FakeSSEResponse(status=200, sse_chunks=[]))
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with caplog.at_level("WARNING"):
+                        await runner._run_agent_via_proxy(
+                            message="hi", context_prompt="", history=[],
+                            source=source, session_id="test")
+        self._assert_no_creds(caplog)
+
+    @pytest.mark.asyncio
+    async def test_success_log_strips_userinfo(self, monkeypatch, caplog):
+        runner, source = self._runner_and_source(monkeypatch)
+        session = _FakeSession(_FakeSSEResponse(
+            status=200,
+            sse_chunks=['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+                        "data: [DONE]\n\n"]))
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with caplog.at_level("INFO"):
+                        result = await runner._run_agent_via_proxy(
+                            message="hi", context_prompt="", history=[],
+                            source=source, session_id="test")
+        assert result["final_response"] == "hi"
+        self._assert_no_creds(caplog)
+
+    @pytest.mark.asyncio
+    async def test_exception_text_embedding_url_is_scrubbed(self, monkeypatch, caplog):
+        """aiohttp exceptions can carry the request URL verbatim
+        (ClientResponseError.url, InvalidURL) — scrubbed for log AND user result."""
+        runner, source = self._runner_and_source(monkeypatch)
+
+        class _BadUrlSession:
+            def post(self, *args, **kwargs):
+                raise Exception(
+                    f"InvalidURL {self._CRED_URL}/v1/chat/completions")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with patch("aiohttp.ClientSession", return_value=_BadUrlSession()):
+                with patch("aiohttp.ClientTimeout"):
+                    with caplog.at_level("ERROR"):
+                        result = await runner._run_agent_via_proxy(
+                            message="hi", context_prompt="", history=[],
+                            source=source, session_id="test")
+        self._assert_no_creds(caplog)
+        assert "secretuser" not in result["final_response"]
+        assert "secretpass" not in result["final_response"]
+
+    @pytest.mark.asyncio
+    async def test_upstream_error_echo_is_scrubbed(self, monkeypatch, caplog):
+        """An upstream body that echoes the request URL must not leak creds."""
+        runner, source = self._runner_and_source(monkeypatch)
+        session = _FakeSession(_FakeSSEResponse(
+            status=500,
+            error_text=f"upstream failed for {self._CRED_URL}/v1/chat/completions"))
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with caplog.at_level("WARNING"):
+                        result = await runner._run_agent_via_proxy(
+                            message="hi", context_prompt="", history=[],
+                            source=source, session_id="test")
+        self._assert_no_creds(caplog)
+        assert "secretuser" not in result["final_response"]
+        assert "secretpass" not in result["final_response"]
+
+
 class TestStreamingResilience:
     """Tests for SSE streaming robustness — hang avoidance and malformed-chunk tolerance."""
 

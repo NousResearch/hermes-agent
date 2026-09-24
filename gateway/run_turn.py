@@ -2766,6 +2766,9 @@ class GatewayTurnMixin:
         proxy_url = self._get_proxy_url()
         if not proxy_url:
             return self._proxy_error_result("⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)")
+        # The configured endpoint may embed userinfo credentials; never log it raw.
+        from gateway.platforms.base import safe_url_for_log
+        _proxy_for_log = safe_url_for_log(proxy_url)
 
         # The proxy key is a per-profile credential: honor the installed secret scope under multiplex.
         # Only UnscopedSecretError (the unscoped default-profile path) falls back to the env; any
@@ -2852,8 +2855,10 @@ class GatewayTurnMixin:
             async with _AioClientSession(timeout=_timeout) as session:
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
-                        error_text = await resp.text()
-                        logger.warning("Proxy error (%d) from %s: %s", resp.status, proxy_url, error_text[:500])
+                        # The upstream body can echo the request URL back; keep the
+                        # credentialed form out of logs and the surfaced error.
+                        error_text = (await resp.text()).replace(proxy_url, _proxy_for_log)
+                        logger.warning("Proxy error (%d) from %s: %s", resp.status, _proxy_for_log, error_text[:500])
                         return self._proxy_error_result(f"⚠️ Proxy error ({resp.status}): {error_text[:300]}")
 
                     buffer = ""
@@ -2882,7 +2887,7 @@ class GatewayTurnMixin:
                         # presenting the truncation as a complete answer.
                         logger.warning(
                             "Proxy SSE stream from %s ended without [DONE] — response may be truncated "
-                            "(%d chars received)", proxy_url, len(full_response),
+                            "(%d chars received)", _proxy_for_log, len(full_response),
                         )
                         if not full_response:
                             return self._proxy_error_result(
@@ -2890,9 +2895,13 @@ class GatewayTurnMixin:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error("Proxy connection error to %s: %s", proxy_url, e)
+            # aiohttp exception text can embed the request URL verbatim
+            # (ClientResponseError.url, InvalidURL) — scrub the configured
+            # endpoint's credentialed form before it reaches log or chat.
+            _err_txt = str(e).replace(proxy_url, _proxy_for_log)
+            logger.error("Proxy connection error to %s: %s", _proxy_for_log, _err_txt)
             if not full_response:
-                return self._proxy_error_result(f"⚠️ Proxy connection error: {e}")
+                return self._proxy_error_result(f"⚠️ Proxy connection error: {_err_txt}")
             # Partial response — return what we got
         finally:
             if _stream_consumer:
@@ -2908,7 +2917,7 @@ class GatewayTurnMixin:
             return _stale_result("result")
         logger.info(
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
-            proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
+            _proxy_for_log, (session_id or "")[:20], _elapsed, len(full_response),
         )
         return {
             "final_response": full_response or "(No response from remote agent)",

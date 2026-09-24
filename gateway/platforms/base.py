@@ -3416,6 +3416,25 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
 
+    async def acknowledge_resumed_reply(self, event: MessageEvent, session_key: str) -> None:
+        """Attach an inline clarify answer to the active turn's processing lifecycle."""
+        owner = self._session_tasks.get(session_key)
+        if owner is None or owner.done():
+            return
+        replies = getattr(owner, "_hermes_resumed_replies", None)
+        if replies is None:
+            replies = []
+            owner._hermes_resumed_replies = replies
+        replies.append(event)
+        await self._run_processing_hook("on_processing_start", event)
+
+    async def _complete_resumed_replies(self, outcome: ProcessingOutcome) -> None:
+        owner = asyncio.current_task()
+        for reply in getattr(owner, "_hermes_resumed_replies", ()):
+            await self._run_processing_hook("on_processing_complete", reply, outcome)
+        if owner is not None and hasattr(owner, "_hermes_resumed_replies"):
+            del owner._hermes_resumed_replies
+
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
         """Return True if the error string looks like a transient network failure."""
@@ -4449,6 +4468,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            await self._complete_resumed_replies(
+                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4464,9 +4485,12 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+            await self._complete_resumed_replies(
+                ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            await self._complete_resumed_replies(ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.

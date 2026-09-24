@@ -60,6 +60,9 @@ DEFAULT_EXCLUDES = [
 ]
 
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
+# A live `git add` holds its index lock for less than _GIT_TIMEOUT, so a lock older than this has no
+# owner: git never clears a lock it did not create, so a killed process wedges the directory forever.
+_STALE_LOCK_AGE: float = max(120.0, _GIT_TIMEOUT * 4)
 _MAX_FILES = 50_000  # skip huge directories to avoid slowdowns
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')  # short or full SHA-1/SHA-256
 _MB = 1024 * 1024
@@ -237,12 +240,44 @@ def _repair_bare_repo_dirs(store: Path) -> None:
             logger.warning("Cannot create %s in checkpoint store: %s", subdir, exc)
 
 
+def _git_result(result, args: List[str]) -> Tuple[bool, str, str]:
+    """(ok, stdout, stderr) from a completed git run.  NUL-delimited output carries literal paths,
+    including leading spaces, so only line-oriented output is stripped."""
+    stdout = result.stdout if "-z" in args else result.stdout.strip()
+    return result.returncode == 0, stdout, result.stderr.strip()
+
+
+def _stale_index_lock(index_file: Optional[Path]) -> Optional[Path]:
+    """``<index_file>.lock`` when it exists and cannot have a live owner.
+
+    A killed git process leaves the lock behind and git never clears a lock it did not create, so
+    every later operation on that index fails with ``fatal: Unable to create ... File exists`` — the
+    directory's checkpoints stop being written, silently.  A live ``git add`` holds the lock for
+    less than ``_GIT_TIMEOUT``, so anything older than ``_STALE_LOCK_AGE`` is abandoned; anything
+    younger may belong to a concurrent snapshot and is left alone."""
+    if index_file is None:
+        return None
+    lock = Path(str(index_file) + ".lock")
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        return None
+    return lock if age >= _STALE_LOCK_AGE else None
+
+
 def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT_TIMEOUT,
              allowed_returncodes: Optional[Set[int]] = None, index_file: Optional[Path] = None) -> Tuple[bool, str, str]:
     """Run git against the shared store -> (ok, stdout, stderr).  ``allowed_returncodes`` suppresses
-    error logging for expected non-zero exits (``diff --cached --quiet`` -> 1); ``ok`` stays rc == 0."""
+    error logging for expected non-zero exits (``diff --cached --quiet`` -> 1); ``ok`` stays rc == 0.
+
+    A failed call is retried once after clearing an abandoned index lock, so a directory whose
+    checkpoints were wedged by a crashed git heals itself instead of failing until a human notices."""
     wd = _normalize_path(working_dir)
     cmd = ["git"] + list(args)
+
+    def _attempt():
+        return _git_subprocess(cmd, _git_env(store, str(wd), index_file=index_file), timeout, cwd=str(wd))
+
     if not wd.is_dir():
         msg = (f"working directory not found: {wd}" if not wd.exists()
                else f"working directory is not a directory: {wd}")
@@ -250,7 +285,7 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
         return False, "", msg
 
     try:
-        result = _git_subprocess(cmd, _git_env(store, str(wd), index_file=index_file), timeout, cwd=str(wd))
+        result = _attempt()
     except subprocess.TimeoutExpired:
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
         logger.error(msg, exc_info=True)
@@ -266,10 +301,23 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
 
-    ok = result.returncode == 0
-    # NUL-delimited output contains literal paths, including leading spaces.
-    stdout = result.stdout if "-z" in args else result.stdout.strip()
-    stderr = result.stderr.strip()
+    ok, stdout, stderr = _git_result(result, args)
+    lock = _stale_index_lock(index_file) if not ok else None
+    if lock is not None:
+        try:
+            lock.unlink()
+        except OSError as exc:
+            logger.warning("Cannot remove abandoned checkpoint index lock %s: %s", lock, exc)
+        else:
+            logger.warning("Removed abandoned checkpoint index lock %s; retrying git %s",
+                           lock, " ".join(args))
+            try:
+                result = _attempt()
+            except subprocess.TimeoutExpired:
+                msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
+                logger.error(msg, exc_info=True)
+                return False, "", msg
+            ok, stdout, stderr = _git_result(result, args)
     if not ok and result.returncode not in (allowed_returncodes or set()):
         logger.error("Git command failed: %s (rc=%d) stderr=%s",
                      " ".join(cmd), result.returncode, stderr)

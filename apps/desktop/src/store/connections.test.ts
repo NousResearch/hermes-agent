@@ -32,7 +32,10 @@ const ensureGatewayAgent = vi.fn(
   async (_connectionId: null | string, _profile: string, _options?: ActivationOptions): Promise<void> => undefined
 )
 
-const openGatewayAgent = vi.fn(async (_connectionId: string, _profile: string): Promise<void> => undefined)
+const openGatewayAgent = vi.fn(
+  async (_connectionId: string, _profile: string, _options?: { signal?: AbortSignal }): Promise<void> => undefined
+)
+
 const refreshActiveProfile = vi.fn(async () => undefined)
 const requestFreshSession = vi.fn()
 const beforeConnectionSwitch = vi.fn()
@@ -256,7 +259,7 @@ describe('selectConnection', () => {
 
     await selectConnection('homelab')
 
-    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect(api).not.toHaveBeenCalled()
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
@@ -289,6 +292,7 @@ describe('selectConnection', () => {
 
   it('lets a later source choice win while an earlier dial is still pending', async () => {
     let releaseDials!: () => void
+    let firstSignal: AbortSignal | undefined
 
     const dialGate = new Promise<void>(resolve => {
       releaseDials = resolve
@@ -296,18 +300,23 @@ describe('selectConnection', () => {
 
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
-    openGatewayAgent.mockImplementation(async () => {
+    openGatewayAgent.mockImplementation(async (_connectionId, _profile, options) => {
+      firstSignal ??= options?.signal
       await dialGate
     })
 
     const openHomelab = selectConnection('homelab')
     await Promise.resolve()
+    expect(firstSignal).toBeDefined()
+    expect(firstSignal?.aborted).toBe(false)
+
     const stayLocal = selectConnection('local')
+    expect(firstSignal?.aborted).toBe(true)
 
     releaseDials()
     await Promise.all([openHomelab, stayLocal])
 
-    expect(openGatewayAgent.mock.calls).toEqual([
+    expect(openGatewayAgent.mock.calls.map(call => [call[0], call[1]])).toEqual([
       ['homelab', 'default'],
       ['local', 'default']
     ])
@@ -450,7 +459,9 @@ describe('selectConnection', () => {
           expect.objectContaining({ connectionId: 'homelab', profile: 'scout', path: '/api/profiles' })
         )
       )
-      expect(openGatewayAgent.mock.calls).toEqual(Array.from({ length: 3 }, () => ['homelab', 'scout']))
+      expect(openGatewayAgent.mock.calls.map(call => [call[0], call[1]])).toEqual(
+        Array.from({ length: 3 }, () => ['homelab', 'scout'])
+      )
       expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
       expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
       expect(api.mock.invocationCallOrder[2]).toBeLessThan(beginGatewaySwitch.mock.invocationCallOrder[0])
@@ -520,7 +531,7 @@ describe('selectConnection', () => {
     expect(published).toEqual([{ activeSessionId: null, connectionId: 'homelab', switching: true }])
     // dial → commit (barrier + reset + wipe, inside the activation's commit
     // hook) → publish, in that order.
-    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect(openGatewayAgent.mock.invocationCallOrder[0]).toBeLessThan(ensureGatewayAgent.mock.invocationCallOrder[0])
     expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
@@ -631,16 +642,26 @@ describe('selectConnection', () => {
       setConnectionsRegistry(registry)
       $connection.set({ connectionId: 'local', mode: 'local' })
       $activeSessionId.set('a93bb39d')
-      openGatewayAgent.mockImplementationOnce(() => new Promise<void>(() => undefined))
+      let phaseOneSignal: AbortSignal | undefined
+      openGatewayAgent.mockImplementationOnce((_connectionId, _profile, options) => {
+        phaseOneSignal = options?.signal
+
+        return new Promise<void>(() => undefined)
+      })
 
       const outcome = selectConnection('homelab').then(
         () => 'resolved',
         (error: Error) => error.message
       )
 
+      await Promise.resolve()
+      expect(phaseOneSignal).toBeDefined()
+      expect(phaseOneSignal?.aborted).toBe(false)
+
       await vi.advanceTimersByTimeAsync(20_000)
 
       expect(await outcome).toMatch(/Timed out connecting to "Homelab"/)
+      expect(phaseOneSignal?.aborted).toBe(true)
       expect(ensureGatewayAgent).not.toHaveBeenCalled()
       expect(beginGatewaySwitch).not.toHaveBeenCalled()
       expect($activeSessionId.get()).toBe('a93bb39d')
@@ -935,7 +956,7 @@ describe('selectConnection', () => {
 
     await selectConnection('local')
 
-    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac')
+    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
     expect(ensureGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
     expect($newChatProfile.get()).toBe('mac')
   })

@@ -61,6 +61,7 @@ const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
+let phaseOneAbortController: AbortController | null = null
 
 export const $pendingConnectionId = atom<null | string>(null)
 
@@ -109,6 +110,8 @@ $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, 
 
 /** @internal Reset module-owned preferences and switch coordination for tests. */
 export function _resetConnectionsForTests(): void {
+  phaseOneAbortController?.abort()
+  phaseOneAbortController = null
   $lastProfileByConnection.set({})
   pendingTarget = null
   restoreAttempted = false
@@ -394,22 +397,33 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   const revision = ++switchRevision
+
+  phaseOneAbortController?.abort()
+  const phaseOneController = new AbortController()
+  phaseOneAbortController = phaseOneController
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
   // Set by the commit hook once THIS switch has wiped — i.e. it owns the
   // barrier and, if the commit then fails, owes the still-active source a
   // repaint. Null while queued, or if it stepped aside before its turn.
   let token = null as GatewaySwitchToken | null
+  let releasePhaseOne: () => void = () => undefined
 
   try {
     // Phase 1 — open the target's socket; the active route is untouched.
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
-    await withTimeout(
-      openGatewayAgent(connectionId, targetProfile),
+    const phaseOneLease = await withTimeout(
+      openGatewayAgent(connectionId, targetProfile, { signal: phaseOneController.signal }),
       SWITCH_DIAL_TIMEOUT_MS,
-      `Timed out connecting to "${targetConnection.label}".`
+      `Timed out connecting to "${targetConnection.label}".`,
+      error => phaseOneController.abort(error)
     )
+    // Older bridge/test implementations predate the explicit phase-one lease
+    // return. They have nothing to release; the real gateway path always
+    // supplies the owner cleanup function.
+
+    releasePhaseOne = typeof phaseOneLease === 'function' ? phaseOneLease : () => undefined
 
     // A newer click owns the switch from here on. The superseded dial never
     // activates, so the user doesn't flip through it on the way to the source
@@ -537,6 +551,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
       throw error
     }
   } finally {
+    releasePhaseOne()
+
+    if (phaseOneAbortController === phaseOneController) {
+      phaseOneAbortController = null
+    }
+
     if (revision === switchRevision) {
       pendingTarget = null
       $pendingConnectionId.set(null)

@@ -664,8 +664,8 @@ describe('profile-aware plugin session opens', () => {
 
     vi.mocked(openGatewayForAgent).mockImplementationOnce(
       () =>
-        new Promise<void>(resolve => {
-          releaseDial = resolve
+        new Promise<Awaited<ReturnType<typeof openGatewayForAgent>>>(resolve => {
+          releaseDial = () => resolve({ release: () => undefined })
         })
     )
 

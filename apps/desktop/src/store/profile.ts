@@ -752,17 +752,24 @@ async function resolveConnectionForAgent(connectionId: string, profile: string):
 // activates it synchronously, which lets the caller sever the previous
 // backend's session bindings and publish the new source in the same tick
 // (#93937). An already-open target is a no-op.
-export async function openGatewayAgent(connectionId: string, profile: string): Promise<void> {
+export async function openGatewayAgent(
+  connectionId: string,
+  profile: string,
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<() => void> {
   const connection = connectionId.trim()
 
   if (!connection) {
-    return
+    return () => undefined
   }
 
-  await openGatewayForAgent(connection, normalizeProfileKey(profile), {
+  const lease = await openGatewayForAgent(connection, normalizeProfileKey(profile), {
     activationLease: true,
-    spawnPriority: 'foreground'
+    spawnPriority: 'foreground',
+    signal
   })
+
+  return lease.release
 }
 
 // Activate a connection-scoped agent's gateway — the (connectionId, profile)

@@ -452,6 +452,18 @@ class TestSaveEnvValueSecure:
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
 
+    def test_save_env_value_keeps_non_utf8_bytes_of_other_lines(self, tmp_path):
+        """A cp1252 .env (the loader reads it as latin-1) must come back byte-identical apart from
+        the saved key; decoding it with errors=replace wrote U+FFFD over every non-UTF-8 byte."""
+        original = b"EMAIL_PASSWORD=Stra\xdfe-g\xe9heim-42\nOPENROUTER_API_KEY=sk-or-FAKE\n"
+        env_path = tmp_path / ".env"
+        env_path.write_bytes(original)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TELEGRAM_HOME_CHANNEL", "12345")
+
+        assert env_path.read_bytes() == original + b"TELEGRAM_HOME_CHANNEL=12345\n"
+
     def test_save_env_value_quotes_values_containing_hash(self, tmp_path):
         """Regression test for #30355."""
         from dotenv import dotenv_values

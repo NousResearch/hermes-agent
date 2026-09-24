@@ -291,12 +291,9 @@ def test_plain_utf8_env_regression(tmp_path, monkeypatch):
 def test_cp1252_env_regression_does_not_crash(tmp_path, monkeypatch):
     """cp1252/latin-1 body must not crash sanitize; ASCII keys still usable.
 
-    0xE9 is 'é' in cp1252 and incomplete as UTF-8. First line does not begin
-    with U+FFFD, so the FFFD guard must not refuse the whole file.
-
-    Sanitize leaves the file bytes alone when the only "change" is
-    errors=replace on values (original already replace-decoded equals
-    sanitized), so _load_dotenv_with_fallback's latin-1 path recovers café.
+    0xE9 is 'é' in cp1252 and incomplete as UTF-8. The file needs no
+    normalizing, so sanitize leaves its bytes alone and
+    _load_dotenv_with_fallback's latin-1 path recovers café.
     """
     home = tmp_path / "hermes"
     home.mkdir()
@@ -312,8 +309,26 @@ def test_cp1252_env_regression_does_not_crash(tmp_path, monkeypatch):
     assert loaded == [env_file]
     assert os.getenv("ASCII_KEY") == "ok"
     assert os.getenv("LATIN1_VALUE") == "café"
-    # Sanitize must not have rewritten (would have persisted U+FFFD).
+    # Sanitize must not have rewritten.
     assert env_file.read_bytes() == before
+
+
+def test_cp1252_env_bytes_survive_a_normalizing_sanitize(tmp_path, monkeypatch):
+    """When the startup sanitizer does rewrite (here: a missing final newline),
+    non-UTF-8 bytes go back to disk unchanged, so the latin-1 fallback still
+    loads the original value on this and every later start."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_bytes(b"ASCII_KEY=ok\nLATIN1_VALUE=caf\xe9")
+
+    monkeypatch.delenv("ASCII_KEY", raising=False)
+    monkeypatch.delenv("LATIN1_VALUE", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert env_file.read_bytes() == b"ASCII_KEY=ok\nLATIN1_VALUE=caf\xe9\n"
+    assert os.getenv("LATIN1_VALUE") == "café"
 
 
 # ---------------------------------------------------------------------------

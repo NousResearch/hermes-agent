@@ -2470,7 +2470,7 @@ def sanitize_env_file() -> int:
     env_path = get_env_path()
     if not env_path.exists():
         return 0
-    with open(env_path, encoding="utf-8-sig", errors="replace") as f:
+    with open(env_path, encoding="utf-8-sig", errors="surrogateescape") as f:
         original_lines = f.readlines()
     sanitized = _sanitize_env_lines(original_lines)
     if sanitized == original_lines:
@@ -2484,8 +2484,9 @@ def sanitize_env_file() -> int:
 
 def _read_env_lines(env_path: Path) -> list:
     """Read ``.env`` lines, normalized. Explicit UTF-8 (Windows defaults to cp1252) with BOM
-    tolerance (Notepad adds one)."""
-    with open(env_path, encoding="utf-8-sig", errors="replace") as f:
+    tolerance (Notepad adds one). ``surrogateescape`` + ``_write_env_lines`` round-trip bytes that
+    are not UTF-8 (a cp1252 file the loader reads as latin-1), so a rewrite never corrupts other lines."""
+    with open(env_path, encoding="utf-8-sig", errors="surrogateescape") as f:
         return _sanitize_env_lines(f.readlines())
 
 
@@ -2500,7 +2501,7 @@ def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> Non
         pass
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())

@@ -221,14 +221,16 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     """Nearest ancestor (≤6 levels) that looks like a project root, or ``None``. ``$HOME``
     and the shared temp root are skipped: a Makefile/AGENTS.md in the home dir is global
     config, and a stray manifest in /tmp must not flip every session under it."""
+    from hermes_constants import exists_or_denied
     current = cwd.resolve()
     try:
         temp_root = Path(tempfile.gettempdir()).resolve()
     except Exception:
         temp_root = None
     skip = (_home(), temp_root)
+    # A parent the process cannot stat (locked-down shared host) is "no marker here", not a crash (#8751 class).
     for parent in (current, *current.parents)[:7]:
-        if parent not in skip and any((parent / marker).exists() for marker in _PROJECT_MARKERS):
+        if parent not in skip and any(exists_or_denied(parent / marker) for marker in _PROJECT_MARKERS):
             return parent
     return None
 

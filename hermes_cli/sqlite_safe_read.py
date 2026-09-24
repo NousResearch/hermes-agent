@@ -230,7 +230,15 @@ def offline_file_access(path: Path | str, *, what: str = "read"):
     :func:`has_live_connection` and *then* doing raw I/O is a check/use race (a connection opened
     in between loses its POSIX locks to the raw ``close()``). Held only for the raw I/O."""
     with _live_lock:
-        if _key(path) in _live_connections:
+        key = _key(path)
+        # SQLite locks the main file and its WAL shared-memory sidecar. A raw
+        # close of either inode cancels this process's POSIX locks, while the
+        # connection registry is keyed by the main database path.
+        live = key in _live_connections or any(
+            key.endswith(suffix) and key[:-len(suffix)] in _live_connections
+            for suffix in ("-wal", "-shm")
+        )
+        if live:
             raise LiveConnectionError(
                 f"Refusing to {what} {path}: a connection to it is still open "
                 "in this process, and raw file access would cancel that "

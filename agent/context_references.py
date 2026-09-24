@@ -296,6 +296,21 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if is_folder:
         listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    try:
+        # Keep admission through every sniff, line count and text read: a connection
+        # can start between a check and a later open otherwise.
+        with offline_file_access(path, what="preview context reference"):
+            return _expand_file_reference(ref, path, max_inline_tokens)
+    except LiveConnectionError:
+        return None, _on_disk_reference_block(
+            ref, path, descriptor="live SQLite database file",
+            reason="not previewed: raw access would cancel SQLite's POSIX locks.",
+            guidance="Do not open this file directly while its database connection is live.",
+        )
+
+
+def _expand_file_reference(ref: ContextReference, path: Path, max_inline_tokens: int | None) -> Expansion:
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
@@ -637,13 +652,17 @@ def _file_metadata(path: Path) -> str:
         return "unknown size"
     # A listing line is a summary, not content: past the cap, byte size conveys the
     # same "how big is this" without a full scan per entry.
-    if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
-        return f"{size} bytes"
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     try:
-        with path.open("rb") as fh:
-            # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
-            # matches a decoded newline count while streaming instead of read_text.
-            lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
-        return f"{lines + 1} lines"
-    except Exception:
+        # A directory preview inspects each entry separately; the registry lock
+        # must cover both its binary sniff and optional line-count read.
+        with offline_file_access(path, what="inspect folder entry"):
+            if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
+                return f"{size} bytes"
+            with path.open("rb") as fh:
+                # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
+                # matches a decoded newline while streaming instead of read_text.
+                lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
+            return f"{lines + 1} lines"
+    except (LiveConnectionError, OSError):
         return f"{size} bytes"

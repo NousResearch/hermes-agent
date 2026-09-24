@@ -451,6 +451,41 @@ export function registrySourceOwnsPrimaryBackend(
   return Boolean(id) && id === registry.primary && resolvedConnectionId(registry, descriptor) === id
 }
 
+export interface ReuseMatchingPrimaryRemoteBackendOptions<T extends ResolvedConnectionDescriptor> {
+  connectionId: string
+  ensurePrimary: (profile: null | string | undefined) => Promise<T>
+  profile: null | string | undefined
+  registry: ConnectionRegistry
+  source: RegistryConnection
+}
+
+export interface SharedRegistryProfileScope {
+  connectionId: string
+  profile: string
+  sharedRemote: true
+}
+
+/** Reuse the live URL/cloud primary without losing the caller's REST profile scope. */
+export async function reuseMatchingPrimaryRemoteBackend<T extends ResolvedConnectionDescriptor>({
+  connectionId,
+  ensurePrimary,
+  profile,
+  registry,
+  source
+}: ReuseMatchingPrimaryRemoteBackendOptions<T>): Promise<(T & SharedRegistryProfileScope) | null> {
+  if (connectionId !== registry.primary || source.kind === 'local' || source.kind === 'ssh') {
+    return null
+  }
+
+  const descriptor: T = await ensurePrimary(profile)
+
+  if (!registrySourceOwnsPrimaryBackend(registry, connectionId, descriptor)) {
+    return null
+  }
+
+  return { ...descriptor, profile: String(profile ?? '').trim() || 'default', connectionId, sharedRemote: true }
+}
+
 function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unknown }): null | string {
   const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })
 

@@ -22,7 +22,7 @@ sys.path.insert(0, str(WORKTREE))
 import pytest
 
 # The stand-in wears a `gateway run` argv; the test spawns and reaps it itself.
-pytestmark = [pytest.mark.windows_only, pytest.mark.spawns_gateway_lookalike]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.spawns_gateway_lookalike]
 
 
 def _wait_until(predicate, timeout: float = 15.0, interval: float = 0.05) -> bool:

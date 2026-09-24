@@ -509,7 +509,7 @@ def test_client_passes_custom_base_url_to_sdk(monkeypatch):
     module = types.ModuleType("supermemory")
     module.Supermemory = StubSupermemory
     monkeypatch.setitem(sys.modules, "supermemory", module)
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    monkeypatch.setattr("pm.ensure_import", lambda *args, **kwargs: None)
 
     client = _SupermemoryClient(
         api_key="test-key",
@@ -596,7 +596,7 @@ def test_post_setup_writes_config_and_env(monkeypatch, tmp_path):
     assert "SUPERMEMORY_API_KEY=new-api-key" in env_text
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+@pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 def test_save_config_sets_owner_only_permissions(tmp_path):
     """supermemory.json must be written with 0o600 so API key is not world-readable."""
     _save_supermemory_config({"api_key": "sm-test-key"}, str(tmp_path))

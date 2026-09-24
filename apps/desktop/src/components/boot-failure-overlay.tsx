@@ -7,16 +7,17 @@ import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-cont
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
-import type { DesktopConnectionConfig } from '@/global'
+import type { DesktopConnectionConfig, DesktopOauthLoginResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
+import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { openExternalLink } from '@/lib/external-link'
 import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
-import { type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
+import { classifyLocalBootFailure, type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
 import type { RemoteReauth } from './boot-failure-reauth'
 import {
   deriveProviderShape,
@@ -83,6 +84,10 @@ export function BootFailureOverlay() {
   // A remote/cloud backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
   const [remoteFailure, setRemoteFailure] = useState(false)
+  // A bundled install (payload ships in-app) has no installer to repair with.
+  // Read from the bootstrap state snapshot so Repair is never offered there;
+  // "Reinstall the app" replaces it only when the payload itself is damaged.
+  const [bundled, setBundled] = useState(false)
   // Swap the card body to the embedded Gateway settings panel in place of routing
   // to the full Settings page (keeps the user on the recovery surface, no z-index
   // juggling, no second connection form to maintain).
@@ -103,6 +108,30 @@ export function BootFailureOverlay() {
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
       .catch(() => undefined)
+  }, [boot.error, visible])
+
+  // Bundled installs carry their runtime as an immutable payload — repair
+  // would re-run an installer that must never fire for them. Resolve the
+  // artifact kind from the bootstrap snapshot, including failures before setup.
+  useEffect(() => {
+    if (!visible) {
+      return
+    }
+
+    let cancelled = false
+
+    void window.hermesDesktop
+      ?.getBootstrapState()
+      .then(snapshot => {
+        if (!cancelled && snapshot) {
+          setBundled(snapshot.bundled)
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
   }, [boot.error, visible])
 
   // Resolve whether this boot failure is a remote-gateway reauth so we can
@@ -178,10 +207,32 @@ export function BootFailureOverlay() {
     window.location.reload()
   }
 
-  const repair = async () => {
+  const repair = async (): Promise<void> => {
     setBusy('repair')
-    await window.hermesDesktop?.repairBootstrap().catch(() => undefined)
-    window.location.reload()
+
+    try {
+      if (!window.hermesDesktop?.repairBootstrap) {
+        throw new Error(t.boot.errors.ipcBridgeUnavailable)
+      }
+
+      const result = await window.hermesDesktop.repairBootstrap()
+
+      // Main refuses repair on a bundled install (its stamp is authoritative;
+      // our snapshot may be stale) — say what to do instead of the raw code.
+      if (result?.error === 'bundled-immutable') {
+        throw new Error(t.boot.failure.bundledReinstallHint)
+      }
+
+      if (!result?.ok) {
+        throw new Error(result?.error || t.boot.errors.desktopBootFailed)
+      }
+
+      window.location.reload()
+    } catch (error) {
+      notifyError(error, t.boot.failure.repairInstall)
+    } finally {
+      setBusy(null)
+    }
   }
 
   const switchToLocalGateway = async () => {
@@ -208,6 +259,10 @@ export function BootFailureOverlay() {
       const desktop = window.hermesDesktop
 
       let connected: boolean
+      // Only the oauth arm reports a reason (DesktopOauthLoginResult.error);
+      // the incomplete sign-in notice below surfaces it. The cloud ladder
+      // reports an outcome, handled in its own branch.
+      let error: string | undefined
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
         // The ladder drops this gateway's lapsed cookies itself — logging out
@@ -228,7 +283,9 @@ export function BootFailureOverlay() {
       } else {
         await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
-        connected = (await desktop?.oauthLoginConnectionConfig(remoteReauth.url))?.connected === true
+        const result: DesktopOauthLoginResult | undefined = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+        connected = result?.connected === true
+        error = result?.error
       }
 
       if (connected) {
@@ -245,7 +302,9 @@ export function BootFailureOverlay() {
       notify({
         kind: 'warning',
         title: t.boot.failure.signInIncompleteTitle,
-        message: t.boot.failure.signInIncompleteMessage
+        message: error
+          ? `${t.boot.failure.signInIncompleteMessage}: ${error}`
+          : t.boot.failure.signInIncompleteMessage
       })
     } catch (err) {
       notifyError(err, t.boot.failure.signInFailed)
@@ -360,19 +419,33 @@ export function BootFailureOverlay() {
   } else {
     // Local failure: Use-local is redundant with Retry (both re-target local), so
     // it's dropped here; keep it for remote failures where it's the fall-back.
-    actions = [
-      retryAction,
-      {
-        key: 'repair',
-        label: copy.repairInstall,
-        onClick: () => void repair(),
-        icon: <Wrench />,
-        variant: 'secondary',
-        busy: 'repair'
-      },
-      { ...settingsAction, variant: 'ghost' }
-    ]
-    hint = copy.repairHint
+    // A bundled install's payload is immutable, so there is no installer to
+    // re-run: Repair is dropped, and "Reinstall the app" is offered only when
+    // the payload itself is what's broken — a port clash or timeout on a
+    // bundled install is not fixed by reinstalling.
+    const damagedPayload: boolean = bundled && classifyLocalBootFailure(boot.error) === 'installMissing'
+
+    const fixAction: RecoveryAction | null = damagedPayload
+      ? {
+          key: 'reinstall',
+          label: copy.reinstallApp,
+          onClick: () => openExternalLink(DESKTOP_DOCS_URL),
+          icon: <ExternalLink />,
+          variant: 'secondary'
+        }
+      : bundled
+        ? null
+        : {
+            key: 'repair',
+            label: copy.repairInstall,
+            onClick: () => void repair(),
+            icon: <Wrench />,
+            variant: 'secondary',
+            busy: 'repair'
+          }
+
+    actions = [retryAction, ...(fixAction ? [fixAction] : []), { ...settingsAction, variant: 'ghost' }]
+    hint = damagedPayload ? copy.bundledReinstallHint : bundled ? '' : copy.repairHint
   }
 
   if (view === 'connect') {
@@ -445,7 +518,7 @@ export function BootFailureOverlay() {
                 {copy.openLogs}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">{hint}</p>
+            {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
           </div>
 
           {logs.length > 0 ? (

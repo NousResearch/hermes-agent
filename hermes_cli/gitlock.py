@@ -298,8 +298,9 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
         if probe.returncode == 0:
             return 0
         with _ShallowLock(shallow_path):
-            original = shallow_path.read_text(encoding="utf-8")
-            existing = {line for line in original.splitlines() if line}
+            # Keep the rollback image byte-exact, including BOM and line endings.
+            original = shallow_path.read_bytes()
+            existing = {line for line in original.decode("utf-8-sig").splitlines() if line}
             if not existing:
                 return 0
             # Boundary candidates: commits recorded as *fetch tips* in remote-tracking
@@ -329,7 +330,7 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
             # Self-check under the same lock hold (rev-list never takes
             # shallow.lock): the rollback cannot be defeated by lock contention.
             if not _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"]):
-                shallow_path.write_text(original, encoding="utf-8")
+                shallow_path.write_bytes(original)
                 logger.debug("shallow boundary repair self-check failed; file restored")
                 return 0
         logger.info("Restored %d broken shallow boundary(ies) in %s", len(repaired), repo_root)
@@ -358,7 +359,9 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         if shallow_path is None:
             return 0
         with _ShallowLock(shallow_path):
-            lines = [line for line in shallow_path.read_text(encoding="utf-8").splitlines() if line]
+            # Decode for pruning, but retain the same capture for a lossless rollback.
+            original = shallow_path.read_bytes()
+            lines = [line for line in original.decode("utf-8-sig").splitlines() if line]
             if not lines:
                 return 0
             keep = set(lines) & {
@@ -368,7 +371,6 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
             }
             if len(keep) == len(lines):
                 return 0
-            original = shallow_path.read_text(encoding="utf-8")
             _write_shallow(shallow_path, "\n".join(sorted(keep)) + "\n", suffix=".hermes-prune")
             # Fail-safe: if any reachable walk now crosses a boundary we wrongly
             # removed, put the grafts back — a growing file beats a broken repo.
@@ -378,7 +380,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
                 _git_stdout_lines(repo_root, ["rev-list", "--count", "--all"]) and \
                 _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"])
             if not still_walks:
-                shallow_path.write_text(original, encoding="utf-8")
+                shallow_path.write_bytes(original)
                 logger.debug("shallow prune self-check failed; grafts restored")
                 return 0
         logger.info("Pruned %d stale shallow graft(s) in %s", len(lines) - len(keep), repo_root)
@@ -386,3 +388,22 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
     except Exception:
         logger.debug("shallow graft prune failed for %s", repo_root, exc_info=True)
         return 0
+
+
+def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
+    """Turn a shallow checkout into a treeless partial clone of ``origin``.
+
+    Version identity is the nearest reachable release tag plus the commit count since
+    it, and a shallow boundary hides both. Only commits (and the tags that follow
+    them) are fetched; trees and blobs stay on demand, so this costs a fraction of a
+    full unshallow. Returns False when the checkout was not shallow; raises
+    ``subprocess.CalledProcessError`` / ``TimeoutExpired`` when the fetch fails.
+    """
+    if _shallow_file_path(repo_root) is None:
+        return False
+    subprocess.run(
+        ["git", "fetch", "--quiet", "--unshallow", "--filter=tree:0", "origin"],
+        cwd=str(repo_root), check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+    )
+    return True

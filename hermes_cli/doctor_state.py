@@ -121,6 +121,41 @@ def _memory_store_flags(hermes_home: Path) -> tuple:
     return get_builtin_memory_store_flags({"memory": _doctor_memory_config(hermes_home)})
 
 
+def _check_memory_file(f: Finding, path: Path, limit: int) -> None:
+    """Diagnose entry boundaries and strict scan as used by the prompt snapshot."""
+    from tools.memory_tool_store import ENTRY_DELIMITER, MemoryStore
+    from tools.threat_patterns import scan_for_threats
+
+    raw, readable = MemoryStore._read_raw_checked(path)
+    if not readable:
+        check_warn(f"{path.name} exists but cannot be read")
+        f.issues.append(f"{path.name} is unreadable — check permissions or UTF-8 encoding")
+        return
+    parsed = MemoryStore._parse_entries(raw)
+    entries = list(dict.fromkeys(parsed))
+    blocked = [scan_for_threats(entry, scope="strict") for entry in entries
+               if entry and not entry.startswith("[BLOCKED:")]
+    blocked = [patterns for patterns in blocked if patterns]
+    count = len(ENTRY_DELIMITER.join(entries))
+    # The mutation guard refuses non-round-tripping content or an individual entry over the cap.
+    drift = bool(raw.strip()) and (raw.strip() != ENTRY_DELIMITER.join(parsed)
+                                  or max(map(len, parsed), default=0) > limit)
+    if blocked:
+        names = ", ".join(sorted({name for patterns in blocked for name in patterns}))
+        check_warn(f"{path.name}: {len(blocked)} blocked entries in system prompt",
+                   f"(threat pattern(s): {names}; edit or remove the affected entries)")
+        f.issues.append(f"{path.name} has {len(blocked)} blocked memory entries ({names})")
+    if drift:
+        check_warn(f"{path.name} does not round-trip through the memory store",
+                   "(memory writes will be refused; rewrite as a clean §-delimited list without losing entries)")
+        f.issues.append(f"{path.name} has external drift — reconcile its entries before writing memory")
+    if count > limit:
+        check_warn(f"{path.name} exceeds its configured char limit ({count}/{limit} chars)",
+                   "(further additions will be refused until entries are consolidated)")
+        f.issues.append(f"{path.name} exceeds its configured memory char limit")
+    if not (blocked or drift or count > limit):
+        check_ok(f"{path.name} exists ({len(raw.strip())} chars)")
+
 @doctor_check()
 def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     """HERMES_HOME, expected subdirs, SOUL.md, and the enabled built-in memory files."""
@@ -158,9 +193,13 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     existed = memories_dir.exists()
     ensure_dir(f, should_fix, memories_dir, f"{_DHH}/memories/ directory exists", f"Created {_DHH}/memories/",
                f"{_DHH}/memories/ not found")
-    for fname in [n for on, n in ((_memory_enabled, "MEMORY.md"), (_user_profile_enabled, "USER.md")) if on and existed]:
+    config = _doctor_memory_config(hermes_home)
+    for enabled, fname, key, default in ((_memory_enabled, "MEMORY.md", "memory_char_limit", 2200),
+                                         (_user_profile_enabled, "USER.md", "user_char_limit", 1375)):
+        if not enabled or not existed:
+            continue
         if (memories_dir / fname).exists():
-            check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
+            _check_memory_file(f, memories_dir / fname, int(config.get(key, default)))
         else:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 

@@ -149,3 +149,28 @@ def test_per_iteration_default_unchanged_by_cadence_state(monkeypatch, tmp_path)
         facade.create(messages=msgs, tools=[])
 
     assert len(ref_runs) == 3
+
+
+def test_user_turn_fanout_reuses_guidance_after_a_persistent_steer(monkeypatch, tmp_path):
+    """A mid-turn /steer guides the aggregator without restarting advisory fan-out (#121342)."""
+    home = tmp_path / ".hermes"
+    _cadence_config(home, "user_turn")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    ref_runs = []
+    _install_fake_llm(monkeypatch, ref_runs)
+
+    from agent.moa_loop import MoAChatCompletions
+    from agent.prompt_builder import steer_user_row
+
+    facade = MoAChatCompletions("review")
+    base = [{"role": "user", "content": "task"}]
+    facade.create(messages=base, tools=[])
+    facade.create(messages=[
+        *base,
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "tool_call_id": "1", "content": "result"},
+        steer_user_row("use the result to narrow the answer"),
+    ], tools=[])
+
+    assert len(ref_runs) == 1

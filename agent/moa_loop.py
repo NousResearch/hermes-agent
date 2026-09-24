@@ -699,6 +699,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     rendered: list[dict[str, Any]] = []
     last_user_content: str | None = None
+    trailing_steer = False
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content")
@@ -714,6 +715,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue  # genuinely empty user turn: strict providers 400 on it
             last_user_content = text
             rendered.append({"role": "user", "content": text})
+            trailing_steer = msg.get("display_kind") == "steer"
         elif role == "assistant":
             parts = [text.strip()] if text.strip() else []
             calls_text = _render_tool_calls(msg.get("tool_calls"))
@@ -721,6 +723,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 parts.append(calls_text)
             if parts:  # empty assistant turns carry nothing advisory
                 rendered.append({"role": "assistant", "content": "\n".join(parts)})
+                trailing_steer = False
         elif role == "tool":
             # Fold the tool result into the preceding assistant turn as text (a leading
             # tool result with no assistant turn opens one).
@@ -729,10 +732,11 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
                 rendered.append({"role": "assistant", "content": block})
+            trailing_steer = False
         # system and any other role are ignored.
 
     # Anthropic rejects trailing assistant prefill: end on a synthetic user request.
-    if rendered and rendered[-1].get("role") == "assistant":
+    if rendered and (rendered[-1].get("role") == "assistant" or trailing_steer):
         rendered.append({"role": "user", "content": _ADVISORY_INSTRUCTION})
     if not rendered:
         # Nothing rendered: fall back to the latest user turn.
@@ -780,6 +784,15 @@ def _hash_messages(msgs: list[dict[str, Any]]) -> str:
 def _is_failed_reference(text: str) -> bool:
     """Whether a reference output is a ``[failed: …]`` / ``[skipped: …]`` sentinel."""
     return text.lstrip().lower().startswith(("[failed:", "[skipped:"))
+
+
+def _is_steer_reference_row(message: dict[str, Any]) -> bool:
+    """Whether a rendered advisory row is Hermes' persisted /steer marker."""
+    if message.get("role") != "user":
+        return False
+    from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN
+    content = message.get("content")
+    return isinstance(content, str) and content.startswith(STEER_MARKER_OPEN) and content.endswith(STEER_MARKER_CLOSE)
 
 
 def _join_reference_outputs(outputs: list[tuple[str, str, Any]], degraded: str = "") -> str:
@@ -1223,11 +1236,13 @@ class MoAChatCompletions:
                 fanout_mode = "per_iteration"  # every_n:1 IS per-iteration (mirrors _coerce_fanout)
         sig_messages = turn_prefix = ref_messages
         if fanout_mode == "user_turn" or every_n >= 2:
-            # Last REAL user message: the synthetic _ADVISORY_INSTRUCTION marker must not
-            # count or the prefix would grow (and re-sign) every iteration.
+            # Last real task user message: neither the synthetic advisory request nor a
+            # persistent /steer marker starts a new advisor fan-out.
             last_user = next(
                 (i for i in range(len(ref_messages) - 1, -1, -1)
-                 if ref_messages[i].get("role") == "user" and ref_messages[i].get("content") != _ADVISORY_INSTRUCTION),
+                 if ref_messages[i].get("role") == "user"
+                 and ref_messages[i].get("content") != _ADVISORY_INSTRUCTION
+                 and not _is_steer_reference_row(ref_messages[i])),
                 None,
             )
             if last_user is not None:

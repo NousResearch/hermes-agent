@@ -470,6 +470,29 @@ def _print_section(title: str, lines) -> None:
         print(line)
 
 
+def _task_board_hint(task_id: str) -> Optional[str]:
+    """Return another active board holding ``task_id``, without changing board state."""
+    current_board = kb.get_current_board()
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception:
+        return None
+    for board in boards:
+        slug = board["slug"]
+        if slug == current_board:
+            continue
+        db_path = Path(board["db_path"])
+        if not db_path.is_file():
+            continue
+        try:
+            with kbc.connect_closing(db_path=db_path) as other_conn:
+                if kb.get_task(other_conn, task_id):
+                    return slug
+        except Exception:
+            continue
+    return None
+
+
 def _cmd_show(args: argparse.Namespace) -> int:
     rsk, rc = _run_state_kwargs(args, "show")
     if rc:
@@ -479,6 +502,15 @@ def _cmd_show(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
+            if not want_json:
+                other_board = _task_board_hint(args.task_id)
+                if other_board:
+                    current_board = kb.get_current_board()
+                    return _err(
+                        f"no such task on board '{current_board}': {args.task_id}; "
+                        f"found on '{other_board}' — retry with: "
+                        f"hermes kanban --board {other_board} show {args.task_id}"
+                    )
             return _err(f"no such task: {args.task_id}")
         comments = kb.list_comments(conn, args.task_id)
         events = kb.list_events(conn, args.task_id)

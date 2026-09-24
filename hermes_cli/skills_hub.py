@@ -932,7 +932,8 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
-        c.print(format_scan_report(scan_skill(skill_path, source=entry.get("identifier", entry["source"]))))
+        source = entry.get("identifier") or entry.get("source", "")
+        c.print(format_scan_report(scan_skill(skill_path, source=source)))
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
         c.print()
@@ -1377,7 +1378,11 @@ def skills_command(args) -> None:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return
-    handler(args)
+    try:
+        handler(args)
+    except ValueError as exc:
+        _print_error(_console, str(exc))
+        raise SystemExit(1) from None
 
 
 # --- Slash command entry point (/skills in chat) ---
@@ -1504,7 +1509,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         for line in _SLASH_USAGE[action]:
             c.print(line)
         return
-    handler(args, c)
+    try:
+        handler(args, c)
+    except ValueError as exc:
+        _print_error(c, str(exc))
 
 
 def _print_skills_help(console: Console) -> None:

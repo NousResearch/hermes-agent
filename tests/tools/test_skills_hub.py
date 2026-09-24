@@ -810,15 +810,6 @@ class TestCreateSourceRouter:
 
 
 class TestHubLockFile:
-
-    def test_load_corrupt_json(self, tmp_path):
-        lock_file = tmp_path / "lock.json"
-        lock_file.write_text("not json{{{")
-        lock = HubLockFile(path=lock_file)
-        data = lock.load()
-        assert data == {"version": 1, "installed": {}}
-
-
     def test_list_installed(self, tmp_path):
         lock = HubLockFile(path=tmp_path / "lock.json")
         lock.record_install(

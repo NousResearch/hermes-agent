@@ -206,7 +206,10 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
     from tools.skills_hub import HubLockFile, append_audit_log
     lock = HubLockFile()
-    entry = lock.get_installed(skill_name)
+    try:
+        entry = lock.get_installed(skill_name)
+    except ValueError as exc:
+        return False, f"Refusing uninstall: {exc}"
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
     # The destructive boundary: whatever reaches rmtree MUST be inside
@@ -218,7 +221,14 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if install_path.exists():
         shutil.rmtree(install_path)
     lock.record_uninstall(skill_name)
-    append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+    append_audit_log(
+        "UNINSTALL",
+        skill_name,
+        entry.get("source", "unknown"),
+        entry.get("trust_level", "unknown"),
+        "n/a",
+        "user_request",
+    )
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 

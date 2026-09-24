@@ -69,3 +69,20 @@ def test_compaction_epochs(tmp_path, monkeypatch):
 
     assert [m["content"] for m in session["history"]] == ["summary of MANGO", "Repeat it", "MANGO", "KIWI", "OK"]
     assert session["history"][0].get("_compressed_summary") and session["history_version"] == 1
+
+
+def test_model_switch_marker_is_not_adopted_as_a_foreign_row(tmp_path, monkeypatch):
+    """The gateway persists the switch marker itself; unstamped, its row sat above the history's highest id
+    and the next turn re-appended it as a foreign turn, so the model saw the marker twice."""
+    db, session = _seed(tmp_path)
+    _bind_db(monkeypatch, db)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)  # the row already exists
+
+    server._append_model_switch_marker(session, model="model-b", provider="p")
+    own = db.append_message("s1", "user", "Which model is this?", timestamp=5.0)
+    session["_submit_user_row"] = {"role": "user", "content": "Which model is this?", "_row_id": own}
+    server._adopt_out_of_band_turns(session)
+
+    markers = [m for m in session["history"] if server._is_model_switch_marker(m)]
+    assert len(markers) == 1 and "model-b" in markers[0]["content"]
+    assert [m["content"] for m in session["history"][:2]] == ["My codeword is MANGO.", "OK"]

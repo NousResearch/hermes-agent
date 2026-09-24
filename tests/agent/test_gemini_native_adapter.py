@@ -870,3 +870,83 @@ def test_response_without_thinking_tokens_keeps_its_output_count():
     assert usage.completion_tokens == visible
     assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
     assert normalize_usage(usage, provider="google").reasoning_tokens == 0
+
+
+def test_build_gemini_request_translates_response_format():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": schema}},
+        tools_as_json_schema=True,
+    )
+    assert req["generationConfig"]["responseMimeType"] == "application/json"
+    assert req["generationConfig"]["responseJsonSchema"] == schema
+
+
+def test_build_gemini_request_json_object_sets_mime_type_only():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_object"},
+        tools_as_json_schema=True,
+    )["generationConfig"]
+    assert generation["responseMimeType"] == "application/json"
+    assert "responseJsonSchema" not in generation and "responseSchema" not in generation
+
+
+def test_build_gemini_request_response_schema_path_sanitizes_schema():
+    """Non-v1beta surfaces (v1, Vertex express v1beta1) take the OpenAPI-subset responseSchema key."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "additionalProperties": False}
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": schema}},
+        tools_as_json_schema=False,
+    )["generationConfig"]
+    assert "responseJsonSchema" not in generation
+    assert generation["responseSchema"] == {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+
+def test_build_gemini_request_json_schema_without_schema_key_falls_back_to_mime_type():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_schema", "json_schema": {"name": "out"}},
+        tools_as_json_schema=True,
+    )["generationConfig"]
+    assert generation["responseMimeType"] == "application/json"
+    assert "responseJsonSchema" not in generation and "responseSchema" not in generation
+
+
+@pytest.mark.parametrize("tool_choice", ["required", {"type": "function", "function": {"name": "lookup"}}])
+def test_build_gemini_request_drops_json_output_when_tool_choice_forces_calls(tool_choice):
+    """Gemini 400s on forced function calling (mode ANY) combined with a JSON responseMimeType."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        tool_choice=tool_choice,
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": {"type": "object"}}},
+        tools_as_json_schema=True,
+    )["generationConfig"]
+    assert "responseMimeType" not in generation
+    assert "responseJsonSchema" not in generation and "responseSchema" not in generation
+
+
+def test_build_gemini_request_keeps_json_output_when_tool_choice_is_auto():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    generation = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        tool_choice="auto",
+        response_format={"type": "json_object"},
+        tools_as_json_schema=True,
+    )["generationConfig"]
+    assert generation["responseMimeType"] == "application/json"

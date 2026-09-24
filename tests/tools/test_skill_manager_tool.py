@@ -413,6 +413,68 @@ class TestWriteFile:
         assert not (outside_dir / "owned.md").exists()
 
 
+class TestWriteFileRoutePointer:
+    """skill_view() returns the NAMES of a skill's supporting files and never reads their content,
+    so a file whose name never reaches SKILL.md is invisible to every future session — the lesson
+    is written down and lost in the same move. The write that creates the gap must say so."""
+
+    def test_unreferenced_support_file_gets_route_warning(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "references/notes.md", "body")
+        assert result["success"] is True
+        assert "references/notes.md" in result["route_warning"]
+        assert "patch" in result["route_hint"]
+
+    def test_unreferenced_template_also_warns(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "templates/report.md", "body")
+        assert result["success"] is True
+        assert "templates/report.md" in result["route_warning"]
+
+    def test_referenced_support_file_is_quiet(self, tmp_path):
+        """★ reverse anchor: a file SKILL.md already names must not draw a warning."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT + "\nRouting: references/notes.md\n")
+            result = _write_file("my-skill", "references/notes.md", "body")
+        assert result["success"] is True
+        assert "route_warning" not in result
+
+    def test_directory_reference_covers_every_file_inside(self, tmp_path):
+        """★ reverse anchor: naming a whole asset directory routes everything under it."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT + "\nTemplates: templates/venue/\n")
+            result = _write_file("my-skill", "templates/venue/paper.sty", "body")
+        assert result["success"] is True
+        assert "route_warning" not in result
+
+    def test_archived_path_is_quiet(self, tmp_path):
+        """★ reverse anchor: the archive region is indexed by archive-index, not routed per file."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "references/archive/old.md", "body")
+        assert result["success"] is True
+        assert "route_warning" not in result
+
+    def test_plain_skill_md_write_has_no_route_warning(self, tmp_path):
+        """★ reverse anchor: the finding belongs to supporting files, not SKILL.md itself."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True
+        assert "route_warning" not in result
+
+    def test_patch_does_not_route_check(self, tmp_path):
+        """★ reverse anchor: patching an existing file is not the write that creates the gap."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/notes.md", "old body")
+            result = _patch_skill("my-skill", "old body", "new body", file_path="references/notes.md")
+        assert result["success"] is True
+        assert "route_warning" not in result
+
+
 class TestRemoveFile:
     def test_remove_existing_file(self, tmp_path):
         with _skill_dir(tmp_path):

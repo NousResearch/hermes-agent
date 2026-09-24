@@ -415,6 +415,32 @@ def _attach_lint_findings(result: Dict[str, Any], skill_md: Path, before: Option
         "— fix them with skill_manage(action='patch') to match Hermes skill standards.")
 
 
+def _attach_route_pointer_finding(result: Dict[str, Any], skill_dir: Path, file_path: str) -> None:
+    """ADVISORY: a supporting file the skill's own index never mentions is a lesson written down and
+    lost. ``skill_view`` returns supporting file NAMES and never reads their content, so SKILL.md is
+    the only index a future session has — an unmentioned file is invisible however good its content.
+    Attach the finding to the very write that creates the gap, in the same result the writer is
+    already reading (the advisory shape used by the lint findings above)."""
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    segments = [seg for seg in file_path.split("/") if seg]
+    if any(seg == "archive" or seg.startswith(".") for seg in segments[:-1]):
+        return  # the archive region is covered by archive-index, not routed file by file
+    head, _, tail = file_path.rpartition("/")
+    if tail in text or ("/" in head and head in text):
+        return  # named directly, or named as a directory (which routes every file inside it)
+    result["route_warning"] = (
+        f"SKILL.md does not mention '{file_path}'. skill_view() lists supporting file names but "
+        "never reads their content, so a session loading this skill will not know this file exists.")
+    result["route_hint"] = (
+        "Add a pointer in SKILL.md before finishing — e.g. skill_manage(action='patch', "
+        "old_string=<an existing line of SKILL.md>, new_string=<that line plus a routing row "
+        f"naming '{file_path}'>). Naming the containing directory ('{head}/') routes every file "
+        "inside it.")
+
+
 def _clip(text: str, n: int, ellipsis: str) -> str:
     return text[:n] + (ellipsis if len(text) > n else "")
 
@@ -579,6 +605,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     # that crosses the line so the review fork sees it in the same turn.
     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
         _attach_lint_findings(result, skill_dir / "SKILL.md")
+    # A supporting file nobody can reach is a lesson written down and lost: skill_view() returns
+    # supporting file NAMES and never their content, so SKILL.md is the only index there is.
+    if skill_dir:
+        _attach_route_pointer_finding(result, skill_dir, file_path)
     return result
 
 

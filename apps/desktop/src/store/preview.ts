@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { readJson, readKey, writeKey } from '@/lib/storage'
+import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
@@ -209,11 +209,32 @@ let viewKey = 'default'
 
 export const $previewTabs = atom<PreviewTab[]>([])
 
+// Adoption phase: emissions that carry storage THIS MODULE JUST READ, not a
+// change. nanostores' subscribe fires immediately, and writing what was just
+// read back is a data-loss clobber: every renderer boots against storage it
+// has not adopted yet, and echoing the empty view back overwrites the real
+// record before adoption can read it. A legacy single-array store is wiped
+// this way before `pendingLegacyTabs` is ever adopted; a bucket store loses
+// its `default` bucket the same way.
+let adoptingStoredTabs = true
+
 $previewTabs.subscribe(tabs => {
+  if (adoptingStoredTabs) {
+    return
+  }
+
   // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
   tabsByProfile[viewKey] = [...tabs]
   persistTabs()
 })
+
+// Seed the view with this renderer's own bucket. Without it the primary
+// profile's rail never restores: `viewKey` already IS 'default', so
+// `setPreviewScope` early-returns and nothing else moves the bucket into the
+// atom. Suppressed like the creation emission above — a persist here would
+// echo the just-read record back out (wiping a legacy store before adoption).
+$previewTabs.set(tabsByProfile[viewKey] ?? [])
+adoptingStoredTabs = false
 
 /** Re-home the rail onto the profile that owns the chat on screen. Called by
  *  `session-states.ts` whenever the focused session (or its resolved owner)
@@ -225,6 +246,15 @@ export function setPreviewScope(scope: string) {
     return
   }
 
+  applyPreviewScope(next)
+}
+
+/** Swap the view onto `next`'s bucket (legacy tabs ride along into it). Split
+ *  from `setPreviewScope` so `adoptPersistedBrowserTab` can force a re-home
+ *  onto the bucket a persisted tab lives in — the same-key early return above
+ *  would skip exactly that case (a fresh pop-out renderer starts on 'default'
+ *  while the popped tab belongs to another profile). */
+function applyPreviewScope(next: string) {
   if (pendingLegacyTabs) {
     tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
     pendingLegacyTabs = null
@@ -387,27 +417,56 @@ export function commitBrowserTabLocation(tabId: string, url: string, title?: str
   )
 }
 
-/** Pull one tab from storage into this renderer's atom. A sibling window
- *  (the pop-out) may have committed a newer URL that we never saw. */
+/** Pull one tab out of shared storage into this renderer's view. Two callers,
+ *  two shapes (#119850):
+ *
+ *  - The docked mirror when a pop-out closes (`onBrowserPopoutClosed`): the
+ *    tab is already in this view, so adopt the newer URL/label the sibling
+ *    window committed — every bucket is fair game, because the sibling writes
+ *    through its own scoped view, which is not necessarily this one.
+ *  - A fresh pop-out renderer (`PreviewTilePane` in `?win=browser`): no
+ *    session ever pushes a scope there, so the scoped view starts empty. Find
+ *    the bucket that owns the tab and re-home the view onto it. Re-homing
+ *    rather than splicing the tab into the current bucket keeps this window's
+ *    later writes (address-bar navigation) in the OWNER's bucket — a splice
+ *    would duplicate the tab into the primary profile's rail.
+ *
+ *  Reads every profile bucket plus the pre-scoping single-array shape. */
 export function adoptPersistedBrowserTab(tabId: string) {
   if (!tabId) {
     return
   }
 
   try {
-    const raw = readKey(TABS_STORAGE_KEY)
+    const stored = readJson<unknown>(TABS_STORAGE_KEY)
 
-    if (!raw) {
+    if (!stored) {
       return
     }
 
-    const persisted = decodePreviewTabs(raw).find(tab => tab.id === tabId)
+    const buckets: Array<[string, PreviewTab[]]> = Array.isArray(stored)
+      ? [['default', parseTabList(stored)]]
+      : Object.entries(stored as Record<string, unknown>).map(
+          ([key, value]) => [normalizeProfileKey(key), parseTabList(value)] as [string, PreviewTab[]]
+        )
 
-    if (!persisted || persisted.target.kind !== 'url') {
+    if ($previewTabs.get().some(tab => tab.id === tabId)) {
+      const persisted = buckets.flatMap(([, tabs]) => tabs).find(tab => tab.id === tabId)
+
+      if (persisted?.target.kind === 'url') {
+        commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+      }
+
       return
     }
 
-    commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+    for (const [key, tabs] of buckets) {
+      if (tabs.some(tab => tab.id === tabId)) {
+        applyPreviewScope(key || 'default')
+
+        return
+      }
+    }
   } catch {
     // Storage can throw; the in-memory tab stays as it was.
   }

@@ -58,22 +58,20 @@ def test_profile_mission_guidance_is_scoped_to_home_and_scheduler(tmp_path, monk
     assert MISSION_DUTIES_GUIDANCE not in without_mission
 
 
-def test_mission_without_cadence_guides_a_paused_draft_not_activation(tmp_path, monkeypatch):
+def test_mission_without_cadence_gets_guidance_only_with_scheduler(tmp_path, monkeypatch):
     home = tmp_path / "mail-profile"
     home.mkdir()
-    (home / "SOUL.md").write_text(
-        "Summarize Gmail into Discord when new mail arrives.", encoding="utf-8"
-    )
+    mission = "Summarize Gmail into Discord when new mail arrives."
+    (home / "SOUL.md").write_text(mission, encoding="utf-8")
     monkeypatch.setattr("agent.system_prompt._skills_prompt", lambda agent: "")
     monkeypatch.setattr("agent.system_prompt._coding_parts", lambda agent: ([], [], []))
     monkeypatch.setattr("agent.system_prompt._post_workspace_parts", lambda agent: [])
     monkeypatch.setattr("agent.system_prompt._auto_load_parts", lambda agent: [])
     monkeypatch.setattr("agent.prompt_builder.build_environment_hints", lambda: "")
 
-    prompt = build_system_prompt_parts(_agent(home, {"cronjob_manage"}))["stable"]
-    assert "not a cadence" in prompt
-    assert "editable default schedule" in prompt
-    assert "known or proposed schedule" in prompt
-    assert "cronjob_manage(create, paused=true)" in prompt
-    assert "confirm or change it before resuming" in prompt
-    assert "Never resume a job or send a test or other external message without explicit user consent" in prompt
+    with_scheduler = build_system_prompt_parts(_agent(home, {"cronjob_manage"}))["stable"]
+    without_scheduler = build_system_prompt_parts(_agent(home, set()))["stable"]
+    assert mission in with_scheduler and mission in without_scheduler
+    assert MISSION_DUTIES_GUIDANCE in with_scheduler
+    assert MISSION_DUTIES_GUIDANCE not in without_scheduler
+    assert with_scheduler == build_system_prompt_parts(_agent(home, {"cronjob_manage"}))["stable"]

@@ -336,6 +336,39 @@ def get_board(
 _read_board = coalesced_read(get_board)
 
 
+def get_all_boards(tenant: Optional[str] = None) -> dict[str, Any]:
+    """Read-only fleet view; each source board retains its own SQLite connection."""
+    columns: dict[str, list[dict]] = {name: [] for name in BOARD_COLUMNS}
+    tenants: set[str] = set()
+    assignees: set[str] = set()
+    boards = kanban_db.list_boards(include_archived=False)
+    for meta in boards:
+        slug = meta["slug"]
+        data = get_board(tenant=tenant, include_archived=False, board=slug,
+                         workflow_template_id=None, current_step_key=None)
+        for column in data["columns"]:
+            columns[column["name"]].extend({**task, "board_slug": slug} for task in column["tasks"])
+        tenants.update(data["tenants"])
+        assignees.update(data["assignees"])
+    for name, tasks in columns.items():
+        if name == "done":
+            tasks.sort(key=lambda t: (t["completed_at"] is None, -(t["completed_at"] or 0), t["id"]))
+        else:
+            tasks.sort(key=lambda t: (-t["priority"], t["created_at"], t["id"]))
+    return {"columns": [{"name": name, "tasks": tasks} for name, tasks in columns.items()],
+            "tenants": sorted(tenants), "assignees": sorted(assignees),
+            "boards": [{"slug": b["slug"], "name": b.get("name") or b["slug"]} for b in boards],
+            "now": int(time.time())}
+
+
+_read_all_boards = coalesced_read(get_all_boards)
+
+
+@router.get("/board/all")
+async def get_all_boards_endpoint(tenant: Optional[str] = Query(None)):
+    return await _read_all_boards(tenant=tenant)
+
+
 @router.get("/board")
 async def get_board_endpoint(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),

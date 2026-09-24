@@ -69,6 +69,27 @@
   overflow-x: auto;
 }
 
+.hermes-kanban-fleet-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.hermes-kanban-fleet-card:focus-visible {
+  outline: 2px solid var(--color-primary);
+}
+
+.hermes-kanban-fleet-source {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  overflow-wrap: anywhere;
+}
+
 .hermes-kanban-columns--scrollable {
   cursor: grab;
 }

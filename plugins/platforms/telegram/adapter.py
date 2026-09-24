@@ -1166,6 +1166,21 @@ class TelegramAdapter(BasePlatformAdapter):
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
 
+    @classmethod
+    def _is_stale_message_thread_send(cls, error: Exception, send_kwargs: Dict[str, Any]) -> bool:
+        """True when a send failed *because* its ``message_thread_id`` no longer exists.
+
+        Independent of the DM-topic reply-anchor path: a cron/scheduled send carries a plain
+        ``thread_id`` with neither ``telegram_dm_topic_reply_fallback`` nor
+        ``direct_messages_topic_id``, so ``_should_retry_without_dm_topic_reply_anchor`` declines it
+        and the exception used to propagate — text recovered via its own retry, media did not.
+        """
+        return (
+            send_kwargs.get("message_thread_id") is not None
+            and cls._is_bad_request_error(error)
+            and cls._is_thread_not_found_error(error)
+        )
+
     def _prune_stale_dm_topic_binding(self, chat_id: Any, thread_id: Any, *, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Drop the stale ``telegram_dm_topic_bindings`` row for a topic Telegram confirmed deleted, else
         ``_recover_telegram_topic_thread_id`` keeps steering inbound to the dead thread. Best-effort.
@@ -1239,11 +1254,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await _await_with_thread_deadline(
                     send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
             except Exception as send_err:
-                if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
+                stale_thread = self._is_stale_message_thread_send(send_err, send_kwargs)
+                if stale_thread:
+                    # Text sends already survive a dead thread_id: they retry without it and prune the
+                    # binding. Media did not, so a scheduled brief delivered its text and silently
+                    # dropped the attachment every run. Recover the file instead of losing it.
+                    logger.warning(
+                        "[%s] Thread %s not found for Telegram %s, retrying without message_thread_id",
+                        self.name, send_kwargs.get("message_thread_id"), media_label)
+                    self._prune_stale_dm_topic_binding(
+                        send_kwargs.get("chat_id"), send_kwargs.get("message_thread_id"), metadata=metadata)
+                elif not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
                     raise
-                logger.warning(
-                    "[%s] Reply target deleted for Telegram %s, retrying without reply/topic anchor: %s",
-                    self.name, media_label, _redact_telegram_error_text(send_err))
+                else:
+                    logger.warning(
+                        "[%s] Reply target deleted for Telegram %s, retrying without reply/topic anchor: %s",
+                        self.name, media_label, _redact_telegram_error_text(send_err))
                 if reset_media is not None:
                     reset_media()
                 retry_kwargs = dict(send_kwargs)

@@ -13,6 +13,7 @@ from gateway.restart import (
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    LAUNCHD_LABEL_ENV,
 )
 from hermes_cli import stderr_timestamp
 
@@ -88,6 +89,34 @@ def test_prepare_skips_interactive_xpc_zero_even_for_gateway_argv():
         stderr_timestamp._prepare_child_command(_STALE_GATEWAY_ARGV, {"PATH": "/usr/bin"})
         == _STALE_GATEWAY_ARGV
     )
+
+
+def test_child_launchd_label_env_exports_only_hermes_job_labels():
+    assert stderr_timestamp._child_launchd_label_env(_LAUNCHD_ENV) == {LAUNCHD_LABEL_ENV: "ai.hermes.gateway-butler"}
+    # Interactive shells and the grandchild itself read "0": nothing to export. App-coalition labels
+    # (IDE integrated terminals) are not a Hermes job identity either.
+    for env in ({"PATH": "/usr/bin", "XPC_SERVICE_NAME": "0"}, {"PATH": "/usr/bin"},
+                {"PATH": "/usr/bin", "XPC_SERVICE_NAME": "application.com.example.ide.123"}):
+        assert stderr_timestamp._child_launchd_label_env(env) == {}
+
+
+@pytest.mark.parametrize("xpc, expected", [("ai.hermes.gateway-butler", "ai.hermes.gateway-butler"), ("0", "unset")],
+                         ids=["launchd-job", "foreground-xpc-zero"])
+def test_main_forwards_launchd_label_to_child_only_under_launchd(tmp_path, monkeypatch, xpc, expected):
+    """The gateway grandchild must resolve its job (drain cap, restart route) from HERMES_LAUNCHD_LABEL;
+    a foreground/unsupervised start must not inherit a fabricated one."""
+    monkeypatch.setenv("XPC_SERVICE_NAME", xpc)
+    monkeypatch.delenv(LAUNCHD_LABEL_ENV, raising=False)
+    marker_path = tmp_path / "label.txt"
+    code = (
+        "import os\nfrom pathlib import Path\n"
+        f"Path({str(marker_path)!r}).write_text(os.environ.get({LAUNCHD_LABEL_ENV!r}, 'unset'), encoding='utf-8')\n"
+    )
+
+    rc = stderr_timestamp.main(["--error-log", str(tmp_path / "gateway.error.log"), "--", sys.executable, "-c", code])
+
+    assert rc == 0
+    assert marker_path.read_text(encoding="utf-8") == expected
 
 
 # The child is ``python -c <record argv>`` carrying a "gateway run" tail as inert data, which is

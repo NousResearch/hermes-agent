@@ -171,14 +171,6 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
 
 
 
-def test_prompt_submit_calls_compression_sync_after_model_sync():
-    # Read the module that actually defines the turn (it moved out of server.py).
-    source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()
-    model_idx = source.find("_sync_agent_model_with_config(sid, session)")
-    compression_idx = source.find("_sync_agent_compression_with_config(sid, session)")
-    assert model_idx != -1
-    assert compression_idx != -1
-    assert model_idx < compression_idx
 
 
 # ── Unset semantics (#94724 review finding on #95980) ────────────────────
@@ -217,53 +209,34 @@ def _sync_with_cfg(monkeypatch, session, cfg):
     server._sync_agent_compression_with_config("sid-unset", session)
 
 
-def test_removing_tail_mode_restores_lean_default(monkeypatch):
-    session, compressor = _neutral_session(tail_mode="legacy")
-    assert compressor.tail_mode == "legacy"
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.tail_mode == "lean"
-
-
-def test_removing_target_ratio_restores_default(monkeypatch):
-    session, compressor = _neutral_session(summary_target_ratio=0.60)
-    assert compressor.summary_target_ratio == 0.60
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.summary_target_ratio == 0.20
-
-
-def test_removing_protect_last_n_restores_default(monkeypatch):
-    session, compressor = _neutral_session(protect_last_n=5)
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.protect_last_n == 20
-
-
-def test_removing_proactive_prune_keys_restores_defaults(monkeypatch):
+def test_removing_compressor_keys_restores_fresh_build_values(monkeypatch):
+    """Absent keys must land on exactly what a fresh ContextCompressor installs, not stale values."""
     session, compressor = _neutral_session(
+        tail_mode="legacy",
+        summary_target_ratio=0.60,
+        protect_last_n=5,
         proactive_prune_tokens=48_000,
         proactive_prune_min_result_chars=30_000,
         proactive_prune_min_reclaim_tokens=1,
-    )
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.proactive_prune_tokens == 0
-    assert compressor.proactive_prune_min_result_chars == 8000
-    assert compressor.proactive_prune_min_reclaim_tokens == 4096
-
-
-def test_removing_min_tail_user_messages_restores_default(monkeypatch):
-    session, compressor = _neutral_session(min_tail_user_messages=4)
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.min_tail_user_messages == 1
-
-
-def test_removing_model_thresholds_restores_empty_map(monkeypatch):
-    session, compressor = _neutral_session(
-        model_thresholds={"unset-test-model": 0.95}
+        min_tail_user_messages=4,
+        model_thresholds={"unset-test-model": 0.95},
     )
     assert compressor.threshold_percent == 0.95
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.model_thresholds == {}
-    # The stale per-model override must stop steering the live threshold too.
-    assert compressor.threshold_percent == 0.50
+
+    _, fresh = _neutral_session()
+    for attr in (
+        "tail_mode",
+        "summary_target_ratio",
+        "protect_last_n",
+        "proactive_prune_tokens",
+        "proactive_prune_min_result_chars",
+        "proactive_prune_min_reclaim_tokens",
+        "min_tail_user_messages",
+        "model_thresholds",
+        "threshold_percent",  # the stale per-model override must stop steering the live threshold
+    ):
+        assert getattr(compressor, attr) == getattr(fresh, attr), attr
 
 
 def test_removing_threshold_restores_derived_default(monkeypatch):

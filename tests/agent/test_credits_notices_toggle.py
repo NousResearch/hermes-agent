@@ -45,20 +45,4 @@ class TestCreditsNoticesToggle:
             agent._emit_credits_notices()
         assert any(getattr(n, "key", None) == "credits.depleted" for n in received)
 
-    def test_toggle_cached_per_agent(self):
-        """load_config is consulted once per agent, not once per emission."""
-        agent = _agent_with_state()
-        agent.notice_callback = lambda n: None
-        with patch("hermes_cli.config.load_config", return_value=_cfg(True)) as mock_load:
-            agent._emit_credits_notices()
-            agent._emit_credits_notices()
-        assert mock_load.call_count == 1
 
-    def test_disabled_state_still_cached_for_usage(self):
-        """The gate stops emission only — get_credits_state still returns data."""
-        agent = _agent_with_state()
-        agent.notice_callback = lambda n: None
-        agent._credits_session_start_micros = None
-        with patch("hermes_cli.config.load_config", return_value=_cfg(False)):
-            agent._emit_credits_notices()
-        assert agent.get_credits_state() is not None

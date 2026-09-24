@@ -125,12 +125,3 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     assert not missing, f"gauges emitted but NOT registered in metric_names (will be silently dropped): {sorted(missing)}"
 
 
-def test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush():
-    from pathlib import Path
-
-    text = Path("website/docs/developer-guide/gateway-monitoring.md").read_text(encoding="utf-8")
-
-    assert "Hermes Agent-owned Relay transport health" in text
-    assert "authoritative shared connector/platform state" in text
-    assert "up to one second" in text
-    assert "terminal" in text

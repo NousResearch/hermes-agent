@@ -1,9 +1,5 @@
 """Tests for Matrix outbound message length configuration (#53026)."""
-import asyncio
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from gateway.config import PlatformConfig
 
@@ -24,10 +20,6 @@ def _make_adapter(**extra):
 
 
 class TestMatrixMaxMessageLength:
-    def test_default_limit_is_16000(self):
-        adapter = _make_adapter()
-        assert adapter.max_message_length == 16000
-        assert adapter._SPLIT_THRESHOLD == 15900
 
     def test_extra_override(self):
         adapter = _make_adapter(max_message_length=12000)

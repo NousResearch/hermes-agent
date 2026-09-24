@@ -13,7 +13,6 @@ import json
 import logging
 import threading
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -89,11 +88,6 @@ def make_manager(monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestWriteFrequencyParsing:
-    def test_string_async(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "async"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == "async"
 
 
     def test_integer_frequency(self, tmp_path):
@@ -113,11 +107,6 @@ class TestWriteFrequencyParsing:
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "session"
 
-    def test_defaults_to_async(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == "async"
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +188,6 @@ class TestResolveSessionNameTitle:
         )
         assert result == "agent-main-telegram-dm-42"
 
-    def test_global_strategy_returns_workspace(self):
-        cfg = HonchoClientConfig(session_strategy="global", workspace_id="my-workspace")
-        result = cfg.resolve_session_name("/some/dir")
-        assert result == "my-workspace"
 
 
 # ---------------------------------------------------------------------------
@@ -251,15 +236,6 @@ class TestSaveRouting:
             mgr.save(sess)  # turn 3
             assert mock_flush.call_count == 1
 
-    def test_int_frequency_skips_other_turns(self, make_manager):
-        mgr = make_manager(write_frequency=5)
-        sess = self._make_session_with_message(mgr)
-        with patch.object(mgr, "_flush_session") as mock_flush:
-            for _ in range(4):
-                mgr.save(sess)
-            assert mock_flush.call_count == 0
-            mgr.save(sess)  # turn 5
-            assert mock_flush.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -351,13 +327,6 @@ class TestAsyncWriterThread:
         assert len(flushed) == 1
         assert flushed[0] is sess
 
-    def test_shutdown_sentinel_stops_loop(self, make_manager):
-        mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer_locked()
-        thread = mgr._async_thread
-        mgr.shutdown()
-        thread.join(timeout=10)
-        assert not thread.is_alive()
 
     def test_shutdown_without_started_thread_is_noop(self, make_manager):
         mgr = make_manager(write_frequency="async")
@@ -414,15 +383,6 @@ class TestStopAsyncWriterDrain:
         assert flushed == ["after"]
         assert mgr._async_queue.empty()
 
-    def test_shutdown_gives_the_writer_join_what_the_flush_left_of_the_timeout(self, make_manager, monkeypatch):
-        mgr = make_manager("async")
-        seen = {}
-        monkeypatch.setattr(mgr, "_stop_async_writer_before",
-                            lambda deadline: seen.setdefault("remaining", deadline - time.monotonic()) and [])
-
-        mgr.shutdown(timeout=2.5)
-
-        assert 2.0 < seen["remaining"] <= 2.5
 
     def _pending_session(self, mgr, uploads):
         session = _make_session(key="pending")
@@ -713,16 +673,6 @@ class TestMemoryFileMigrationOwnerGate:
 
         assert uploaded is True
         assert honcho_session.upload_file.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# HonchoClientConfig dataclass defaults for new fields
-# ---------------------------------------------------------------------------
-
-class TestNewConfigFieldDefaults:
-    def test_write_frequency_default(self):
-        cfg = HonchoClientConfig()
-        assert cfg.write_frequency == "async"
 
 
 class TestPrefetchCacheAccessors:

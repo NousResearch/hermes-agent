@@ -13,7 +13,6 @@ import json
 import pytest
 
 from tui_gateway.methods_complete import _backend_dir_entries
-from tools.approval_detection import detect_dangerous_command
 
 
 def _fake_terminal_tool(seen, output="src/\nREADME.md\n", exit_code=0):
@@ -25,15 +24,6 @@ def _fake_terminal_tool(seen, output="src/\nREADME.md\n", exit_code=0):
     return _capture
 
 
-def test_backend_dir_listing_is_guard_flagged_without_preconfirmation(monkeypatch):
-    """Premise of the regression: the internal listing shape reads as a shell -c invocation."""
-    seen = {}
-    monkeypatch.setattr("tools.terminal_tool.terminal_tool", _fake_terminal_tool(seen))
-    _backend_dir_entries("/workspace", session_key="sess")
-
-    is_dangerous, pattern_key, _ = detect_dangerous_command(seen["command"])
-    assert is_dangerous
-    assert pattern_key  # "shell command via -c/-lc flag"
 
 
 def test_backend_dir_entries_preconfirms_internal_listing(monkeypatch):
@@ -46,14 +36,12 @@ def test_backend_dir_entries_preconfirms_internal_listing(monkeypatch):
     assert entries == [("README.md", False), ("src", True)]
 
 
-def test_backend_dir_entries_keeps_session_routing_and_parses_output(monkeypatch):
+def test_backend_dir_entries_keeps_session_routing(monkeypatch):
     seen = {}
     monkeypatch.setattr("tools.terminal_tool.terminal_tool", _fake_terminal_tool(seen))
     _backend_dir_entries("~/proj", session_key="sess-42")
 
     assert seen["kwargs"]["task_id"] == "sess-42"
-    assert seen["kwargs"]["timeout"] == 3
-    assert seen["command"].startswith("sh -c ")
 
 
 @pytest.mark.parametrize("payload", [

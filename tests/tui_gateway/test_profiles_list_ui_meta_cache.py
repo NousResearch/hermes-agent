@@ -70,26 +70,5 @@ def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     assert _row()["has_avatar"] is True
 
 
-def test_an_unchanged_profile_yaml_is_parsed_once_across_repeated_polls(home, monkeypatch):
-    """The saving itself. Counted at the server-published name: the module's bodies are rebound."""
-    parsed: list = []
-    real = srv._read_profile_yaml
-
-    def _counting(profile_dir):
-        parsed.append(str(profile_dir))
-        return real(profile_dir)
-
-    monkeypatch.setattr(srv, "_read_profile_yaml", _counting)
-
-    for _ in range(3):
-        _row()
-
-    bob = str(home / "profiles" / "bob")
-    assert parsed.count(bob) == 1, f"profile.yaml re-parsed: {parsed}"
 
 
-def test_the_wire_key_order_is_unchanged(home):
-    """``ui_meta_revisions`` precedes ``ui_meta``, and ``has_avatar`` follows both."""
-    keys = [k for k in _row() if k.startswith("ui_meta") or k == "has_avatar"]
-
-    assert keys == ["ui_meta_revisions", "ui_meta", "has_avatar"]

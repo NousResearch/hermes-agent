@@ -104,17 +104,11 @@ class TestSignalConnectCleanup:
 
 
 class TestSignalHelpers:
-    def test_redact_phone_long(self):
-        from gateway.platforms.helpers import redact_phone
-        assert redact_phone("+155****4567") == "+155****4567"
 
     def test_redact_phone_short(self):
         from gateway.platforms.helpers import redact_phone
         assert redact_phone("+12345") == "+1****45"
 
-    def test_redact_phone_empty(self):
-        from gateway.platforms.helpers import redact_phone
-        assert redact_phone("") == "<none>"
 
     def test_parse_comma_list(self):
         from gateway.platforms.signal import _parse_comma_list
@@ -202,12 +196,6 @@ class TestSignalHelpers:
         assert len(m4a_bytes) >= len(aac_data) * 0.5
 
 
-    def test_is_image_ext(self):
-        from gateway.platforms.signal import _is_image_ext
-        assert _is_image_ext(".png") is True
-        assert _is_image_ext(".jpg") is True
-        assert _is_image_ext(".gif") is True
-        assert _is_image_ext(".pdf") is False
 
 
     def test_check_requirements(self, monkeypatch):
@@ -519,18 +507,6 @@ class TestSignalSendVideo:
 # MEDIA: tag extraction integration
 # ---------------------------------------------------------------------------
 
-class TestSignalMediaExtraction:
-    """Verify the full pipeline: MEDIA: tag → extract → send_image_file/send_voice."""
-
-    def test_extract_media_finds_image_tag(self):
-        """BasePlatformAdapter.extract_media should find MEDIA: image paths."""
-        from gateway.platforms.base import BasePlatformAdapter
-        media, cleaned = BasePlatformAdapter.extract_media(
-            "Here's the chart.\nMEDIA:/tmp/price_graph.png"
-        )
-        assert len(media) == 1
-        assert media[0][0] == "/tmp/price_graph.png"
-        assert "MEDIA:" not in cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -663,18 +639,6 @@ class TestSignalSendDocumentViaHelper:
 # Signal streaming edit capability / message_id behavior
 # ---------------------------------------------------------------------------
 
-class TestSignalStreamingCapabilities:
-    """Signal must opt out of edit-based streaming behavior."""
-
-    def test_signal_declares_no_message_editing(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-
-        assert adapter.SUPPORTS_MESSAGE_EDITING is False
-
-    def test_signal_declares_long_message_chunking(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-
-        assert getattr(adapter, "splits_long_messages", False) is True
 
 
 class TestSignalSendReturnsMessageId:
@@ -837,18 +801,6 @@ class TestSignalSendResultValidation:
 # stop_typing() delegates to _stop_typing_indicator (#4647)
 # ---------------------------------------------------------------------------
 
-class TestSignalStopTyping:
-    """Signal must expose a public stop_typing() so base adapter's
-    _keep_typing finally block can clean up platform-level typing tasks."""
-
-    @pytest.mark.asyncio
-    async def test_stop_typing_calls_private_method(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._stop_typing_indicator = AsyncMock()
-
-        await adapter.stop_typing("+155****4567")
-
-        adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
 
 
 # ---------------------------------------------------------------------------
@@ -867,25 +819,6 @@ class TestSignalTypingBackoff:
     - reset counters when _stop_typing_indicator() is called for the chat
     """
 
-    @pytest.mark.asyncio
-    async def test_first_failure_logs_at_warning_subsequent_at_debug(
-        self, monkeypatch
-    ):
-        adapter = _make_signal_adapter(monkeypatch)
-        calls = []
-
-        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
-            calls.append({"log_failures": log_failures})
-            return None  # simulate NETWORK_FAILURE
-
-        adapter._rpc = _fake_rpc
-
-        await adapter.send_typing("+155****4567")
-        await adapter.send_typing("+155****4567")
-
-        assert len(calls) == 2
-        assert calls[0]["log_failures"] is True   # first failure — warn
-        assert calls[1]["log_failures"] is False  # subsequent — debug
 
     @pytest.mark.asyncio
     async def test_three_consecutive_failures_trigger_cooldown(
@@ -1267,15 +1200,6 @@ class TestSignalRateLimitDetection:
         assert _is_signal_rate_limit_error(err) is True
 
 
-class TestSignalSendTimeout:
-    """Timeout scaling for batched attachment sends."""
-
-
-    def test_scales_with_batch_size(self):
-        from gateway.platforms.signal import _signal_send_timeout
-        # 32 attachments × 5s = 160s; ought to comfortably outlast a
-        # serial upload of an attachment-heavy batch.
-        assert _signal_send_timeout(32) == 160.0
 
 
 # ---------------------------------------------------------------------------

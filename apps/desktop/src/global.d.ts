@@ -15,6 +15,7 @@ import type {
   PetOverlayStatePayload
 } from './store/pet-overlay'
 import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
+import type { SideChatAsk, SideChatContext, SideChatReply } from './store/side-chat'
 
 export {}
 
@@ -210,6 +211,25 @@ declare global {
         // Quick window subscribes to "you were just summoned" so it can reset
         // its draft and re-focus the input on every open.
         onShown: (callback: () => void) => () => void
+      }
+      // Side chat: the floating window `/btw` opens. It has no gateway of its
+      // own — questions travel side window → main → primary renderer, which
+      // runs the same `prompt.btw` RPC and relays `btw.complete` back.
+      sideChat: {
+        // Primary renderer → main: open/focus the window on a conversation.
+        open: (context: SideChatContext) => Promise<{ ok: boolean; error?: string }>
+        // Side window → main: put itself away.
+        close: () => void
+        // Side window → main → primary renderer: run this as prompt.btw.
+        ask: (payload: SideChatAsk) => void
+        // Primary renderer → main → side window: the answer, or the failure.
+        reply: (payload: SideChatReply) => void
+        // Side window subscribes to the conversation it is asking about.
+        onContext: (callback: (context: SideChatContext) => void) => () => void
+        // Primary renderer subscribes to questions typed in the side window.
+        onAsk: (callback: (payload: SideChatAsk) => void) => () => void
+        // Side window subscribes to the answers coming back.
+        onReply: (callback: (payload: SideChatReply) => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>

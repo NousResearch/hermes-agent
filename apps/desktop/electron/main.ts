@@ -438,6 +438,15 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
+import {
+  buildSideChatWindowUrl,
+  normalizeSideChatAsk,
+  normalizeSideChatContext,
+  normalizeSideChatReply,
+  SIDE_CHAT_MIN_HEIGHT,
+  SIDE_CHAT_MIN_WIDTH,
+  sideChatWindowBounds
+} from './side-chat'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -15267,6 +15276,170 @@ function closeQuickEntryWindow() {
   quickEntryWindow = null
 }
 
+// Side chat — the floating window `/btw` opens.
+//
+// `prompt.btw` answers from a SNAPSHOT of the conversation without touching its
+// history, alternation or prompt cache, so an aside can be asked while the main
+// turn is still streaming. This window is that aside's surface: a small
+// always-on-top column beside the app, instead of a system line spliced into
+// the transcript the user is still reading.
+//
+// Like Quick Entry it carries NO gateway connection. A question goes side
+// window -> main -> the renderer that opened it, which calls the same
+// `prompt.btw` RPC the inline command always called and relays `btw.complete`
+// back. See electron/side-chat.ts for the pure pieces.
+let sideChatWindow = null
+
+// Latest conversation pushed by a renderer, replayed to a side window that
+// finishes loading after the push — otherwise the window paints before it knows
+// which chat it belongs to and its first question has nowhere to go.
+let sideChatContext = null
+
+// The renderer that ran `/btw`. Asks are routed BACK to it rather than to the
+// primary window: it is the one holding this session's runtime binding and
+// profile-scoped socket, and `/btw` is reachable from a popped-out session
+// window and the HUD too. Falls back to the primary if that window has gone.
+let sideChatOwner = null
+
+function sideChatUrl() {
+  return buildSideChatWindowUrl({ devServer: DEV_SERVER, rendererIndexPath: resolveRendererIndex() })
+}
+
+function sideChatAskTarget() {
+  if (sideChatOwner && !sideChatOwner.isDestroyed()) {
+    return sideChatOwner
+  }
+
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
+}
+
+function spawnSideChatWindow() {
+  const cursor = screen.getCursorScreenPoint()
+  const display = screen.getDisplayNearestPoint(cursor)
+  const bounds = sideChatWindowBounds(display?.workArea)
+
+  const win = new BrowserWindow({
+    ...bounds,
+    minWidth: SIDE_CHAT_MIN_WIDTH,
+    minHeight: SIDE_CHAT_MIN_HEIGHT,
+    frame: false,
+    transparent: true,
+    // Unlike Quick Entry this window holds a conversation, so it must be
+    // resizable: an answer with a code block in it needs more than a capture
+    // strip, and the user is the only one who knows how much more.
+    resizable: true,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    // Same rationale as the pet overlay / quick entry: on Windows/Linux keep
+    // the helper out of the taskbar and alt-tab list; on macOS use an NSPanel
+    // so a frameless helper never becomes the app's cmd-tab anchor. It is
+    // always-on-top, so it stays findable without either.
+    skipTaskbar: !IS_MAC,
+    hasShadow: true,
+    alwaysOnTop: true,
+    type: IS_MAC ? 'panel' : undefined,
+    hiddenInMissionControl: IS_MAC,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      devTools: true
+    }
+  })
+
+  win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
+  win.setHiddenInMissionControl?.(true)
+
+  try {
+    win.setVisibleOnAllWorkspaces(
+      true,
+      IS_MAC ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined
+    )
+  } catch {
+    // Not supported everywhere — best effort.
+  }
+
+  // Opts out of global UI zoom for the same reason as the pet overlay and quick
+  // entry: it sizes its own OS window, and a zoomed composer would overflow it.
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('sideChat'))
+
+  // Log-only renderer lifecycle (#81290): a dead side chat must never resurrect
+  // itself over the app, but its loss belongs in desktop.log.
+  installWindowRendererLifecycle(win, { kind: 'side-chat', callbacks: { log: rememberLog } })
+
+  // Deliberately NO hide-on-blur, unlike Quick Entry. That window is a capture
+  // strip the user fires and forgets; this one is a conversation they read
+  // while working in the chat it is about, so losing focus is the normal case.
+
+  win.on('closed', () => {
+    if (sideChatWindow === win) {
+      sideChatWindow = null
+      sideChatContext = null
+      sideChatOwner = null
+    }
+  })
+
+  // Replay the conversation as soon as the page can hear it.
+  win.webContents.on('did-finish-load', () => {
+    if (!win.isDestroyed() && sideChatContext) {
+      win.webContents.send('hermes:side-chat:context', sideChatContext)
+    }
+  })
+
+  attachRendererConsoleCapture(win, 'side-chat', rememberLog)
+  loadWindowUrl(win, sideChatUrl(), 'Side chat')
+
+  return win
+}
+
+function openSideChatWindow(request, sender) {
+  const context = normalizeSideChatContext(request)
+
+  if (!context) {
+    // No parent session means nothing to snapshot — a window that could never
+    // answer must not open at all, and the caller falls back to inline `/btw`.
+    return { ok: false, error: 'a side chat needs a conversation to ask about' }
+  }
+
+  sideChatContext = context
+  sideChatOwner = sender ?? null
+
+  if (sideChatWindow && !sideChatWindow.isDestroyed()) {
+    sideChatWindow.webContents.send('hermes:side-chat:context', context)
+    sideChatWindow.show()
+    focusWindow(sideChatWindow)
+
+    return { ok: true }
+  }
+
+  const win = spawnSideChatWindow()
+  sideChatWindow = win
+
+  wireWindowReveal(win, {
+    show: () => {
+      win.show()
+      win.focus()
+    }
+  })
+
+  return { ok: true }
+}
+
+function closeSideChatWindow() {
+  if (sideChatWindow && !sideChatWindow.isDestroyed()) {
+    sideChatWindow.close()
+  }
+
+  sideChatWindow = null
+  sideChatContext = null
+  sideChatOwner = null
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -18061,6 +18234,58 @@ ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
 
 ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())
 
+// Side chat: the floating window `/btw` opens. Main only ROUTES here — it never
+// calls a gateway. A question goes side window -> main -> the renderer that
+// opened the window, which runs the same `prompt.btw` RPC the inline command
+// always called, and the answer comes back the same road. See
+// electron/side-chat.ts + store/side-chat.
+ipcMain.handle('hermes:side-chat:open', async (event, context) =>
+  openSideChatWindow(context, event.sender))
+
+ipcMain.on('hermes:side-chat:close', event => {
+  // Only the side chat itself may put the side chat away.
+  if (sideChatWindow && !sideChatWindow.isDestroyed() && event.sender === sideChatWindow.webContents) {
+    closeSideChatWindow()
+  }
+})
+
+// Side window -> main -> the renderer that opened it. The ask is validated
+// here (see normalizeSideChatAsk) so a malformed payload is dropped at the
+// boundary rather than reaching a prompt path.
+ipcMain.on('hermes:side-chat:ask', (event, payload) => {
+  if (!sideChatWindow || sideChatWindow.isDestroyed() || event.sender !== sideChatWindow.webContents) {
+    return
+  }
+
+  const ask = normalizeSideChatAsk(payload)
+
+  if (!ask) {
+    return
+  }
+
+  const target = sideChatAskTarget()
+
+  if (!target) {
+    rememberLog('[side-chat] dropped an ask: no renderer to route it to')
+
+    return
+  }
+
+  target.send('hermes:side-chat:ask', ask)
+})
+
+// The answer (or the failure) on its way back. Deliberately does NOT raise the
+// side chat: the user asked an aside precisely so they could keep working.
+ipcMain.on('hermes:side-chat:reply', (_event, payload) => {
+  const reply = normalizeSideChatReply(payload)
+
+  if (!reply || !sideChatWindow || sideChatWindow.isDestroyed()) {
+    return
+  }
+
+  sideChatWindow.webContents.send('hermes:side-chat:reply', reply)
+})
+
 // Disable F12 DevTools: maintained in the main process so a cold launch
 // restores it before any window is shown (applied on ready). The renderer
 // toggles it from Settings → Advanced over IPC. See store/disable-f12.
@@ -19175,6 +19400,10 @@ app.on('before-quit', event => {
   // Same for the Quick Entry composer — and release its global accelerator so a
   // quitting Hermes never keeps another app's chord hostage.
   closeQuickEntryWindow()
+
+  // And the `/btw` side chat, which is always-on-top: an orphan would outlive
+  // the app it is an aside to.
+  closeSideChatWindow()
 
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {

@@ -27,7 +27,7 @@
       // pre-paint.
       try {
         const win = new URLSearchParams(window.location.search).get('win')
-        if (!win || ['hud', 'overlay', 'quick', 'wake', 'intro'].indexOf(win) === -1) {
+        if (!win || ['hud', 'overlay', 'quick', 'side', 'wake', 'intro'].indexOf(win) === -1) {
           let bg = localStorage.getItem('hermes-boot-background')
           let scheme = localStorage.getItem('hermes-boot-color-scheme')
           if (!bg) {

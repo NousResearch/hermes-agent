@@ -301,6 +301,7 @@ test('pet overlay opts out of zoom', () => {
 })
 
 test('wake indicator opts out of zoom', () => {
+  assert.deepEqual(zoomWiringForWindowKind('sideChat'), { zoom: false })
   assert.deepEqual(zoomWiringForWindowKind('wakeIndicator'), { zoom: false })
 })
 

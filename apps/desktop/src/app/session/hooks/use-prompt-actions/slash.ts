@@ -45,6 +45,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { canUseSideChat, openSideChat } from '@/store/side-chat'
 import {
   applyWakeStartResult,
   applyWakeStatus,
@@ -564,7 +565,27 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const { render: renderSlashOutput, sessionId } = resolved
+          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+
+          // On the desktop an aside gets an aside's surface: a floating window
+          // beside the app, where the answer and any follow-ups live instead of
+          // being spliced into the transcript the user is still reading. Same
+          // prompt.btw RPC underneath (see use-side-chat-bridge) — the window
+          // is a view, not a second client. A bare `/btw` opens it empty rather
+          // than printing usage: with a window to type in, that IS the usage.
+          if (canUseSideChat()) {
+            // Blank when the row isn't cached yet (a session this command just
+            // created): the window then says "about this conversation" rather
+            // than the "Untitled session" placeholder, which would read as the
+            // name of a chat that plainly has one.
+            const row = $sessions.get().find(session => session.id === storedSessionId)
+
+            if (await openSideChat({ question, sessionId, title: row ? sessionTitle(row) : '' })) {
+              return
+            }
+            // Falling through means the shell refused the window; the inline
+            // path below still answers, which is the point of not returning.
+          }
 
           if (!question) {
             renderSlashOutput(

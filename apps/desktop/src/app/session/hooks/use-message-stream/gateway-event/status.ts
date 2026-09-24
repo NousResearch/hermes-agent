@@ -17,6 +17,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { setTurnStartedAt } from '@/store/session'
+import { deliverSideChatAnswer } from '@/store/side-chat'
 import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
@@ -121,9 +122,19 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // session. Persistent transcript line, matching the TUI's `[btw "q"]`
     // — without it Desktop only ever showed the acknowledgement (#99065).
     const text = coerceGatewayText(payload?.text).trim()
+    const completedTaskId = String(payload?.task_id ?? '').trim()
+
+    // Unless the floating side chat asked it. That window exists precisely so
+    // an aside can stay OUT of the conversation it is about, so an answer it
+    // owns is handed to it and the transcript is left alone. Checked before the
+    // `text` guard so an empty answer still settles its bubble there instead of
+    // leaving the question thinking forever.
+    if (deliverSideChatAnswer(completedTaskId, text)) {
+      return true
+    }
 
     if (text && sessionId) {
-      const taskId = String(payload?.task_id ?? '').trim()
+      const taskId = completedTaskId
       const question = coerceGatewayText(payload?.question).trim()
       const header = `[btw${question ? ` "${question}"` : ''}${taskId ? ` (${taskId})` : ''}]`
 

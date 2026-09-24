@@ -267,6 +267,45 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:quick-entry:shown', listener)
     }
   },
+  // Side chat: the floating window `/btw` opens. Like Quick Entry it carries no
+  // gateway of its own — a question goes side window → main → primary renderer,
+  // which calls the same `prompt.btw` RPC the inline command always called, and
+  // the answer comes back the same road (see electron/side-chat.ts).
+  sideChat: {
+    // Primary renderer → main: open/focus the window on this conversation,
+    // optionally with the question `/btw` was invoked with.
+    open: context => ipcRenderer.invoke('hermes:side-chat:open', context),
+    // Side window → main: put itself away.
+    close: () => ipcRenderer.send('hermes:side-chat:close'),
+    // Side window → main → primary renderer: a question to run as prompt.btw.
+    ask: payload => ipcRenderer.send('hermes:side-chat:ask', payload),
+    // Primary renderer → main → side window: that question's answer, or why
+    // it failed.
+    reply: payload => ipcRenderer.send('hermes:side-chat:reply', payload),
+    // Side window subscribes to the conversation it is asking about. Main
+    // caches the latest context so a window that spawns after the push still
+    // boots knowing which chat it belongs to.
+    onContext: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:side-chat:context', listener)
+
+      return () => ipcRenderer.removeListener('hermes:side-chat:context', listener)
+    },
+    // Primary renderer subscribes to questions typed in the side window.
+    onAsk: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:side-chat:ask', listener)
+
+      return () => ipcRenderer.removeListener('hermes:side-chat:ask', listener)
+    },
+    // Side window subscribes to the answers coming back.
+    onReply: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:side-chat:reply', listener)
+
+      return () => ipcRenderer.removeListener('hermes:side-chat:reply', listener)
+    }
+  },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),

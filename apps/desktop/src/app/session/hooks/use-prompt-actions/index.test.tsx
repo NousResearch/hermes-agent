@@ -1022,10 +1022,18 @@ describe('usePromptActions /compress', () => {
   })
 })
 
+// Pretend the Electron shell offers a side chat window. `canUseSideChat()`
+// probes for `open`, so that is the whole capability check.
+function stubSideChatShell(open: ReturnType<typeof vi.fn>) {
+  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { sideChat: { open } } })
+}
+
 describe('usePromptActions /btw', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    // Back to a web-shaped shell so the inline-path tests above stay honest.
+    Reflect.deleteProperty(window, 'hermesDesktop')
   })
 
   // #99065: slash.exec only captured the ack; the answer prints after the
@@ -1091,6 +1099,86 @@ describe('usePromptActions /btw', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'btw anything' }))
     expect(renderedSeedTexts(seeds).some(text => text.includes('legacy gateway'))).toBe(true)
+  })
+
+  // On the desktop the aside gets its own floating window, so the answer (and
+  // any follow-up) stays out of the conversation it is about. The RPC itself is
+  // unchanged — the window asks it through use-side-chat-bridge.
+  it('hands the question to the side chat window when the shell offers one', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const open = vi.fn(async () => ({ ok: true }))
+    stubSideChatShell(open)
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/btw which file was that error in?')
+
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ question: 'which file was that error in?' }))
+    // The window owns the RPC now; the dispatcher must not also fire it, or the
+    // question would be asked twice.
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.btw', expect.anything())
+    expect(renderedSeedTexts(seeds).some(text => text.includes('conversation snapshot'))).toBe(false)
+  })
+
+  it('opens the side chat empty for a bare /btw instead of printing usage', async () => {
+    // With a window to type in, the window IS the usage.
+    const seeds: Record<string, unknown>[] = []
+    const open = vi.fn(async () => ({ ok: true }))
+    stubSideChatShell(open)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={vi.fn(async () => ({}) as never)}
+      />
+    )
+
+    await handle!.submitText('/btw')
+
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ question: '' }))
+    expect(renderedSeedTexts(seeds).some(text => text.includes('Usage: /btw'))).toBe(false)
+  })
+
+  it('falls back to the inline answer when the shell refuses the window', async () => {
+    // A refused window must not swallow the question.
+    const seeds: Record<string, unknown>[] = []
+    stubSideChatShell(vi.fn(async () => ({ ok: false, error: 'no conversation' })))
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.btw') {
+        return { task_id: 'btw_ab12cd' } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/btw anything')
+
+    expect(requestGateway).toHaveBeenCalledWith('prompt.btw', expect.objectContaining({ text: 'anything' }))
+    expect(renderedSeedTexts(seeds).some(text => text.includes('btw_ab12cd'))).toBe(true)
   })
 })
 

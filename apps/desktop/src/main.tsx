@@ -51,12 +51,16 @@ if (winParam === 'hud') {
   document.title = 'Hermes HUD'
 }
 
+if (winParam === 'side') {
+  document.title = 'Side chat'
+}
+
 // The `?win=` kinds whose Electron window is `transparent: true` and so paints
 // nothing but its own surface over the user's desktop. `secondary` (a session
 // window) and `browser` are ordinary opaque windows and are deliberately not
 // in here. index.html's pre-paint script skips exactly this list — keep the
 // two in step.
-const TRANSPARENT_WINDOWS = new Set(['hud', 'overlay', 'quick', 'wake', 'intro'])
+const TRANSPARENT_WINDOWS = new Set(['hud', 'overlay', 'quick', 'side', 'wake', 'intro'])
 
 // Each transparent root used to force its host layers see-through when it
 // MOUNTED. That is far too late: `styles.css` above paints the theme's opaque
@@ -76,6 +80,8 @@ if (winParam === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
 } else if (winParam === 'quick') {
   void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
+} else if (winParam === 'side') {
+  void import('./app/side-chat/side-chat-root').then(({ mountSideChat }) => mountSideChat())
 } else if (winParam === 'wake') {
   void import('./app/wake-indicator/wake-indicator-root').then(({ mountWakeIndicator }) => mountWakeIndicator())
 } else if (winParam === 'intro') {

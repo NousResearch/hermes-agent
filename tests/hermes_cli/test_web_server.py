@@ -3530,6 +3530,65 @@ class TestModelInfoEndpoint:
         assert data["auto_context_length"] == 0
 
 
+    def test_model_info_probes_with_the_providers_credentials(self, monkeypatch):
+        """A custom/local provider needs its endpoint + key for the live context probe;
+        without them the lookup 401s and silently reports the catalog maximum."""
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+            "model": {"default": "google/gemma-4-26b", "provider": "lmstudio"},
+            "providers": {"lmstudio": {"api": "http://lm:1234/v1", "key_env": "LM_API_TOKEN"}},
+        })
+        resolved = []
+
+        def fake_resolve_runtime_provider(*, requested=None, explicit_api_key=None,
+                                          explicit_base_url=None, target_model=None):
+            resolved.append((requested, explicit_base_url, target_model))
+            return {"provider": "lmstudio", "api_mode": "openai", "base_url": "http://lm:1234/v1",
+                    "api_key": "sk-local"}
+
+        seen = {}
+
+        def fake_context_length(**kwargs):
+            seen.update(kwargs)
+            return 131072
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                            fake_resolve_runtime_provider)
+        with patch("agent.model_metadata.get_model_context_length", side_effect=fake_context_length):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.status_code == 200
+        assert resp.json()["effective_context_length"] == 131072
+        assert resolved == [("lmstudio", None, "google/gemma-4-26b")]
+        assert seen["base_url"] == "http://lm:1234/v1"
+        assert seen["api_key"] == "sk-local"
+        assert seen["provider"] == "lmstudio"
+
+
+    def test_model_info_keeps_config_values_when_credentials_fail(self, monkeypatch):
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+            "model": {"default": "some/model", "provider": "custom", "base_url": "http://box:8000/v1"},
+        })
+
+        def fail(**kwargs):
+            raise RuntimeError("no key")
+
+        seen = {}
+
+        def fake_context_length(**kwargs):
+            seen.update(kwargs)
+            return 32768
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fail)
+        with patch("agent.model_metadata.get_model_context_length", side_effect=fake_context_length):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.json()["auto_context_length"] == 32768
+        assert seen["base_url"] == "http://box:8000/v1"
+        assert seen["api_key"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Gateway health probe tests
 # ---------------------------------------------------------------------------

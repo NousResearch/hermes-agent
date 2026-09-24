@@ -132,6 +132,11 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # Hard ceiling the provider's API accepts for max_tokens (server-side absolute
+    # output limit). Authorizes truncation-retry growth above the requested cap;
+    # None = provider doesn't declare one (retry growth stays capped at the
+    # requested cap, the pre-declaration behaviour).
+    max_output_tokens: int | None = None
     # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
     unsupported_response_formats: tuple = ()
     default_aux_model: str = (
@@ -275,6 +280,17 @@ class ProviderProfile:
         per-model.
         """
         return self.default_max_tokens
+
+    def get_max_output_tokens(self, model: str | None) -> int | None:
+        """Return the hard output ceiling the provider's API accepts for *model*.
+
+        Distinct from ``default_max_tokens``: that is the request-level default the
+        transport sends when the user set nothing; this is the server-side absolute
+        limit that truncation-retry escalation may grow towards. Default: return
+        ``self.max_output_tokens`` (the static profile field), ignoring the model
+        name. Override in a subclass to vary the ceiling per-model.
+        """
+        return self.max_output_tokens
 
     def supported_reasoning_efforts(
         self, model: str | None

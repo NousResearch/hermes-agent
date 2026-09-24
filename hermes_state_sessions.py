@@ -1254,6 +1254,10 @@ class SessionSessionsMixin:
         """Project a list_sessions_rich row: shape the preview, drop internal ordering columns."""
         s = cls._session_row_dict(row)
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
+        # A parent_session_id also links compression continuations. Surface the
+        # durable marker so clients can distinguish an explicit /branch from
+        # that implementation edge without receiving model_config itself.
+        s["is_branch"] = bool(_parse_model_config(s.get("model_config")).get("_branched_from"))
         s.pop("_effective_last_active", None)
         return s
 

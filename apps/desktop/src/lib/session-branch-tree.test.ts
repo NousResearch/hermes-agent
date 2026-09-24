@@ -12,8 +12,8 @@ const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo 
 describe('flattenSessionsWithBranches', () => {
   it('nests branch rows under their parent with tree stems', () => {
     const parent = session('parent', { last_active: 20 })
-    const branchA = session('branch-a', { last_active: 15, parent_session_id: 'parent' })
-    const branchB = session('branch-b', { last_active: 10, parent_session_id: 'parent' })
+    const branchA = session('branch-a', { is_branch: true, last_active: 15, parent_session_id: 'parent' })
+    const branchB = session('branch-b', { is_branch: true, last_active: 10, parent_session_id: 'parent' })
 
     expect(flattenSessionsWithBranches([parent, branchA, branchB])).toEqual([
       { session: parent },
@@ -22,9 +22,30 @@ describe('flattenSessionsWithBranches', () => {
     ])
   })
 
+  it('keeps compression continuations flat before and after their parent is sealed', () => {
+    const parent = session('parent', { last_active: 20 })
+    const activeContinuation = session('active-continuation', {
+      is_branch: false,
+      last_active: 15,
+      parent_session_id: 'parent'
+    })
+    const sealedContinuation = session('sealed-continuation', {
+      _lineage_root_id: 'parent',
+      is_branch: false,
+      last_active: 10,
+      parent_session_id: 'parent'
+    })
+
+    expect(flattenSessionsWithBranches([parent, activeContinuation, sealedContinuation])).toEqual([
+      { session: parent },
+      { session: activeContinuation },
+      { session: sealedContinuation }
+    ])
+  })
+
   it('follows a compressed parent via lineage root id', () => {
     const tip = session('tip', { _lineage_root_id: 'root', last_active: 30 })
-    const branch = session('branch', { parent_session_id: 'root', last_active: 10 })
+    const branch = session('branch', { is_branch: true, parent_session_id: 'root', last_active: 10 })
 
     expect(flattenSessionsWithBranches([tip, branch])).toEqual([
       { session: tip },

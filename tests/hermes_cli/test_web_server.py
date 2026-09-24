@@ -2336,6 +2336,28 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_profiles_sessions_projects_explicit_branch_marker(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="branch-parent", source="cli")
+            db.create_session(
+                session_id="user-branch",
+                source="cli",
+                parent_session_id="branch-parent",
+                model_config={"_branched_from": "branch-parent"},
+            )
+        finally:
+            db.close()
+
+        response = self.client.get("/api/profiles/sessions?limit=20&offset=0")
+
+        assert response.status_code == 200
+        rows = {row["id"]: row for row in response.json()["sessions"]}
+        assert rows["branch-parent"]["is_branch"] is False
+        assert rows["user-branch"]["is_branch"] is True
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""

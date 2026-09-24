@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
+import { isEmptySlashArgumentStage } from '../composer-utils'
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
 import { useComposerTrigger } from './use-composer-trigger'
+import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
 beforeEach(() => {
   rememberDesktopCommandsCatalog({
@@ -19,6 +21,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   rememberDesktopCommandsCatalog(undefined)
 })
 
@@ -161,6 +164,168 @@ describe('useComposerTrigger — slash anywhere in the prompt', () => {
 })
 
 describe('useComposerTrigger — free-text slash arguments', () => {
+  it('keeps cached option suggestions visible when deletion returns to a valid prefix', async () => {
+    vi.useFakeTimers()
+    const editor = mountEditor('/personality creative')
+    const editorRef = createRef<HTMLDivElement>() as { current: HTMLDivElement | null }
+    editorRef.current = editor
+    const draftRef = { current: composerPlainText(editor) }
+    const pending = new Map<string, (payload: { items: { text: string }[]; query: string }) => void>()
+
+    const fetcher = vi.fn((query: string) => {
+      if (query === 'personality cr') {
+        return Promise.resolve({ items: [{ text: '/personality creative' }], query })
+      }
+
+      return new Promise<{ items: { text: string }[]; query: string }>(done => pending.set(query, done))
+    })
+
+    const hook = renderHook(() => {
+      const slash = useLiveCompletionAdapter({
+        enabled: true,
+        fetcher,
+        isCached: query => query === 'personality cr',
+        toItem: entry => ({ id: entry.text, type: 'slash', label: entry.text })
+      })
+
+      return useComposerTrigger({
+        at: { adapter: null, loading: false },
+        draftRef,
+        editorRef,
+        requestMainFocus: vi.fn(),
+        setComposerText: vi.fn(),
+        slash
+      })
+    })
+
+    const refresh = (text: string) => {
+      renderComposerContents(editor, text)
+      draftRef.current = text
+      const range = document.createRange()
+      range.selectNodeContents(editor)
+      range.collapse(false)
+      window.getSelection()!.removeAllRanges()
+      window.getSelection()!.addRange(range)
+      act(() => hook.result.current.refreshTrigger())
+    }
+
+    refresh('/personality creativ')
+    await act(async () => {
+      vi.advanceTimersByTime(60)
+    })
+    await act(async () => {
+      pending.get('personality creativ')!({ items: [{ text: '/personality creative' }], query: 'personality creativ' })
+      await Promise.resolve()
+    })
+    expect(hook.result.current.triggerItems).toHaveLength(1)
+
+    refresh('/personality creativx')
+    await act(async () => {
+      vi.advanceTimersByTime(60)
+    })
+    expect(hook.result.current.triggerLoading).toBe(true)
+    expect(hook.result.current.triggerItems).toHaveLength(1)
+    expect(hook.result.current.argStageEmpty).toBe(false)
+    expect(!!hook.result.current.trigger && !hook.result.current.argStageEmpty).toBe(true)
+
+    // Deleting back to a cached prefix keeps the real option row visible and
+    // does not briefly reopen an empty menu or claim network loading.
+    refresh('/personality cr')
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(hook.result.current.triggerLoading).toBe(false)
+    expect(hook.result.current.triggerItems).toHaveLength(1)
+    expect(hook.result.current.argStageEmpty).toBe(false)
+    expect(!!hook.result.current.trigger && !hook.result.current.argStageEmpty).toBe(true)
+    expect(isEmptySlashArgumentStage(hook.result.current.trigger, hook.result.current.triggerItems.length > 0)).toBe(
+      false
+    )
+    await act(async () => {
+      pending.get('personality creativx')!({ items: [], query: 'personality creativx' })
+      await Promise.resolve()
+    })
+    expect(hook.result.current.triggerItems).toHaveLength(1)
+    expect(!!hook.result.current.trigger && !hook.result.current.argStageEmpty).toBe(true)
+    expect(fetcher.mock.calls.map(([query]) => query)).toEqual([
+      'personality creativ',
+      'personality creativx',
+      'personality cr'
+    ])
+  })
+
+  it('keeps empty mixed-argument menus closed while successive prose completions load', async () => {
+    vi.useFakeTimers()
+    const editor = mountEditor('/goal set a migration plan')
+    const editorRef = createRef<HTMLDivElement>() as { current: HTMLDivElement | null }
+    editorRef.current = editor
+    const draftRef = { current: composerPlainText(editor) }
+    const pending = new Map<string, (payload: { items: []; query: string }) => void>()
+
+    const fetcher = vi.fn(
+      (query: string) => new Promise<{ items: []; query: string }>(resolve => pending.set(query, resolve))
+    )
+
+    const hook = renderHook(() => {
+      const slash = useLiveCompletionAdapter({
+        enabled: true,
+        fetcher,
+        toItem: entry => ({ id: entry.text, type: 'slash', label: entry.text })
+      })
+
+      return useComposerTrigger({
+        at: { adapter: null, loading: false },
+        draftRef,
+        editorRef,
+        requestMainFocus: vi.fn(),
+        setComposerText: vi.fn(),
+        slash
+      })
+    })
+
+    const editAndRefresh = async (text: string) => {
+      renderComposerContents(editor, text)
+      draftRef.current = text
+      const range = document.createRange()
+      range.selectNodeContents(editor)
+      range.collapse(false)
+      window.getSelection()!.removeAllRanges()
+      window.getSelection()!.addRange(range)
+      act(() => hook.result.current.refreshTrigger())
+      await act(async () => {
+        vi.advanceTimersByTime(60)
+      })
+
+      return hook.result.current
+    }
+
+    for (const text of [
+      '/goal set a migration plan',
+      '/goal set a migration plan w',
+      '/goal set a migration plan with'
+    ]) {
+      const loading = await editAndRefresh(text)
+
+      expect(loading.triggerLoading).toBe(true)
+      expect(loading.argStageEmpty).toBe(true)
+      expect(!!loading.trigger && !loading.argStageEmpty).toBe(false)
+      expect(isEmptySlashArgumentStage(loading.trigger, loading.triggerItems.length > 0)).toBe(true)
+
+      await act(async () => {
+        pending.get(text.slice(1))!({ items: [], query: text.slice(1) })
+        await Promise.resolve()
+      })
+      expect(hook.result.current.argStageEmpty).toBe(true)
+      expect(!!hook.result.current.trigger && !hook.result.current.argStageEmpty).toBe(false)
+      expect(isEmptySlashArgumentStage(hook.result.current.trigger, hook.result.current.triggerItems.length > 0)).toBe(
+        true
+      )
+    }
+
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(hook.result.current.trigger?.query).toBe('goal set a migration plan with')
+  })
+
   it('keeps a picked /goal command as editable text while retaining subcommand completion', () => {
     const editor = mountEditor('/go')
     const goal = item('/goal', 'Commands')

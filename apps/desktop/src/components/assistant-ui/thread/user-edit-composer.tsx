@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { isEmptySlashArgumentStage } from '@/app/chat/composer/composer-utils'
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
@@ -838,7 +839,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
           onDrop={handleDrop}
           ref={rootRef}
         >
-          {trigger && (
+          {trigger && !isEmptySlashArgumentStage(trigger, triggerItems.length > 0) && (
             <ComposerTriggerPopover
               activeIndex={triggerActive}
               items={triggerItems}

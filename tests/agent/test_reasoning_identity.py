@@ -101,3 +101,31 @@ def test_identified_delta_keeps_writer_fencing_legacy_fallback_and_observer_once
     agent._fire_reasoning_event("delta", "rs:summary:1", "Fallback")
     assert legacy == ["Fallback"]
     assert len(hooks) == 2
+
+
+def test_native_reasoning_obeys_muted_notification_turn_and_restores_delivery():
+    from agent.notification_presentation import event_presentation_muted, notification_turn
+
+    agent = StreamDeliveryMixin()
+    seen = []
+    def callback(*args):
+        seen.append(args)
+
+    agent.reasoning_event_callback = callback
+    agent.reasoning_callback = lambda text: seen.append(("legacy", text))
+    agent._stream_reasoning_hooks_enabled = False
+    agent._claim_stream_writer()
+    phases = [("start", ""), ("delta", "Diagnostic only"), ("end", "")]
+    with notification_turn(agent, muted=True, session_id="owner"):
+        for phase, text in phases:
+            agent._fire_reasoning_event(phase, "rs_muted", text)
+        assert seen == []
+        for phase, _ in phases:
+            assert event_presentation_muted("reasoning." + phase, "owner")
+            assert not event_presentation_muted("reasoning." + phase, "other")
+        assert not event_presentation_muted("notification.clear", "owner")
+    assert agent.reasoning_event_callback is callback
+    for phase, text in phases:
+        agent._fire_reasoning_event(phase, "rs_restored", text)
+        assert not event_presentation_muted("reasoning." + phase, "owner")
+    assert seen == [(phase, "rs_restored", text) for phase, text in phases]

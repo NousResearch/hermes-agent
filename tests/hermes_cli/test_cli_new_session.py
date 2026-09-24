@@ -11,10 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import model_switch as _model_switch_mod
-from hermes_cli.cli_session_mixin import (
-    CLISessionMixin,
-    _reset_model_to_config_default,
-)
 from hermes_state import SessionDB
 from tools.todo_tool import TodoStore
 
@@ -381,13 +377,15 @@ def test_new_session_boundary_restores_startup_selection(
     started with ``--model``/``--provider`` answers post-boundary turns with
     ``model.default`` instead of its startup route.
     """
+    from hermes_cli.cli_session_mixin import _reset_model_to_session_baseline
+
     _patch_model_config_default(monkeypatch)
     calls = []
     _patch_switch_model(monkeypatch, calls)
     cli = _startup_reset_stub(
         startup_model=startup_model, startup_provider=startup_provider)
 
-    _reset_model_to_config_default(cli, True)
+    _reset_model_to_session_baseline(cli, True)
 
     assert calls, "expected the boundary reset to go through switch_model"
     assert calls[0]["raw_input"] == want_model
@@ -398,19 +396,66 @@ def test_new_session_boundary_restores_startup_selection(
 
 def test_new_session_boundary_without_startup_flags_uses_config_default(monkeypatch):
     """No launch flags: the boundary keeps re-deriving from config.yaml."""
+    from hermes_cli.cli_session_mixin import _reset_model_to_session_baseline
+
     _patch_model_config_default(monkeypatch)
     calls = []
     _patch_switch_model(monkeypatch, calls)
     cli = _startup_reset_stub(with_startup_attrs=False)
 
-    _reset_model_to_config_default(cli, True)
+    _reset_model_to_session_baseline(cli, True)
 
     assert calls[0]["raw_input"] == "config-default-model"
     assert cli.model == "config-default-model"
 
 
+def test_new_session_boundary_switches_on_provider_only_difference(monkeypatch):
+    """Same model, different provider: the whole route is compared, so a
+    provider-only drift (e.g. a session-scoped ``/model --provider`` on the
+    startup model) still switches back."""
+    from hermes_cli.cli_session_mixin import _reset_model_to_session_baseline
+
+    _patch_model_config_default(monkeypatch)
+    calls = []
+    _patch_switch_model(monkeypatch, calls)
+    cli = _startup_reset_stub(
+        startup_model="same-model", startup_provider="other-provider",
+        current_model="same-model", current_provider="session-provider")
+
+    _reset_model_to_session_baseline(cli, True)
+
+    assert calls, "expected the boundary reset to go through switch_model"
+    assert calls[0]["raw_input"] == "same-model"
+    assert (calls[0]["explicit_provider"] or "") == "other-provider"
+    assert (cli.model, cli.provider) == ("same-model", "other-provider")
+
+
+def test_boundary_reset_message_names_startup_vs_config_default(monkeypatch):
+    """The non-silent notice distinguishes a startup-selection restore from a
+    config-default reset."""
+    import cli as cli_mod
+    from hermes_cli.cli_session_mixin import _reset_model_to_session_baseline
+
+    notes = []
+    monkeypatch.setattr(cli_mod, "_cprint", lambda s: notes.append(s))
+    _patch_model_config_default(monkeypatch)
+    _patch_switch_model(monkeypatch, [])
+    cli = _startup_reset_stub(
+        startup_model="startup-model", startup_provider="other-provider")
+    _reset_model_to_session_baseline(cli, False)
+    assert any("startup selection" in n for n in notes)
+
+    notes.clear()
+    _patch_switch_model(monkeypatch, [])
+    plain = _startup_reset_stub(with_startup_attrs=False)
+    _reset_model_to_session_baseline(plain, False)
+    assert any("config default" in n for n in notes)
+
+
 def test_wake_path_new_session_silent_restores_startup_selection(monkeypatch):
     """The wake-word path (``new_session(silent=True)``) resets like ``/new``."""
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+
     _patch_model_config_default(monkeypatch)
     monkeypatch.setitem(__import__("cli").CLI_CONFIG, "agent", {})
     calls = []
@@ -436,5 +481,223 @@ def test_wake_path_new_session_silent_restores_startup_selection(monkeypatch):
     assert (calls[0]["explicit_provider"] or "") == "other-provider"
     assert cli.model == "startup-model"
     assert cli.provider == "other-provider"
+
+
+# --- Real-constructor integration: flags → capture → /new boundary (#74329) ---
+
+_OPENROUTER_URL = "https://openrouter.ai/api/v1"
+
+_BASE_DISPLAY = {"compact": False, "tool_progress": "all"}
+
+
+@pytest.fixture
+def _offline_route(monkeypatch):
+    """Neutralize every network seam in the real switch_model pipeline.
+
+    Validation accepts, the runtime resolver echoes explicit endpoints (the
+    credential under test is re-resolved, never fetched), catalogs are empty
+    and capability probes return nothing. Routing, endpoint selection and
+    credential scoping still run for real.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": False,
+                         "recognized": True, "message": ""})
+
+    def _fake_runtime(**kw):
+        requested = str(kw.get("requested") or "")
+        if kw.get("explicit_base_url"):
+            base_url = kw["explicit_base_url"]
+        elif requested in ("openrouter", "auto"):
+            base_url = _OPENROUTER_URL
+        else:
+            base_url = "https://runtime-test.example/v1"
+        return {"api_key": kw.get("explicit_api_key") or "sk-test",
+                "base_url": base_url, "api_mode": "chat_completions"}
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_provider_models", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "agent.native_compaction.resolve_native_compaction_capabilities",
+        lambda **k: {})
+
+
+def _make_startup_cli(monkeypatch, *, config_yaml, model_cfg,
+                      extra_cli_cfg=None, **flags):
+    """Real ``HermesCLI`` against a temp home (conftest-isolated HERMES_HOME).
+
+    ``config_yaml`` is the on-disk file (alias/custom-provider readers use
+    ``load_config``); ``model_cfg`` (+ extras) is the in-memory CLI_CONFIG the
+    constructor and the boundary reset read. Both must agree.
+    """
+    import os
+    from pathlib import Path
+
+    import cli as cli_mod
+
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(config_yaml)
+    clean = {
+        "model": dict(model_cfg),
+        "display": dict(_BASE_DISPLAY),
+        "agent": {},
+        "terminal": {"env_type": "local"},
+    }
+    if extra_cli_cfg:
+        clean.update(extra_cli_cfg)
+    monkeypatch.setitem(cli_mod.__dict__, "CLI_CONFIG", clean)
+    with patch.dict("os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""},
+                    clear=False):
+        return cli_mod.HermesCLI(**flags)
+
+
+def _boundary_round_trip(cli):
+    """Simulate a ``/model --session`` switch, run the wake path, return startup."""
+    startup = (cli.model, cli.provider, cli.base_url)
+    cli.model = "session-model"
+    cli.provider = "session-provider"
+    cli.requested_provider = "session-provider"
+    cli.base_url = "https://session.example/v1"
+    cli.api_key = "sk-session"
+    cli._explicit_api_key = "sk-session"
+    cli._explicit_base_url = "https://session.example/v1"
+    cli._pending_one_turn_model_restore = {"sentinel": True}
+    cli.new_session(silent=True)
+    assert cli._pending_one_turn_model_restore is None
+    assert cli._explicit_model_override is False
+    return startup
+
+
+def test_startup_model_only_survives_boundary(_offline_route, monkeypatch):
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="startup-model-x")
+    assert (cli.model, cli.provider) == ("startup-model-x", "openrouter")
+
+    assert _boundary_round_trip(cli) == (
+        "startup-model-x", "openrouter", _OPENROUTER_URL)
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "startup-model-x", "openrouter", _OPENROUTER_URL)
+
+
+def test_startup_provider_only_custom_survives_boundary(_offline_route, monkeypatch):
+    relay_url = "http://127.0.0.1:8765/v1"
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n"
+        "providers:\n  relay:\n"
+        f"    base_url: {relay_url}\n    api_key: test-relay-key\n"
+        "    api_mode: chat_completions\n    default_model: relay-default-model\n"
+        "    models: [relay-default-model]\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        extra_cli_cfg={"providers": {
+            "relay": {"base_url": relay_url, "api_key": "test-relay-key",
+                      "api_mode": "chat_completions",
+                      "default_model": "relay-default-model",
+                      "models": ["relay-default-model"]}}},
+        provider="relay")
+    # The configured custom provider's default model is picked at startup.
+    assert cli.model == "relay-default-model"
+    assert cli.requested_provider == "relay"
+
+    startup = _boundary_round_trip(cli)
+    assert startup[0] == "relay-default-model"
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "relay-default-model", startup[1], relay_url)
+
+
+def test_startup_model_and_provider_survive_boundary(_offline_route, monkeypatch):
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="startup-model-x", provider="openrouter")
+
+    assert _boundary_round_trip(cli) == (
+        "startup-model-x", "openrouter", _OPENROUTER_URL)
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "startup-model-x", "openrouter", _OPENROUTER_URL)
+
+
+def test_startup_direct_alias_endpoint_survives_boundary(_offline_route, monkeypatch):
+    alias_url = "http://127.0.0.1:9999/v1"
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n"
+        "model_aliases:\n  localrelay:\n    model: relay-alias-model\n"
+        f"    provider: custom\n    base_url: {alias_url}\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="localrelay")
+    assert getattr(cli, "_startup_model_input", None) == "localrelay"
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "relay-alias-model", "custom", alias_url)
+
+    assert _boundary_round_trip(cli) == (
+        "relay-alias-model", "custom", alias_url)
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "relay-alias-model", "custom", alias_url)
+    assert cli.requested_provider == "custom"
+
+
+def test_startup_foreign_label_alias_endpoint_survives_boundary(
+        _offline_route, monkeypatch):
+    """A URL-bearing alias labelled with a foreign vendor must still land back
+    on its own endpoint (never the session's, never the vendor default)."""
+    alias_url = "http://127.0.0.1:9998/v1"
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n"
+        "model_aliases:\n  foreignrelay:\n    model: foreign-model\n"
+        f"    provider: anthropic\n    base_url: {alias_url}\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="foreignrelay")
+    # Startup host-gates the foreign label to custom (never the live vendor
+    # token on the alias wire); the boundary replays the alias name, which the
+    # interactive /model path routes under the alias label.
+    assert (cli.model, cli.base_url) == ("foreign-model", alias_url)
+
+    startup_model, _, startup_base = _boundary_round_trip(cli)
+    assert (startup_model, startup_base) == ("foreign-model", alias_url)
+    assert (cli.model, cli.base_url) == ("foreign-model", alias_url)
+    assert cli.provider == cli.requested_provider
+
+
+def test_no_flags_boundary_uses_config_default(_offline_route, monkeypatch):
+    yaml_text = (
+        "model:\n  default: config-default-model\n  provider: openrouter\n"
+        f"  base_url: {_OPENROUTER_URL}\n")
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=yaml_text,
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL})
+    assert getattr(cli, "_startup_model", None) is None
+    assert getattr(cli, "_startup_model_input", None) is None
+
+    assert _boundary_round_trip(cli) == (
+        "config-default-model", "openrouter", _OPENROUTER_URL)
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "config-default-model", "openrouter", _OPENROUTER_URL)
 
 

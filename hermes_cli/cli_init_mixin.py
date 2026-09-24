@@ -195,12 +195,24 @@ class CLIInitMixin:
         # reset TO them, not away from them (#74329). Stored resolved (not raw
         # flags) so a bare --provider keeps its startup resolution; absent flags
         # stay None so the boundary keeps re-deriving from config.yaml.
+        # A direct-alias --model is ALSO kept by name: the resolved id cannot
+        # recover the alias endpoint (foreign labels fail reverse lookup), so
+        # the boundary replays the name through the same alias path instead.
+        # No api_key is stored — endpoints re-resolve credentials at the boundary.
         if model or provider:
             self._startup_model = self.model or None
             self._startup_provider = self.requested_provider or None
+            self._startup_provider_input = (provider or "").strip() or None
+            from hermes_cli import model_switch as _ms
+            _ms._ensure_direct_aliases()
+            _raw_flag = (model or "").strip().lower()
+            self._startup_model_input = (
+                _raw_flag if _raw_flag and _raw_flag in _ms.DIRECT_ALIASES else None)
         else:
             self._startup_model = None
             self._startup_provider = None
+            self._startup_model_input = None
+            self._startup_provider_input = None
 
     def _init_turn_limits(self, max_turns, run_budget):
         """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""

@@ -58,7 +58,7 @@ def _dim_notice(cli, msg: str, quiet: bool) -> None:
         cli._console_print(f"[dim]{_escape(msg)}[/dim]")
 
 
-def _reset_model_to_config_default(cli, silent: bool) -> None:
+def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     """/new is a full boundary: restore the startup selection (``--model`` /
     ``--provider`` when the process was launched with them, else config.yaml)
     so a session-only ``/model --session`` switch never leaks into the next
@@ -66,6 +66,12 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
     Module-level helper (like ``_apply_new_session_title``): tests drive
     ``new_session`` unbound on a SimpleNamespace."""
     from cli import CLI_CONFIG, _cprint, _split_model_config_default, logger
+    # getattr: unbound test doubles may lack startup attrs.
+    _startup_model = getattr(cli, "_startup_model", None)
+    _startup_provider = getattr(cli, "_startup_provider", None)
+    if _startup_model and _startup_model == getattr(cli, "model", None) and (
+            not _startup_provider or _startup_provider == getattr(cli, "provider", None)):
+        return  # already on the startup route (also skips alias replay: name != id)
     _model_config = CLI_CONFIG.get("model", {})
     if isinstance(_model_config, dict):
         _raw_default = _model_config.get("default") or _model_config.get("model") or ""
@@ -74,9 +80,18 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
         _raw_default, _config_provider = (_model_config or ""), ""
     _config_model, _ = _split_model_config_default(_raw_default)
     # Launch flags are the baseline the boundary resets TO, not an override it
-    # resets away (#74329). getattr: unbound test doubles may lack these.
-    _desired_model = getattr(cli, "_startup_model", None) or _config_model
-    _desired_provider = getattr(cli, "_startup_provider", None) or _config_provider
+    # resets away (#74329).
+    _startup_input = getattr(cli, "_startup_model_input", None)
+    if _startup_input:
+        # Direct-alias startup: replay the alias name so the switch pipeline
+        # restores the alias endpoint + credential; the resolved id cannot
+        # recover it (foreign labels fail reverse lookup).
+        _desired_model = _startup_input
+        _desired_provider = getattr(cli, "_startup_provider_input", None) or ""
+    else:
+        _desired_model = _startup_model or _config_model
+        _desired_provider = _startup_provider or _config_provider
+    _restored_startup = bool(_startup_input or _startup_model or _startup_provider)
     # Whole-route comparison: a provider-only difference must still switch.
     if not _desired_model or (
             _desired_model == getattr(cli, "model", None)
@@ -92,7 +107,9 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
             current_base_url=cli.base_url or "",
             current_api_key=cli.api_key or "",
             is_global=False,
-            explicit_provider=_desired_provider or "")
+            explicit_provider=_desired_provider or "",
+            user_providers=CLI_CONFIG.get("providers"),
+            custom_providers=CLI_CONFIG.get("custom_providers"))
         if not r.success:
             return
         if cli.agent:
@@ -112,7 +129,8 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
         if r.api_mode:
             cli.api_mode = r.api_mode
         if not silent:
-            _cprint(f"  (model reset to config default: {r.new_model})")
+            _kind = "startup selection" if _restored_startup else "config default"
+            _cprint(f"  (model reset to {_kind}: {r.new_model})")
     except Exception:
         logger.debug("/new model reset to config default failed", exc_info=True)
 
@@ -539,11 +557,12 @@ class CLISessionMixin:
         # An explicit -m/--model was for the previous session only.
         self._explicit_model_override = False
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
-        # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
-        # into the next session (#48055, #23131).
+        # Re-derive model/provider from the startup selection (launch flags) or
+        # config.yaml, plus service tier, so a session-only switch never leaks
+        # into the next session (#48055, #23131, #74329).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
-        _reset_model_to_config_default(self, silent)
+        _reset_model_to_session_baseline(self, silent)
         # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning
         # session override is dropped, the default model's per-model override is kept).
         _resolve_cli_reasoning(self)

@@ -411,6 +411,36 @@ class TestPersistence:
         assert mc == {"cwd": "/work", "provider": "anthropic",
                       "base_url": "https://anthropic.example/v1", "api_mode": "anthropic_messages"}
 
+    def test_fallback_turn_persists_requested_route(self, tmp_path):
+        """A turn served by the in-loop fallback leaves the live agent on the fallback's route;
+        the row must keep the session's requested (primary) route or a resume pins the
+        fallback as the session's primary (#121506)."""
+        agent = SimpleNamespace(
+            model="primary-model", provider="anthropic",
+            base_url="https://anthropic.example/v1", api_mode="anthropic_messages",
+        )
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        # The primary fails mid-session; the fallback chain serves the turn in place.
+        agent.model = "fallback-model"
+        agent.provider = "custom:local"
+        agent.base_url = "http://127.0.0.1:8000/v1"
+        agent.api_mode = "chat_completions"
+        agent._fallback_activated = True
+        agent._primary_runtime = {"model": "primary-model", "provider": "anthropic",
+                                  "base_url": "https://anthropic.example/v1",
+                                  "api_mode": "anthropic_messages"}
+        manager.save_session(state.session_id)
+
+        row = db.get_session(state.session_id)
+        assert row["model"] == "primary-model"  # state.model is the requested pick
+        mc = json.loads(row["model_config"])
+        assert mc["provider"] == "anthropic"
+        assert mc["base_url"] == "https://anthropic.example/v1"
+        assert mc["api_mode"] == "anthropic_messages"
+
 
 
 

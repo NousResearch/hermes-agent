@@ -341,7 +341,7 @@ class GatewayTurnMixin:
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
-        """Persist the runtime model/provider a gateway turn actually used (provider fallback can
+        """Persist the model/provider route a gateway turn ran on (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
         uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
         if not session_id or agent is None or self._session_db is None:
@@ -350,7 +350,19 @@ class GatewayTurnMixin:
         if not model:
             return
         runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
-        runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
+        fallback_active = bool(getattr(agent, "_fallback_activated", False))
+        if fallback_active:
+            # A turn served by a fallback must not persist its live route as the session's route:
+            # resume restores the model column and ``gateway_runtime`` as the session's primary,
+            # so the fallback would outlive the one turn that needed it (#121506). Persist the
+            # requested route from the per-turn snapshot instead; ``fallback_active`` still
+            # records that the turn was served by the fallback chain.
+            primary = getattr(agent, "_primary_runtime", None) or {}
+            model = str(primary.get("model") or model)
+            for key in ("provider", "base_url", "api_mode"):
+                if primary.get(key):
+                    runtime[key] = primary[key]
+        runtime["fallback_active"] = fallback_active
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
             db = self._session_db._db

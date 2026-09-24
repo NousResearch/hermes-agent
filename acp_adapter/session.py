@@ -320,8 +320,14 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
+        # A turn served by a fallback leaves the live agent carrying the fallback's route; the
+        # row must keep the session's REQUESTED route or a resume pins the fallback as the
+        # primary (#121506). Read the route off the per-turn primary snapshot instead.
+        route = state.agent
+        if getattr(state.agent, "_fallback_activated", False):
+            route = getattr(state.agent, "_primary_runtime", None) or {}
         for key in ("provider", "base_url", "api_mode"):
-            value = getattr(state.agent, key, None)
+            value = route.get(key) if isinstance(route, dict) else getattr(route, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
 

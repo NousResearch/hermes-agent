@@ -338,6 +338,46 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⠀⣰⡿⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
+    "matcha": {
+        "name": "matcha",
+        "description": "Matcha latte & botanical green — Material 3 Expressive palette",
+        "colors": {
+            "banner_border": "#416646", "banner_title": "#D8F5D0", "banner_accent": "#78DC88",
+            "banner_dim": "#7E9782", "banner_text": "#E1E9DF", "ui_accent": "#78DC88",
+            "ui_label": "#A8DAB0", "ui_ok": "#5FE88D", "ui_error": "#FF7582", "ui_warn": "#E8BA5A",
+            "prompt": "#D8F5D0", "input_rule": "#416646", "response_border": "#4C7351",
+            "status_bar_bg": "#0E140F", "status_bar_text": "#DDE6DC",
+            "status_bar_strong": "#78DC88", "status_bar_dim": "#7E9782",
+            "status_bar_good": "#5FE88D", "status_bar_warn": "#E8BA5A", "status_bar_bad": "#F28D5E",
+            "status_bar_critical": "#FF7582", "session_label": "#A8DAB0",
+            "session_border": "#416646", "completion_menu_bg": "#151D16",
+            "completion_menu_current_bg": "#283B2C", "selection_bg": "#25422B",
+            "shell_dollar": "#78DC88", "voice_status_bg": "#151D16",
+        },
+        "light_colors": {
+            "banner_border": "#759B7A", "banner_title": "#1B3B20", "banner_accent": "#2C7A39",
+            "banner_dim": "#5C7560", "banner_text": "#243627", "ui_accent": "#2C7A39",
+            "ui_label": "#2F703B", "ui_ok": "#1F7D3A", "ui_error": "#C92A3A", "ui_warn": "#B57800",
+            "prompt": "#243627", "input_rule": "#759B7A", "response_border": "#6FA879",
+            "status_bar_bg": "#E6EFE4", "status_bar_text": "#243627",
+            "status_bar_strong": "#2C7A39", "status_bar_dim": "#758D79",
+            "status_bar_good": "#1F7D3A", "status_bar_warn": "#B57800", "status_bar_bad": "#B84F1A",
+            "status_bar_critical": "#C92A3A", "session_label": "#2F703B",
+            "session_border": "#759B7A", "completion_menu_bg": "#EAF1E8",
+            "completion_menu_current_bg": "#C5DFBF", "selection_bg": "#C5DFBF",
+            "shell_dollar": "#2C7A39", "voice_status_bg": "#E6EFE4",
+        },
+        "spinner": {
+            "waiting_faces": ["(🍵)", "(🌿)", "(🌱)", "(◇)", "(::)"],
+            "thinking_faces": ["(🍵)", "(🌿)", "(🌱)", "(⌁)", "(◇)"],
+            "thinking_verbs": [
+                "steeping thoughts", "whisking ideas", "infusing context",
+                "measuring tea leaves", "brewing response", "filtering signal",
+                "warming kettle", "pouring insights"],
+            "wings": _wings("🍵", "🌿", "🌱", "◇")},
+        "branding": _branding("Matcha", "🍵", "Until next brew. 🍵"),
+        "tool_prefix": "┊",
     }}
 
 _active_skin: Optional[SkinConfig] = None

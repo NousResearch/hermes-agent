@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
@@ -910,7 +910,8 @@ class TurnRunner:
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
         if ctx.mute_notification_reply:
-            return None, None, None, False
+            # (stream_consumer, delta_cb, interim_cb, reasoning_cb, want_interim)
+            return None, None, None, None, False
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.
@@ -986,7 +987,28 @@ class TurnRunner:
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
                 self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
-        return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
+        # Reasoning deltas are opt-in (``plugins.stream_reasoning_deltas``). Off by
+        # default: the consumer stays muted and no callback is attached, so nothing
+        # reaches an adapter unless the operator explicitly opted in. When on, the
+        # consumer is unmuted and the agent's reasoning_callback tees deltas into
+        # its on_reasoning sink, which the adapter renders via
+        # ``render_reasoning_event`` (a first-class adapter hook; default no-op).
+        reasoning_cb: Optional[Callable[[str], None]] = None
+        try:
+            from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
+            reasoning_opted_in = stream_reasoning_deltas_enabled()
+        except Exception:
+            reasoning_opted_in = False
+        if reasoning_opted_in and stream_consumer is not None:
+            stream_consumer.stream_reasoning_enabled = True
+
+            def _reasoning_cb(text: str) -> None:
+                if ctx._run_still_current() and stream_consumer is not None:
+                    stream_consumer.on_reasoning(text)
+
+            reasoning_cb = _reasoning_cb
+
+        return stream_consumer, stream_delta_cb, interim_assistant_cb, reasoning_cb, want_interim_messages
 
     # ── agent resolution (cache reuse vs fresh build) ───────────────────────────────────────
 
@@ -1241,7 +1263,8 @@ class TurnRunner:
         agent._gateway_turn_request_overrides = turn_overrides
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
-                                   stream_delta_cb, interim_assistant_cb, want_interim_messages):
+                                   stream_delta_cb, interim_assistant_cb, reasoning_cb,
+                                   want_interim_messages):
         """Per-message state — callbacks and reasoning config change every turn, so they aren't
         baked into the cached agent."""
         ctx = self._ctx
@@ -1261,6 +1284,7 @@ class TurnRunner:
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
+        agent.reasoning_callback = reasoning_cb
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
@@ -1940,7 +1964,7 @@ class TurnRunner:
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
-        stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+        stream_consumer, stream_delta_cb, interim_cb, reasoning_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
@@ -1948,7 +1972,7 @@ class TurnRunner:
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, reasoning_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)

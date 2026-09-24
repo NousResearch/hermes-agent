@@ -53,7 +53,8 @@ def _wire(user_config):
         _notice_callback_sync=lambda *a, **k: None,
         _attach_session_title_callback=lambda agent, ctx: None,
     )
-    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+    # (turn_route, reasoning_config, delta_cb, interim_cb, reasoning_cb, want_interim)
+    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, None, False)
     return agent
 
 

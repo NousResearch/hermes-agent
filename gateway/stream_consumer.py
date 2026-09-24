@@ -40,13 +40,15 @@ logger = logging.getLogger("gateway.stream_consumer")
 # Queue sentinels (see _drain_queue()).  Bare: _DONE, _NEW_SEGMENT (finalize, start a
 # fresh message), _REOPEN_SEED (EAGER native re-seed after a clarify answer — WeCom
 # typing is driven by the seed frame; lazy re-seed measured 48s of dead air).  Tuples:
-# (_COMMENTARY, text); (_TOOL_PROGRESS, line) native-bubble overlay; (_FINAL_TEXT, text)
+# (_COMMENTARY, text); (_TOOL_PROGRESS, line) native-bubble overlay; (_REASONING, text)
+# opt-in reasoning delta (adapter decides rendering); (_FINAL_TEXT, text)
 # authoritative final_response incl. post-stream augmentation, queued just before _DONE;
 # (_FLUSH, threading.Event) barrier; (_APPROVAL_BOUNDARY, future, cancelled_flag).
 _DONE = object()
 _NEW_SEGMENT = object()
 _COMMENTARY = object()
 _TOOL_PROGRESS = object()
+_REASONING = object()
 _FINAL_TEXT = object()
 _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
@@ -86,6 +88,7 @@ class _Tick:
     got_reopen_seed: bool = False
     approval_boundary: Optional[tuple] = None  # (future, cancelled_flag)
     commentary_text: Optional[str] = None
+    reasoning_text: Optional[str] = None  # opt-in reasoning delta (see on_reasoning)
     # Set by _push_update for _finalize_turn / _end_segment.
     update_visible: bool = False
     draft_final_fresh_send: bool = False
@@ -137,6 +140,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ``_run_agent_mark_streamed_delivery`` must not fire for it (#105341). Default True: every
         # other construction site (incl. the proxy path) creates consumers only when streaming is on.
         self.stream_deltas_enabled = True
+        # Opt-in reasoning delivery. Default False so nothing changes for non-opted
+        # users; the turn wiring sets it only when ``plugins.stream_reasoning_deltas``
+        # is enabled. ``on_reasoning`` no-ops while this is off.
+        self.stream_reasoning_enabled = False
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
@@ -247,6 +254,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Thread-safe: overlay a tool-progress line in the native bubble until the next delta."""
         if line:
             self._queue.put((_TOOL_PROGRESS, line))
+
+    def on_reasoning(self, text: str) -> None:
+        """Thread-safe: queue an opt-in reasoning delta for the adapter to render.
+
+        No-ops unless ``stream_reasoning_enabled`` is True (set by the turn wiring
+        only when the user opted into ``plugins.stream_reasoning_deltas``), so the
+        default install never surfaces chain-of-thought."""
+        if not self.stream_reasoning_enabled:
+            return
+        if text:
+            self._queue.put((_REASONING, text))
 
     def _compose_frame_content(self) -> str:
         """Native frame content: text, with any tool-progress lines below a rule."""
@@ -593,6 +611,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # this tick still lands after it instead of being dropped.
                     await self._push_update(tick)
 
+                if tick.reasoning_text is not None:
+                    # Opt-in reasoning delta rides the same tick; the adapter decides
+                    # whether/how to render it (render_reasoning_event).
+                    self._deliver_reasoning(tick.reasoning_text)
+
                 if tick.got_done:
                     await self._finalize_turn(tick)
                     return
@@ -674,6 +697,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 if self._use_native_streaming:
                     self._tool_progress_lines.append(item[1])
                     self._tool_progress_active = True
+            elif kind is _REASONING:  # keep draining; reasoning rides the same tick
+                # Append concat so batched deltas arrive whole; the adapter renders.
+                tick.reasoning_text = (tick.reasoning_text or "") + item[1]
             elif kind is _APPROVAL_BOUNDARY:
                 tick.approval_boundary = (item[1], item[2])
                 return tick
@@ -916,6 +942,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._last_edit_time = time.monotonic()
         if not cumulative:
             self._reset_segment_state()
+
+    def _deliver_reasoning(self, reasoning_text: str) -> None:
+        """Hand an opt-in reasoning delta to the adapter's render hook (the adapter decides
+        whether/how to surface it).  Never persisted and never sent as a chat message here —
+        reasoning is transport, and the default base render is a no-op."""
+        from gateway.stream_events import Reasoning
+        try:
+            self.adapter.render_reasoning_event(Reasoning(reasoning_text), self)
+        except Exception as e:
+            logger.debug("Reasoning render error: %s", e)
 
     async def _end_segment(self, tick: "_Tick") -> None:
         """Tool boundary: edit-based transports reset so the next chunk is a fresh message.

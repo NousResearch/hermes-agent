@@ -2041,6 +2041,17 @@ class BasePlatformAdapter(ABC):
         elif isinstance(event, Commentary) and event.text:
             sink.on_commentary(event.text)
 
+    def render_reasoning_event(self, event: Any, sink: Any) -> None:
+        """Render an opt-in Reasoning delta (chain-of-thought) onto ``sink`` (the
+        GatewayStreamConsumer).  Default is a no-op: reasoning is never sent as a
+        regular chat message nor persisted, so an adapter surfaces it only by
+        overriding this hook (e.g. a status card, a scratchpad bubble, a tool-
+        progress overlay).  Delivery itself is gated upstream on
+        ``plugins.stream_reasoning_deltas`` and the consumer's
+        ``stream_reasoning_enabled``, so a non-overriding adapter stays silent
+        and non-opted installs never emit these deltas at all."""
+        return None  # adapters opt into rendering reasoning by overriding
+
     def format_tool_event(self, event: Any, *, mode: str = "all", preview_max_len: int = 40) -> Optional[str]:
         """Rendered chrome for a ToolCallChunk, or None to eat it (adapters without editing/rich
         text override to None). ``mode``: tool-progress mode ("all"/"new"/"verbose");

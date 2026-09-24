@@ -8,8 +8,6 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 
 
-
-
 def test_concrete_gateway_sinks_hide_all_freeform_muted_turn_output():
     for muted in (False, True, False):
         scheduled = []

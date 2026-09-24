@@ -36,7 +36,7 @@ Pick `realtime` only when the user actually wants the agent to speak. It costs r
 | Location | When |
 |---|---|
 | Local (default) | Gateway machine runs the Playwright bot directly. |
-| Remote node (`node="<name>"`) | Bot runs on a different machine that has a signed-in Chrome and (for realtime) a configured audio bridge. Useful when the gateway runs on a headless Linux box but the user's real signed-in Chrome lives on their Mac. |
+| Remote node (`node="<name>"`) | Bot runs on a different machine with Playwright/Chromium and (for realtime) a configured audio bridge. This is useful when the gateway cannot run the browser or audio device locally; it does not automatically reuse a signed-in Chrome session. |
 
 ## Prerequisites the user must handle once
 
@@ -85,10 +85,10 @@ Run `hermes meet setup` to preflight local prereqs.
 
 1. **Join** — call `meet_join(url=..., mode=..., node=...)`. Returns immediately.
 2. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Hermes agent bot is in this call taking notes."
-3. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Don't re-read the whole transcript every turn.
+3. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Use the same `node` selected for joining on every subsequent call. Don't re-read the whole transcript every turn.
 4. **Speak (realtime only)** — `meet_say(text="...")` queues text for TTS. The speech lags by ~2s. Don't spam it.
 5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave. Session-finalize cleanup leaves by default; set `persist_after_session=true` only when the user explicitly wants the bot detached from the Hermes session.
-6. **Follow up** — read `meet_transcript()` in full, summarize, and use regular tools to send the recap, file issues, schedule followups.
+6. **Follow up** — after leaving, explicitly read `meet_transcript(include_finished=true)` from the same Hermes session that joined (and the same `node`, if remote). Finished transcripts are not returned by default or to another session. Summarize and perform the followups the user requested.
 
 ## Tool reference
 
@@ -96,13 +96,19 @@ Run `hermes meet setup` to preflight local prereqs.
 |---|---|---|
 | `meet_join` | `url`, `mode?`, `guest_name?`, `duration?`, `persist_after_session?`, `use_auth_state?`, `headed?`, `node?` | Start bot |
 | `meet_status` | `node?` | Liveness + progress |
-| `meet_transcript` | `last?`, `node?` | Read captions |
+| `meet_transcript` | `last?`, `include_finished?`, `node?` | Read active captions, or explicitly request the owning session's finished transcript |
 | `meet_leave` | `node?` | Close bot |
 | `meet_say` | `text`, `node?` | Speak in realtime meeting |
 
 `node?` on all tools: pass a registered node name (or `"auto"` for the sole node) to operate a remote bot instead of a local one. Omit for local.
 `use_auth_state=true` is local-only; with `node?` it is rejected because auth
 state must be managed on the node host.
+
+Debug status, Xvfb policy, proxy routing, realtime-readiness timeout, and stall
+timeout belong in the active bot host's `config.yaml` under `google_meet`. For a
+remote node, configure that node's active profile, not just the gateway. Do not
+recommend non-secret `HERMES_MEET_*` environment overrides for these settings;
+the launch environment is an internal bridge. Credentials remain in `.env`.
 
 ## Important limits
 
@@ -112,7 +118,7 @@ state must be managed on the node host.
 - **One active meeting per install per location.** A second `meet_join` leaves the first.
 - **Windows not supported.**
 - Realtime mode needs a virtual audio device. If the audio bridge or pump cannot be verified before join, the bot fails closed instead of joining with an unsafe mic route.
-- `meet_say` requires `mode='realtime'` on the originating `meet_join`, an active in-call bot, a ready realtime audio pump, and Meet microphone enabled. Otherwise it returns a clear error.
+- `meet_say` requires `mode='realtime'` on the originating `meet_join`, an active in-call bot, a live and ready realtime audio pump, and Meet microphone enabled. Otherwise it returns a clear error. A pump or PCM-stream failure after admission revokes readiness and makes the bot leave with `leaveReason: "realtime_audio_route_failed"`.
 - **Barge-in is best-effort.** When a caption arrives attributed to a real participant while the bot is generating audio, the bot sends `response.cancel` to OpenAI Realtime. Captions take ~500ms to show up, so the bot will talk over the first second or so of a human interruption.
 
 ## Status dict reference
@@ -124,9 +130,9 @@ state must be managed on the node host.
 | `inCall` | Past the lobby. False while waiting for admission. |
 | `lobbyWaiting` | Clicked "Ask to join", waiting on host. |
 | `joinAttemptedAt` / `joinedAt` | Timestamps for lobby-click and actual admission. |
-| `captioning` | Caption observer is installed. |
+| `captioning` | Captions have been verified enabled or caption text has arrived. |
 | `transcriptLines` / `lastCaptionAt` | Transcript progress. |
-| `realtime` / `realtimeReady` | Realtime mode provisioned / WS connected. |
+| `realtime` / `realtimeReady` | Realtime mode provisioned / session ready; speaking also requires the audio pump and Meet microphone to be ready. |
 | `realtimeDevice` | Audio device name the bot is feeding (e.g. `hermes_meet_src`). |
 | `audioBytesOut` / `lastAudioOutAt` | How much PCM the OpenAI session has produced. |
 | `lastBargeInAt` | Timestamp of the most recent `response.cancel` sent. |

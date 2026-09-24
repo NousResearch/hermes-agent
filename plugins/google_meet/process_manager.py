@@ -1,41 +1,57 @@
 """Subprocess lifecycle manager for the google_meet bot.
 
-Single active meeting at a time. Stores the running pid + out_dir in a
-session-scoped state file under ``$HERMES_HOME/workspace/meetings/.active.json``
-so tool calls across turns can find the bot, and session-finalize cleanup can
-leave calls owned by the ending session.
-
-The bot runs as a detached subprocess — we don't hold file descriptors open,
-so the parent agent loop can't block on it. We communicate via files only.
+One active meeting at a time is recorded under the active profile's
+``$HERMES_HOME/workspace/meetings``. The bot is a detached subprocess reached
+through its state, transcript, and queue files so the agent loop never blocks.
 """
 
 from __future__ import annotations
 
-import json
+import contextlib
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from plugins.google_meet._jsonfile import read_json
 from plugins.google_meet.queue_io import append_jsonl
+from utils import atomic_json_write
 
-# File + directory layout (under $HERMES_HOME):
-#
-#   workspace/meetings/
-#       .active.json                # pointer to current session's bot
-#       <meeting-id>/
-#           status.json             # live bot state (written by bot each tick)
-#           transcript.txt          # scraped captions
-#
-# .active.json holds:
-#   {"pid": 12345, "meeting_id": "abc-defg-hij", "out_dir": "...",
-#    "url": "https://meet.google.com/...", "started_at": 1714159200.0,
-#    "duration": "30m", "session_id": "optional"}
+
+_NO_ACTIVE = {"ok": False, "reason": "no active meeting"}
+
+# These are behavioral bridge values. They must not be inherited from the
+# gateway's ambient environment; the active bot-host profile owns them.
+_MEET_CONFIG_ENV_VARS = (
+    "HERMES_MEET_DEBUG_STATUS",
+    "HERMES_MEET_PROXY_SERVER",
+    "HERMES_MEET_PROXY_BYPASS",
+    "HERMES_MEET_REALTIME_READY_TIMEOUT",
+    "HERMES_MEET_STALL_AFTER",
+    "HERMES_MEET_XVFB",
+)
+
+# Start inputs are request-scoped, not persistent process settings. Clearing
+# them prevents a previous shell launch from supplying an implicit duration or
+# authentication state to a new bot.
+_MEET_START_ENV_VARS = (
+    "HERMES_MEET_URL",
+    "HERMES_MEET_OUT_DIR",
+    "HERMES_MEET_GUEST_NAME",
+    "HERMES_MEET_HEADED",
+    "HERMES_MEET_AUTH_STATE",
+    "HERMES_MEET_DURATION",
+    "HERMES_MEET_MODE",
+    "HERMES_MEET_REALTIME_MODEL",
+    "HERMES_MEET_REALTIME_VOICE",
+    "HERMES_MEET_REALTIME_INSTRUCTIONS",
+)
 
 
 def _root() -> Path:
@@ -51,23 +67,11 @@ def _last_file() -> Path:
 
 
 def _read_active() -> Optional[Dict[str, Any]]:
-    p = _active_file()
-    if not p.is_file():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    return read_json(_active_file())
 
 
 def _read_last() -> Optional[Dict[str, Any]]:
-    p = _last_file()
-    if not p.is_file():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    return read_json(_last_file())
 
 
 def _clean_session_id(value: Any) -> Optional[str]:
@@ -76,46 +80,33 @@ def _clean_session_id(value: Any) -> Optional[str]:
 
 
 def _read_status(out_dir: Path) -> Dict[str, Any]:
-    status_path = out_dir / "status.json"
-    if not status_path.is_file():
-        return {}
-    try:
-        data = json.loads(status_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    status = read_json(out_dir / "status.json")
+    return status if isinstance(status, dict) else {}
 
 
 def _write_last(data: Dict[str, Any]) -> None:
-    p = _last_file()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    atomic_json_write(_last_file(), data)
 
 
 def _write_active(data: Dict[str, Any]) -> None:
-    p = _active_file()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    atomic_json_write(_active_file(), data)
     _write_last(data)
 
 
 def _clear_active() -> None:
-    try:
+    with contextlib.suppress(FileNotFoundError):
         _active_file().unlink()
-    except FileNotFoundError:
-        pass
 
 
 def _pid_alive(pid: int) -> bool:
-    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — it
-    # routes through GenerateConsoleCtrlEvent and can kill the target.
-    # Use the cross-platform existence check.
+    # Not ``os.kill(pid, 0)``: on Windows that can kill the target (bpo-14484).
     from gateway.status import _pid_exists
-    return _pid_exists(pid)
+    return bool(pid) and _pid_exists(pid)
+
+
+def _kill(pid: int, sig: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, sig)
 
 
 def _record_stop_reason(active: Dict[str, Any], reason: str) -> None:
@@ -123,38 +114,32 @@ def _record_stop_reason(active: Dict[str, Any], reason: str) -> None:
     if not out_dir:
         return
     status_path = Path(out_dir) / "status.json"
-    status: Dict[str, Any] = {}
-    if status_path.is_file():
-        try:
-            status = json.loads(status_path.read_text(encoding="utf-8"))
-        except Exception:
-            status = {}
-    status.update({
-        "meetingId": active.get("meeting_id"),
-        "url": active.get("url"),
-        "exited": True,
-        "leaveReason": (reason or "requested").strip() or "requested",
-    })
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = status_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
-    tmp.replace(status_path)
+    status = _read_status(Path(out_dir))
+    status.update(
+        {
+            "meetingId": active.get("meeting_id"),
+            "url": active.get("url"),
+            "exited": True,
+            "leaveReason": (reason or "requested").strip() or "requested",
+        }
+    )
+    atomic_json_write(status_path, status)
 
 
-_MEET_CONFIG_ENV_VARS = (
-    "HERMES_MEET_DEBUG_STATUS",
-    "HERMES_MEET_PROXY_SERVER",
-    "HERMES_MEET_PROXY_BYPASS",
-    "HERMES_MEET_REALTIME_READY_TIMEOUT",
-    "HERMES_MEET_STALL_AFTER",
-    "HERMES_MEET_XVFB",
-)
+def _positive_seconds(value: Any, default: int) -> str:
+    try:
+        if float(value) > 0:
+            return str(value)
+    except (TypeError, ValueError):
+        pass
+    return str(default)
 
 
 def _resolve_meet_config() -> Dict[str, Any]:
-    from hermes_cli.config import load_config_readonly
+    """Read effective config for the currently bound bot-host profile."""
+    from hermes_cli.config_effective import load_user_config_effective
 
-    root = load_config_readonly()
+    root = load_user_config_effective()
     config = root.get("google_meet", {}) if isinstance(root, dict) else {}
     if not isinstance(config, dict):
         config = {}
@@ -162,70 +147,131 @@ def _resolve_meet_config() -> Dict[str, Any]:
     if not isinstance(proxy, dict):
         proxy = {}
     return {
-        "debug_status": config.get("debug_status", False) is True,
+        "debug_status": config.get("debug_status") is True,
         "xvfb": config.get("xvfb", "auto"),
         "proxy_server": str(proxy.get("server") or "").strip(),
         "proxy_bypass": proxy.get("bypass"),
-        "realtime_ready_timeout": config.get("realtime_ready_timeout", 15),
-        "stall_after": config.get("stall_after", 90),
+        "realtime_ready_timeout": _positive_seconds(
+            config.get("realtime_ready_timeout"), 15
+        ),
+        "stall_after": _positive_seconds(config.get("stall_after"), 90),
     }
 
 
 def _apply_meet_config_to_env(env: Dict[str, str], config: Dict[str, Any]) -> None:
+    """Bridge only profile-owned behavioral config into the child process."""
     for name in _MEET_CONFIG_ENV_VARS:
         env.pop(name, None)
-
     if config["debug_status"]:
         env["HERMES_MEET_DEBUG_STATUS"] = "1"
-
     if config["proxy_server"]:
         env["HERMES_MEET_PROXY_SERVER"] = config["proxy_server"]
+        # ``None`` preserves the bot's WebRTC-safe bypass default; an empty
+        # string is an explicit config choice to disable that bypass.
         if config["proxy_bypass"] is not None:
-            env["HERMES_MEET_PROXY_BYPASS"] = str(config["proxy_bypass"]).strip()
+            env["HERMES_MEET_PROXY_BYPASS"] = str(config["proxy_bypass"])
+    env["HERMES_MEET_REALTIME_READY_TIMEOUT"] = config["realtime_ready_timeout"]
+    env["HERMES_MEET_STALL_AFTER"] = config["stall_after"]
 
-    env["HERMES_MEET_REALTIME_READY_TIMEOUT"] = str(
-        config["realtime_ready_timeout"]
+
+def _apply_start_env(
+    env: Dict[str, str],
+    *,
+    url: str,
+    out_dir: Path,
+    guest_name: str,
+    headed: bool,
+    auth_state: Optional[str],
+    duration: Optional[str],
+    mode: str,
+    realtime_model: Optional[str],
+    realtime_voice: Optional[str],
+    realtime_instructions: Optional[str],
+) -> None:
+    for name in _MEET_START_ENV_VARS:
+        env.pop(name, None)
+    env.update(
+        {
+            "HERMES_MEET_URL": url,
+            "HERMES_MEET_OUT_DIR": str(out_dir),
+            "HERMES_MEET_GUEST_NAME": guest_name,
+            "HERMES_MEET_MODE": mode,
+        }
     )
-    env["HERMES_MEET_STALL_AFTER"] = str(config["stall_after"])
+    if headed:
+        env["HERMES_MEET_HEADED"] = "1"
+    if auth_state:
+        env["HERMES_MEET_AUTH_STATE"] = auth_state
+    if duration:
+        env["HERMES_MEET_DURATION"] = duration
+    if realtime_model:
+        env["HERMES_MEET_REALTIME_MODEL"] = realtime_model
+    if realtime_voice:
+        env["HERMES_MEET_REALTIME_VOICE"] = realtime_voice
+    if realtime_instructions:
+        env["HERMES_MEET_REALTIME_INSTRUCTIONS"] = realtime_instructions
 
 
-def _headed_launch_prefix(policy: Any) -> tuple[list[str], bool, Optional[str]]:
-    """Return an argv prefix for headed browser runs in service contexts."""
+def _apply_realtime_credential(
+    env: Dict[str, str],
+    *,
+    mode: str,
+    realtime_api_key: Optional[str],
+) -> None:
+    """Pass just the scoped realtime credential, never ambient provider secrets."""
+    env.pop("HERMES_MEET_REALTIME_KEY", None)
+    env.pop("OPENAI_API_KEY", None)
+    if mode != "realtime":
+        return
+    if not realtime_api_key:
+        from agent.secret_scope import get_secret
+
+        realtime_api_key = get_secret("HERMES_MEET_REALTIME_KEY") or get_secret(
+            "OPENAI_API_KEY"
+        )
+    if realtime_api_key:
+        env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key
+
+
+def _headed_launch_prefix(
+    policy: Any, env: Dict[str, str]
+) -> tuple[list[str], bool, Optional[str]]:
+    """Return a Linux-only Xvfb prefix for an explicitly headed launch."""
     if not sys.platform.startswith("linux"):
         return [], False, None
 
     normalized = str(policy if policy is not None else "auto").strip().lower()
-    display = os.environ.get("DISPLAY", "").strip()
+    display = env.get("DISPLAY", "").strip()
     disabled = {"0", "false", "no", "off", "disable", "disabled"}
     forced = {"1", "true", "yes", "on", "force", "forced"}
 
     if normalized in disabled:
         if display:
             return [], False, None
-        return [], False, (
-            "headed Meet launch requested, but DISPLAY is unset and "
-            "google_meet.xvfb disables xvfb-run"
+        return (
+            [],
+            False,
+            (
+                "headed Meet launch requested, but DISPLAY is unset and google_meet.xvfb disables xvfb-run"
+            ),
         )
-
     if display and normalized not in forced:
         return [], False, None
 
     xvfb_run = shutil.which("xvfb-run")
     if xvfb_run:
         return [xvfb_run, "-a"], True, None
-
     if display:
         return [], False, None
-
-    return [], False, (
-        "headed Meet launch requested, but DISPLAY is unset and xvfb-run "
-        "is unavailable; set headed=false or install xvfb-run"
+    return (
+        [],
+        False,
+        (
+            "headed Meet launch requested, but DISPLAY is unset and xvfb-run is unavailable; "
+            "set headed=false or install xvfb-run"
+        ),
     )
 
-
-# ---------------------------------------------------------------------------
-# Public API — used by tool handlers + CLI
-# ---------------------------------------------------------------------------
 
 def start(
     url: str,
@@ -243,108 +289,71 @@ def start(
     realtime_instructions: Optional[str] = None,
     realtime_api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Spawn the meet_bot subprocess for *url*.
-
-    If a bot is already running for this hermes install, leave it first —
-    we enforce single-active-meeting semantics.
-
-    Returns a dict summarizing the started bot.
-    """
+    """Spawn the Meet bot, replacing a live prior bot for this profile."""
     from plugins.google_meet.meet_bot import _is_safe_meet_url, _meeting_id_from_url
 
     if not _is_safe_meet_url(url):
         return {
             "ok": False,
-            "error": (
-                "refusing: only https://meet.google.com/ URLs are allowed. "
-                "got: " + repr(url)
-            ),
+            "error": "refusing: only https://meet.google.com/ URLs are allowed. got: "
+            + repr(url),
         }
 
     existing = _read_active()
-    if existing and _pid_alive(int(existing.get("pid", 0))):
-        stop(reason="replaced by new meet_join")
+    if existing:
+        if _pid_alive(int(existing.get("pid", 0) or 0)):
+            stop(reason="replaced by new meet_join")
+        else:
+            _clear_active()
 
     meeting_id = _meeting_id_from_url(url)
-    out = out_dir or (_root() / meeting_id)
+    out = Path(out_dir) if out_dir is not None else _root() / meeting_id
     out.mkdir(parents=True, exist_ok=True)
-
-    # Wipe any stale transcript/status files from a previous run of this
-    # meeting id so polling isn't confused.
     for name in ("transcript.txt", "status.json"):
-        f = out / name
-        if f.exists():
-            try:
-                f.unlink()
-            except OSError:
-                pass
+        with contextlib.suppress(OSError):
+            (out / name).unlink()
 
+    from tools.environments.local import served_profile_child_env
+
+    env = served_profile_child_env(
+        target_home=get_hermes_home(), inherit_credentials=False
+    )
     meet_config = _resolve_meet_config()
-    env = os.environ.copy()
     _apply_meet_config_to_env(env, meet_config)
-    env["HERMES_MEET_URL"] = url
-    env["HERMES_MEET_OUT_DIR"] = str(out)
-    env["HERMES_MEET_GUEST_NAME"] = guest_name
-    if headed:
-        env["HERMES_MEET_HEADED"] = "1"
-    if auth_state:
-        env["HERMES_MEET_AUTH_STATE"] = auth_state
-    if duration:
-        env["HERMES_MEET_DURATION"] = duration
-    # v2: realtime mode + passthroughs. The bot defaults to transcribe
-    # mode if HERMES_MEET_MODE isn't set, matching v1 behavior.
-    if mode:
-        env["HERMES_MEET_MODE"] = mode
-    if realtime_model:
-        env["HERMES_MEET_REALTIME_MODEL"] = realtime_model
-    if realtime_voice:
-        env["HERMES_MEET_REALTIME_VOICE"] = realtime_voice
-    if realtime_instructions:
-        env["HERMES_MEET_REALTIME_INSTRUCTIONS"] = realtime_instructions
-    # Resolve the realtime key at SPAWN time, in the parent, where the
-    # profile secret scope (a contextvar) is still installed. The detached
-    # child inherits the process environment — NOT the scope — so under a
-    # multiplexed gateway an in-child os.environ read would see another
-    # profile's OPENAI_API_KEY (or nothing). Pass it explicitly instead;
-    # meet_bot checks HERMES_MEET_REALTIME_KEY before OPENAI_API_KEY.
-    if not realtime_api_key:
-        try:
-            from agent.secret_scope import get_secret
+    _apply_start_env(
+        env,
+        url=url,
+        out_dir=out,
+        guest_name=guest_name,
+        headed=headed,
+        auth_state=auth_state,
+        duration=duration,
+        mode=mode,
+        realtime_model=realtime_model,
+        realtime_voice=realtime_voice,
+        realtime_instructions=realtime_instructions,
+    )
+    _apply_realtime_credential(env, mode=mode, realtime_api_key=realtime_api_key)
 
-            realtime_api_key = (
-                get_secret("HERMES_MEET_REALTIME_KEY")
-                or get_secret("OPENAI_API_KEY")
-            )
-        except ImportError:  # pragma: no cover — secret_scope is in-repo
-            pass
-    if realtime_api_key:
-        env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key
-
-    xvfb = False
     cmd = [sys.executable, "-m", "plugins.google_meet.meet_bot"]
+    xvfb = False
     if headed:
-        prefix, xvfb, error = _headed_launch_prefix(meet_config["xvfb"])
+        prefix, xvfb, error = _headed_launch_prefix(meet_config["xvfb"], env)
         if error:
             return {"ok": False, "error": error}
         cmd = [*prefix, *cmd]
 
     log_path = out / "bot.log"
-    # Detach: stdin=devnull, stdout/stderr → log file, new session so parent
-    # signals don't propagate.
-    log_fh = open(log_path, "ab", buffering=0)
-    try:
+    with open(log_path, "ab", buffering=0) as log_file:
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
-            stdout=log_fh,
+            stdout=log_file,
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
             close_fds=True,
         )
-    finally:
-        # The subprocess now owns the log fd; we can close ours.
-        log_fh.close()
 
     record = {
         "pid": proc.pid,
@@ -354,33 +363,25 @@ def start(
         "started_at": time.time(),
         "duration": duration,
         "persist_after_session": bool(persist_after_session),
-        "session_id": session_id,
+        "session_id": _clean_session_id(session_id),
         "log_path": str(log_path),
         "mode": mode,
         "headed": bool(headed),
-        "xvfb": bool(xvfb),
+        "xvfb": xvfb,
     }
     _write_active(record)
     return {"ok": True, **record}
 
 
 def status() -> Dict[str, Any]:
-    """Return the current meeting state, or ``{"ok": False, "reason": ...}``."""
+    """Return current process and bot status without exposing a finished bot as active."""
     active = _read_active()
     if not active:
-        return {"ok": False, "reason": "no active meeting"}
+        return dict(_NO_ACTIVE)
 
-    pid = int(active.get("pid", 0))
+    pid = int(active.get("pid", 0) or 0)
     alive = _pid_alive(pid) if pid else False
-
-    status_path = Path(active.get("out_dir", "")) / "status.json"
-    bot_status: Dict[str, Any] = {}
-    if status_path.is_file():
-        try:
-            bot_status = json.loads(status_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
+    bot_status = _read_status(Path(active.get("out_dir", "")))
     if pid and not alive:
         _clear_active()
         return {
@@ -414,11 +415,7 @@ def transcript(
     include_finished: bool = False,
     session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Read the active transcript file.
-
-    Finished meeting transcripts require an explicit ``include_finished`` opt-in
-    so a fresh session cannot accidentally receive a stale previous transcript.
-    """
+    """Read an active transcript, or an explicitly requested matching finished one."""
     active = _read_active()
     from_last = False
     if active:
@@ -426,6 +423,7 @@ def transcript(
         if not pid or not _pid_alive(pid):
             _clear_active()
             active = None
+
     if not active and include_finished:
         active = _read_last()
         from_last = bool(active)
@@ -437,42 +435,28 @@ def transcript(
                     "ok": False,
                     "reason": "finished transcript requires session id",
                 }
-            if not active_session_id or active_session_id != requested_session_id:
-                return {
-                    "ok": False,
-                    "reason": "no finished meeting for this session",
-                }
-    if not active:
-        return {"ok": False, "reason": "no active meeting"}
+            if active_session_id != requested_session_id:
+                return {"ok": False, "reason": "no finished meeting for this session"}
 
-    tp = Path(active.get("out_dir", "")) / "transcript.txt"
-    bot_status = _read_status(Path(active.get("out_dir", "")))
-    active_response = not from_last
-    if not tp.is_file():
-        return {
-            "ok": True,
-            "meetingId": active.get("meeting_id"),
-            "sessionId": active.get("session_id"),
-            "lines": [],
-            "total": 0,
-            "path": str(tp),
-            "active": active_response,
-            "fromLast": from_last,
-            "stale": from_last,
-            "leaveReason": bot_status.get("leaveReason"),
-            "error": bot_status.get("error"),
-        }
-    text = tp.read_text(encoding="utf-8", errors="replace")
-    all_lines = [ln for ln in text.splitlines() if ln.strip()]
-    lines = all_lines[-last:] if last else all_lines
+    if not active:
+        return dict(_NO_ACTIVE)
+
+    out_dir = Path(active.get("out_dir", ""))
+    transcript_path = out_dir / "transcript.txt"
+    lines = []
+    if transcript_path.is_file():
+        text = transcript_path.read_text(encoding="utf-8", errors="replace")
+        lines = [line for line in text.splitlines() if line.strip()]
+    selected = lines[-last:] if last else lines
+    bot_status = _read_status(out_dir)
     return {
         "ok": True,
         "meetingId": active.get("meeting_id"),
         "sessionId": active.get("session_id"),
-        "lines": lines,
-        "total": len(all_lines),
-        "path": str(tp),
-        "active": active_response,
+        "lines": selected,
+        "total": len(lines),
+        "path": str(transcript_path),
+        "active": not from_last,
         "fromLast": from_last,
         "stale": from_last,
         "leaveReason": bot_status.get("leaveReason"),
@@ -481,35 +465,27 @@ def transcript(
 
 
 def enqueue_say(text: str) -> Dict[str, Any]:
-    """Append a ``say`` request to the active bot's JSONL queue.
-
-    Returns ``{"ok": False, "reason": ...}`` when no meeting is active or
-    the active bot is in transcribe-only mode. Otherwise writes a line to
-    ``<out_dir>/say_queue.jsonl`` that the bot's realtime speaker thread
-    will consume.
-    """
-    import uuid
-
+    """Queue speech only when the live realtime bot can receive microphone audio."""
     text = (text or "").strip()
     if not text:
         return {"ok": False, "reason": "text is required"}
 
     active = _read_active()
     if not active:
-        return {"ok": False, "reason": "no active meeting"}
+        return dict(_NO_ACTIVE)
     if active.get("mode") != "realtime":
         return {
             "ok": False,
             "reason": (
-                "active meeting is in transcribe mode — pass mode='realtime' "
-                "to meet_join to enable agent speech"
+                "active meeting is in transcribe mode — pass mode='realtime' to meet_join "
+                "to enable agent speech"
             ),
         }
 
     pid = int(active.get("pid", 0) or 0)
     if not pid or not _pid_alive(pid):
         _clear_active()
-        return {"ok": False, "reason": "no active meeting"}
+        return dict(_NO_ACTIVE)
 
     out_dir = Path(active.get("out_dir", ""))
     if not out_dir.is_dir():
@@ -519,15 +495,21 @@ def enqueue_say(text: str) -> Dict[str, Any]:
     if bot_status.get("exited"):
         return {"ok": False, "reason": "active realtime meeting has exited"}
     if bot_status.get("error") or bot_status.get("leaveReason"):
+        detail = bot_status.get("error") or bot_status.get("leaveReason")
         return {
             "ok": False,
-            "reason": f"active realtime meeting is not usable: {bot_status.get('error') or bot_status.get('leaveReason')}",
+            "reason": f"active realtime meeting is not usable: {detail}",
         }
     if not bot_status.get("inCall"):
         return {"ok": False, "reason": "active realtime meeting is not in call yet"}
     if not (bot_status.get("realtime") and bot_status.get("realtimeReady")):
         return {"ok": False, "reason": "realtime is not ready"}
-    if bot_status.get("realtimeAudioPumpStatus") != "ready":
+    pump_pid = int(bot_status.get("realtimeAudioPumpPid", 0) or 0)
+    if (
+        bot_status.get("realtimeAudioPumpStatus") != "ready"
+        or not pump_pid
+        or not _pid_alive(pump_pid)
+    ):
         return {"ok": False, "reason": "realtime audio pump is not ready"}
     if bot_status.get("localMicrophoneOn") is not True:
         return {"ok": False, "reason": "realtime microphone is not enabled"}
@@ -544,33 +526,22 @@ def enqueue_say(text: str) -> Dict[str, Any]:
 
 
 def stop(*, reason: str = "requested") -> Dict[str, Any]:
-    """Signal the active bot to leave cleanly, then clear the active pointer.
-
-    Sends SIGTERM and waits up to 10s for the bot to exit. Falls back to
-    SIGKILL if the bot doesn't respond.
-    """
+    """Terminate the active bot, record its leave reason, and clear the active pointer."""
     active = _read_active()
     if not active:
-        return {"ok": False, "reason": "no active meeting"}
+        return dict(_NO_ACTIVE)
 
-    pid = int(active.get("pid", 0))
+    pid = int(active.get("pid", 0) or 0)
     out_dir = active.get("out_dir")
     transcript_path = Path(out_dir) / "transcript.txt" if out_dir else None
-
     if pid and _pid_alive(pid):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        _kill(pid, signal.SIGTERM)
         for _ in range(20):
             if not _pid_alive(pid):
                 break
             time.sleep(0.5)
         if _pid_alive(pid):
-            try:
-                os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only plugin (google_meet registers no-op on Windows; see __init__.py)
-            except ProcessLookupError:
-                pass
+            _kill(pid, signal.SIGKILL)
 
     _record_stop_reason(active, reason)
     _clear_active()

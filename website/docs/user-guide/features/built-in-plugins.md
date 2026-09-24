@@ -9,7 +9,7 @@ description: "Plugins shipped with Hermes Agent that run automatically via lifec
 
 Hermes ships a small set of plugins bundled with the repository. They live under `<repo>/plugins/<name>/` and load automatically alongside user-installed plugins in `~/.hermes/plugins/`. They use the same plugin surface as third-party plugins — hooks, tools, slash commands — just maintained in-tree.
 
-See the [Plugins](/user-guide/features/plugins) page for the general plugin system, and [Build a Hermes Plugin](/developer-guide/plugins) to write your own.
+See the [Plugins](./plugins.md) page for the general plugin system, and [Build a Hermes Plugin](../../developer-guide/plugins/index.md) to write your own.
 
 ## How discovery works
 
@@ -61,7 +61,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
-| `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
+| `image_gen/openai` | image backend | OpenAI GPT Image 2 and 2.5 Flare/Sunburst generation and editing (API key) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
@@ -77,7 +77,7 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. |
+| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. | <!-- no-tmp: ok — documents the plugin's scope guard -->
 | `on_session_end` | If any test files were auto-tracked during the turn, run the safe `quick` cleanup and log a one-line summary. Stays silent otherwise. |
 
 **Deletion rules:**
@@ -111,7 +111,8 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 | `tracked.json.bak` | Atomic-write backup of the above |
 | `cleanup.log` | Append-only audit trail of every track / skip / reject / delete |
 
-**Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end.
+<!-- no-tmp: ok — documents the plugin's scope guard -->
+**Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end. User project trees (`workspace/`, `projects/`, `plans/`, `home/`) are never tracked or swept at all: a `test_*.py` or `tmp_*` file inside your project is source code, not scratch. `kanban/` (task attachments and workspaces) is never tracked either, and a tracked *directory* under a protected top level such as `cache/` is never removed — only the files inside it age out.
 
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 
@@ -208,7 +209,44 @@ NeMo Relay is no longer a bundled Hermes plugin. Do not run `hermes plugins enab
 
 To opt into Relay middleware or exporters, create a standard Relay `plugins.toml`, then set `HERMES_NEMO_RELAY_PLUGINS_TOML` to that file before starting Hermes. The policy is process-wide for every profile hosted by that Hermes process. See the [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about) for ATOF, ATIF, and OpenTelemetry options.
 
-The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer activate exporters. `hermes doctor` reports these stale settings when no replacement `plugins.toml` is selected.
+The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer activate exporters — a `.env` that still carries them (and no `HERMES_NEMO_RELAY_PLUGINS_TOML`) exports **nothing**, and the gateway logs one warning saying so. `hermes doctor` reports these stale settings when no replacement `plugins.toml` is selected.
+
+**Automatic migration.** `hermes update` (and `hermes migrate relay`, or `hermes migrate relay --all-profiles` for every profile home) converts the legacy variables into `<hermes home>/relay-plugins.toml`, sets `HERMES_NEMO_RELAY_PLUGINS_TOML` in that profile's `.env`, and comments the legacy lines out (nothing is deleted). Under a multiplexed gateway every profile home gets its own file. The generated file is validated through Relay before it is written; this is the shape it produces (note the `type = "file"` sink discriminator — a sink without it is rejected):
+
+```toml
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 4
+enable_full_payloads = false
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "/home/you/.hermes/telemetry/nemo-relay/atof"
+filename = "hermes-atof.jsonl"
+mode = "append"
+
+[components.config.atif]
+enabled = true
+agent_name = "Hermes Agent"
+model_name = "unknown"
+output_directory = "/home/you/.hermes/telemetry/nemo-relay/atif"
+filename_template = "trajectory-{session_id}.json"
+
+[components.config.policy]
+unknown_component = "warn"
+unknown_field = "warn"
+unsupported_value = "error"
+```
+
+Then add `HERMES_NEMO_RELAY_PLUGINS_TOML=/home/you/.hermes/relay-plugins.toml` to `.env` and restart the gateway.
 
 #### Session-span segmentation (continuous sessions)
 
@@ -236,18 +274,16 @@ Lets the agent **join, transcribe, and participate in Google Meet calls** — ta
 **What it adds:**
 
 - A headless virtual participant that joins a Meet URL using browser automation
-- Live transcription of the meeting audio via the configured STT provider
+- Live transcription derived from Meet's own live captions (the bot never decodes the meeting audio, so no STT billing — and captions are lossy and English-biased)
 - A `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` toolset the agent invokes to join calls, poll the live transcript, and act on what it heard
-- Post-meeting artifacts (transcript, status) saved under `~/.hermes/workspace/meetings/<meeting_id>/`
+- Post-meeting artifacts (transcript, status) saved under the active profile's `$HERMES_HOME/workspace/meetings/<meeting_id>/`
 
 **Setup:**
 
 ```bash
 hermes plugins enable google_meet
-hermes meet setup   # preflight: playwright, chromium, auth file
-hermes meet auth    # opens a browser to sign into Google and saves session state —
-                    # needs a Google account with Meet access. Host approval may be
-                    # required if the meeting enforces "only invited participants can join".
+hermes meet setup   # preflight: Playwright and Chromium
+hermes meet auth    # optional: save Google session state for explicit local reuse
 ```
 
 Usage from chat:
@@ -256,9 +292,23 @@ Usage from chat:
 
 The agent kicks off the meeting join, streams the transcription back into its context as the call proceeds, and produces a structured summary when the meeting ends (or when you tell it to stop).
 
+Guest mode is the default; saved Google authentication is reused only with
+`use_auth_state=true` (`--use-auth-state` in the CLI). Remote-node joins reject
+this option rather than silently ignoring it. Calls survive individual agent
+turns, but session-finalize cleanup stops only the ending session's bots unless
+`persist_after_session=true` was explicitly requested. After leaving, retrieve
+the transcript with `meet_transcript(include_finished=true)` from the same owning
+session, specifying the original `node` for a remote meeting.
+
+Non-secret settings live in the bot host's active `config.yaml` under
+`google_meet`: debug status, Xvfb policy, proxy settings, realtime-readiness
+timeout, and stall timeout. Credentials remain separate in `.env`.
+
+**Realtime mode (`mode='realtime'`) is speak-only on the audio side.** The bot's replies are synthesized by OpenAI Realtime and played through a virtual microphone; incoming speech remains the caption stream, not meeting audio. The bot fails closed if the realtime route cannot be verified before joining. `meet_say` requires an in-call bot, a ready audio pump, and an enabled Meet microphone. Transcription-only mode keeps microphone and camera off.
+
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
-**Disabling:** `hermes plugins disable google_meet`. Any saved transcripts stay in `~/.hermes/workspace/meetings/` until you remove them.
+**Disabling:** `hermes plugins disable google_meet`. Saved transcripts remain in the active profile's `$HERMES_HOME/workspace/meetings/` until you remove them.
 
 ### hermes-achievements
 
@@ -313,7 +363,7 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 
 ## Adding a bundled plugin
 
-Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](/developer-guide/plugins). The only differences are:
+Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](../../developer-guide/plugins/index.md). The only differences are:
 
 - Directory lives at `<repo>/plugins/<name>/` instead of `~/.hermes/plugins/<name>/`
 - Manifest source is reported as `bundled` in `hermes plugins list`

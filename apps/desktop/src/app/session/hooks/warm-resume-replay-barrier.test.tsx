@@ -162,7 +162,7 @@ async function mountWithPendingReplay() {
   const request = second.sent.find(item => item.method === 'session.events.since')!
   expect(request.params).toMatchObject({ session_id: runtimeId, last_seen: 1 })
 
-  return { ...hook, client, requestGateway, second, request }
+  return { ...hook, client, connect, requestGateway, second, request }
 }
 
 beforeEach(() => {
@@ -305,6 +305,51 @@ it('holds a reconnect re-resume of the selected session behind its replay (cold 
 
     expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
     expect(requestGateway.mock.calls.some(([method]) => method === 'session.resume')).toBe(true)
+    expect(
+      $messages
+        .get()
+        .map(chatMessageText)
+        .join('\n')
+        .match(/Finished result\./g)
+    ).toHaveLength(1)
+  } finally {
+    client.close()
+  }
+})
+
+it('does not paint a cold re-resume read ahead of a replay redialed while REST was in flight', async () => {
+  const { result, client, connect } = await mountWithPendingReplay()
+  const { activeSessionIdRef, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef } = result.current.cache
+  let releaseRest!: () => void
+  const restGate = new Promise<void>(resolve => (releaseRest = resolve))
+  const latest = vi.mocked(getLatestSessionMessages).getMockImplementation()!
+  vi.mocked(getLatestSessionMessages).mockImplementation(async (...args) => restGate.then(() => latest(...args)))
+  selectedStoredSessionIdRef.current = storedId
+  activeSessionIdRef.current = runtimeId
+  runtimeIdByStoredSessionIdRef.current.delete(storedId)
+
+  try {
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = result.current.actions.resumeSession(storedId, true)
+    })
+    // The replay socket drops (barrier false: cold resume starts its REST read)
+    // and redials before that read returns, owning a fresh replay of the turn.
+    let third!: Awaited<ReturnType<typeof connect>>
+    await act(async () => {
+      client.invalidate()
+      third = await connect()
+    })
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    const request = third.sent.find(item => item.method === 'session.events.since')!
+
+    await act(async () => {
+      releaseRest()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      third.frame({ id: request.id, jsonrpc: '2.0', result: { events: replay } })
+      await pending
+    })
+
     expect(
       $messages
         .get()

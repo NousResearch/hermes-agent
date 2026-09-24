@@ -1805,6 +1805,15 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
+        // The socket can drop and redial while REST is in flight. Painting now
+        // would let the new socket's replay append the same turn again; a lost
+        // socket (false) drops this read and the resume below binds without it.
+        const viewReplayAtReturn = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+        if (prefetchedResult && viewReplayAtReturn && !(await viewReplayAtReturn)) {
+          prefetchedResult = null
+        }
+
         // A completed read still warms its exact durable scope after navigation.
         // It must not adopt a runtime or touch the foreground on that path.
         if (

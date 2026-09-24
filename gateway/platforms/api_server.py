@@ -4229,8 +4229,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _sweep_orphaned_runs(self) -> None:
         return await _api_runs._sweep_orphaned_runs(self)
 
-    def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
-        return _api_runs._sweep_orphaned_runs_once(self, now)
+    async def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
+        return await _api_runs._sweep_orphaned_runs_once(self, now)
 
     # -- BasePlatformAdapter interface ------------------------------------------------
 

@@ -1715,7 +1715,8 @@ class TestRunIdempotency:
         assert body["last_event"] == "run.interrupted"
 
 
-    def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
+    @pytest.mark.asyncio
+    async def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
         adapter._run_statuses["run_old"] = {
             "status": "completed",
             "updated_at": 1,
@@ -1723,7 +1724,7 @@ class TestRunIdempotency:
         adapter._run_idempotency_ids.add("run_old")
         adapter._run_owners["run_old"] = "scope"
 
-        adapter._sweep_orphaned_runs_once(adapter._RUN_STATUS_TTL + 2)
+        await adapter._sweep_orphaned_runs_once(adapter._RUN_STATUS_TTL + 2)
 
         assert "run_old" not in adapter._run_statuses
         assert "run_old" not in adapter._run_idempotency_ids
@@ -1757,6 +1758,9 @@ class TestHostedRoomRuns:
                 patch.object(
                     auth_adapter, "_room_grant_token", return_value="scoped-grant"
                 ),
+                # This isolated approval fixture uses a sentinel grant rather than
+                # signing a room claim; pin its store scope without decoding it.
+                patch.object(auth_adapter, "_run_idempotency_scope", return_value="0" * 64),
             ):
                 async with TestClient(TestServer(app)) as cli:
                     missing = await cli.post(

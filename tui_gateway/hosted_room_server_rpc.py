@@ -11,6 +11,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 from gateway import hosted_room_driver as state
+from tui_gateway.session_registry import _live_profile_matches
 
 _LockType = type(threading.Lock())
 
@@ -89,31 +90,61 @@ class HostedRoomServerRPC:
         rows = result.get("messages")
         return tuple(row for row in rows if isinstance(row, dict)) if isinstance(rows, list) else ()
 
-    def _session_record(self, session_id: str) -> dict[str, Any] | None:
+    def _session_record(self, session_id: str, *, profile: str) -> tuple[str, dict[str, Any]] | None:
+        home = self.server._profile_home(profile)
         with self.server._sessions_lock:
             record = self.server._sessions.get(session_id)
             if record is not None:
-                return record
-            return next((c for c in self.server._sessions.values()
-                         if str(c.get("session_key") or "") == session_id), None)
+                if not _live_profile_matches(record, home):
+                    raise HostedRoomSessionError("session.info", 4001, "session profile mismatch")
+                return session_id, record
+            return next(((sid, c) for sid, c in self.server._sessions.items()
+                         if str(c.get("session_key") or "") == session_id
+                         and _live_profile_matches(c, home)), None)
 
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
-        del profile, source
-        record = self._session_record(session_id)
-        if record is None:
-            return {"active": False, "task_id": None}
-        lock = record.get("history_lock")
-        if not isinstance(lock, _LockType):
-            return {"active": bool(record.get("running")), "task_id": None}
-        with lock:
-            task = record.get("_hosted_room_task")
-            result = {"active": bool(record.get("running")),
-                      "task_id": task.get("task_id") if isinstance(task, dict) else None}
-            pending_reader = getattr(self.server, "_pending_approval_request_payload", None)
-            if callable(pending_reader) and (pending := pending_reader(str(record.get("session_key") or ""))):
-                result["status"] = "waiting_for_approval"
-                result["pending_approval"] = pending
-            return result
+        del source
+        selected = self._session_record(session_id, profile=profile)
+        if selected is None:
+            return {"active": False, "task_id": None, "execution_generation": None}
+        runtime_id, record = selected
+        # The request registry (including compute-host mirrors) owns runtime-ID
+        # routing. The approval queue has only a stored key, which can coincide
+        # across profiles. Never use that queue to recover private prompt data.
+        reader = getattr(self.server, "_open_requests", None)
+        requests = reader(runtime_id) if callable(reader) else []
+        if not isinstance(requests, list) or any(not isinstance(row, dict) for row in requests):
+            raise HostedRoomSessionError("session.info", 4001, "request snapshot unavailable")
+        pending = next((dict(row["params"]) for row in requests
+                        if row.get("method") == "approval"
+                        and isinstance(row.get("params"), dict)
+                        and row["params"].get("session_id") == runtime_id), None)
+        with self.server._sessions_lock:
+            if self.server._sessions.get(runtime_id) is not record:
+                raise HostedRoomSessionError("session.info", 4001, "session owner changed")
+            lock = record.get("history_lock")
+            if isinstance(lock, _LockType):
+                with lock:
+                    task = record.get("_hosted_room_task")
+                    result = {"active": bool(record.get("running")),
+                              "task_id": task.get("task_id") if isinstance(task, dict) else None,
+                              "execution_generation": task.get("execution_generation") if isinstance(task, dict) else None}
+                    key = str(record.get("session_key") or "")
+            else:
+                result = {"active": bool(record.get("running")), "task_id": None,
+                          "execution_generation": None}
+                key = str(record.get("session_key") or "")
+        if pending is not None:
+            result["status"] = "waiting_for_approval"
+            result["pending_approval"] = pending
+        else:
+            from tools.approval import has_blocking_approval
+
+            if has_blocking_approval(key):
+                # Absence from the owned request registry does not prove idle:
+                # publication may still be in progress, or belong to another home.
+                result["status"] = "unknown"
+        return result
 
     def approve(self, *, session_id: str, request_id: str, choice: str) -> Mapping[str, Any]:
         """Resolve one exact local room approval without broad policy changes."""

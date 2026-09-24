@@ -1,6 +1,7 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import { $connection } from '@/store/session'
 
 import {
   getMediaImageDimensions,
@@ -8,8 +9,26 @@ import {
   mediaImageKey,
   rememberMediaImageDimensions,
   rememberMediaImageFailure,
+  resolveMediaDisplaySrc,
   validImageDimensions
 } from './media'
+
+it('reads a remote-owned image through its gateway, never the local file reader', async () => {
+  const readFileDataUrl = vi.fn(async () => 'data:local')
+  const api = vi.fn(async () => ({ dataUrl: 'data:remote' }))
+  vi.stubGlobal('hermesDesktop', { readFileDataUrl, api })
+  // A local foreground must not pull a remote tile's path off this disk.
+  $connection.set({ connectionId: 'local', mode: 'local', profile: 'default' } as HermesConnection)
+
+  try {
+    await expect(resolveMediaDisplaySrc('/srv/out.png', { connectionId: 'remote-1' })).resolves.toBe('data:remote')
+    expect(api).toHaveBeenCalledWith({ connectionId: 'remote-1', path: '/api/fs/read-data-url?path=%2Fsrv%2Fout.png' })
+    expect(readFileDataUrl).toHaveBeenCalledTimes(0)
+  } finally {
+    $connection.set(null)
+    vi.unstubAllGlobals()
+  }
+})
 
 it('shares proven path aliases only within an owner and bounds regenerated metadata by LRU', () => {
   const a = { connectionId: 'a', profile: 'work', mode: 'remote' } as HermesConnection

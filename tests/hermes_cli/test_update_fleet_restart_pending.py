@@ -182,6 +182,54 @@ def test_pending_needed_when_marker_exists():
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_update_dispatch_pause_is_owned_only_when_update_arms_it(monkeypatch):
+    """Regression for #121071: a pull must fence new cron work without clearing a user pause."""
+    calls = []
+
+    class _UpdatePausePath:
+        def unlink(self):
+            calls.append(("unlink",))
+
+    monkeypatch.setattr("agent.estop.is_engaged", lambda: False)
+    monkeypatch.setattr("agent.estop.engage", lambda reason: calls.append(("engage", reason)))
+    monkeypatch.setattr(
+        "agent.estop.get_state",
+        lambda: {"reason": "hermes update: preventing new work during code swap"},
+    )
+    monkeypatch.setattr("agent.estop.sentinel_path", _UpdatePausePath)
+
+    assert update_cmd._arm_update_dispatch_pause() is True
+    update_cmd._release_update_dispatch_pause(True)
+    update_cmd._release_update_dispatch_pause(False)
+
+    assert calls == [
+        ("engage", "hermes update: preventing new work during code swap"),
+        ("unlink",),
+    ]
+
+
+def test_update_arms_dispatch_pause_before_pulling_and_releases_after_verification(
+    monkeypatch, tmp_path,
+):
+    """#121071: the real update path fences cron before ``git merge`` mutates the tree."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    events = []
+
+    monkeypatch.setattr(update_cmd, "_arm_update_dispatch_pause", lambda: events.append("armed") or True)
+    monkeypatch.setattr(update_cmd, "_release_update_dispatch_pause", lambda owned: events.append(("released", owned)))
+    original_pull = update_cmd._pull_updates
+
+    def _pull_after_pause(*args, **kwargs):
+        assert events == ["armed"]
+        return original_pull(*args, **kwargs)
+
+    monkeypatch.setattr(update_cmd, "_pull_updates", _pull_after_pause)
+    hermes_main.cmd_update(args)
+
+    assert events == ["armed", ("released", True)]
+
+
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     disk_sha = "e" * 40
     old_sha = "7" * 40

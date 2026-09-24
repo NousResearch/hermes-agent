@@ -3706,7 +3706,9 @@ def _commit_compaction(
                 compressed = messages
                 made_progress = False
                 _restore_prune_rearm_tokens(agent.context_compressor, attempt.snapshot)
-            split_status = "aborted" if old_session_id is None and not in_place else "failed_not_indexed"
+            committed_in_place = in_place and split_status == "in_place_committed"
+            if not committed_in_place:
+                split_status = "aborted" if old_session_id is None and not in_place else "failed_not_indexed"
             # If rotation rolled back to the parent, agent.session_id is the indexed parent
             # and old_session_id was cleared: recovery, not an un-indexed orphan.
             if old_session_id is None and not in_place:
@@ -3714,6 +3716,8 @@ def _commit_compaction(
                     "Compression rotation aborted and rolled back to the parent session (%s): %s",
                     agent.session_id or "?", e,
                 )
+            elif committed_in_place:
+                logger.error("Committed compression could not reload its active transcript: %s", e)
             else:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
             # Arm the failure cooldown so the next turn can't rerun the doomed compression;
@@ -3723,6 +3727,11 @@ def _commit_compaction(
                 agent.context_compressor._record_compression_failure_cooldown(
                     _SPLIT_FAILURE_COOLDOWN_SECONDS, f"session_split_failed: {e}"
                 )
+            if committed_in_place:
+                # The DB has already archived the held rows. Neither the old snapshot nor
+                # the summary-only candidate is a safe model input until a durable reload.
+                agent._last_compaction_in_place = True
+                raise RuntimeError("Committed compression requires a durable transcript reload") from e
     return _CommitOutcome(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
         split_status=split_status, session_commit_succeeded=session_commit_succeeded,

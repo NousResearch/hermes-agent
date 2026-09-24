@@ -1,6 +1,7 @@
 """Regression for #121734: a continuing client must see every active row it did not summarize."""
 
 from unittest.mock import patch
+import pytest
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.conversation_compression import compress_context
@@ -66,3 +67,24 @@ def test_persisted_input_without_provenance_refuses_to_archive(tmp_path):
     assert live == held
     assert "foreign" in [m["content"] for m in db.get_messages_as_conversation("s")]
     assert not any(m["compacted"] for m in db.get_messages("s", include_inactive=True))
+
+
+def test_post_commit_read_failure_does_not_publish_partial_live_transcript(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s", source="test")
+    for i in range(8):
+        db.append_message("s", role="user" if i % 2 == 0 else "assistant", content=f"held {i}")
+    held = db.get_messages_as_conversation("s", repair_alternation=True, include_row_ids=True)
+    db.append_message("s", role="user", content="foreign gap")
+    db.append_message("s", role="assistant", content="foreign reply")
+    held.append({"role": "user", "content": "current unpersisted turn"})
+    agent = _agent(db, "s")
+    original_read = db.get_messages_as_conversation
+    with patch.object(db, "get_messages_as_conversation", side_effect=OSError("read failed")):
+        with pytest.raises(RuntimeError, match="Committed compression requires a durable transcript reload"):
+            compress_context(agent, held, approx_tokens=100_000, system_message="sys")
+
+    durable = original_read("s", repair_alternation=True, include_row_ids=True)
+    assert any("foreign gap" in str(m["content"]) for m in durable)
+    assert any("current unpersisted turn" in str(m["content"]) for m in durable)
+    assert agent._last_compaction_in_place is True

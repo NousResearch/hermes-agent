@@ -732,6 +732,11 @@
 
     useEffect(function () { loadBoardList(); }, [loadBoardList]);
 
+    const refreshFleet = useCallback(function () {
+      loadBoardList();
+      loadBoard();
+    }, [loadBoardList, loadBoard]);
+
     const scheduleReload = useCallback(function () {
       if (reloadTimerRef.current) return;
       reloadTimerRef.current = setTimeout(function () {
@@ -753,9 +758,9 @@
     // Fleet snapshots span independent event cursors; refresh without opening a WS per board.
     useEffect(function () {
       if (board !== "__all__") return undefined;
-      const timer = setInterval(loadBoard, 10000);
+      const timer = setInterval(refreshFleet, 10000);
       return function () { clearInterval(timer); };
-    }, [board, loadBoard]);
+    }, [board, refreshFleet]);
 
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
@@ -1313,7 +1318,7 @@
               })),
             h(Input, { value: search, placeholder: tx(t, "search", "Search tasks"),
               onChange: function (e) { setSearch(e.target.value); } }),
-            h(Button, { size: "sm", onClick: loadBoard }, tx(t, "refresh", "Refresh"))),
+            h(Button, { size: "sm", onClick: refreshFleet }, tx(t, "refresh", "Refresh"))),
           error ? h("div", { className: "text-xs text-destructive" }, error) : null,
           h("div", { className: "hermes-kanban-columns" },
             filteredBoard.columns.map(function (col) {

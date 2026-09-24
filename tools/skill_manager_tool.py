@@ -351,8 +351,11 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
+    # Policy lookups key on the bare name even when the caller addressed the skill as
+    # ``category/name`` — the two forms resolve to the same dir, and the usage store
+    # holds the curator-management record under the bare name (#121887).
     guard = ((org_guard and _org_mirror_write_guard(name, skill_dir, action))
-             or _background_review_write_guard(name, skill_dir, action))
+             or _background_review_write_guard(skill_dir.name, skill_dir, action))
     return (None, guard) if guard else (skill_dir, None)
 
 
@@ -534,7 +537,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     skill_dir, guard = _locate_for_write(name, "delete")
     if guard := guard or _curator_consolidation_delete_guard(name, absorbed_into):
         return guard
-    if pinned_err := _pinned_guard(name):
+    # The pin record lives under the bare name; a ``category/name`` address must not
+    # sidestep it (#121887).
+    if pinned_err := _pinned_guard(skill_dir.name):
         return _err(pinned_err)
     absorbed_target = absorbed_into.strip() if isinstance(absorbed_into, str) else ""
     if absorbed_target:
@@ -552,7 +557,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if _is_background_review():
         try:
             from tools.skill_usage import archive_skill
-            ok, archive_msg = archive_skill(name)
+            # Same bare-name keying as the guards: archive the real record, not a
+            # fork under the qualified address (#121887).
+            ok, archive_msg = archive_skill(skill_dir.name)
         except Exception as e:
             return _err(f"failed to archive '{name}': {e}")
         if not ok:
@@ -761,13 +768,16 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         # archive primitive instead of permanent rmtree so a misjudged consolidation can be undone (#29912).
         # Foreground, user-directed deletes keep their existing hard-delete semantics.
         from tools.skill_provenance import is_background_review
+        # Usage records are keyed by the bare skill name; a ``category/name`` address
+        # must not fork a second record under the qualified key (#121887).
+        _usage_name = Path(name).name
         if action == "create":
-            record_created(name, agent_created=is_background_review(),
+            record_created(_usage_name, agent_created=is_background_review(),
                            task_id=task_id, session_id=session_id)
         elif action in {"patch", "edit", "write_file", "remove_file"}:
-            bump_patch(name, action=action, task_id=task_id, session_id=session_id)
+            bump_patch(_usage_name, action=action, task_id=task_id, session_id=session_id)
         elif action == "delete" and not result.get("_archived"):
-            forget(name)
+            forget(_usage_name)
     # Only AFTER the write gate passed (staged writes returned early): never push un-reviewed content.
     with suppress(Exception):
         _maybe_debounced_sync_push(name)

@@ -235,7 +235,13 @@ def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, A
         return None
     from tools import skill_manager_tool as _smt
     existing = _smt._find_skill(name)
-    return _background_review_write_guard(name, existing["path"], action) if existing else None
+    if not existing:
+        return None
+    # `_find_skill` resolves the bare name and the ``category/name`` form to the same
+    # skill, but every usage-store key inside the guard is the bare name. Keying the
+    # policy on the name as passed made a category-qualified address read the forked
+    # telemetry record (``created_by=None``) and refuse a curator-managed skill (#121887).
+    return _background_review_write_guard(existing["path"].name, existing["path"], action)
 
 
 def _curator_consolidation_delete_guard(

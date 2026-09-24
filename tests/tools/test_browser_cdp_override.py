@@ -1,4 +1,6 @@
 from unittest.mock import Mock, patch
+
+import pytest
 from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_cdp as bt_cdp
 from tools import browser_tool_session as bt_session
@@ -157,6 +159,49 @@ class TestGetCdpOverride:
         monkeypatch.setenv("BROWSER_CDP_URL", HTTP_URL)
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert bc.is_camofox_mode() is False
+
+
+class TestLoopbackCdpOverride:
+    @pytest.mark.parametrize(
+        ("url", "answers", "expected"),
+        [
+            ("http://localhost:9222", None, True),
+            ("ws://dev.localhost:9222/devtools/browser/x", None, True),
+            ("http://127.7.8.9:9222", None, True),
+            ("ws://[::1]:9222/devtools/browser/x", None, True),
+            ("http://chrome.test:9222", ["127.0.0.1", "::1"], True),
+            ("http://chrome.test:9222", ["127.0.0.1", "192.168.1.5"], False),
+            ("http://192.168.1.5:9222", None, False),
+        ],
+    )
+    def test_trusts_only_exclusively_loopback_hosts(self, monkeypatch, url, answers, expected):
+        if answers is not None:
+            monkeypatch.setattr(
+                bt_cdp.socket,
+                "getaddrinfo",
+                lambda host, port: [(None, None, None, None, (address, 0)) for address in answers],
+            )
+
+        assert bt_cdp._is_loopback_cdp_override(url) is expected
+
+    def test_dns_timeout_is_bounded_and_fails_closed(self, monkeypatch):
+        class TimedOutThread:
+            def __init__(self, *, target, name, daemon):
+                assert daemon is True
+
+            def start(self):
+                pass
+
+            def join(self, *, timeout):
+                assert timeout == bt_cdp.LOOPBACK_CDP_DNS_TIMEOUT_S
+
+            def is_alive(self):
+                return True
+
+        monkeypatch.setattr(bt_cdp.threading, "Thread", TimedOutThread)
+
+        assert bt_cdp._is_loopback_cdp_override("http://blackholed.test:9222") is False
+
 
 class TestCreateCdpSession:
     """_create_cdp_session() must sanitize the CDP URL before logging.

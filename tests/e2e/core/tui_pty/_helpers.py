@@ -66,6 +66,26 @@ def require_tui() -> None:
     pytest.skip(f"needs {missing}")
 
 
+def private_tui_dir(root: Path) -> Path:
+    """A private copy of the prebuilt bundle for ``HERMES_TUI_DIR``.
+
+    A checkout launch of ``hermes --tui`` re-runs esbuild on ``ui-tui/dist/entry.js`` every
+    time, non-atomically, so a TUI started by another worker (or another e2e suite) while it
+    rebuilds dies with a Node ``SyntaxError`` on a half-written bundle. The prebuilt-bundle path
+    runs the same file without rebuilding; a copy that ``node --check`` accepts is immune to
+    concurrent rebuilds of the shared one.
+    """
+    src = REPO_ROOT / "ui-tui" / "dist" / "entry.js"
+    dest = root / "tui" / "dist" / "entry.js"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(20):
+        shutil.copyfile(src, dest)
+        if subprocess.run(["node", "--check", str(dest)], capture_output=True, timeout=60).returncode == 0:
+            return dest.parent.parent
+        time.sleep(0.5)  # caught a rebuild mid-write; take another copy
+    raise AssertionError(f"{src} never parsed (a rebuild kept rewriting it?)")
+
+
 def words(tag: str, n: int, start: int = 0) -> list[str]:
     return [f"{tag}w{i:03d}" for i in range(start, start + n)]
 
@@ -173,7 +193,8 @@ class TmuxTui:
                if not k.startswith(("HERMES_", "TMUX", "OPENAI_", "OPENROUTER_", "ANTHROPIC_"))}
         env.update(HOME=str(self.home), HERMES_HOME=str(self.hermes_home), PYTHONPATH=str(REPO_ROOT),
                    TMPDIR=str(root / "tmp"), LANG="C.UTF-8", LC_ALL="C.UTF-8", PYTHONUNBUFFERED="1",
-                   HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_TUI_INLINE="1" if inline else "0")
+                   HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_TUI_INLINE="1" if inline else "0",
+                   HERMES_TUI_DIR=str(private_tui_dir(root)))
         env.update(env_extra or {})
         argv = [sys.executable, "-m", "hermes_cli.main", "--tui", *args]
         subprocess.run(["tmux", "-L", self.sock, "-f", str(conf), "new-session", "-d", "-s", "p",
@@ -193,8 +214,18 @@ class TmuxTui:
     def fmt(self, spec: str) -> str:
         return self.tmux("display", "-p", "-t", "p", spec).strip()
 
+    def pane_state(self) -> str:
+        """``"<dead> <pid> <status>"``; a tmux client that loses the race to a loaded host
+        answers empty, so retry before concluding the server is gone."""
+        for _ in range(5):
+            out = self.fmt("#{pane_dead} #{pane_pid} #{pane_dead_status}")
+            if out:
+                return out
+            time.sleep(0.2)
+        return ""
+
     def alive(self) -> bool:
-        return self.fmt("#{pane_dead}") == "0" and bool(self.fmt("#{pane_pid}"))
+        return self.pane_state().startswith("0 ")
 
     def size(self) -> tuple[int, int]:
         cols, rows = self.fmt("#{pane_width} #{pane_height}").split()
@@ -293,7 +324,10 @@ class TmuxTui:
                  what="the TUI to take the terminal (raw mode)")
         except AssertionError as exc:
             raise AssertionError(f"{exc}\n{self.dump()}") from None
-        assert self.alive(), f"hermes --tui exited during startup\n{self.dump()}"
+        state = self.pane_state()
+        assert state.startswith("0 "), (
+            f"hermes --tui exited during startup (pane_dead pid status={state!r}, "
+            f"tmux server {'up' if state else 'gone'})\n{self.dump()}")
         self.wait_quiet(1.5, timeout=timeout)
 
     # -- processes -------------------------------------------------------------------------------

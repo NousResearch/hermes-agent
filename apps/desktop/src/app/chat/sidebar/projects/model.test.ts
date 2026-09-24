@@ -69,10 +69,10 @@ describe('orderProjectsByIds', () => {
 })
 
 describe('sortProjectsForOverview', () => {
-  it('puts Home above the active project', () => {
-    const active = { ...makeProject('active', 5), isAuto: false }
-    const projects = [makeProject('scanned', 0), active, home()]
+  it('keeps Home and the active project ahead of a stable A-Z overview', () => {
+    const active = { ...makeProject('zebra', 5), isAuto: false }
+    const projects = [makeProject('scanned', 10), active, home(), makeProject('alpha', 0)]
 
-    expect(ids(sortProjectsForOverview(projects, 'active'))).toEqual([NO_PROJECT_ID, 'active', 'scanned'])
+    expect(ids(sortProjectsForOverview(projects, 'zebra'))).toEqual([NO_PROJECT_ID, 'zebra', 'alpha', 'scanned'])
   })
 })

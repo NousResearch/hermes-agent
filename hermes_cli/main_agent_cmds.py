@@ -80,7 +80,14 @@ def cmd_acp(args):
     """Launch Hermes Agent as an ACP server."""
     try:
         from acp_adapter.entry import main as acp_main
-        acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
+        argv = [flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)]
+        # Subcommand-level ``--reasoning LEVEL`` (dest acp_reasoning) wins over the top-level
+        # ``hermes --reasoning`` — headless ACP clients (task runners, editors) append args
+        # after the subcommand, so that position must work.
+        level = str(getattr(args, "acp_reasoning", None) or getattr(args, "reasoning", None) or "").strip()
+        if level:
+            argv.extend(["--reasoning", level])
+        acp_main(argv)
     except ImportError as e:
         from hermes_cli.main_dep_hints import missing_optional_deps_message
 

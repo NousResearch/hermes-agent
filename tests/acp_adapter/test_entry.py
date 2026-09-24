@@ -23,6 +23,39 @@ def test_main_enables_unstable_protocol(monkeypatch):
     assert calls["kwargs"]["use_unstable_protocol"] is True
 
 
+def test_main_reasoning_flag_reaches_session_manager(monkeypatch):
+    """``hermes acp --reasoning max`` builds the SessionManager with the parsed override so every
+    session in the process runs at that effort; an unknown level keeps config resolution."""
+
+    async def fake_run_agent(agent, **kwargs):
+        pass
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery", lambda **_kwargs: None
+    )
+
+    built = {}
+
+    from acp_adapter.server import HermesACPAgent as _RealAgent
+
+    class _SpyAgent(_RealAgent):
+        def __init__(self, session_manager=None, **kwargs):
+            built["session_manager"] = session_manager
+            super().__init__(session_manager=session_manager, **kwargs)
+
+    monkeypatch.setattr("acp_adapter.server.HermesACPAgent", _SpyAgent)
+    entry.main(["--reasoning", "max"])
+    sm = built["session_manager"]
+    assert sm is not None and sm._reasoning_override == {"enabled": True, "effort": "max"}
+
+    # Unknown level: parse_reasoning_effort → None → default SessionManager (config resolution).
+    entry.main(["--reasoning", "bogus"])
+    assert built["session_manager"] is None
+
+
 def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):
     discovery_calls = []
 

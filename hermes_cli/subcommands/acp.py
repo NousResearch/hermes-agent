@@ -31,4 +31,9 @@ def build_acp_parser(subparsers, *, cmd_acp: Callable) -> None:
         "--yes", "-y", action="store_true", dest="assume_yes",
         help="Accept all prompts (used by --setup-browser to skip the "
              "~400 MB Chromium download confirmation).")
+    acp_parser.add_argument(
+        "--reasoning", dest="acp_reasoning", default=None, metavar="LEVEL",
+        help="Reasoning effort for every session in this ACP server "
+             "(none/minimal/low/medium/high/xhigh/max/ultra). Overrides config.yaml "
+             "agent.reasoning_effort / reasoning_overrides for this process.")
     acp_parser.set_defaults(func=cmd_acp)

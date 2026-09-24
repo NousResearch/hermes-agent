@@ -66,6 +66,38 @@ def test_startup_listener_summary_is_info_operator_notice(caplog) -> None:
     )
 
 
+def test_startup_listener_summary_reports_physical_sockets_not_multiplex_routes(caplog) -> None:
+    runner = SimpleNamespace(
+        adapters={
+            Platform.API_SERVER: SimpleNamespace(
+                _bound_listener_endpoints=("127.0.0.1:8642",)
+            )
+        },
+        _profile_adapters={
+            "coder": {
+                Platform.LINE: SimpleNamespace(
+                    _shared_listener_profile="coder",
+                    _bound_listener_endpoints=(),
+                )
+            },
+            "maintainer": {
+                Platform.TEAMS: SimpleNamespace(
+                    _shared_listener_profile="maintainer",
+                    _bound_listener_endpoints=(),
+                )
+            },
+        },
+    )
+
+    with caplog.at_level(logging.INFO):
+        GatewayStartupMixin._log_startup_listeners(runner)
+
+    records = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Gateway listeners:")]
+    assert records == ["Gateway listeners: api_server=127.0.0.1:8642"]
+    assert "/p/coder/" not in records[0]
+    assert "/p/maintainer/" not in records[0]
+
+
 @pytest.mark.asyncio
 async def test_bind_listener_records_the_actual_ephemeral_port() -> None:
     adapter = SimpleNamespace(_shared_listener_profile=None)

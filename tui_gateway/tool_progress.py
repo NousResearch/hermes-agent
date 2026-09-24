@@ -247,6 +247,9 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        # A preview prepared for an earlier call whose completion never fired (failed
+        # flush) must not attach to a provider that reuses the same call id.
+        session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
     if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
@@ -281,18 +284,20 @@ def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: 
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
+    session = _sessions.get(sid)
+    prepared = session.setdefault("tool_result_metadata", {}) if session is not None else {}
+    # Consume the pre-flush preview even when this completion is dropped as stale.
+    metadata = prepared.pop(tool_call_id, None)
     if _connector_lifecycle_is_stale(sid, name, args):
         return
     payload = {"tool_id": tool_call_id, "name": name, "args": args}
     if (labels := _tool_labels(name, args)) is not None:
         payload["labels"] = labels
-    session = _sessions.get(sid)
-    prepared = session.setdefault("tool_result_metadata", {}) if session is not None else {}
-    if tool_call_id not in prepared:
+    if metadata is None:
         # Native runtimes may emit lifecycle callbacks without the tool executor.
-        metadata = _prepare_tool_result_metadata(sid, tool_call_id, name, args, result)
-        payload.update(metadata.get("tool_result_metadata", {}))
-    payload.update(prepared.pop(tool_call_id, {}))
+        metadata = _prepare_tool_result_metadata(sid, tool_call_id, name, args, result).get("tool_result_metadata", {})
+        prepared.pop(tool_call_id, None)
+    payload.update(metadata)
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:

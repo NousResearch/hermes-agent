@@ -5,6 +5,7 @@
 // non-repo / remote backend; mutations reject so the renderer can toast.
 
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -48,15 +49,22 @@ function gitFor(cwd, gitBin) {
   // locations or PATH — never renderer/user input. simple-git's custom-binary
   // validation rejects paths containing spaces (the default Windows install is
   // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
-  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
-  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
-  // could resolve a repo-local git.exe).
+  // For spaced paths, prefer the 8.3 short path when available to avoid simple-git's
+  // console.warn (which throws EPIPE on headless/detached GUI processes), and
+  // opt into simple-git's trusted-binary escape hatch.
+  let bin = gitBin || 'git'
+  if (process.platform === 'win32' && /\s/.test(bin)) {
+    const short = bin.replace(/Program Files \(x86\)/i, 'PROGRA~2').replace(/Program Files/i, 'PROGRA~1')
+    if (existsSync(short)) {
+      bin = short
+    }
+  }
   return simpleGit({
     baseDir: cwd,
-    binary: gitBin || 'git',
+    binary: bin,
     maxConcurrentProcesses: 4,
     trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    ...(bin && /\s/.test(bin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
   })
 }
 

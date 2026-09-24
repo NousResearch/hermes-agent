@@ -225,7 +225,7 @@ import {
   writeBufferToFile
 } from './gateway-file-download'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
-import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
+import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import {
   describeGitHubCredentialSource,
@@ -1985,6 +1985,14 @@ function rememberLog(chunk) {
 
   scheduleDesktopLogFlush()
 }
+
+// Prevent unhandled EPIPE crash if stdout/stderr pipe closes (e.g. detached GUI on Windows)
+process.stdout?.on?.('error', (err: any) => {
+  if (err?.code === 'EPIPE') return
+})
+process.stderr?.on?.('error', (err: any) => {
+  if (err?.code === 'EPIPE') return
+})
 
 installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
 
@@ -12802,10 +12810,8 @@ async function runPoolBackendStart(
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
   ready = true
 
-  const childAlive = () => child.exitCode === null && !child.killed
-
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
-    childAlive,
+    childAlive: () => child.exitCode === null && !child.killed,
     label: `Hermes backend for profile "${profile}"`,
     rememberLog
   })
@@ -12817,13 +12823,7 @@ async function runPoolBackendStart(
   // Verify the WebSocket session token before declaring backend ready.
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
   const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-
-  // Our own child: a cold start can stall its loop past the base budget (#96177).
-  const wsProbe = await probeGatewayWebSocket(wsUrl, {
-    WebSocketImpl: globalThis.WebSocket,
-    ...spawnedBackendProbeOptions(childAlive)
-  })
-
+  const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   if (!wsProbe.ok) {
@@ -13653,10 +13653,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     primaryExitRecovery.reset()
     backendStartFailure = null
 
-    const childAlive = () => hermesProcess.exitCode === null && !hermesProcess.killed
-
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
-      childAlive,
+      childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
       rememberLog
     })
 
@@ -13664,13 +13662,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     // Verify the WebSocket session token before declaring backend ready.
     const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-
-    // Same policy as the pool path: our own child may still be cold-starting (#96177).
-    const wsProbe = await probeGatewayWebSocket(wsUrl, {
-      WebSocketImpl: globalThis.WebSocket,
-      ...spawnedBackendProbeOptions(childAlive)
-    })
-
+    const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     if (!wsProbe.ok) {

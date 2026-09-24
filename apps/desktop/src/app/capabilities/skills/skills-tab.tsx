@@ -11,9 +11,10 @@ import {
   editLearningNode,
   getLearningNode,
   getOfficialSkills,
-  type ProfileScope,
   profileScopeKey,
-  setSkillEnabled
+  setSkillCategoryEnabled,
+  setSkillEnabled,
+  type ProfileScope
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
@@ -211,6 +212,51 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
       )
   }
 
+  // Per-category bulk: one backend request per category (a single
+  // skills.disabled write server-side); rows repaint from response names.
+  async function bulkCategoryApply(category: string, enabled: boolean) {
+    if (bulkBusy) {
+      return
+    }
+
+    setBulkBusy(true)
+
+    try {
+      const result = await setSkillCategoryEnabled(
+        category === 'general' ? null : category,
+        enabled,
+        profile
+      )
+      const names = new Set(result.names)
+      setSkills(cur => cur?.map(row => (names.has(row.name) ? { ...row, enabled } : row)) ?? cur)
+      notify({ kind: 'success', title: t.skills.bulkUpdated(result.names.length), message: '' })
+    } catch (err) {
+      notifyError(err, t.skills.failedToUpdate(category))
+    } finally {
+      invalidateSlashCompletions()
+      setBulkBusy(false)
+    }
+  }
+
+  const categoryBulkItems = useMemo(() => {
+    const byCategory = new Map<string, SkillInfo[]>()
+    for (const row of skills) {
+      const key = categoryFor(row)
+      byCategory.set(key, [...(byCategory.get(key) ?? []), row])
+    }
+
+    return Array.from(byCategory.entries()).map(([category, rows]) => {
+      const anyEnabled = rows.some(row => row.enabled)
+      return {
+        disabled: bulkBusy,
+        label: anyEnabled
+          ? t.skills.categoryDisableAll(prettyName(category), rows.length)
+          : t.skills.categoryEnableAll(prettyName(category), rows.length),
+        onSelect: () => void bulkCategoryApply(category, !anyEnabled)
+      }
+    })
+  }, [bulkBusy, skills, t])
+
   // "Never used" = zero recorded activity. The pruning move for a 100+ skill
   // install: keep the workhorses, shed the noise.
   const disableUnused = () =>
@@ -292,7 +338,8 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                         disabled: bulkBusy,
                         label: t.skills.disableUnused,
                         onSelect: () => void disableUnused()
-                      }
+                      },
+                      ...categoryBulkItems
                     ]}
                     label={t.skills.tabSkills}
                     toggle={bulkSwitch}

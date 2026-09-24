@@ -3,7 +3,11 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useState } from 'react'
 
 import { CountSkeleton } from '@/components/ui/skeleton'
-import { type ProfileScope, setToolsetEnabled } from '@/hermes'
+import {
+  setToolsetEnabled,
+  setToolsetGroupEnabled,
+  type ProfileScope
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { Codecs, persistentAtom } from '@/lib/persisted'
@@ -139,6 +143,47 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
       )
   }
 
+  // Per-group bulk: one backend request per display group (TOOLSET_GROUPS);
+  // rows repaint from response names.
+  async function bulkApplyGroup(group: string, enabled: boolean) {
+    if (bulkBusy) {
+      return
+    }
+
+    setBulkBusy(true)
+
+    try {
+      const result = await setToolsetGroupEnabled(group, enabled, profile)
+      const names = new Set(result.names)
+      setToolsets(cur => cur?.map(r => (names.has(r.name) ? { ...r, enabled, available: enabled } : r)) ?? cur)
+      notify({ kind: 'success', title: t.skills.bulkUpdated(result.names.length), message: '' })
+    } catch (err) {
+      notifyError(err, t.skills.failedToUpdate(t.skills.toolsetGroupName(group)))
+    } finally {
+      invalidateSlashCompletions()
+      setBulkBusy(false)
+    }
+  }
+
+  const groupBulkItems = useMemo(() => {
+    const byGroup = new Map<string, ToolsetInfo[]>()
+    for (const ts of bulkToolsets) {
+      const key = ts.group ?? 'other'
+      byGroup.set(key, [...(byGroup.get(key) ?? []), ts])
+    }
+
+    return Array.from(byGroup.entries()).map(([group, rows]) => {
+      const anyEnabled = rows.some(ts => ts.enabled)
+      return {
+        disabled: bulkBusy,
+        label: anyEnabled
+          ? t.skills.groupDisableAll(t.skills.toolsetGroupName(group), rows.length)
+          : t.skills.groupEnableAll(t.skills.toolsetGroupName(group), rows.length),
+        onSelect: () => void bulkApplyGroup(group, !anyEnabled)
+      }
+    })
+  }, [bulkBusy, bulkToolsets, t])
+
   if (visibleToolsets.length === 0) {
     return <CapabilityEmpty noun="tools" query={query} />
   }
@@ -149,7 +194,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
         header={
           <ListStrip
             left={<SortButton desc={toolsetsSortDesc} onFlip={() => $toolsetsSortDesc.set(!$toolsetsSortDesc.get())} />}
-            right={<ListStripMenu label={t.skills.tabToolsets} toggle={bulkSwitch} />}
+            right={<ListStripMenu items={groupBulkItems} label={t.skills.tabToolsets} toggle={bulkSwitch} />}
           />
         }
       >

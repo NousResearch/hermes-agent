@@ -2761,6 +2761,11 @@ export const es = defineLocale({
     disableUnused: 'Desactivar los que no se usan',
     bulkUpdated: count =>
       `${count === 1 ? 'Se actualizó' : 'Se actualizaron'} ${count} ${count === 1 ? 'elemento' : 'elementos'} para las sesiones nuevas.`,
+    categoryEnableAll: (name, count) => `Activar todas las habilidades de ${name} (${count})`,
+    categoryDisableAll: (name, count) => `Desactivar todas las habilidades de ${name} (${count})`,
+    groupEnableAll: (name, count) => `Activar todos los toolsets de ${name} (${count})`,
+    groupDisableAll: (name, count) => `Desactivar todos los toolsets de ${name} (${count})`,
+    toolsetGroupName: key => ({ web: 'Web y búsqueda', system: 'Sistema y archivos', media: 'Medios y voz', knowledge: 'Conocimiento y agentes', integrations: 'Integraciones', plugins: 'Plugins', other: 'Otros' })[key] ?? key,
     bulkNoChange: 'No hay nada que cambiar.',
     usageCount: count => `usado ${count}×`,
     provenance: {

@@ -34,6 +34,19 @@ export function setToolsetEnabled(
   })
 }
 
+export function setToolsetGroupEnabled(
+  group: string,
+  enabled: boolean,
+  profile?: ProfileScope
+): Promise<{ ok: boolean; group: string; enabled: boolean; names: string[] }> {
+  return window.hermesDesktop.api<{ ok: boolean; group: string; enabled: boolean; names: string[] }>({
+    ...capabilityScoped(profile),
+    path: '/api/tools/toolsets/bulk',
+    method: 'PUT',
+    body: { group, enabled }
+  })
+}
+
 export function getToolsetConfig(name: string, profile?: ProfileScope): Promise<ToolsetConfig> {
   return window.hermesDesktop.api<ToolsetConfig>({
     ...capabilityScoped(profile),

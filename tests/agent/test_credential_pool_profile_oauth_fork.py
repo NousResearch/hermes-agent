@@ -766,7 +766,7 @@ def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowe
     from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
 
     fleet["use"](_profile(fleet, "stale-dead") if borrowed else fleet["root"])
-    stale, peer = load_pool("anthropic"), load_pool("anthropic")
+    stale, stale_billing, peer = load_pool("anthropic"), load_pool("anthropic"), load_pool("anthropic")
     assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
 
     stale.mark_exhausted_and_rotate(
@@ -780,9 +780,9 @@ def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowe
     selected = stale.select()
     assert selected is not None and selected.refresh_token == "sk-ant-ort-RT1"
 
-    # Only the terminal verdict was scoped to the old pair: a later account-wide
-    # billing 402 from the same stale writer still applies to the rotated pair.
-    stale.mark_exhausted_and_rotate(status_code=402, credential_id="abc123")
+    # Only the terminal verdict is scoped to the old pair: a later account-wide
+    # billing 402 from another still-stale writer applies to the rotated pair.
+    stale_billing.mark_exhausted_and_rotate(status_code=402, credential_id="abc123")
     row = fleet["rows"](fleet["root"])[0]
     assert row["refresh_token"] == "sk-ant-ort-RT1"
     assert row["last_status"] == STATUS_EXHAUSTED

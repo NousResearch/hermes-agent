@@ -928,6 +928,95 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
     assert not any("delete-generic-password" in c for c in calls)
 
 
+def test_relaunchable_fixup_failed_identity_uses_pinned_adhoc_before_legacy(tmp_path, monkeypatch):
+    """A locked keychain must not skip identifier-pinned ad-hoc for cdhash-only.
+
+    ``desktop.macos_signing_identity`` fails over SSH (login keychain locked).
+    The next try is the same inside-out signer with ``identity="-"``, which
+    keeps the identifier designated requirement and entitlements. Legacy
+    ``codesign --deep --sign -`` is only the last resort (#121857).
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda _app: False)
+    monkeypatch.setattr(
+        main_desktop, "_desktop_macos_local_signing_identity", lambda: "Hermes Local Signing",
+    )
+
+    seen: list[str] = []
+
+    def fake_codesign(_app, *, desktop_dir, identity="-"):
+        seen.append(identity)
+        if identity != "-":
+            raise subprocess.CalledProcessError(1, ["codesign", "--sign", identity])
+        return True
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", fake_codesign)
+    monkeypatch.setattr(
+        main_desktop.shutil, "which",
+        lambda name: "/usr/bin/codesign" if name == "codesign" else None,
+    )
+    monkeypatch.setattr(main_desktop.subprocess, "run", fake_run)
+
+    assert main_desktop._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert seen == ["Hermes Local Signing", "-"]
+    assert not any(cmd[:5] == ["/usr/bin/codesign", "--force", "--deep", "--sign", "-"] for cmd in calls)
+
+
+def test_relaunchable_fixup_legacy_when_pinned_adhoc_also_fails(tmp_path, monkeypatch):
+    """Legacy deep ad-hoc still runs when identifier-pinned signing fails too."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    app = exe.parents[2]
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda _app: False)
+    monkeypatch.setattr(
+        main_desktop, "_desktop_macos_local_signing_identity", lambda: "Hermes Local Signing",
+    )
+
+    seen: list[str] = []
+
+    def fake_codesign(_app, *, desktop_dir, identity="-"):
+        seen.append(identity)
+        raise subprocess.CalledProcessError(1, ["codesign", "--sign", identity])
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", fake_codesign)
+    monkeypatch.setattr(
+        main_desktop.shutil, "which",
+        lambda name: "/usr/bin/codesign" if name == "codesign" else None,
+    )
+    monkeypatch.setattr(main_desktop.subprocess, "run", fake_run)
+
+    assert main_desktop._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert seen == ["Hermes Local Signing", "-"]
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+
+
 # --- desktop.* launch options (config.yaml) -------------------------------
 
 

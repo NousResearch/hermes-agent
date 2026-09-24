@@ -889,11 +889,23 @@ def _desktop_macos_relaunchable_fixup(
             print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
             return True
     except Exception as exc:
+        # A configured cert can fail while the login keychain is locked (an SSH
+        # update). Identifier-pinned ad-hoc still keeps the designated requirement
+        # and entitlements; cdhash-only ``--deep --sign -`` is the last resort.
         if identity != "-":
             print(
                 f"  (warning: configured macOS signing identity failed: {identity!r}; "
-                "falling back to ad-hoc — TCC grants may need to be re-granted)"
+                "falling back to identifier-pinned ad-hoc)"
             )
+            try:
+                if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity="-"):
+                    print(
+                        "  → macOS desktop signed with stable ad-hoc identity; "
+                        "TCC grants persist across rebuilds"
+                    )
+                    return True
+            except Exception as adhoc_exc:
+                exc = adhoc_exc
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
     return _macos_legacy_adhoc_resign(codesign, app)
 

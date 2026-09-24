@@ -32,6 +32,12 @@ DEFAULT_CONFIG = {
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
     "database": {
         "journal_mode": "wal",
+        # auto_settle_retired_wal: when a live handle's -wal/-shm generation is rotated away under it
+        # and the retired frames are durably captured, settle the handle and reopen on the current
+        # generation instead of halting every later write until restart (Python 3.12+ only; older
+        # runtimes keep the halt because closing the stale handle could checkpoint retired frames
+        # over the new WAL). Set false to require the manual "stop the writers, then reopen".
+        "auto_settle_retired_wal": True,
         # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
         "wal_autocheckpoint": None,
         "journal_size_limit": None,

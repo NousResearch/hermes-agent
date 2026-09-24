@@ -99,6 +99,22 @@ def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -
         return fallback
 
 
+def _auto_settle_retired_wal_enabled() -> bool:
+    """``database.auto_settle_retired_wal`` from config.yaml (lazy import: circular at load).
+
+    Default True: a HALTED writer whose retired WAL generation was durably captured settles
+    (close the stale handle with its close-time checkpoint disabled) and reopens on the
+    generation at the path, instead of staying sticky-quarantined until process restart —
+    the remediation for a stranded long-lived backend must not require killing it.
+    Set False to restore the halt-until-restart contract."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        value = (load_config_readonly().get("database") or {}).get("auto_settle_retired_wal")
+        return True if value is None else bool(value)
+    except Exception:
+        return True
+
+
 def resolved_max_resume_messages() -> int:
     return _configured_transcript_limit("max_resume_messages")
 
@@ -993,6 +1009,10 @@ class SessionDB(
             fn_started = False
             try:
                 with self._lock:
+                    if self._db_wal_generation_lost:
+                        # Sticky from an earlier halt: self-heal first (the retired generation is
+                        # already durably captured), then fall through to the normal guard.
+                        self._auto_settle_retired_generation_locked()
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
@@ -1272,6 +1292,78 @@ class SessionDB(
             "whether those frames belong on top of the file now at the path.", self.db_path, trigger, artifact,
         )
         return artifact
+
+    def _auto_settle_retired_generation_locked(self) -> bool:
+        """Self-heal a writer stranded by sidecar rotation; caller holds ``self._lock``.
+
+        A long-lived backend (TUI/gateway) whose -wal/-shm generation was rotated away under it
+        used to stay sticky-quarantined until process death, while every fresh opener was refused
+        by :func:`refuse_deleted_wal_generation` until that death too — the split-brain mutual
+        lockout. By the time the sticky halt fires, the design has ALREADY decided preservation is
+        sufficient: the exact retired generation is durably captured (see _capture_retired_
+        generation). Settling closes the stale handle (close-time checkpoint disabled first, so its
+        retired frames can never land on the newer generation), reopens on the generation at the
+        path, and clears the sticky flag so this process stops refusing — and stops making every
+        other opener refuse, because this process was one of the deleted-inode holders.
+
+        Eligibility (every leg keeps the pre-fix sticky halt): config
+        ``database.auto_settle_retired_wal`` is on, the capture succeeded (frames are
+        durable), this runtime can disable SQLite's close-time checkpoint (3.12+; on older runtimes
+        closing the stale handle could checkpoint retired frames over the newer generation, and the
+        pin-unclosed remediation intentionally keeps the deleted fd pinned), the main file was not
+        replaced (#89332 contract unchanged), no foreign process still pins a deleted sidecar
+        (re-checked before reopening — the reopen must not mint a replacement WAL),
+        and the reopen succeeds (sticky halt restored on failure).
+        The frames in the capture stay OUT of the live db until an operator recovers them — the
+        same data-safety contract a manual restart always had."""
+        if not _auto_settle_retired_wal_enabled():
+            return False
+        if self.read_only or self._conn is None or self._retired_generation_capture is None:
+            return False
+        if self._db_replaced or self._db_file_was_replaced():
+            return False
+        if not _close_time_checkpoint_configurable() or not self._disable_close_time_checkpoint():
+            return False
+        # Pooled read-only connections may pin the retired sidecars too; drain them so this
+        # process stops being a deleted-inode holder as a whole, not just on its writer conn.
+        with self._read_conns_lock:
+            self._read_conns_closed = True
+        while self._evict_one_idle_read_conn():
+            pass
+        artifact = self._retired_generation_capture
+        conn, self._conn = self._conn, None
+        self._close_connection_quietly(conn)
+        try:
+            # Our own stale descriptors are gone by now; if a FOREIGN process still pins a deleted
+            # generation, the reopen below could mint a replacement WAL — refuse (sticky halt
+            # restored) exactly like a fresh opener would.
+            refuse_deleted_wal_generation(self.db_path)
+            self._conn = self._open_writer_conn()
+        except Exception as exc:
+            self._db_wal_generation_lost = True
+            with self._read_conns_lock:
+                self._read_conns_closed = False
+            logger.error(
+                "Auto-settle of the retired WAL generation of %s failed to reopen (%s); the handle "
+                "stays quarantined and close() retries. Captured generation remains at %s.",
+                self.db_path, exc, artifact,
+            )
+            return False
+        with self._read_conns_lock:
+            self._read_conns_closed = False
+        self._db_wal_generation_lost = False
+        # Once-per-handle is wrong now that one handle can outlive several generations: the NEXT
+        # loss must capture its own generation.
+        self._retired_generation_capture = None
+        self._record_db_file_identity()
+        logger.error(
+            "Auto-settled the retired WAL generation of %s (captured at %s) and reopened on the "
+            "generation at the path. Frames committed only in the retired WAL are NOT in the live "
+            "database: inspect the capture with `hermes sessions recover --source %s --inspect-only` "
+            "before deciding whether they belong on it.",
+            self.db_path, artifact, artifact / self.db_path.name,
+        )
+        return True
 
     def _raise_if_db_replaced(self) -> None:
         """Sticky-flag fast path (no log spam on every write), then the live probe."""

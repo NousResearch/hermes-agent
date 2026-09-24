@@ -10,6 +10,7 @@ generation.
 import errno
 import gc
 import os
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -294,7 +295,9 @@ def test_iter_holders_flags_orphan_kept_alive_by_hardlink(tmp_path, force_wal):
     not sys.platform.startswith("linux"),
     reason="deleted-WAL write halt uses Linux unlink semantics",
 )
-def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):
+def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal, monkeypatch):
+    """Manual contract: with auto-settle OFF, the halt stays sticky until restart."""
+    monkeypatch.setattr(hermes_state, "_auto_settle_retired_wal_enabled", lambda: False)
     path = tmp_path / "state.db"
     db = make_db(path, "s", "before")
     require_wal(db)
@@ -309,6 +312,63 @@ def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):
     with pytest.raises(DeletedWalGenerationError):
         db.append_message("s", role="user", content="second-after-halt")
     db.close()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="deleted-WAL self-heal uses Linux unlink semantics",
+)
+@pytest.mark.skipif(
+    not _close_time_checkpoint_configurable(),
+    reason="auto-settle requires setconfig to disable the close-time checkpoint; "
+           "older runtimes keep the sticky halt (pin-unclosed remediation)",
+)
+def test_writer_self_heals_on_next_write_after_capture(tmp_path, force_wal):
+    """Self-heal contract: after the retired generation is durably captured, the NEXT write
+    settles the stranded handle and continues on the generation at the path — the stranded
+    long-lived backend must not need a process kill, and neither must every other opener.
+    Frames committed only in the retired WAL are NOT in the live db (same contract a manual
+    restart always had) but are recoverable from the captured artifact alone."""
+    path = Path(tmp_path / "state.db")
+    db = make_db(path, "s", "before")
+    require_wal(db)
+    # Park "before" (+ the session row) in the main file, then commit one frame that lives
+    # ONLY in the WAL — that frame is what a sidecar rotation strands in the deleted inode.
+    db._conn.execute("PRAGMA wal_autocheckpoint=0")
+    db._try_wal_checkpoint()
+    db.append_message("s", role="user", content="wal-only-frame")
+    lost_wal_identity = db._db_sidecar_identity.get("-wal")
+    lose_sidecars(path, rename=False)
+
+    with pytest.raises(DeletedWalGenerationError):
+        db.append_message("s", role="user", content="after-unlink")  # halts, captures
+    artifact = db._retired_generation_capture
+    assert artifact is not None and artifact.is_dir()
+
+    # Next write: settles on the new generation and lands.
+    db.append_message("s", role="user", content="after-heal")
+    assert db._db_wal_generation_lost is False
+    assert db._retired_generation_capture is None  # next loss captures fresh
+    assert db._db_sidecar_identity.get("-wal") != lost_wal_identity
+
+    contents = [m["content"] for m in db.get_messages("s")]
+    assert "before" in contents and "after-heal" in contents
+    assert "wal-only-frame" not in contents  # retired-generation frame: out of the live db
+    db.close()
+    assert integrity_ok_path(path)
+    # The retired generation is a self-contained recoverable pair holding the stranded frame.
+    assert (artifact / "state.db").exists() and (artifact / "state.db-wal").exists()
+    work = tmp_path / "recover"
+    work.mkdir()
+    shutil.copyfile(artifact / "state.db", work / "state.db")
+    shutil.copyfile(artifact / "state.db-wal", work / "state.db-wal")
+    conn = sqlite3.connect(str(work / "state.db"))
+    try:
+        rows = conn.execute("SELECT content FROM messages").fetchall()
+    finally:
+        conn.close()
+    recovered = [r[0] for r in rows]
+    assert any("wal-only-frame" in c for c in recovered)
 
 
 @pytest.mark.skipif(_close_time_checkpoint_configurable(),

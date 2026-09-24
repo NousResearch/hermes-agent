@@ -65,17 +65,62 @@ def test_post_attach_reconnects_stop_at_budget_and_unregister(monkeypatch, unreg
     assert bs.SUPERVISOR_REGISTRY.get(supervisor.task_id) is None
 
 
-def test_initial_connect_failure_stays_fatal_for_start(monkeypatch):
-    """The budget is post-attach only: a first-dial failure still propagates to ``start()``."""
-    supervisor = bs.CDPSupervisor(task_id="initial-failure", cdp_url="ws://127.0.0.1:9222")
+def test_initial_connect_retries_through_cold_start_then_attaches(monkeypatch):
+    """A cold browser may reject early dials, but a later CDP attach still starts the supervisor."""
+    supervisor = bs.CDPSupervisor(task_id="cold-start", cdp_url="ws://127.0.0.1:9222")
+    dials = 0
 
     async def connect(*_args, **_kwargs):
-        raise ConnectionError("CDP endpoint is unavailable")
+        nonlocal dials
+        dials += 1
+        if dials < bs.MAX_INITIAL_CONNECT_ATTEMPTS:
+            raise ConnectionError("Chromium is still starting")
+        return _ClosingWebSocket()
+
+    async def _noop(*_a, **_k):
+        pass
+
+    async def _stop_after_attach():
+        supervisor._stop_requested = True
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
 
     monkeypatch.setattr(websockets, "connect", connect)
+    monkeypatch.setattr(supervisor, "_attach_initial_page", _noop)
+    monkeypatch.setattr(supervisor, "_read_loop", _stop_after_attach)
+    monkeypatch.setattr(bs.asyncio, "sleep", fast_sleep)
 
     asyncio.run(supervisor._run())
 
+    assert dials == bs.MAX_INITIAL_CONNECT_ATTEMPTS
+    assert supervisor._start_error is None
+    assert supervisor._ready_event.is_set()
+
+
+def test_initial_connect_failure_stops_after_cold_start_budget(monkeypatch):
+    """An endpoint that never appears remains fatal for ``start()`` after the initial retry window."""
+    supervisor = bs.CDPSupervisor(task_id="initial-failure", cdp_url="ws://127.0.0.1:9222")
+    dials = 0
+
+    async def connect(*_args, **_kwargs):
+        nonlocal dials
+        dials += 1
+        raise ConnectionError("CDP endpoint is unavailable")
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(websockets, "connect", connect)
+    monkeypatch.setattr(bs.asyncio, "sleep", fast_sleep)
+
+    asyncio.run(supervisor._run())
+
+    assert dials == bs.MAX_INITIAL_CONNECT_ATTEMPTS
     assert isinstance(supervisor._start_error, ConnectionError)
     assert supervisor._ready_event.is_set()
     assert supervisor.snapshot().active is False

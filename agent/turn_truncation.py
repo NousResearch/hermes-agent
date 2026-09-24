@@ -10,6 +10,7 @@ the final roll-back. Nothing here imports ``agent.conversation_loop`` at module 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -316,6 +317,58 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     )
 
 
+def _kanban_block_on_truncation(agent: Any, *, stream_stall: bool) -> None:
+    """#115999: a dispatcher worker that exhausted its truncated-tool-call retries cannot
+    emit ANY tool call — including ``kanban_block`` — so its exit gets booked against the
+    worker's name. Record the real cause on the worker's behalf (best-effort, never raises):
+    a ``transient`` block parks the card with a reason the retry worker and the operator can
+    read, instead of a bare rc/exit-code guess. No-op outside a dispatcher-owned worker."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_context, is_dispatcher_owned_worker_context,
+        )
+        # Same ownership guard as the kanban tool mutations: a delegate_task child (or an
+        # in-process cron) inherits HERMES_KANBAN_* env but is not the run owner — blocking
+        # here would park the PARENT's task mid-run.
+        if is_delegated_child_context() or not is_dispatcher_owned_worker_context():
+            return
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        reason = (
+            "harness: stream kept dropping mid tool-call after 4 retries — the worker could "
+            "not emit any well-formed tool call, so this block is recorded on its behalf "
+            "(retry is the right response)"
+            if stream_stall else
+            "harness: every tool call arrived truncated after 4 boosted retries (output cap) — "
+            "the worker could not emit any well-formed tool call, so this block is recorded on "
+            "its behalf (retry, ideally on a model/provider with a higher output cap)"
+        )
+        raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID")
+        try:
+            expected_run_id = int(raw_run_id) if raw_run_id else None
+        except ValueError:
+            expected_run_id = None
+        conn = kbc.connect()
+        try:
+            if kb.block_task(
+                conn, task_id, reason=reason, kind="transient", expected_run_id=expected_run_id,
+            ):
+                agent._vprint(
+                    f"{agent.log_prefix}🧱 Kanban task {task_id} blocked (transient) on the "
+                    "worker's behalf: no well-formed tool call could be emitted.",
+                    force=True, diagnostic=True,
+                )
+        finally:
+            conn.close()
+    except Exception:
+        # Runs on the way out of an already-failed turn: board bookkeeping must never
+        # mask the truncation verdict — a debug line keeps the no-op diagnosable.
+        logger.debug("on-behalf kanban block after truncation failed", exc_info=True)
+
+
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
     """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
@@ -347,6 +400,10 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             force=True, diagnostic=True,
         )
         _final_response = _TRUNCATED_FINAL
+    # The on-behalf block must run BEFORE cleanup: _kanban_block_on_truncation never
+    # raises, but a cleanup failure on the way out must not cost the worker the only
+    # durable record of the real failure cause.
+    _kanban_block_on_truncation(agent, stream_stall=st.is_stub)
     agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)

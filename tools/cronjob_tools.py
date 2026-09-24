@@ -155,6 +155,67 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
     })
 
 
+def _routed_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Delivery-platform names for this job whose native adapter is absent from this profile's
+    ``config.platforms`` — the multiplexer gateway's ``SharedRouteAdapters`` is the only path that
+    can deliver them when ``gateway.profile_routes`` forwards that platform to this profile. A
+    profile that declares its own ``platforms.<p>`` block is NOT routed, even if a route exists,
+    because the native adapter is authoritative (#89302 covers the in-gateway form)."""
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+        targets = _resolve_delivery_targets(job) or []
+    except Exception:
+        return set()
+    if not targets:
+        return set()
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    except Exception:
+        return set()
+    platforms = (config.get("platforms") or {}) if isinstance(config, dict) else {}
+    missing = set()
+    for t in targets:
+        platform = str(t.get("platform") or "").lower()
+        if platform and platform not in platforms:
+            missing.add(platform)
+    return missing
+
+
+def _forward_routed_profile_run(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None
+) -> Optional[str]:
+    """Forward a manual run to the gateway when this profile has no native adapter for the job's
+    delivery target — the multiplexer's ``SharedRouteAdapters`` is the only path. Reached via the
+    same ``POST /api/jobs/{id}/run`` endpoint the relay-fronted path uses; returns a JSON result
+    string when forwarding engages, None otherwise (normal in-process run).
+    """
+    if not _routed_delivery_platforms(job):
+        return None
+    from agent.secret_scope import get_secret
+    key = get_secret("API_SERVER_KEY", "") or ""
+    try:
+        import httpx
+        resp = httpx.post(
+            f"{_api_server_base_url()}/api/jobs/{job['id']}/run",
+            headers={"Authorization": f"Bearer {key}"},
+            json=({"prompt": extra_prompt} if extra_prompt else {}),
+            timeout=10.0,
+        )
+    except Exception:
+        resp = None
+    if resp is not None and resp.status_code < 300:
+        return _dumps({
+            "success": True,
+            "forwarded_to_gateway": True,
+            "note": (
+                "This profile has no native adapter for the job's delivery target; "
+                "the run was dispatched to the gateway, whose SharedRouteAdapters "
+                "owns delivery for routed profiles."),
+        })
+    return None
+
+
 def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
     """Parenthetical delivery note for a manual run's summary; follows the refreshed record's
     ``last_delivery_error`` so the summary never claims success over a failed delivery.
@@ -698,6 +759,11 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
     if bg is not None:
         exec_result = bg  # terminal result: claim lost or inline fallback
     else:
+        # Routed-profile manual run: this profile has no native adapter for the job's delivery
+        # target — the multiplexer's SharedRouteAdapters is the only path (#120330).
+        forwarded = _forward_routed_profile_run(job, extra_prompt=extra_prompt)
+        if forwarded is not None:
+            return forwarded
         # Relay-fronted manual run: no live adapter here — forward to the running gateway.
         forwarded = _forward_relay_fronted_run(job, extra_prompt=extra_prompt)
         if forwarded is not None:

@@ -16,8 +16,9 @@ from tests.e2e.core.providers._openai_helpers import Home
 
 
 class TuiGateway:
-    def __init__(self, h: Home) -> None:
-        env = h.env({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(h.project), "HERMES_YOLO_MODE": "1"})
+    def __init__(self, h: Home, extra_env: dict[str, str] | None = None) -> None:
+        env = h.env({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(h.project), "HERMES_YOLO_MODE": "1",
+                     **(extra_env or {})})
         self.stderr_path = h.root / f"tui-gateway-{time.monotonic_ns()}.log"
         self._stderr = open(self.stderr_path, "wb")  # noqa: SIM115 - closed in close()
         self.proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=h.project, env=env,

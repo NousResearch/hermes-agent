@@ -1373,6 +1373,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return {**_CORS_HEADERS, "Access-Control-Allow-Origin": origin, "Vary": "Origin",
                 "Access-Control-Max-Age": "600"}
 
+    def _sse_headers(self, request: "web.Request", extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Headers for an SSE StreamResponse prepared inside a handler: the CORS middleware only
+        touches the response after the handler returns, by which point ``prepare()`` has already
+        flushed the head, so CORS must be resolved up front (#72892, #6358)."""
+        headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        headers.update(self._cors_headers_for_origin(request.headers.get("Origin", "")) or {})
+        if extra:
+            headers.update(extra)
+        return headers
+
     def _origin_allowed(self, origin: str) -> bool:
         """Allow non-browser clients and explicitly configured browser origins."""
         return not origin or "*" in self._cors_origins or origin in self._cors_origins
@@ -3351,10 +3361,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if admitted is None:
             return None
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
-        response = web.StreamResponse(status=200, headers={
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-            **self._session_headers(session_id, ctx["gateway_session_key"])})
-        await response.prepare(request)
+        response = await self._prepare_sse_response(request, session_id, ctx["gateway_session_key"])
 
         async def _write(name: str, payload: Dict[str, Any]) -> None:
             name, payload = events.payload(name, payload)
@@ -3532,17 +3539,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # NOT in _active_run_tasks: _run_agent already counts this turn for the shutdown drain.
         task = asyncio.create_task(_run_and_signal())
         self._track_background_task(task)
-        headers = {
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no", **self._session_headers(session_id, gateway_session_key)}
-        # CORS middleware can't inject headers into StreamResponse after
-        # prepare() flushes them, so resolve CORS headers up front (#72892).
-        origin = request.headers.get("Origin", "")
-        cors = self._cors_headers_for_origin(origin) if origin else None
-        if cors:
-            headers.update(cors)
-        response = web.StreamResponse(status=200, headers=headers)
-        await response.prepare(request)
+        response = await self._prepare_sse_response(request, session_id, gateway_session_key)
         try:
             while True:
                 try:

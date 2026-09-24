@@ -1703,6 +1703,180 @@ class TestBuildJobPromptBumpUse:
         )
 
 
+class TestBuildJobPromptBoundSkills:
+    """_build_job_prompt fills ``bound_skills_out`` with CANONICAL loaded-skill
+    names (post bundle-expansion, post absolute-path/alias normalization) so
+    they match the names the offer-time skill index emits."""
+
+    def test_records_canonical_name_from_skill_view(self):
+        """A single skill binds skill_view's resolved ``name``, not the raw
+        job entry."""
+
+        def _skill_view(name: str) -> str:
+            # skill_view resolves the frontmatter name; the job entry ("alpha")
+            # differs from the canonical name ("alpha-skill").
+            return json.dumps(
+                {"success": True, "name": "alpha-skill", "content": "Do alpha."}
+            )
+
+        out: list = []
+        with patch("tools.skills_tool.skill_view", side_effect=_skill_view):
+            _build_job_prompt({"skills": ["alpha"], "prompt": "go"}, bound_skills_out=out)
+
+        assert out == ["alpha-skill"]
+
+    def test_absolute_path_binds_normalized_canonical_name(self, tmp_path):
+        """An absolute skill path binds the canonical index name, not the path
+        — the reviewer's core concern that paths must match index names."""
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "alpha-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.")
+        absolute_path = str(skill_dir)
+
+        def _skill_view(name: str) -> str:
+            # skill_view is called with the normalized relative name.
+            return json.dumps(
+                {"success": True, "name": "alpha-skill", "content": "Do alpha."}
+            )
+
+        out: list = []
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view):
+            _build_job_prompt({"skills": [absolute_path], "prompt": "go"}, bound_skills_out=out)
+
+        assert out == ["alpha-skill"]
+
+    def test_bundle_expands_to_member_names(self):
+        """A bundle slug binds its expanded member skills, not the slug."""
+        out: list = []
+        with patch("agent.skill_bundles.resolve_bundle_command_key", return_value="my-bundle"), \
+             patch(
+                 "agent.skill_bundles.build_bundle_invocation_message",
+                 return_value=("bundle body", ["member-a", "member-b"], []),
+             ):
+            _build_job_prompt({"skills": ["my-bundle"], "prompt": "go"}, bound_skills_out=out)
+
+        assert out == ["member-a", "member-b"]
+
+    def test_missing_skill_not_bound(self):
+        """A skill that fails to load is not bound."""
+
+        def _missing(name: str) -> str:
+            return json.dumps({"success": False, "error": "not found"})
+
+        out: list = []
+        with patch("tools.skills_tool.skill_view", side_effect=_missing):
+            _build_job_prompt({"skills": ["ghost"], "prompt": "go"}, bound_skills_out=out)
+
+        assert out == []
+
+    def test_no_skills_leaves_out_list_empty(self):
+        """A job with no skills leaves the out-list untouched (→ None = full index)."""
+        out: list = []
+        _build_job_prompt({"prompt": "just a prompt"}, bound_skills_out=out)
+        assert out == []
+
+
+class TestCronToSystemPromptScoping:
+    """End-to-end: a cron job's ``skills=[...]`` scopes the system-prompt skill
+    index to exactly those skills, through the real skill_view resolution and
+    build_skills_system_prompt filter."""
+
+    def test_cron_bound_skills_scope_the_system_prompt_index(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import build_skills_system_prompt
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        for name in ("web-crawler", "freshrss"):
+            d = skills_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} skill\n---\n"
+            )
+
+        # Baseline: without scoping the index carries both skills.
+        assert "freshrss" in build_skills_system_prompt(bound_skills=None)
+
+        # A cron job that lists only web-crawler collects its canonical name...
+        out: list = []
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+            _build_job_prompt(
+                {"skills": ["web-crawler"], "prompt": "crawl it"}, bound_skills_out=out
+            )
+        assert out == ["web-crawler"]
+
+        # ...and feeding that into the system prompt scopes the index to it.
+        scoped = build_skills_system_prompt(bound_skills=out)
+        assert "web-crawler" in scoped
+        assert "freshrss" not in scoped
+
+
+class TestResolveBoundSkills:
+    """_resolve_bound_skills keeps three states distinct at the run_job -> AIAgent
+    boundary (#119086 review — JoaoMarcos44): a naive ``bound_skills_out or None``
+    collapses "no skills requested" and "skills requested, none resolved" into the
+    same unrestricted-index outcome, silently widening the index exactly when
+    resolution failed."""
+
+    def test_no_skills_declared_returns_none(self):
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        assert _resolve_bound_skills({"prompt": "just a prompt"}, []) is None
+
+    def test_skills_declared_but_none_resolved_returns_empty_list(self):
+        """The bug this guards: skills=['missing-skill'] must scope to an empty
+        index, not fall back to the full one."""
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        result = _resolve_bound_skills({"skills": ["missing-skill"], "prompt": "go"}, [])
+        assert result == []
+        assert result is not None
+
+    def test_skills_declared_and_resolved_returns_canonical_names(self):
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        result = _resolve_bound_skills(
+            {"skills": ["web-crawler"], "prompt": "go"}, ["web-crawler"]
+        )
+        assert result == ["web-crawler"]
+
+
+class TestCronMissingSkillScopesToEmptyIndex:
+    """End-to-end companion to TestCronToSystemPromptScoping: a job that explicitly
+    requests a skill which fails to resolve must scope the system-prompt skill index
+    to empty, not the full index (#119086 review — JoaoMarcos44)."""
+
+    def test_missing_skill_scopes_system_prompt_to_empty_index(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import build_skills_system_prompt
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        d = skills_dir / "freshrss"
+        d.mkdir()
+        (d / "SKILL.md").write_text("---\nname: freshrss\ndescription: freshrss skill\n---\n")
+
+        # Baseline: unrestricted index carries the installed skill.
+        assert "freshrss" in build_skills_system_prompt(bound_skills=None)
+
+        # A cron job that lists only a skill which doesn't exist resolves nothing...
+        out: list = []
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+            _build_job_prompt(
+                {"skills": ["does-not-exist"], "prompt": "go"}, bound_skills_out=out
+            )
+        assert out == []
+
+        # ...and the run_job boundary must scope to empty, not fall back to unrestricted.
+        bound = _resolve_bound_skills({"skills": ["does-not-exist"]}, out)
+        assert bound == []
+        scoped = build_skills_system_prompt(bound_skills=bound)
+        assert "freshrss" not in scoped
+
+
 class TestSendMediaViaAdapter:
     """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""
 

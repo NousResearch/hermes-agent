@@ -59,6 +59,28 @@ class TestSandboxBypass:
         assert bt_session._needs_chromium_sandbox_bypass() is True
 
 
+class TestChromiumGpuBypass:
+    """Regression coverage for #120672's 16 KiB-page ARM64 Chromium crash."""
+
+    def test_16k_page_gpu_bypass_is_limited_to_linux_arm64(self):
+        assert bt_session.chromium_gpu_bypass_required("linux", "arm64", 16 * 1024)
+        assert not bt_session.chromium_gpu_bypass_required("darwin", "arm64", 16 * 1024)
+        assert not bt_session.chromium_gpu_bypass_required("linux", "amd64", 16 * 1024)
+        assert not bt_session.chromium_gpu_bypass_required("linux", "arm64", 4 * 1024)
+
+    def test_linux_arm64_16k_pages_disables_gpu_without_overriding_user_args(self, monkeypatch):
+        monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: False)
+        monkeypatch.setattr(bt_session, "_needs_chromium_gpu_bypass", lambda: True)
+
+        browser_env: dict[str, str] = {}
+        bt_session._apply_chromium_sandbox_args(browser_env)
+        assert browser_env["AGENT_BROWSER_ARGS"] == "--disable-gpu"
+
+        user_env = {"AGENT_BROWSER_ARGS": "--use-gl=egl"}
+        bt_session._apply_chromium_sandbox_args(user_env)
+        assert user_env == {"AGENT_BROWSER_ARGS": "--use-gl=egl"}
+
+
 class TestTimeoutErrorFormatting:
     def test_includes_stderr_detail(self):
         err = bt_session._format_browser_timeout_error(

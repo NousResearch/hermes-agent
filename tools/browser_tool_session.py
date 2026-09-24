@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_platform.host import facts as _host_facts
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
@@ -35,6 +36,7 @@ _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROM
 # AGENT_BROWSER_ARGS and the Bot Desktop dock's Browser icon (same binary, same profile) through
 # ``tools.bot_desktop.browser.dock_argv`` — one list, or the human's click dies while the agent's works.
 CHROMIUM_SANDBOX_BYPASS_ARGS = ("--no-sandbox", "--disable-dev-shm-usage")
+CHROMIUM_GPU_BYPASS_ARGS = ("--disable-gpu",)
 
 
 def apparmor_restricts_unprivileged_userns() -> bool:
@@ -56,12 +58,33 @@ def _needs_chromium_sandbox_bypass() -> bool:
     return apparmor_restricts_unprivileged_userns()
 
 
+def chromium_gpu_bypass_required(os_family: str, native_arch: str, page_size: int) -> bool:
+    """Whether Playwright Chromium needs its GPU disabled on this host."""
+    return os_family.startswith("linux") and native_arch == "arm64" and page_size == 16 * 1024
+
+
+def _needs_chromium_gpu_bypass() -> bool:
+    """Detect Linux ARM64 hosts whose 16 KiB pages crash Chromium's GPU process."""
+    try:
+        return chromium_gpu_bypass_required(
+            _host_facts.os_family(), _host_facts.native_arch(), os.sysconf("SC_PAGESIZE")
+        )
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
-    """Add required Chromium sandbox flags without overriding user settings."""
-    if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-            and _needs_chromium_sandbox_bypass()):
-        _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
-        browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
+    """Add required Chromium launch flags without overriding user settings."""
+    if "AGENT_BROWSER_ARGS" in browser_env or "AGENT_BROWSER_CHROME_FLAGS" in browser_env:
+        return
+    launch_args = []
+    if _needs_chromium_sandbox_bypass():
+        launch_args.extend(CHROMIUM_SANDBOX_BYPASS_ARGS)
+    if _needs_chromium_gpu_bypass():
+        launch_args.extend(CHROMIUM_GPU_BYPASS_ARGS)
+    if launch_args:
+        _bt.logger.debug("browser: injecting required Chromium launch flags: %s", launch_args)
+        browser_env["AGENT_BROWSER_ARGS"] = ",".join(launch_args)
 
 
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:

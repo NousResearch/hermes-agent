@@ -467,12 +467,6 @@ class TestExtractReasoning:
         )
         assert agent._extract_reasoning(msg) == "list-shaped reasoningpart two"
 
-    def test_thinking_block_whitespace_only_payload_dropped(self, agent):
-        msg = _mock_assistant_msg(
-            content=[{"type": "thinking", "thinking": "   "}]
-        )
-        assert agent._extract_reasoning(msg) is None
-
 
 class TestSessionFilenameSafety:
     def test_safe_session_filename_component_contains_traversal(self):

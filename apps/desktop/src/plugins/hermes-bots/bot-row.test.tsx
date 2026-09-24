@@ -60,9 +60,11 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 const noop = () => undefined
 
 function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+  const { container } = render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
 
-  return screen.getByRole('button')
+  // The row's subtree also carries its conversations caret (#112184), so the
+  // row itself is located by the attribute every Bot Mode click path keys off.
+  return container.querySelector<HTMLElement>('[data-roster-key]')!
 }
 
 beforeEach(() => {

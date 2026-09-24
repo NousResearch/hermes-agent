@@ -1319,6 +1319,11 @@ def _on_server_started(
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
         start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
+        # A connected client keeps the idle watchdog quiet forever, and the host's updater may not
+        # restart this backend, so it retires itself (between turns) when the install moves on.
+        from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
+
+        start_code_skew_watchdog(server)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port

@@ -47,7 +47,7 @@ def _switch_to_alias(monkeypatch, alias_entry):
         return {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
     monkeypatch.setattr(
-        "hermes_cli.models.validate_requested_model", _fake_validate
+        "hermes_cli.models_validate.validate_requested_model", _fake_validate
     )
 
     import hermes_cli.model_switch as ms
@@ -208,7 +208,7 @@ class TestSessionKeyIsHostScoped:
             "hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg
         )
         monkeypatch.setattr(
-            "hermes_cli.models.validate_requested_model",
+            "hermes_cli.models_validate.validate_requested_model",
             lambda *a, **k: {
                 "accepted": True,
                 "persist": True,
@@ -278,7 +278,7 @@ class TestBuiltinProviderKeysDoNotLeak:
             return {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
         monkeypatch.setattr(
-            "hermes_cli.models.validate_requested_model", _fake_validate
+            "hermes_cli.models_validate.validate_requested_model", _fake_validate
         )
         import hermes_cli.model_switch as ms
 
@@ -320,7 +320,7 @@ class TestProviderLabelCannotSelectAKeyForAnArbitraryHost:
             probed["api_key"] = api_key
             return {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
-        monkeypatch.setattr("hermes_cli.models.validate_requested_model", _fake_validate)
+        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", _fake_validate)
         import hermes_cli.model_switch as ms
 
         monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
@@ -378,7 +378,7 @@ class TestSessionCredentialIsScopedToTheOrigin:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
         monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
         monkeypatch.setattr(
-            "hermes_cli.models.validate_requested_model",
+            "hermes_cli.models_validate.validate_requested_model",
             lambda *a, **k: {"accepted": True, "persist": True,
                              "recognized": True, "message": ""},
         )

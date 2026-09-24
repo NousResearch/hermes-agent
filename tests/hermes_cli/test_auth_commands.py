@@ -294,6 +294,45 @@ def test_auth_list_includes_non_registry_configured_provider(
     assert "private-groq (1 credentials):" in capsys.readouterr().out
 
 
+def test_auth_list_shows_entry_id_and_priority(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "ab12cd",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "secret-1",
+                    },
+                    {
+                        "id": "ef56gh",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "secret-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    auth_list_command(type("Args", (), {"provider": "openrouter"})())
+
+    out = capsys.readouterr().out
+    assert "id=ab12cd priority=0" in out
+    assert "id=ef56gh priority=1" in out
+
+
 def test_interactive_auth_add_accepts_non_registry_configured_provider(
     tmp_path, monkeypatch
 ):
@@ -960,7 +999,7 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     }))
 
     # Stub the readers so only hermes_pkce is "available"; claude_code returns None
-    import agent.anthropic_adapter as aa
+    import agent.anthropic_credentials as aa
     monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
@@ -1110,3 +1149,20 @@ def test_auth_remove_env_seeded_dotenv_with_bom_no_shell_hint(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "Cleared DEEPSEEK_API_KEY from .env" in out
     assert "still set in your shell environment" not in out
+
+
+def test_qwen_oauth_login_marks_active_through_moved_owner(monkeypatch):
+    """`_mark_qwen_oauth_active` lives in `auth_qwen`; the login flow must reach it
+    without depending on a re-export from the `auth` facade (AttributeError on head before)."""
+    import hermes_cli.auth_commands as auth_commands
+    import hermes_cli.auth_qwen as auth_qwen
+
+    creds = {"access_token": "tok"}
+    marked = []
+    monkeypatch.setattr(
+        auth_commands.auth_mod, "resolve_qwen_runtime_credentials", lambda **kw: creds
+    )
+    monkeypatch.setattr(auth_qwen, "_mark_qwen_oauth_active", lambda c: marked.append(c))
+
+    assert auth_commands._qwen_oauth_login(None) is creds
+    assert marked == [creds]

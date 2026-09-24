@@ -41,6 +41,7 @@ _LIVE_FREE_MODELS = [
     "nemotron-3-ultra-free",
     "nemotron-3.5-lightning-free",
     "muse-spark-1.2-contributor-free",
+    "muse-spark-1.3-contributor-free",
 ]
 
 # The raw live /zen/v1/models dump also lists paid/subscription + KEYED-free IDs

@@ -23,7 +23,7 @@ from agent.context_compressor import (
     _PRESSURE_KEEP_RECENT_MESSAGES,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
-from agent.turn_context import _compression_made_progress
+from agent.turn_context import compression_made_progress
 
 
 def _unique_tool_pair(i: int, chars: int) -> list[dict]:
@@ -129,7 +129,7 @@ class TestProtectedTailPressure61932:
             o_len, o_tok = len(cur), tok
             out = c.compress(list(cur), current_tokens=tok)
             n_tok = estimate_messages_tokens_rough(out)
-            last_progress = _compression_made_progress(
+            last_progress = compression_made_progress(
                 o_len, len(out), o_tok, n_tok
             )
             cur, tok = out, n_tok

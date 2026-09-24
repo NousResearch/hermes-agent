@@ -32,7 +32,7 @@ import pytest
 from unittest.mock import patch
 
 from agent import secret_scope as ss
-from agent.anthropic_adapter import resolve_anthropic_token
+from agent.anthropic_credentials import resolve_anthropic_token
 
 
 @pytest.fixture(autouse=True)

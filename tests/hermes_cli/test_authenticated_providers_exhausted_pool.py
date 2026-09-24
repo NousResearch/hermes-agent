@@ -8,6 +8,7 @@ the session provider (the "sticky provider fallback pollution" bug).
 """
 
 import pytest
+from hermes_cli import main_provider_setup
 
 
 class _FakePool:
@@ -69,7 +70,7 @@ def test_exhausted_pool_provider_is_not_authenticated(monkeypatch):
 
 def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     """Legacy token-style auth-store values have no parsed pool entries."""
-    from hermes_cli.model_switch import _credential_pool_is_usable
+    from hermes_cli.model_switch_providers import _credential_pool_is_usable
 
     monkeypatch.setattr(
         "agent.credential_pool.load_pool",
@@ -90,7 +91,7 @@ def test_picker_shows_exhausted_pool_provider(monkeypatch):
     """The interactive picker must include providers whose credential pool
     entries are all exhausted, so the user can still switch to a different
     model under the same provider."""
-    from hermes_cli.model_switch import list_picker_providers
+    from hermes_cli.model_switch_providers import list_picker_providers
 
     _patch_opencode_pool(monkeypatch, available=False)
     providers = list_picker_providers(
@@ -140,7 +141,7 @@ def test_aux_task_picker_requests_exhausted_pool_visibility(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
 
     with pytest.raises(_StopPicker):
-        main._aux_select_for_task("compression")
+        main_provider_setup._aux_select_for_task("compression")
 
     assert recorded.get("for_picker") is True, (
         "aux-task picker must pass for_picker=True so exhausted-pool providers "

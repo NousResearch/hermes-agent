@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.relay.descriptor import CapabilityDescriptor
-from cron.scheduler import _resolve_cron_surface_mode
+from cron.scheduler_delivery import _resolve_cron_surface_mode
 
 
 def _descriptor(**overrides):

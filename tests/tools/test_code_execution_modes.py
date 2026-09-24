@@ -44,18 +44,20 @@ def _fresh_kernel_registry():
     shutdown_all_kernels()
 
 
+from tools.code_execution_env import (
+    _is_usable_python,
+    _python_environment_prefix,
+    _python_prefix_cache,
+    _resolve_child_cwd,
+    _resolve_child_python,
+    _usable_python_cache,
+    _uses_hermes_python_environment,
+)
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,
     EXECUTION_MODES,
     _get_execution_mode,
-    _is_usable_python,
-    _python_environment_prefix,
-    _python_prefix_cache,
-    _usable_python_cache,
-    _resolve_child_cwd,
-    _resolve_child_python,
-    _uses_hermes_python_environment,
     build_execute_code_schema,
     execute_code,
 )
@@ -522,19 +524,19 @@ class TestUsesHermesPythonEnvironment(unittest.TestCase):
 
     def test_false_for_different_prefix(self):
         """An interpreter reporting a different prefix is external."""
-        with patch("tools.code_execution_tool._python_environment_prefix",
+        with patch("tools.code_execution_env._python_environment_prefix",
                    return_value="/some/other/venv"):
             self.assertFalse(_uses_hermes_python_environment("/other/python"))
 
     def test_false_when_prefix_is_empty(self):
         """If prefix cannot be determined (error path), treat as external."""
-        with patch("tools.code_execution_tool._python_environment_prefix",
+        with patch("tools.code_execution_env._python_environment_prefix",
                    return_value=""):
             self.assertFalse(_uses_hermes_python_environment("/bad/python"))
 
     def test_true_when_prefix_matches_sys_prefix(self):
         hermes_prefix = os.path.realpath(sys.prefix)
-        with patch("tools.code_execution_tool._python_environment_prefix",
+        with patch("tools.code_execution_env._python_environment_prefix",
                    return_value=hermes_prefix):
             self.assertTrue(_uses_hermes_python_environment("/same/env/python"))
 
@@ -575,7 +577,7 @@ class TestPythonPathComposition(unittest.TestCase):
 
         with patch("tools.code_execution_tool._load_config", return_value={"mode": "strict"}), \
              patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call), \
-             patch("tools.code_execution_tool._uses_hermes_python_environment",
+             patch("tools.code_execution_env._uses_hermes_python_environment",
                    return_value=same_env), \
              patch("subprocess.Popen", side_effect=_fake_popen):
             try:

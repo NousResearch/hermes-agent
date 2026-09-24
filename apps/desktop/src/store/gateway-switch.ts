@@ -23,8 +23,10 @@ import {
   setSessions,
   setSessionsLoading
 } from '@/store/session'
+import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
+import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
 // True while a connection switch is mid-flight — a Settings → Gateway apply
@@ -206,6 +208,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // that are still unread once the next gateway's lists load — so a profile
   // round-trip doesn't swallow green dots.
   clearAllSessionStates()
+  // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
+  // next backend re-mints, so a full wipe is exact (and stale-response-safe).
+  clearAllSessionControl()
   resetLiveRuntimeTracking()
   resetLiveSync()
   $unreadFinishedSessionIds.set([])
@@ -223,8 +228,12 @@ export function wipeSessionListsForGatewaySwitch(): void {
 
   // Cached transcript tails belong to the PREVIOUS backend's sessions; a
   // different backend can recycle stored ids, and painting another machine's
-  // conversation under a same-named id is worse than a loader. Wipe them.
+  // conversation under a same-named id is worse than a loader. Wipe both the
+  // persisted cache and the in-memory paging entries — the latter are keyed by
+  // owner, so a survivor from the old backend would sit beside the new one and
+  // fail the unique-match lookup that shows "Show earlier".
   clearTranscriptTails()
+  clearTranscriptTailPaging()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

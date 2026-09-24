@@ -52,7 +52,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.platforms.base import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +309,7 @@ class TestSendVoiceReply:
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
-             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -336,7 +337,7 @@ class TestSendVoiceReply:
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
-             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -1054,7 +1055,7 @@ class TestStreamTtsToSpeaker:
 
     def test_none_sentinel_flushes_buffer(self):
         """None sentinel causes remaining buffer to be spoken."""
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -1072,7 +1073,7 @@ class TestStreamTtsToSpeaker:
 
     def test_stop_event_aborts_early(self):
         """Setting stop_event causes early exit."""
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -1088,7 +1089,7 @@ class TestStreamTtsToSpeaker:
 
     def test_done_event_set_on_exception(self):
         """tts_done_event is set even when an exception occurs."""
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -1755,7 +1756,8 @@ class TestVoiceTTSPlayback:
 
     def _call_should_reply(self, runner, voice_mode, msg_type, response="Hello",
                            agent_msgs=None, already_sent=False):
-        from gateway.platforms.base import MessageEvent, SessionSource
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent
         from gateway.config import Platform
         runner._voice_mode["discord:ch1"] = voice_mode
         source = SessionSource(
@@ -1771,20 +1773,20 @@ class TestVoiceTTSPlayback:
 
     def test_voice_input_runner_skips(self):
         """Streaming OFF + voice input: runner skips — base adapter handles."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
 
     def test_text_input_voice_all_runner_fires(self):
         """Streaming OFF + text input + voice_mode=all: runner generates TTS."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.TEXT, already_sent=False) is True
 
 
     def test_error_response_no_tts(self):
         """Error response: no TTS regardless of voice_mode."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.TEXT, response="Error: boom") is False
 
@@ -1794,7 +1796,7 @@ class TestVoiceTTSPlayback:
 
     def test_streaming_on_agent_tts_dedup(self):
         """Streaming ON + agent called TTS: runner skips (dedup still works)."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         agent_msgs = [{"role": "assistant", "tool_calls": [
             {"id": "1", "type": "function", "function": {"name": "text_to_speech", "arguments": "{}"}}
@@ -1918,7 +1920,7 @@ class TestStreamTtsTempfileFallback:
         import wave
         import tools.tts_tool as tts_mod
         import tools.voice_mode as vm
-        from tools.tts_tool import stream_tts_to_speaker
+        from tools.tts_tool_speaker import stream_tts_to_speaker
 
         # Fake registry streamer so resolve_streaming_provider yields chunked
         # PCM regardless of which real providers are configured in the env.

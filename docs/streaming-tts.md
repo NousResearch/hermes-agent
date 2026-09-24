@@ -18,7 +18,7 @@ The streaming pipeline has four parts:
 3. **TTS provider** — a registered `StreamingTTSProvider` turns each sentence
    into raw PCM chunks (int16 mono at the provider's declared `sample_rate`)
 4. **Audio sink** — `sounddevice.OutputStream` for local playback
-   (`tools.tts_tool.stream_tts_to_speaker`), or a gateway platform adapter's
+   (`tools.tts_tool_speaker.stream_tts_to_speaker`), or a gateway platform adapter's
    `write_streaming_tts` seam (`gateway/streaming_tts_consumer.py`)
 
 Providers with no chunked API still get per-*sentence* playback via the proven

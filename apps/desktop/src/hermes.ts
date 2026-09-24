@@ -18,6 +18,7 @@ export {
 export type { ProfileScope } from './api/client'
 export * from './api/config'
 export * from './api/cron'
+export * from './api/local-models'
 export * from './api/mcp'
 export * from './api/messaging'
 export * from './api/models'
@@ -27,6 +28,7 @@ export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
 export * from './api/toolsets'
+export * from './api/wisdom'
 
 export type {
   ActionResponse,
@@ -39,9 +41,11 @@ export type {
   AnalyticsTotals,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
+  AudioTtsLeaseResponse,
   AutomationBlueprint,
   AutomationBlueprintField,
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   BackendUpdateCheckResponse,
   ComputerUseCheck,
   ComputerUsePermissionSource,
@@ -118,6 +122,9 @@ export type {
   StaleAuxAssignment,
   StarmapGraph,
   StatusResponse,
+  TelegramOnboardingApplyResponse,
+  TelegramOnboardingStartResponse,
+  TelegramOnboardingStatusResponse,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,

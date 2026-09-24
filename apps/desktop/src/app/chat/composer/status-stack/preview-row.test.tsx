@@ -19,7 +19,7 @@ describe('PreviewStatusRow', () => {
     vi.restoreAllMocks()
   })
 
-  it('keeps the preview tooltip label inline inside the portaled decoration', async () => {
+  it('keeps the preview tooltip label in inline flow inside the portaled decoration', async () => {
     const view = render(
       <PreviewStatusRow
         item={{ cwd: 'C:\\repo', id: 'preview.html', label: 'preview.html', target: 'preview.html' }}
@@ -31,12 +31,15 @@ describe('PreviewStatusRow', () => {
     await screen.findByRole('tooltip')
 
     const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
-    const label = content?.firstElementChild?.firstElementChild
+    const decoration = content?.firstElementChild
 
     expect(content).not.toBeNull()
     expect(view.container.contains(content)).toBe(false)
-    expect(label?.classList.contains('inline-flex')).toBe(true)
-    expect(label?.classList.contains('flex')).toBe(false)
+    // The decoration's per-line background only wraps inline FLOW. A flex box
+    // (block or inline-flex) under it lights the first line and leaves the
+    // rest dark-on-dark, so the two lines must be split by a hard break.
+    expect(decoration?.querySelector('.flex, .inline-flex')).toBeNull()
+    expect(decoration?.querySelector('br')).not.toBeNull()
   })
 
   it('opens remote non-HTML file artifacts in the in-app preview instead of the local browser bridge', async () => {

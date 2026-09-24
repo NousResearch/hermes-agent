@@ -34,14 +34,28 @@ export const ANNOTATE_CSS_KEYS = [
   'position',
   'width',
   'height',
+  'max-width',
   'padding',
   'margin',
+  'border',
   'border-radius',
+  'box-shadow',
   'opacity',
+  'overflow',
+  'z-index',
+  'transform',
   'flex-direction',
   'gap',
+  'grid-template-columns',
   'justify-content',
   'align-items'
 ] as const
 
 export type AnnotateCssKey = (typeof ANNOTATE_CSS_KEYS)[number]
+
+/**
+ * Markup budget for one comment. Enough for the opening tag plus a couple of
+ * levels of children — the part an agent greps a component out of — without
+ * pasting a whole section into the composer.
+ */
+export const ANNOTATE_HTML_BUDGET = 600

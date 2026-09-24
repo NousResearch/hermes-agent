@@ -18,14 +18,14 @@ export const APPEARANCE_SETTING_IDS = {
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',
-  uiScale: 'appearance.ui-scale'
+  uiScale: 'appearance.ui-scale',
+  userBubble: 'appearance.user-bubble'
 } as const
 
 export interface SettingsSearchTarget {
   field?: string
   key?: string
   keysView?: CredentialSettingsView
-  plugin?: string
   providerView?: 'accounts' | 'custom-endpoints' | 'keys'
   setting?: string
   view: SettingsView
@@ -218,10 +218,6 @@ export function settingsSearchTargetQuery(target: SettingsSearchTarget): string 
 
   if (target.key) {
     params.set('key', target.key)
-  }
-
-  if (target.plugin) {
-    params.set('plugin', target.plugin)
   }
 
   return params.toString()

@@ -34,7 +34,7 @@ class TestTerminalRequirements:
 
     def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr(terminal_tool_module, "managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr("tools.terminal_tool_backends.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
@@ -45,8 +45,7 @@ class TestTerminalRequirements:
             lambda: {"env_type": "modal", "modal_mode": "managed"},
         )
         monkeypatch.setattr(
-            terminal_tool_module,
-            "is_managed_tool_gateway_ready",
+            "tools.terminal_tool_backends.is_managed_tool_gateway_ready",
             lambda _vendor: True,
         )
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
@@ -304,7 +303,7 @@ class TestCheckFnTransientFailureSuppression:
             lambda: {"env_type": "vercel_sandbox", "container_disk": 51200},
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -326,7 +325,7 @@ class TestCheckFnTransientFailureSuppression:
             },
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -351,7 +350,7 @@ class TestCheckFnTransientFailureSuppression:
             },
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -360,3 +359,34 @@ class TestCheckFnTransientFailureSuppression:
 
         assert "terminal" not in names
         assert "execute_code" not in names
+
+
+class TestUnscopedSecretReadLogging:
+    """#100697: with multiplexing on, boot-time check_fns run before any
+    profile secret scope exists, so get_secret fails closed with
+    UnscopedSecretError. That expected signal must not be logged like a
+    crashed check_fn (WARNING + traceback); an unscoped read reported while
+    the scope was *resolved* is a genuinely lost scope and stays loud."""
+
+    def test_expected_fail_closed_probe_is_quiet_but_lost_scope_stays_loud(self, caplog):
+        import logging
+
+        import tools.registry as reg
+        from agent.secret_scope import get_secret, set_multiplex_active
+
+        def probe():
+            return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))
+
+        set_multiplex_active(True)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+                assert reg._run_check_fn_uncached(probe, unresolved_scope=True) is False
+                boot = [r for r in caplog.records if r.name == "tools.registry"]
+                caplog.clear()
+                assert reg._run_check_fn_uncached(probe, unresolved_scope=False) is False
+                lost = [r for r in caplog.records if r.name == "tools.registry"]
+        finally:
+            set_multiplex_active(False)
+
+        assert boot and all(r.levelno == logging.DEBUG and r.exc_info is None for r in boot)
+        assert any(r.levelno >= logging.WARNING and r.exc_info for r in lost)

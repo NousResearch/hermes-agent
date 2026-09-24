@@ -200,6 +200,7 @@ export interface ConnectorCardProps {
   /** A sibling card is mid-flight. Two sign-in tabs racing for focus is
    *  hostile, so the action waits — but the decline never does. */
   otherBusy?: boolean
+  actionDisabled?: boolean
   outcome?: ConnectorCardOutcome
   /** Present only while working; replaces the resting state label. */
   phase?: string
@@ -224,6 +225,7 @@ export function ConnectorCard({
   onDismiss,
   onEnvChange,
   otherBusy = false,
+  actionDisabled = false,
   outcome,
   phase,
   state
@@ -315,7 +317,7 @@ export function ConnectorCard({
           <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
             <Button
               className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
-              disabled={working || otherBusy}
+              disabled={working || otherBusy || actionDisabled}
               onClick={onConnect}
               size="xs"
               variant="ghost"

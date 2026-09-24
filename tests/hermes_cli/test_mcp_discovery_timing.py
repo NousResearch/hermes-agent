@@ -106,7 +106,7 @@ def _stub_mcp_modules(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: None,
             get_mcp_status=lambda: [{"connected": True}],
@@ -241,7 +241,8 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
-    monkeypatch.setattr(cli_mod, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+    import run_agent
+    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is True
@@ -269,7 +270,8 @@ def test_init_agent_defaults_to_interactive(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
-    monkeypatch.setattr(cli_mod, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+    import run_agent
+    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is False

@@ -109,7 +109,7 @@ def make_startup_runner(tmp_path):
     async def no_op_watcher(*args, **kwargs):
         await asyncio.Event().wait()
 
-    runner._session_expiry_watcher = no_op_watcher
+    runner._session_housekeeping_watcher = no_op_watcher
     runner._platform_reconnect_watcher = no_op_watcher
     runner._run_process_watcher = no_op_watcher
     runner._safe_adapter_disconnect = gateway_run.GatewayRunner._safe_adapter_disconnect.__get__(
@@ -167,6 +167,18 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
     )
 
 
+def _patch_aborted_startup(monkeypatch, runner_cls):
+    """Run start_gateway() against a runner that aborts before running mode."""
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", runner_cls)
+
+
 @pytest.mark.asyncio
 async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -199,16 +211,9 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
         nonlocal cron_started
         cron_started = True
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
-    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
-    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", AbortedStartupRunner)
+    _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
     monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
-    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
         await gateway_run.start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
@@ -216,3 +221,104 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert cron_started is False
     assert export_shutdown_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_preserves_service_restart_fallback_after_aborted_startup(
+    tmp_path, monkeypatch
+):
+    """A legacy service restart without an explicit exit code still exits with EX_TEMPFAIL."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cron_started = False
+
+    class AbortedStartupRunner:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+            self._running = False
+            self._restart_requested = True
+            self._restart_via_service = True
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = False
+            self.exit_reason = None
+            self.exit_code = None
+
+        async def start(self):
+            return True
+
+        async def wait_for_shutdown(self):
+            return None
+
+    def fail_if_cron_starts(*args, **kwargs):
+        nonlocal cron_started
+        cron_started = True
+
+    _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
+    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
+    monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
+
+    with pytest.raises(SystemExit) as exc:
+        await gateway_run.start_gateway(
+            config=GatewayConfig(), replace=False, verbosity=None
+        )
+
+    assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    assert cron_started is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("unexpected_signal", "expected_success"),
+    [(True, False), (False, True)],
+    ids=["unexpected-sigterm", "planned-stop"],
+)
+async def test_start_gateway_classifies_startup_signal_exit(
+    tmp_path, monkeypatch, unexpected_signal, expected_success
+):
+    """A startup SIGTERM is restartable unless a planned-stop marker classified it as intentional."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    signal_state = None
+    cron_started = False
+
+    class AbortedStartupRunner:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+            self._running = False
+            self._restart_requested = False
+            self._restart_via_service = False
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = False
+            self.exit_reason = None
+            self.exit_code = None
+
+        async def start(self):
+            if unexpected_signal:
+                signal_state[0] = True
+            return True
+
+        async def wait_for_shutdown(self):
+            return None
+
+    def capture_signal_state(runner, state):
+        nonlocal signal_state
+        signal_state = state
+        return lambda received_signal=None: None
+
+    def fail_if_cron_starts(*args, **kwargs):
+        nonlocal cron_started
+        cron_started = True
+
+    _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
+    monkeypatch.setattr(
+        "gateway.run._start_gateway_make_shutdown_signal_handler", capture_signal_state
+    )
+    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
+    monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
+
+    result = await gateway_run.start_gateway(
+        config=GatewayConfig(), replace=False, verbosity=None
+    )
+
+    assert result is expected_success
+    assert cron_started is False

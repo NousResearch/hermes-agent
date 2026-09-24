@@ -1,16 +1,16 @@
 """Browser sign-in flow for the Honcho memory provider — no CLI step.
 
 ``begin_authorization`` / ``complete_authorization`` are the transport-agnostic
-core: the code can arrive via the loopback listener here or a future
-``hermes://`` handler. Endpoints are env-overridable with local-dev defaults
-because ``/authorize`` (dashboard) and ``/oauth/token`` (API) live on
-different origins.
+core (the code can arrive via the loopback listener here or a ``hermes://``
+handler). Endpoints are env-overridable because ``/authorize`` (dashboard) and
+``/oauth/token`` (API) live on different origins.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import logging
 import os
 import secrets
@@ -23,36 +23,34 @@ from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from plugins.memory.honcho import oauth
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path
+from plugins.memory.honcho.client import HonchoClientConfig, resolve_active_host, resolve_config_path
 
 logger = logging.getLogger(__name__)
 
-# The loopback redirect registered for the Hermes OAuth client. IP-literal so
-# the browser can't resolve the advertised host to ::1 and miss the IPv4 bind.
+# Loopback redirect registered for the Hermes OAuth client. IP-literal so the browser can't resolve the
+# advertised host to ::1 and miss the IPv4 bind.
 LOOPBACK_HOST = "127.0.0.1"
 LOOPBACK_PORT = 8765
 LOOPBACK_REDIRECT_URI = f"http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/callback"
-
-# Pending authorizations live only until their callback returns; keyed by the
-# CSRF ``state`` so a stray/forged callback can't complete a grant.
+# Pending authorizations are keyed by the CSRF ``state`` so a forged callback can't complete a grant;
+# stale entries are swept after this TTL.
 _PENDING_TTL_SECONDS = 600
-
+# Dashboard serves /authorize, API serves /oauth/token.
+_CLOUD_DASHBOARD = "https://app.honcho.dev"
+_CLOUD_TOKEN_URL = "https://api.honcho.dev/oauth/token"
+_LOCAL_DASHBOARD = "http://localhost:3000"
+_LOCAL_TOKEN_URL = "http://localhost:8000/oauth/token"
+# One OAuth client for every surface (consent branding varies via ``source``), so there is a single
+# grant identity to refresh — no clientId/refresh-token desync.
+_DEFAULT_CLIENT_ID = "hermes-agent"
 
 def _display_config_path(path: object) -> str:
-    """Home-relative display string for the consent screen.
-
-    The absolute path (username + home layout) never leaves the machine — it's
-    only shown to the user. Collapse ``$HOME`` to ``~``; for a path outside
-    home, send the bare filename rather than leak an arbitrary absolute path.
-    """
-    from pathlib import Path as _Path
-
-    p = _Path(str(path))
+    """Home-relative display string for the consent screen (never the write path); outside ``$HOME``, the bare name."""
+    p = Path(str(path))
     try:
-        return "~/" + str(p.relative_to(_Path.home()))
+        return "~/" + str(p.relative_to(Path.home()))
     except ValueError:
         return p.name
-
 
 @dataclass(frozen=True)
 class OAuthEndpoints:
@@ -64,53 +62,25 @@ class OAuthEndpoints:
     scope: str
     device_authorization_url: str = ""  # API /oauth/device_authorization
 
-
-# Cloud (production) hosts; dashboard serves /authorize, API serves /oauth/token.
-_CLOUD_DASHBOARD = "https://app.honcho.dev"
-_CLOUD_TOKEN_URL = "https://api.honcho.dev/oauth/token"
-_LOCAL_DASHBOARD = "http://localhost:3000"
-_LOCAL_TOKEN_URL = "http://localhost:8000/oauth/token"
-
-# One OAuth client for every surface. Consent branding/UI adapt via the
-# ``source`` query param (not a separate client_id), so there's a single grant
-# identity to refresh — no clientId-vs-refresh-token desync to revoke the grant.
-_DEFAULT_CLIENT_ID = "hermes-agent"
-
-
-def _is_loopback_url(url: str | None) -> bool:
-    return bool(url) and any(h in url for h in ("localhost", "127.0.0.1", "::1"))
-
-
-def resolve_endpoints(
-    environment: str | None = None, base_url: str | None = None
-) -> OAuthEndpoints:
-    """Resolve OAuth endpoints, zero-config by default.
-
-    Keys off the host's honcho ``environment`` (production → cloud, local →
-    localhost); a self-hosted ``base_url`` derives the token endpoint from the
-    API host. Env vars override every field for unusual deployments.
-    """
+def resolve_endpoints(environment: str | None = None, base_url: str | None = None) -> OAuthEndpoints:
+    """Resolve OAuth endpoints, zero-config by default: the host's honcho ``environment`` picks cloud vs
+    localhost, a self-hosted ``base_url`` derives the token endpoint from the API host, env vars override all."""
     if environment is None or base_url is None:
         try:
-            from plugins.memory.honcho.client import HonchoClientConfig
-
             cfg = HonchoClientConfig.from_global_config()
             environment = environment or cfg.environment
             base_url = base_url if base_url is not None else cfg.base_url
         except Exception:
             environment = environment or "production"
 
-    is_local = (environment or "").lower() == "local" or _is_loopback_url(base_url)
-    default_dashboard = _LOCAL_DASHBOARD if is_local else _CLOUD_DASHBOARD
+    is_loopback = bool(base_url) and any(h in base_url for h in ("localhost", "127.0.0.1", "::1"))
+    is_local = (environment or "").lower() == "local" or is_loopback
     default_token = _LOCAL_TOKEN_URL if is_local else _CLOUD_TOKEN_URL
-    # Self-hosted API (non-loopback base_url): token rides the same host.
-    if base_url and not is_local:
+    if base_url and not is_local:  # self-hosted API: token rides the same host
         default_token = f"{base_url.rstrip('/')}/oauth/token"
-
-    dashboard = os.environ.get("HONCHO_OAUTH_DASHBOARD", default_dashboard).rstrip("/")
+    dashboard = os.environ.get("HONCHO_OAUTH_DASHBOARD", _LOCAL_DASHBOARD if is_local else _CLOUD_DASHBOARD).rstrip("/")
     token_url = os.environ.get("HONCHO_OAUTH_TOKEN_URL", default_token)
-    # Device authorization rides the token endpoint's origin.
-    default_device = f"{token_url.rsplit('/', 1)[0]}/device_authorization"
+    default_device = f"{token_url.rsplit('/', 1)[0]}/device_authorization"  # rides the token endpoint's origin
     return OAuthEndpoints(
         authorize_url=os.environ.get("HONCHO_OAUTH_AUTHORIZE_URL", f"{dashboard}/authorize"),
         token_url=token_url,
@@ -119,149 +89,77 @@ def resolve_endpoints(
         device_authorization_url=os.environ.get("HONCHO_OAUTH_DEVICE_AUTH_URL", default_device),
     )
 
-
-@dataclass
-class _Pending:
-    verifier: str
-    redirect_uri: str
-    created_at: float
-
-
-_pending: dict[str, _Pending] = {}
+_pending: dict[str, tuple[str, str, float]] = {}  # state -> (verifier, redirect_uri, created_at)
 _pending_lock = threading.Lock()
 
-
-def _pkce() -> tuple[str, str]:
-    """Return (verifier, S256 challenge) for an authorization-code request."""
-    verifier = secrets.token_urlsafe(64)
-    challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
-    return verifier, challenge
-
-
-def _prune_pending(now: float) -> None:
-    expired = [s for s, p in _pending.items() if now - p.created_at > _PENDING_TTL_SECONDS]
-    for state in expired:
-        _pending.pop(state, None)
-
-
 def begin_authorization(
-    endpoints: OAuthEndpoints,
-    redirect_uri: str = LOOPBACK_REDIRECT_URI,
-    *,
-    source: str | None = None,
-    config_path: str | None = None,
-    now: float | None = None,
+    endpoints: OAuthEndpoints, redirect_uri: str = LOOPBACK_REDIRECT_URI, *,
+    source: str | None = None, config_path: str | None = None, now: float | None = None,
 ) -> tuple[str, str]:
-    """Start an authorization: return ``(authorize_url, state)`` and stash PKCE.
-
-    ``source`` tags the authorize link with the initiating surface
-    (``hermes-desktop`` / ``hermes-cli``) so the consent side can attribute
-    connects and vary behavior per surface. ``config_path`` is a home-relative
-    *display* string for the consent screen (never the absolute path); callers
-    pass the actual write path separately to ``complete_authorization``.
-    """
+    """Start an authorization: return ``(authorize_url, state)`` and stash PKCE. ``source`` tags the initiating
+    surface for consent branding; ``config_path`` is the home-relative *display* string (the real write path
+    goes to ``complete_authorization``)."""
     now = time.time() if now is None else now
-    verifier, challenge = _pkce()
+    verifier = secrets.token_urlsafe(64)  # PKCE: S256 challenge of a fresh verifier
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     state = secrets.token_urlsafe(32)
     with _pending_lock:
-        _prune_pending(now)
-        _pending[state] = _Pending(verifier=verifier, redirect_uri=redirect_uri, created_at=now)
+        for stale in [s for s, p in _pending.items() if now - p[2] > _PENDING_TTL_SECONDS]:
+            _pending.pop(stale, None)
+        _pending[state] = (verifier, redirect_uri, now)
     params = {
-        "client_id": endpoints.client_id,
-        "redirect_uri": redirect_uri,
-        "scope": endpoints.scope,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "response_type": "code",
-        "state": state,
+        "client_id": endpoints.client_id, "redirect_uri": redirect_uri, "scope": endpoints.scope,
+        "code_challenge": challenge, "code_challenge_method": "S256", "response_type": "code", "state": state,
     }
-    if source:
-        params["source"] = source
-    if config_path:
-        params["config_path"] = config_path
+    params.update({k: v for k, v in (("source", source), ("config_path", config_path)) if v})
     return f"{endpoints.authorize_url}?{urlencode(params)}", state
 
+def _install(
+    endpoints: OAuthEndpoints, grant: dict, *, path: Path | None, host: str | None,
+    apply_config: bool, now: float | None, kind: str,
+) -> oauth.OAuthCredential:
+    """Persist ``grant`` for the target host; drop the cached client so the next acquisition uses the new token."""
+    target_host = host or resolve_active_host()
+    cred = oauth.install_grant(
+        path or resolve_config_path(), target_host, grant,
+        client_id=endpoints.client_id, token_endpoint=endpoints.token_url, apply_config=apply_config, now=now,
+    )
+    from plugins.memory.honcho.client import reset_honcho_client
+    reset_honcho_client()
+    logger.info("Honcho OAuth %sgrant installed for host %s", kind, target_host)
+    return cred
 
 def complete_authorization(
-    endpoints: OAuthEndpoints,
-    code: str,
-    state: str,
-    *,
-    config_path: Path | None = None,
-    host: str | None = None,
-    apply_config: bool = True,
-    now: float | None = None,
+    endpoints: OAuthEndpoints, code: str, state: str, *,
+    config_path: Path | None = None, host: str | None = None, apply_config: bool = True, now: float | None = None,
 ) -> oauth.OAuthCredential:
-    """Exchange ``code`` for a grant and persist it. Raises on bad state/exchange.
-
-    ``apply_config=False`` stores the tokens only, skipping the grant's config
-    block — the CLI path, where settings stay wizard-owned.
-    """
+    """Exchange ``code`` for a grant and persist it. Raises on bad state/exchange. ``apply_config=False``
+    stores tokens only (CLI path: settings stay wizard-owned)."""
     with _pending_lock:
         pending = _pending.pop(state, None)
     if pending is None:
         raise ValueError("unknown or expired authorization state")
+    verifier, redirect_uri, _ = pending
+    form = {"grant_type": "authorization_code", "client_id": endpoints.client_id, "code": code,
+            "redirect_uri": redirect_uri, "code_verifier": verifier}
+    _, grant = oauth._http_json("POST", endpoints.token_url, timeout=oauth._REFRESH_TIMEOUT_SECONDS, data=form)
+    return _install(endpoints, grant, path=config_path, host=host, apply_config=apply_config, now=now, kind="")
 
-    grant = oauth._http_post_form(
-        endpoints.token_url,
-        {
-            "grant_type": "authorization_code",
-            "client_id": endpoints.client_id,
-            "code": code,
-            "redirect_uri": pending.redirect_uri,
-            "code_verifier": pending.verifier,
-        },
-        oauth._REFRESH_TIMEOUT_SECONDS,
-    )
-
-    path = config_path or resolve_config_path()
-    target_host = host or resolve_active_host()
-    cred = oauth.install_grant(
-        path,
-        target_host,
-        grant,
-        client_id=endpoints.client_id,
-        token_endpoint=endpoints.token_url,
-        apply_config=apply_config,
-        now=now,
-    )
-    # Drop the singleton so the next acquisition builds with the new token.
-    from plugins.memory.honcho.client import reset_honcho_client
-
-    reset_honcho_client()
-    logger.info("Honcho OAuth grant installed for host %s", target_host)
-    return cred
-
-
-_CALLBACK_HTML = (
-    b"<!doctype html><meta charset=utf-8>"
-    b"<title>Honcho connected</title>"
-    b"<body style='font:14px ui-monospace,monospace;background:#0b0e14;color:#c9d1d9;"
-    b"display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
-    b"<div>Connected to Honcho. You can close this tab and return to Hermes.</div>"
-)
-
-_CALLBACK_ERROR_HTML = (
-    "<!doctype html><meta charset=utf-8>"
-    "<title>Honcho sign-in failed</title>"
+_CALLBACK_PAGE = (
+    "<!doctype html><meta charset=utf-8><title>{title}</title>"
     "<body style='font:14px ui-monospace,monospace;background:#0b0e14;color:#c9d1d9;"
-    "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
-    "<div>Sign-in was not completed ({error}). You can close this tab and re-run setup.</div>"
+    "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'><div>{body}</div>"
 )
-
+_CALLBACK_HTML = _CALLBACK_PAGE.format(
+    title="Honcho connected", body="Connected to Honcho. You can close this tab and return to Hermes."
+).encode()
+_CALLBACK_ERROR_HTML = _CALLBACK_PAGE.format(  # ``{error}`` is filled per request
+    title="Honcho sign-in failed", body="Sign-in was not completed ({error}). You can close this tab and re-run setup."
+)
 
 def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
-    """Bind the one-shot callback server, returning it and its capture dict.
-
-    Prefers :8765; if that's taken, falls back to an OS-assigned port. groudon's
-    redirect matcher relaxes the port for loopback hosts, so the fallback still
-    matches the seeded ``127.0.0.1`` redirect URI — the caller advertises the
-    actual bound port.
-    """
+    """Bind the one-shot callback server, returning it and its capture dict. Prefers :8765, else an
+    OS-assigned port (the AS relaxes the port for loopback redirect URIs; the caller advertises the bound port)."""
     captured: dict[str, str] = {}
 
     class _Handler(BaseHTTPRequestHandler):
@@ -272,145 +170,92 @@ def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
                 self.end_headers()
                 return
             params = parse_qs(parsed.query)
-            captured["code"] = (params.get("code") or [""])[0]
-            captured["state"] = (params.get("state") or [""])[0]
-            captured["error"] = (params.get("error") or [""])[0]
-            captured["error_description"] = (params.get("error_description") or [""])[0]
+            for k in ("code", "state", "error", "error_description"):
+                captured[k] = (params.get(k) or [""])[0]
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            if captured["error"]:
-                import html as _html
-
-                page = _CALLBACK_ERROR_HTML.format(error=_html.escape(captured["error"]))
-                self.wfile.write(page.encode("utf-8"))
-            else:
-                self.wfile.write(_CALLBACK_HTML)
+            error = captured["error"]
+            self.wfile.write(_CALLBACK_ERROR_HTML.format(error=html.escape(error)).encode() if error else _CALLBACK_HTML)
 
         def log_message(self, *args):  # silence stdlib request logging
             return
 
     try:
-        server = HTTPServer((LOOPBACK_HOST, LOOPBACK_PORT), _Handler)
+        return HTTPServer((LOOPBACK_HOST, LOOPBACK_PORT), _Handler), captured
     except OSError:
-        server = HTTPServer((LOOPBACK_HOST, 0), _Handler)  # OS-assigned fallback
-    return server, captured
+        return HTTPServer((LOOPBACK_HOST, 0), _Handler), captured
 
-
-def capture_loopback_code(
-    server: HTTPServer, captured: dict[str, str], *, timeout: float = 300.0
-) -> tuple[str, str]:
-    """Serve a single ``/callback`` GET on ``server`` and return ``(code, state)``.
-
-    Replies with a close-this-tab page, then stops. Raises ``TimeoutError`` if no
-    callback arrives within ``timeout``.
-    """
+def capture_loopback_code(server: HTTPServer, captured: dict[str, str], *, timeout: float = 300.0) -> tuple[str, str]:
+    """Serve ``/callback`` until our code lands; return ``(code, state)``. Loops so a stray probe to another
+    path doesn't end the wait; raises ``TimeoutError`` if nothing arrives within ``timeout``."""
     server.timeout = timeout
+    deadline = time.monotonic() + timeout
     try:
-        # handle_request honors server.timeout; loop until our callback lands so a
-        # stray probe to another path doesn't end the wait empty-handed.
-        deadline = time.monotonic() + timeout
         while "code" not in captured and time.monotonic() < deadline:
             server.handle_request()
     finally:
         server.server_close()
 
-    if captured.get("error"):
+    if error := captured.get("error"):
         detail = captured.get("error_description")
-        suffix = f" ({detail})" if detail else ""
-        raise ValueError(f"authorization denied: {captured['error']}{suffix}")
+        raise ValueError(f"authorization denied: {error}{f' ({detail})' if detail else ''}")
     if "code" not in captured:
         raise TimeoutError("no OAuth callback received before timeout")
     return captured["code"], captured.get("state", "")
 
-
 def authorize_via_loopback(
-    *,
-    config_path: Path | None = None,
-    host: str | None = None,
-    source: str | None = None,
-    apply_config: bool = True,
-    open_url: Callable[[str], None] | None = None,
-    timeout: float = 300.0,
+    *, config_path: Path | None = None, host: str | None = None, source: str | None = None,
+    apply_config: bool = True, open_url: Callable[[str], None] | None = None, timeout: float = 300.0,
 ) -> oauth.OAuthCredential:
-    """Drive the full loopback flow: open browser → capture code → exchange → persist.
-
-    ``open_url`` defaults to the system browser; tests inject a driver that
-    follows the authorize redirect into the loopback callback. It always
-    receives the authorize URL, so a CLI caller can also print it for
-    browserless environments.
-    """
-    # Bind first so the advertised redirect_uri carries the actual bound port
-    # (which may differ from :8765 if it was taken).
+    """Full loopback flow: open browser → capture code → exchange → persist. ``open_url`` (default: system
+    browser) always receives the authorize URL, so a CLI caller can print it for browserless setups."""
+    # Bind first so the advertised redirect_uri carries the actual bound port.
     server, captured = _bind_loopback_server()
     redirect_uri = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/callback"
-
     endpoints = resolve_endpoints()
     path = config_path or resolve_config_path()
-    authorize_url, state = begin_authorization(
-        endpoints, redirect_uri, source=source, config_path=_display_config_path(path)
-    )
-
+    authorize_url, state = begin_authorization(endpoints, redirect_uri, source=source,
+                                               config_path=_display_config_path(path))
     if open_url is None:
         import webbrowser
-
         open_url = webbrowser.open
-
-    # Browser opens from a short-lived thread; the socket is already bound, so a
-    # fast redirect can't beat it.
-    opener = threading.Thread(target=lambda: open_url(authorize_url), daemon=True)
-    opener.start()
-
+    # Socket is already bound, so a fast redirect can't beat the browser thread.
+    threading.Thread(target=lambda: open_url(authorize_url), daemon=True).start()
     code, returned_state = capture_loopback_code(server, captured, timeout=timeout)
     if returned_state != state:
         raise ValueError("OAuth state mismatch — possible CSRF, aborting")
-    return complete_authorization(
-        endpoints,
-        code,
-        returned_state,
-        config_path=path,
-        host=host,
-        apply_config=apply_config,
-    )
+    return complete_authorization(endpoints, code, returned_state, config_path=path, host=host,
+                                  apply_config=apply_config)
 
 
 # — Device authorization grant (RFC 8628), for headless / remote-VM clients —
-# The loopback flow needs the browser on the same machine; here the CLI prints
-# a short user code, the user approves from any browser (dashboard /device),
-# and the device polls the token endpoint until the grant lands.
 
 DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
-
-# RFC 8628 §3.5: slow_down adds 5s per response; cap matches the server's
-# DEVICE_POLL_INTERVAL_MAX so a misbehaving clock can't inflate past it.
+# RFC 8628 §3.5: slow_down adds 5s per response; cap matches the server's DEVICE_POLL_INTERVAL_MAX.
 _SLOW_DOWN_STEP = 5
 _POLL_INTERVAL_CAP = 60
-
-# RFC 8414 authorization-server metadata; advertising the device grant is what
-# distinguishes a host that can do device login from one that can't.
+# RFC 8414 metadata; advertising the device grant marks a host as device-login capable.
 _AS_METADATA_PATH = "/.well-known/oauth-authorization-server"
-
 
 class DeviceFlowError(RuntimeError):
     """A device-flow request failed. ``error`` is the RFC error code when known."""
 
     def __init__(self, error: str, description: str | None = None):
-        self.error = error
-        self.description = description
+        self.error, self.description = error, description
         super().__init__(f"{error}: {description}" if description else error)
-
 
 class AccessDenied(DeviceFlowError):
     """The user denied the authorization request."""
 
-
 class DeviceCodeExpired(DeviceFlowError):
     """The device code expired before the user approved it."""
-
 
 class AuthorizationTimeout(DeviceFlowError):
     """Polling ran past the device code's lifetime with no decision."""
 
+# Terminal server outcomes for a device-token poll (RFC 8628 §3.5).
+_DEVICE_POLL_ERRORS = {"access_denied": AccessDenied, "expired_token": DeviceCodeExpired}
 
 @dataclass(frozen=True)
 class DeviceCode:
@@ -423,96 +268,56 @@ class DeviceCode:
     expires_in: int
     interval: int
 
-
 def supports_device_login(endpoints: OAuthEndpoints, *, timeout: float = 5.0) -> bool:
-    """Whether the host advertises the device grant in its RFC 8414 metadata.
-
-    Fails closed: any connection error, non-200, or missing capability returns
-    False, so hosts without the device grant simply don't offer the option.
-    """
+    """Whether the host advertises the device grant in its RFC 8414 metadata. Fails closed on any error."""
     origin = endpoints.token_url.rsplit("/oauth/", 1)[0]
     try:
-        body = oauth._http_get_json(f"{origin}{_AS_METADATA_PATH}", timeout)
+        body = oauth._http_json("GET", f"{origin}{_AS_METADATA_PATH}", timeout=timeout)[1]
     except Exception:
         return False
-    grants = body.get("grant_types_supported")
+    grants = body.get("grant_types_supported") if isinstance(body, dict) else None
     return isinstance(grants, list) and DEVICE_GRANT_TYPE in grants
 
-
-def request_device_code(
-    endpoints: OAuthEndpoints, *, source: str | None = None
-) -> DeviceCode:
+def request_device_code(endpoints: OAuthEndpoints, *, source: str | None = None) -> DeviceCode:
     """Request a device + user code pair (RFC 8628 §3.1)."""
     if not endpoints.device_authorization_url:
         raise ValueError("no device authorization endpoint resolved")
-    data = {"client_id": endpoints.client_id, "scope": endpoints.scope}
-    if source:
-        data["source"] = source
-    status, body = oauth._http_post_form_status(
-        endpoints.device_authorization_url, data, oauth._REFRESH_TIMEOUT_SECONDS
-    )
+    data = {"client_id": endpoints.client_id, "scope": endpoints.scope, **({"source": source} if source else {})}
+    url = endpoints.device_authorization_url
+    status, body = oauth._http_post_form_status(url, data, oauth._REFRESH_TIMEOUT_SECONDS)
     if status != 200:
-        error = str(body.get("error") or f"http_{status}")
-        raise DeviceFlowError(error, body.get("error_description"))
+        raise DeviceFlowError(str(body.get("error") or f"http_{status}"), body.get("error_description"))
     try:
-        verification_uri = body["verification_uri"]
+        uri = body["verification_uri"]
         return DeviceCode(
-            device_code=body["device_code"],
-            user_code=body["user_code"],
-            verification_uri=verification_uri,
-            verification_uri_complete=body.get(
-                "verification_uri_complete",
-                f"{verification_uri}?user_code={body['user_code']}",
-            ),
-            expires_in=int(body["expires_in"]),
-            # RFC 8628 §3.2: interval is optional; clients default to 5s.
-            interval=int(body.get("interval", 5)),
+            device_code=body["device_code"], user_code=body["user_code"], verification_uri=uri,
+            verification_uri_complete=body.get("verification_uri_complete", f"{uri}?user_code={body['user_code']}"),
+            expires_in=int(body["expires_in"]), interval=int(body.get("interval", 5)),  # §3.2: default 5s
         )
     except (KeyError, TypeError, ValueError) as e:
-        raise DeviceFlowError(
-            "invalid_response", f"malformed device authorization response: {e}"
-        ) from e
-
+        raise DeviceFlowError("invalid_response", f"malformed device authorization response: {e}") from e
 
 def poll_for_token(
-    endpoints: OAuthEndpoints,
-    device: DeviceCode,
-    *,
-    on_poll: Callable[[], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-    monotonic: Callable[[], float] = time.monotonic,
+    endpoints: OAuthEndpoints, device: DeviceCode, *, on_poll: Callable[[], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
-    """Poll the token endpoint until the grant is approved (RFC 8628 §3.4/§3.5).
-
-    Sleeps ``interval`` before each poll, bumping it on ``slow_down``. Raises
-    ``AccessDenied`` / ``DeviceCodeExpired`` on the terminal server outcomes and
-    ``AuthorizationTimeout`` when ``expires_in`` elapses with no decision.
-    ``sleep`` / ``monotonic`` are injectable for tests.
-    """
+    """Poll the token endpoint until approved (RFC 8628 §3.4/§3.5). Sleeps ``interval`` before each poll,
+    bumping it on ``slow_down``. Raises ``AccessDenied`` / ``DeviceCodeExpired`` on terminal outcomes and
+    ``AuthorizationTimeout`` when ``expires_in`` elapses with no decision."""
     import httpx
 
+    form = {"grant_type": DEVICE_GRANT_TYPE, "device_code": device.device_code, "client_id": endpoints.client_id}
     interval = max(1, min(device.interval, _POLL_INTERVAL_CAP))
     deadline = monotonic() + max(1, device.expires_in)
     while True:
         if monotonic() + interval >= deadline:
-            raise AuthorizationTimeout(
-                "expired_token", "timed out waiting for approval"
-            )
+            raise AuthorizationTimeout("expired_token", "timed out waiting for approval")
         sleep(interval)
         if on_poll:
             on_poll()
         try:
-            status, body = oauth._http_post_form_status(
-                endpoints.token_url,
-                {
-                    "grant_type": DEVICE_GRANT_TYPE,
-                    "device_code": device.device_code,
-                    "client_id": endpoints.client_id,
-                },
-                oauth._REFRESH_TIMEOUT_SECONDS,
-            )
-        except httpx.TransportError as e:
-            # A network blip mid-poll shouldn't kill a 10-minute wait.
+            status, body = oauth._http_post_form_status(endpoints.token_url, form, oauth._REFRESH_TIMEOUT_SECONDS)
+        except httpx.TransportError as e:  # a network blip mid-poll shouldn't kill a 10-minute wait
             logger.debug("device token poll transport error, retrying: %s", e)
             continue
 
@@ -521,38 +326,21 @@ def poll_for_token(
                 raise DeviceFlowError("invalid_response", "token response missing access_token")
             return body
         error = str(body.get("error") or f"http_{status}")
-        description = body.get("error_description")
-        if error == "authorization_pending":
-            continue
         if error == "slow_down":
             interval = min(interval + _SLOW_DOWN_STEP, _POLL_INTERVAL_CAP)
-            continue
-        if error == "access_denied":
-            raise AccessDenied(error, description)
-        if error == "expired_token":
-            raise DeviceCodeExpired(error, description)
-        raise DeviceFlowError(error, description)
-
+        elif error != "authorization_pending":
+            raise _DEVICE_POLL_ERRORS.get(error, DeviceFlowError)(error, body.get("error_description"))
 
 def authorize_via_device_code(
-    *,
-    config_path: Path | None = None,
-    host: str | None = None,
-    source: str | None = None,
-    apply_config: bool = True,
-    display: Callable[[DeviceCode], None] | None = None,
-    open_url: Callable[[str], None] | None = None,
-    on_poll: Callable[[], None] | None = None,
+    *, config_path: Path | None = None, host: str | None = None, source: str | None = None,
+    apply_config: bool = True, display: Callable[[DeviceCode], None] | None = None,
+    open_url: Callable[[str], None] | None = None, on_poll: Callable[[], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> oauth.OAuthCredential:
-    """Drive the full device flow: request codes → show user code → poll → persist.
-
-    ``display`` shows the user code + verification URL. ``open_url`` (if given)
-    receives ``verification_uri_complete`` — there is no default browser open,
-    since the approving browser may be on another machine.
-    """
+    """Full device flow: request codes → show user code → poll → persist. ``open_url`` (if given) receives
+    ``verification_uri_complete``; no default browser open, since the approving browser may be on another machine."""
     endpoints = resolve_endpoints()
-    path = config_path or resolve_config_path()
+    path = config_path or resolve_config_path()  # resolve NOW so a later ambient lookup can't drift
     target_host = host or resolve_active_host()
 
     device = request_device_code(endpoints, source=source)
@@ -560,54 +348,32 @@ def authorize_via_device_code(
         display(device)
     if open_url:
         open_url(device.verification_uri_complete)
-
     grant = poll_for_token(endpoints, device, on_poll=on_poll, sleep=sleep)
-    cred = oauth.install_grant(
-        path,
-        target_host,
-        grant,
-        client_id=endpoints.client_id,
-        token_endpoint=endpoints.token_url,
-        apply_config=apply_config,
-    )
-    from plugins.memory.honcho.client import reset_honcho_client
-
-    reset_honcho_client()
-    logger.info("Honcho OAuth device grant installed for host %s", target_host)
-    return cred
+    return _install(endpoints, grant, path=path, host=target_host, apply_config=apply_config, now=None,
+                    kind="device ")
 
 
-# — Background launcher + status, for the desktop "Connect" button —
-# The flow blocks on a browser round-trip, so the web_server endpoint kicks it
-# off in a thread and the UI polls status rather than holding the request open.
-
+# — Background launcher + status, for the desktop "Connect" button — the flow
+# blocks on a browser round-trip, so web_server runs it in a thread and the UI polls.
 
 @dataclass
 class FlowStatus:
     state: str = "idle"  # idle | pending | connected | error
     detail: str = ""
 
-
 _status = FlowStatus()
 _status_lock = threading.Lock()
 _flow_thread: threading.Thread | None = None
 
-
 def _detect_connection() -> tuple[bool, str | None]:
     """Report whether a credential is already stored: 'oauth', 'apikey', or none."""
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig
-
         cfg = HonchoClientConfig.from_global_config()
         block = (cfg.raw.get("hosts") or {}).get(cfg.host) or {}
-        if oauth.OAuthCredential.from_host_block(block) is not None:
-            return True, "oauth"
-        if cfg.api_key:
-            return True, "apikey"
+        auth = "oauth" if oauth.OAuthCredential.from_host_block(block) is not None else "apikey" if cfg.api_key else None
     except Exception:
-        pass
-    return False, None
-
+        auth = None
+    return auth is not None, auth
 
 def get_flow_status() -> dict[str, object]:
     with _status_lock:
@@ -615,27 +381,18 @@ def get_flow_status() -> dict[str, object]:
     connected, auth = _detect_connection()
     return {"state": state, "detail": detail, "connected": connected, "auth": auth}
 
-
 def _set_status(state: str, detail: str = "") -> None:
     with _status_lock:
         _status.state, _status.detail = state, detail
 
-
 def start_loopback_flow_background(
-    *,
-    config_path: Path | None = None,
-    host: str | None = None,
-    source: str = "hermes-desktop",
+    *, config_path: Path | None = None, host: str | None = None, source: str = "hermes-desktop",
     timeout: float = 300.0,
 ) -> dict[str, str]:
     """Launch the loopback flow in a daemon thread; returns the initial status.
-
-    Idempotent while a flow is pending — a second call is a no-op so a
-    double-clicked button can't open two browser tabs / bind :8765 twice.
-    """
+    Idempotent while pending, so a double-click can't open two tabs / bind :8765 twice."""
     global _flow_thread
-    # Resolve under the caller's profile scope NOW — the worker thread outlives
-    # the request, where a context-local HERMES_HOME override can't reach.
+    # Resolve under the caller's profile scope NOW — a context-local HERMES_HOME override can't reach the worker.
     config_path = config_path or resolve_config_path()
     host = host or resolve_active_host()
     with _status_lock:

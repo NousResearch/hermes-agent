@@ -33,7 +33,7 @@ def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):
     monkeypatch.setattr(entry, "_load_env", lambda: None)
     monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")
     monkeypatch.setattr(
-        "tools.mcp_tool.discover_mcp_tools",
+        "tools.mcp_tool_discovery.discover_mcp_tools",
         lambda: discovery_calls.append(True),
     )
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)

@@ -36,18 +36,17 @@ if "faster_whisper" not in sys.modules:
     faster_whisper_stub.__spec__ = ModuleSpec("faster_whisper", loader=None)
     sys.modules["faster_whisper"] = faster_whisper_stub
 
-from tools.transcription_tools import (
-    CLOUD_STT_PROVIDERS,
-    BUILTIN_STT_PROVIDERS,
+from tools.transcription_common import BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS
+from tools.transcription_audio import (
     _cloud_trim_settings,
     _CLOUD_TRIM_KEEP_MS_DEFAULT,
+    _CLOUD_TRIM_MIN_INPUT_SECONDS,
     _CLOUD_TRIM_THRESHOLD_DB_DEFAULT,
     _trim_silence_for_cloud_stt,
 )
-import tools.transcription_tools as tt_module
 
 # The E2E fixtures below must be past the short-clip input gate.
-_GATE = tt_module._CLOUD_TRIM_MIN_INPUT_SECONDS
+_GATE = _CLOUD_TRIM_MIN_INPUT_SECONDS
 
 _HAS_FFMPEG = bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe"))
 
@@ -231,13 +230,13 @@ class TestTrimFallbacks:
 
     def test_missing_ffmpeg_returns_none(self, tmp_path):
         wav = _write_wav(tmp_path / "a.wav", [("tone", 1)])
-        with patch("tools.transcription_tools._find_ffmpeg_binary", return_value=None):
+        with patch("tools.transcription_audio._find_ffmpeg_binary", return_value=None):
             assert _trim_silence_for_cloud_stt(wav, {}) is None
 
     def test_missing_ffprobe_returns_none(self, tmp_path):
         wav = _write_wav(tmp_path / "a.wav", [("tone", 1)])
-        with patch("tools.transcription_tools._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
-             patch("tools.transcription_tools._find_ffprobe_binary", return_value=None):
+        with patch("tools.transcription_audio._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
+             patch("tools.transcription_audio._find_ffprobe_binary", return_value=None):
             assert _trim_silence_for_cloud_stt(wav, {}) is None
 
     def test_ffmpeg_failure_returns_none_and_cleans_up(self, tmp_path):
@@ -247,16 +246,16 @@ class TestTrimFallbacks:
         def probe(path):
             return 60.0  # past the short-clip gate so the encode is attempted
 
-        with patch("tools.transcription_tools._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
-             patch("tools.transcription_tools._probe_audio_duration", side_effect=probe), \
-             patch("tools.transcription_tools.subprocess.run",
+        with patch("tools.transcription_audio._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
+             patch("tools.transcription_audio._probe_audio_duration", side_effect=probe), \
+             patch("tools.transcription_audio.subprocess.run",
                    side_effect=sp.CalledProcessError(1, "ffmpeg")):
             assert _trim_silence_for_cloud_stt(wav, {}) is None
 
     def test_unprobeable_source_returns_none(self, tmp_path):
         wav = _write_wav(tmp_path / "a.wav", [("tone", 1)])
-        with patch("tools.transcription_tools._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
-             patch("tools.transcription_tools._probe_audio_duration", return_value=None):
+        with patch("tools.transcription_audio._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
+             patch("tools.transcription_audio._probe_audio_duration", return_value=None):
             assert _trim_silence_for_cloud_stt(wav, {}) is None
 
 
@@ -274,7 +273,7 @@ class TestTrimE2E:
             tmp_path / "pauses.wav",
             [("tone", 2), ("silence", 6), ("tone", 2), ("silence", 4)],
         )
-        from tools.transcription_tools import _probe_audio_duration
+        from tools.transcription_audio import _probe_audio_duration
         trimmed = _trim_silence_for_cloud_stt(wav, {})
         assert trimmed is not None
         try:
@@ -306,7 +305,7 @@ class TestTrimE2E:
         wav = _write_wav(
             tmp_path / "short.wav", [("tone", 2), ("silence", 4), ("tone", 2)]
         )
-        with patch.object(tt_module, "_run_ffmpeg_stt_encode") as mock_encode:
+        with patch("tools.transcription_audio._run_ffmpeg_stt_encode") as mock_encode:
             assert _trim_silence_for_cloud_stt(wav, {}) is None
         mock_encode.assert_not_called()
 

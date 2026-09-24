@@ -611,7 +611,9 @@ class TestDisconnectedAgentReap:
         adapter._active_run_agents["run_x"] = agent
 
         request = MagicMock()
+        request.headers = {}
         request.match_info = {"run_id": "run_x"}
+        adapter._run_owners["run_x"] = adapter._run_idempotency_scope(request)
         resp = await adapter._handle_stop_run(request)
         assert resp.status == 200
 
@@ -2357,6 +2359,7 @@ class TestSessionIdHeader:
         ]
         mock_db = MagicMock()
         mock_db.get_messages_as_conversation.return_value = db_history
+        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
         auth_adapter._session_db = mock_db
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

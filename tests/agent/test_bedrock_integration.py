@@ -127,6 +127,9 @@ class TestResolveProvider:
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
 
+        # The Nous free tier counts as a configured provider and sits above the Bedrock chain
+        # (NS-829); this test's contract is the chain itself, so switch the free tier off.
+        monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: False)
         # Mock the auth store to have no active provider
         with patch("hermes_cli.auth._load_auth_store", return_value={}):
             result = resolve_provider("auto")
@@ -290,7 +293,7 @@ class TestPackaging:
 #   us.anthropic.claude-sonnet-4-5-20250929-v1:0
 #   apac.anthropic.claude-haiku-4-5
 #
-# ``agent.anthropic_adapter.normalize_model_name`` converts dots to hyphens
+# ``agent.anthropic_message_convert.normalize_model_name`` converts dots to hyphens
 # unless the caller opts in via ``preserve_dots=True``.  Before this fix,
 # ``AIAgent._anthropic_preserve_dots`` returned False for the ``bedrock``
 # provider, so Claude-on-Bedrock requests went out with
@@ -339,7 +342,7 @@ class TestBedrockModelNameNormalization:
 
     def test_global_anthropic_inference_profile_preserved(self):
         """The reporter's exact model ID."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=True
         ) == "global.anthropic.claude-opus-4-7"
@@ -351,7 +354,7 @@ class TestBedrockModelNameNormalization:
         always returned unmangled -- ``preserve_dots`` is irrelevant for
         these IDs because the dots are namespace separators, not version
         separators.  Regression for #12295."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
         ) == "global.anthropic.claude-opus-4-7"
@@ -403,7 +406,7 @@ class TestBedrockModelIdDetection:
     regardless of ``preserve_dots``.  Regression for #12295."""
 
     def test_bare_bedrock_id_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.anthropic_message_convert import _is_bedrock_model_id
         assert _is_bedrock_model_id("anthropic.claude-opus-4-7") is True
 
 
@@ -415,7 +418,7 @@ class TestBedrockModelIdDetection:
         """The primary bug from #12295: ``anthropic.claude-opus-4-7``
         sent to bedrock-mantle via auxiliary clients that don't pass
         ``preserve_dots=True``."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "anthropic.claude-opus-4-7", preserve_dots=False
         ) == "anthropic.claude-opus-4-7"

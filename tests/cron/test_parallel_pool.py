@@ -164,7 +164,7 @@ class TestRunningJobGuard:
 
         called = []
 
-        def create_execution_side_effect(job_id, source):
+        def create_execution_side_effect(job_id, source, **kwargs):
             if job_id == "failing-job":
                 raise RuntimeError("execution ledger unavailable")
             return {"id": f"{job_id}-execution"}
@@ -187,7 +187,7 @@ class TestRunningJobGuard:
             if job_id == "healthy-job"
             else None,
         )
-        monkeypatch.setattr(sched, "mark_execution_running", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "mark_execution_running", lambda *_a, **_kw: {})
         monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_a, **_kw: True)
 
         n = sched.tick(verbose=False)

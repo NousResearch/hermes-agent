@@ -1,9 +1,7 @@
 """Tests for hermes_cli.gateway."""
 
-import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
 import textwrap
@@ -1089,7 +1087,6 @@ class TestWindowsScheduledTaskSupervisorGuard:
             raise AssertionError("subprocess must not run off Windows")
 
         monkeypatch.setattr(gateway.subprocess, "run", _boom_run)
-        assert gateway._windows_scheduled_task_running("HermesGateway") is False
         assert gateway._windows_scheduled_task_supervises("HermesGateway") is False
         assert gateway._windows_scheduled_task_state("HermesGateway") is None
 
@@ -1100,7 +1097,6 @@ class TestWindowsScheduledTaskSupervisorGuard:
         for state, expected in states.items():
             monkeypatch.setattr(gateway, "_windows_scheduled_task_state", lambda name, s=state: s)
             assert gateway._windows_scheduled_task_supervises("Hermes_Gateway") is expected, state
-            assert gateway._windows_scheduled_task_running("Hermes_Gateway") is (state == "Running")
 
 
 def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):

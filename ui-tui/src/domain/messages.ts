@@ -80,7 +80,11 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
           ? 'background agent work finished'
           : `${count} background agent${count === 1 ? '' : 's'} finished`
 
-      out.push({ kind: 'event', role: 'system', text: label })
+      out.push({
+        kind: 'event',
+        role: 'system',
+        text: typeof meta?.display_text === 'string' ? meta.display_text : label
+      })
       pending = []
 
       continue

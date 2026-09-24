@@ -1,0 +1,14 @@
+name: herdr-auto-reconcile
+repo: https://github.com/chris-yyau/hermes-herdr-auto-reconcile
+sha: 7a01878039c217f7b3a5500a3086dd62a077d100
+description: Wake Hermes when allowlisted Herdr panes need reconciliation, without routing or controlling
+  pane work.
+maintainer: chris-yyau
+tier: community
+docs_url: https://github.com/chris-yyau/hermes-herdr-auto-reconcile
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -170,3 +170,65 @@ export function advanceTranscriptWindow(
 
   return { anchorId: window.windowed ? window.messages[0].id : null, pages, window }
 }
+
+/** How many sessions keep a sticky window before the oldest is evicted. */
+export const MAX_SESSION_WINDOWS = 12
+
+/**
+ * A window state plus the exact message array it was computed from.
+ * The array identity is load-bearing: when a session is re-entered with the
+ * IDENTICAL transcript (the warm-switch path of #95595), the stored window —
+ * including the exact `window.messages` slice reference — is reused as-is.
+ * The reference reuse is what stops `useRuntimeMessageRepository` from
+ * rebuilding (and every row from re-rendering) on a warm switch.
+ */
+export interface SessionWindowMemo {
+  messages: readonly ChatMessage[]
+  state: TranscriptWindowState
+}
+
+/**
+ * `advanceTranscriptWindow` with a STICKY cut that survives session switches.
+ *
+ * The previous single-slot state was nulled on every switch, so a warm
+ * re-entry always re-ran the weight walk and rebuilt the windowed slice —
+ * which re-indexed the whole windowed transcript (markdown re-parse +
+ * re-highlight per row) even though nothing had changed. This keeps one memo
+ * per session:
+ *
+ * - Re-entering a session with the same transcript array returns the cached
+ *   windowed slice BY REFERENCE — the runtime repository and every message
+ *   row stay mounted, so the switch is O(1).
+ * - Re-entering with a changed transcript keeps the sticky cut (anchor still
+ *   present, tail within budget + slack) instead of re-walking from scratch.
+ * - The anchor vanishing (compression rewrite) or a pages change falls
+ *   through to `advanceTranscriptWindow`'s existing fresh-walk behaviour.
+ *
+ * The map is bounded (oldest session evicted) so an unbounded session list
+ * cannot grow it without limit.
+ */
+export function advanceSessionTranscriptWindow(
+  memos: Map<string, SessionWindowMemo>,
+  sessionKey: string,
+  messages: readonly ChatMessage[],
+  pages = 1
+): TranscriptWindowState {
+  const memo = memos.get(sessionKey)
+
+  // Warm re-visit with the identical transcript and page count: reuse the
+  // cached state wholesale, preserving the windowed slice reference.
+  if (memo && memo.messages === messages && memo.state.pages === pages) {
+    return memo.state
+  }
+
+  const state = advanceTranscriptWindow(memo?.state ?? null, messages, pages)
+
+  memos.set(sessionKey, { messages, state })
+
+  if (memos.size > MAX_SESSION_WINDOWS) {
+    const oldest = memos.keys().next().value as string
+    memos.delete(oldest)
+  }
+
+  return state
+}

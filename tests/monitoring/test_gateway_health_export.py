@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import logging
 
-import pytest
 
 
 
@@ -43,7 +41,7 @@ def test_otlp_attrs_redact_strings_and_never_export_profile():
 
 
 def test_resource_attributes_are_allowlisted_and_sanitized():
-    from agent.monitoring.gateway_health_export import _safe_resource_attributes
+    from agent.monitoring.otlp_exporter import _safe_resource_attributes
 
     attrs = _safe_resource_attributes({
         "service.name": "hermes-gateway",

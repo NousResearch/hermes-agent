@@ -66,9 +66,9 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
     - Step 4 returns the nudge response as the final answer
     """
     with (
-        patch("run_agent.get_tool_definitions", return_value=_tool_defs("todo", "web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_tool_defs("todo", "web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -104,7 +104,7 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
     ]
 
     with (
-        patch("run_agent.handle_function_call", return_value="ok"),
+        patch("model_tools.handle_function_call", return_value="ok"),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
@@ -155,9 +155,9 @@ def test_bare_tool_marker_is_not_reused_as_final_response():
     - Step 3 returns the nudge response as the final answer.
     """
     with (
-        patch("run_agent.get_tool_definitions", return_value=_tool_defs("skill_manage")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_tool_defs("skill_manage")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -187,7 +187,7 @@ def test_bare_tool_marker_is_not_reused_as_final_response():
     ]
 
     with (
-        patch("run_agent.handle_function_call", return_value="ok"),
+        patch("model_tools.handle_function_call", return_value="ok"),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),

@@ -25,9 +25,9 @@ def reset_restart_cooldown():
 class TestSpawnGatewayRestartReapsOrphans:
     """_spawn_gateway_restart must reap orphaned gateways before spawning."""
 
-    @patch("hermes_cli.web_server._gateway_subcommand", return_value=["gateway", "restart"])
-    @patch("hermes_cli.web_server._spawn_hermes_action")
-    @patch("hermes_cli.web_server._ACTION_PROCS", {})
+    @patch("hermes_cli.web_server_gateway._gateway_subcommand", return_value=["gateway", "restart"])
+    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
+    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
     def test_reap_called_before_spawn(self, mock_spawn, mock_subcmd):
         """Orphan reap runs before the new gateway process is spawned."""
         mock_proc = MagicMock(spec=subprocess.Popen)
@@ -46,9 +46,9 @@ class TestSpawnGatewayRestartReapsOrphans:
         assert proc is mock_proc
         assert reused is False
 
-    @patch("hermes_cli.web_server._gateway_subcommand", return_value=["gateway", "restart"])
-    @patch("hermes_cli.web_server._spawn_hermes_action")
-    @patch("hermes_cli.web_server._ACTION_PROCS", {})
+    @patch("hermes_cli.web_server_gateway._gateway_subcommand", return_value=["gateway", "restart"])
+    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
+    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
     def test_reap_failure_does_not_block_spawn(self, mock_spawn, mock_subcmd):
         """If reap raises, the restart still proceeds."""
         mock_proc = MagicMock(spec=subprocess.Popen)

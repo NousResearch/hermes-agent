@@ -30,7 +30,7 @@ describe('primary-remote descriptor reuse keeps profile scope', () => {
 
     // The reuse branch must decorate the ambient primary descriptor with
     // sharedRemote: true, matching the explicit shared-remote connection path.
-    expect(branch).toContain('const primaryDescriptor = await ensureBackend(profile)')
+    expect(branch).toContain('const primaryDescriptor = await ensureBackend(profile, { passive })')
     expect(branch).toContain('registrySourceOwnsPrimaryBackend(registry, id, primaryDescriptor)')
     expect(branch).toContain('sharedRemote: true')
   })

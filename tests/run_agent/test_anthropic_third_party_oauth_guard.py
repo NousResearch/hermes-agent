@@ -34,9 +34,9 @@ _API_KEY_TOKEN = "sk-ant-api-abcdef1234567890"
 def agent():
     """Minimal AIAgent construction, skipping tool discovery."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -64,7 +64,7 @@ class TestOAuthFlagOnRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
+            patch("agent.anthropic_credentials.resolve_anthropic_token",
                   return_value=_OAUTH_LIKE_TOKEN),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
@@ -105,13 +105,13 @@ class TestOAuthFlagOnConstruction:
 
     def test_minimax_init_does_not_flip_oauth(self):
         with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
             # Simulate a stale ANTHROPIC_TOKEN in the env — the init code
             # MUST NOT fall back to it when provider != anthropic.
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
+            patch("agent.anthropic_credentials.resolve_anthropic_token",
                   return_value=_OAUTH_LIKE_TOKEN),
         ):
             agent = AIAgent(
@@ -136,7 +136,7 @@ class TestOAuthFlagOnFallbackActivation:
 
     def test_fallback_to_third_party_does_not_flip_oauth(self, agent):
         """Directly mimic the post-fallback assignment at line ~6537."""
-        from agent.anthropic_adapter import _is_oauth_token
+        from agent.anthropic_credentials import _is_oauth_token
 
         # Emulate the relevant lines of _try_activate_fallback without
         # running the entire recovery stack (which pulls in streaming,
@@ -153,6 +153,6 @@ class TestApiKeyTokensAlwaysSafe:
     """Regression: plain API-key shapes must always resolve to non-OAuth, any provider."""
 
     def test_native_anthropic_with_api_key_token(self):
-        from agent.anthropic_adapter import _is_oauth_token
+        from agent.anthropic_credentials import _is_oauth_token
         assert _is_oauth_token(_API_KEY_TOKEN) is False
 

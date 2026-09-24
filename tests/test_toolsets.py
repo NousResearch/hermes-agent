@@ -6,7 +6,6 @@ from toolsets import (
     TOOLSETS,
     get_toolset,
     resolve_toolset,
-    resolve_multiple_toolsets,
     get_all_toolsets,
     validate_toolset,
     create_custom_toolset,
@@ -57,6 +56,24 @@ class TestGetToolset:
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
 
+    def test_static_and_mcp_alias_with_same_name_are_merged(self, monkeypatch):
+        # An MCP server named like a built-in toolset registers a bare alias to its
+        # `mcp-<name>` toolset; the static entry must union those tools in (and keep
+        # its own includes) instead of shadowing the server.
+        TOOLSETS["_mergetest"] = {"description": "static", "tools": ["builtin_tool_a"], "includes": ["web"]}
+        try:
+            reg = ToolRegistry()
+            reg.register(name="mcp__mergetest_call", toolset="mcp-_mergetest",
+                         schema=_make_schema("mcp__mergetest_call", "Call"), handler=_dummy_handler)
+            reg.register_toolset_alias("_mergetest", "mcp-_mergetest")
+            monkeypatch.setattr("tools.registry.registry", reg)
+
+            ts = get_toolset("_mergetest")
+            assert {"builtin_tool_a", "mcp__mergetest_call"} <= set(ts["tools"])
+            assert ts["includes"] == ["web"]
+        finally:
+            del TOOLSETS["_mergetest"]
+
 
 class TestResolveToolset:
     def test_leaf_toolset(self):
@@ -105,15 +122,15 @@ class TestResolveToolset:
 
 
 
-class TestResolveMultipleToolsets:
-    def test_combines_and_deduplicates(self):
-        tools = resolve_multiple_toolsets(["web", "terminal"])
+
+class TestResolveToolsetComposition:
+    def test_union_over_names_combines_and_deduplicates(self):
+        tools = sorted({t for name in ("web", "terminal") for t in resolve_toolset(name)})
         assert "web_search" in tools
         assert "web_extract" in tools
         assert "terminal" in tools
         # No duplicates
         assert len(tools) == len(set(tools))
-
 
 
 class TestValidateToolset:
@@ -265,7 +282,7 @@ class TestResolveToolsetIncludeRegistry:
         finally:
             registry.deregister("__probe_registry_only_tool__")
 
-        assert static == {"terminal", "process"}, static
+        assert static == {"terminal", "process_manage"}, static
         # Registered into 'terminal' but not part of the static definition — it
         # must only appear in the merged view.
         assert "__probe_registry_only_tool__" in merged
@@ -275,7 +292,7 @@ class TestResolveToolsetIncludeRegistry:
     def test_static_view_threads_through_includes(self):
         # 'debugging' has direct tools [terminal, process] and includes [web, file]
         static = set(resolve_toolset("debugging", include_registry=False))
-        assert {"terminal", "process"} <= static
+        assert {"terminal", "process_manage"} <= static
         assert "web_search" in static
         assert "read_file" in static
 

@@ -178,7 +178,7 @@ def test_lazy_recall_open_is_owned_by_the_agent(monkeypatch):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
 
     agent = _bare_agent(_session_db=None, _persist_disabled=False)
     got = agent._get_session_db_for_recall()
@@ -272,7 +272,7 @@ def build_env(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     for name, value in [
         ("_set_session_context", lambda _key: []),
         ("_clear_session_context", lambda _tokens: None),

@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.platforms.base import CachedMedia, MessageType
+from gateway.platforms.base import CachedMedia
+from gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
@@ -24,6 +25,7 @@ hex_to_npub = _buzz_mod.hex_to_npub
 npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
+_MAX_CLI_MESSAGE_CHARS = _buzz_mod._MAX_CLI_MESSAGE_CHARS
 _resolve_private_key = _buzz_mod._resolve_private_key
 _resolve_auth_tag = _buzz_mod._resolve_auth_tag
 _event_reply_parent_id = _buzz_mod._event_reply_parent_id
@@ -1134,8 +1136,8 @@ class TestInboundAttachments:
         )
         monkeypatch.setattr(
             _buzz_mod,
-            "cache_media_bytes",
-            MagicMock(side_effect=OSError(36, "File name too long")),
+            "cache_media_bytes_async",
+            AsyncMock(side_effect=OSError(36, "File name too long")),
         )
         adapter = _make_adapter()
 
@@ -3061,14 +3063,19 @@ class TestInboundMediaAuthorizationGate:
 
     @pytest.mark.asyncio
     async def test_live_media_redacts_long_path_before_bounding(self, tmp_path):
+        # Invariant: the host path is redacted BEFORE the 900-char bound is applied,
+        # so a path long enough to straddle the cut never leaks in fragments. The
+        # path must therefore exceed the bound, but stay under PATH_MAX (1024 on
+        # macOS; 4096 on Linux) so the directory can actually be created.
         parent = tmp_path
         private_parts = []
-        for index in range(6):
-            part = f"private-{index}-" + ("x" * 150)
+        while len(str(parent)) < _MAX_CLI_MESSAGE_CHARS:
+            part = f"private-{len(private_parts)}-" + ("x" * 80)
             private_parts.append(part)
             parent = parent / part
             parent.mkdir()
         media = parent / "handoff.txt"
+        assert _MAX_CLI_MESSAGE_CHARS < len(str(media)) < 1024
         media.write_text("safe handoff", encoding="utf-8")
         adapter = _make_adapter()
         adapter._run_cli = AsyncMock(

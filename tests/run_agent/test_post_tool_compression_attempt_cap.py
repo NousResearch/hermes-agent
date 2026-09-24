@@ -86,6 +86,7 @@ def _pressured_compressor() -> MagicMock:
     compressor.threshold_tokens = 10_000
     compressor.context_length = 200_000
     compressor.last_prompt_tokens = 150_000
+    compressor.awaiting_real_usage_after_compression = False
     compressor.should_compress.return_value = True
     compressor.should_defer_preflight_to_real_usage.return_value = True
     compressor.get_active_compression_failure_cooldown.return_value = None
@@ -95,9 +96,9 @@ def _pressured_compressor() -> MagicMock:
 @pytest.fixture()
 def agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -136,7 +137,7 @@ def _run_tool_loop(agent, n_tool_iterations: int):
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(
-            "run_agent.handle_function_call",
+            "model_tools.handle_function_call",
             lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
         ),
     ):
@@ -151,6 +152,14 @@ def _run_tool_loop(agent, n_tool_iterations: int):
 
 
 class TestPostToolCompressionAttemptCap:
+    def test_post_tool_gate_waits_for_usage_after_native_checkpoint(self, agent):
+        agent.context_compressor.awaiting_real_usage_after_compression = True
+
+        result, compress_calls = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        assert compress_calls == []
+
     def test_post_tool_compression_capped_at_default_three(self, agent):
         """7 tool iterations under constant pressure → exactly 3 compactions.
 

@@ -1,6 +1,9 @@
 """Tests for OSV malware check on MCP extension packages."""
 
 import json
+import time
+from pathlib import Path
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -66,14 +69,18 @@ class TestParsePackageFromArgs:
 
 class TestCheckPackageForMalware:
     @pytest.fixture(autouse=True)
-    def _fresh_cache(self):
+    def _fresh_cache(self, tmp_path, monkeypatch):
         from tools import osv_check
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with osv_check._cache_lock:
             osv_check._cache.clear()
+            osv_check._disk_cache_loaded = False
+        (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
         yield
         with osv_check._cache_lock:
             osv_check._cache.clear()
-
+            osv_check._disk_cache_loaded = False
+        (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
     def test_clean_package(self):
         """Clean package returns None (allow)."""
         mock_response = MagicMock()
@@ -188,6 +195,94 @@ class TestCheckPackageForMalware:
                 osv_check._cache[key] = (0.0, result)
             check_package_for_malware("uvx", ["mcp-server-fetch"])
         assert mock_url.call_count == 2
+
+    def test_disk_cache_persists_and_reloads(self, tmp_path, monkeypatch):
+        """A warm disk cache is reused by a fresh in-process cache."""
+        from tools import osv_check
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+            check_package_for_malware("uvx", ["mcp-server-persist"])
+
+        cache_file = tmp_path / "cache" / "osv_check.json"
+        assert cache_file.exists(), "disk cache should be written after a warm result"
+
+        with osv_check._cache_lock:
+            osv_check._cache.clear()
+            osv_check._disk_cache_loaded = False
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url2:
+            check_package_for_malware("uvx", ["mcp-server-persist"])
+
+        assert mock_url2.call_count == 0, "disk cache must satisfy the second call"
+
+    def test_disk_cache_format_versioned(self, tmp_path, monkeypatch):
+        """Disk cache JSON has a version field and recoverable entries."""
+        from tools import osv_check
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
+            check_package_for_malware("uvx", ["mcp-server-format"])
+
+        cache_file = tmp_path / "cache" / "osv_check.json"
+        with open(cache_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert data["version"] == osv_check._DISK_CACHE_VERSION
+        assert "entries" in data
+        key = "PyPI|mcp-server-format|"
+        assert key in data["entries"]
+        assert "expiry" in data["entries"][key]
+        assert data["entries"][key]["result"] is None
+
+    def test_disk_cache_retries_after_transient_oserror(self, tmp_path, monkeypatch):
+        """A busy/unreadable cache file must not disable disk loads for the process."""
+        from tools import osv_check
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache_file = tmp_path / "cache" / "osv_check.json"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps({
+                "version": osv_check._DISK_CACHE_VERSION,
+                "entries": {
+                    "PyPI|mcp-server-retry|": {
+                        "expiry": time.time() + 3600,
+                        "result": None,
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        real_open = open
+        calls = {"n": 0}
+
+        def flaky_open(path, *args, **kwargs):
+            if Path(path) == cache_file:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise OSError("resource temporarily unavailable")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", flaky_open)
+        with osv_check._cache_lock:
+            osv_check._load_disk_cache()
+            assert osv_check._disk_cache_loaded is False
+            osv_check._load_disk_cache()
+            assert osv_check._disk_cache_loaded is True
+            assert ("PyPI", "mcp-server-retry", None) in osv_check._cache
 
 
 class TestLiveOsvQuery:

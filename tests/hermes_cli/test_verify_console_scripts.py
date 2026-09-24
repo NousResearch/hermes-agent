@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from hermes_cli import main_install_repair
 
 
 @pytest.fixture
@@ -44,10 +45,10 @@ class TestVerifyConsoleScriptsInstalled:
         for name in ("hermes", "hermes-agent", "hermes-acp"):
             (fake_scripts_dir / f"{name}.exe").write_bytes(b"fake")
 
-        with patch("hermes_cli.main._is_windows", return_value=True), \
-             patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts_dir), \
-             patch("hermes_cli.main._run_quarantined_install") as mock_install:
-            from hermes_cli.main import _verify_console_scripts_installed
+        with patch("hermes_cli.main_install_repair._is_windows", return_value=True), \
+             patch("hermes_cli.main_install_repair._venv_scripts_dir", return_value=fake_scripts_dir), \
+             patch("hermes_cli.main_install_repair._run_quarantined_install") as mock_install:
+            from hermes_cli.main_install_repair import _verify_console_scripts_installed
 
             _verify_console_scripts_installed(["uv", "pip"], env={})
 
@@ -61,8 +62,8 @@ class TestVerifyConsoleScriptsInstalled:
     ):
         import hermes_cli.main as main_mod
 
-        with patch("hermes_cli.main._is_windows", return_value=True):
-            names = {path.name for path in main_mod._hermes_exe_shims(fake_scripts_dir)}
+        with patch("hermes_cli.main_install_repair._is_windows", return_value=True):
+            names = {path.name for path in main_install_repair._hermes_exe_shims(fake_scripts_dir)}
 
         assert {"hermes.exe", "hermes-agent.exe", "hermes-acp.exe"} <= names
         assert "hermes-gateway.exe" in names

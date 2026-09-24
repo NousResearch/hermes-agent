@@ -14,6 +14,16 @@ Two behaviors that only show up with more than one profile on disk:
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _uncached_sidebar_endpoints(monkeypatch):
+    """Both sidebar endpoints sit behind ``_sidebar_singleflight_cache`` (5s TTL). Every
+    test here builds a fresh tmp profile set under the same default query params, so a warm
+    entry would answer with another test's payload. TTL 0 makes each request cold."""
+    from hermes_cli.web_routers import profiles as profiles_routes
+
+    monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
+
+
 @pytest.fixture
 def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
     """An isolated default home plus one named profile, each with a state.db."""

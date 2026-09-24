@@ -15,11 +15,13 @@ import pytest
 from hermes_cli import gateway as hermes_gateway
 from hermes_cli import gateway_windows
 from hermes_cli import main as cli_main
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 
 def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
 
     # The pre-spawn re-check (``all_profiles=True``) must find nothing
     # running so the cold-start path proceeds and actually spawns.

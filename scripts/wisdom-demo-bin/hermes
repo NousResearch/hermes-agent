@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Repo-local Hermes shim used by scripts/wisdom-demo-env.sh.
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/wisdom-demo-env.sh
+source "${SCRIPT_DIR}/../lib/wisdom-demo-env.sh"
+wisdom_demo_export_environment
+
+exec "${HERMES_WISDOM_PYTHON}" -m hermes_cli.main "$@"

@@ -12,10 +12,11 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import hermes_cli.model_switch as ms
+from hermes_cli import model_switch_providers
 
 
 def _reset_guard():
-    ms._picker_prewarm_done.clear()
+    model_switch_providers._picker_prewarm_done.clear()
 
 
 def test_prewarm_runs_list_authenticated_providers_once():
@@ -23,7 +24,7 @@ def test_prewarm_runs_list_authenticated_providers_once():
     the warm side effect is delegated there (which disk-caches per provider)."""
     _reset_guard()
     with patch.object(ms, "list_authenticated_providers", return_value=[]) as mock_list:
-        t = ms.prewarm_picker_cache_async()
+        t = model_switch_providers.prewarm_picker_cache_async()
         assert t is not None, "first call must spawn a prewarm thread"
         t.join(timeout=10)
         assert not t.is_alive(), "prewarm thread should finish promptly"
@@ -36,12 +37,12 @@ def test_prewarm_guard_is_once_per_process():
     long-lived process never leaks one OS thread per call."""
     _reset_guard()
     with patch.object(ms, "list_authenticated_providers", return_value=[]):
-        t1 = ms.prewarm_picker_cache_async()
+        t1 = model_switch_providers.prewarm_picker_cache_async()
         assert t1 is not None
         t1.join(timeout=10)
         # Subsequent calls return None (guard set) — no new thread.
-        assert ms.prewarm_picker_cache_async() is None
-        assert ms.prewarm_picker_cache_async() is None
+        assert model_switch_providers.prewarm_picker_cache_async() is None
+        assert model_switch_providers.prewarm_picker_cache_async() is None
     _reset_guard()
 
 
@@ -116,7 +117,7 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
             probe_current_custom_provider=True,
         )
 
-    t = ms.prewarm_picker_cache_async()
+    t = model_switch_providers.prewarm_picker_cache_async()
     assert t is not None
     t.join(timeout=10)
 

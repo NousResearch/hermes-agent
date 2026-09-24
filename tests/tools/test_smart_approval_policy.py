@@ -17,7 +17,7 @@ Inspired by ChatGPT Work's customizable auto-review guardian policy.
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.approval import _get_smart_policy, _smart_approve
+from tools.approval_smart import _get_smart_policy, _smart_approve
 
 POLICY_TEXT = "Always ESCALATE commands that modify anything under /etc."
 
@@ -39,13 +39,13 @@ def _messages_from(mock_call_llm):
 class TestGetSmartPolicy(unittest.TestCase):
     """Unit tests for the config reader."""
 
-    @patch("tools.approval._get_approval_config")
+    @patch("tools.approval_context._get_approval_config")
     def test_missing_key_returns_empty(self, mock_cfg):
         mock_cfg.return_value = {"mode": "smart"}
         assert _get_smart_policy() == ""
 
 
-    @patch("tools.approval._get_approval_config")
+    @patch("tools.approval_context._get_approval_config")
     def test_policy_text_is_stripped(self, mock_cfg):
         mock_cfg.return_value = {"smart_policy": f"  {POLICY_TEXT}\n"}
         assert _get_smart_policy() == POLICY_TEXT
@@ -57,11 +57,11 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
     Follows the mocking pattern of test_smart_approval_injection.py:
     ``call_llm`` is patched at its source module (``agent.auxiliary_client``)
     because _smart_approve imports it lazily inside the function.  The
-    config read is isolated by patching ``tools.approval._get_approval_config``
+    config read is isolated by patching ``tools.approval_context._get_approval_config``
     so tests never touch a real config.yaml.
     """
 
-    @patch("tools.approval._get_approval_config")
+    @patch("tools.approval_context._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
     def test_empty_policy_leaves_prompts_unchanged(self, mock_call_llm, mock_cfg):
         """With no policy configured, prompts must be byte-identical to the
@@ -81,7 +81,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         assert "Additional policy rules from the operator" not in sys_content
 
 
-    @patch("tools.approval._get_approval_config")
+    @patch("tools.approval_context._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
     def test_policy_never_in_user_message(self, mock_call_llm, mock_cfg):
         """The policy is trusted; the user message carries untrusted command
@@ -100,7 +100,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         assert "rm -rf /etc/nginx" in user_content
         assert "<command>" in user_content
 
-    @patch("tools.approval._get_approval_config")
+    @patch("tools.approval_context._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
     def test_config_read_failure_does_not_break_approval(self, mock_call_llm, mock_cfg):
         """If the config reader itself blows up, _smart_approve fails safe."""
@@ -111,7 +111,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
 
 
     @patch("agent.auxiliary_client._get_task_timeout")
-    @patch("tools.approval._get_approval_config")
+    @patch("tools.approval_context._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
     def test_smart_approve_passes_explicit_timeout(
         self, mock_call_llm, mock_cfg, mock_task_timeout
@@ -130,7 +130,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         assert kwargs.get("timeout") == 42.0
 
 
-    @patch("tools.approval._get_approval_config")
+    @patch("tools.approval_context._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
     def test_smart_approve_failure_logs_warning_and_escalates(
         self, mock_call_llm, mock_cfg
@@ -141,7 +141,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         mock_call_llm.side_effect = TimeoutError("stalled provider")
         mock_cfg.return_value = {"mode": "smart"}
 
-        with patch("tools.approval.logger") as mock_logger:
+        with patch("tools.approval_smart.logger") as mock_logger:
             assert _smart_approve("echo hi", "flagged") == "escalate"
 
         assert mock_logger.warning.called

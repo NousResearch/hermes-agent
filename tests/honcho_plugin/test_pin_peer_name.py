@@ -515,11 +515,14 @@ class TestPinTransition:
         )
 
     def test_cache_busting_signature_reflects_pin_peer_name(self, tmp_path, monkeypatch):
-        """Gateway agent cache must bust when honcho.json's pinPeerName flips."""
+        """Gateway agent cache must bust when honcho.json's pinPeerName flips. The gateway reads the
+        flag through ``identity_signature()`` and files it under ``memory.*``."""
         from gateway.run import GatewayRunner
+        from gateway.run_agent_cache import GatewayAgentCacheMixin
 
         cfg_path = tmp_path / "honcho.json"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(GatewayAgentCacheMixin, "_MEMORY_IDENTITY_PROVIDER_MEMO", {})
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": True}))
         sig_pinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
@@ -527,7 +530,9 @@ class TestPinTransition:
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": False}))
         sig_unpinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
-        assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]
+        assert sig_pinned["memory.pin_user_identity"] is True
+        assert sig_unpinned["memory.pin_user_identity"] is False
+        assert not any(k.startswith("honcho.") for k in sig_pinned)
 
 
 class TestProfilePeerUniqueness:

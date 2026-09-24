@@ -349,13 +349,14 @@ describe('threads', () => {
 describe('turn prompt', () => {
   it('addresses the default profile as @hermes', async () => {
     const { rounds } = await loadRoom()
+    const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
 
     const members: GroupMember[] = [
       { name: 'default', title: '' },
       { name: 'builder', title: '' }
     ]
 
-    const own = rounds.buildGroupChatTurnPrompt({
+    const own = buildGroupChatTurnPrompt({
       deltaLines: [],
       groupName: 'Core',
       members,
@@ -365,7 +366,7 @@ describe('turn prompt', () => {
     expect(own).toMatch(/You are @hermes,/)
     expect(own).not.toMatch(/@default\b/)
 
-    const peer = rounds.buildGroupChatTurnPrompt({
+    const peer = buildGroupChatTurnPrompt({
       deltaLines: [],
       groupName: 'Core',
       members,
@@ -377,8 +378,9 @@ describe('turn prompt', () => {
 
   it('asks for full-quality results and short chatter, not short results', async () => {
     const { rounds } = await loadRoom()
+    const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
 
-    const prompt = rounds.buildGroupChatTurnPrompt({
+    const prompt = buildGroupChatTurnPrompt({
       deltaLines: [],
       groupName: 'Core',
       members: [
@@ -560,9 +562,10 @@ describe('attachments', () => {
 
   it('names attachments in the transcript line, labelling PDFs and files distinctly', async () => {
     const { rounds } = await loadRoom()
+    const { formatGroupChatLine } = await import('./group-round-prompt')
     const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'spec.pdf' }
     const doc: Attachment = { data: 'data:text/plain;base64,aGVsbG8=', kind: 'file', name: 'notes.txt' }
-    const line = (entry: Partial<GroupMessage>) => rounds.formatGroupChatLine(entry as GroupMessage, 'research')
+    const line = (entry: Partial<GroupMessage>) => formatGroupChatLine(entry as GroupMessage, 'research')
 
     expect(line({ from: { kind: 'user', name: 'You' }, images: [IMG], text: 'see attached' })).toBe(
       'You (user): see attached [attached image: screenshot.png]'
@@ -692,14 +695,15 @@ describe('member holds (#93129)', () => {
 
   it('consumes a held skip exactly once so the loop cannot spin', async () => {
     const { rounds } = await loadRoom()
+    const { heldMemberWatermarkAdvance } = await import('./group-round-members')
 
     // Fresh delta → advance to log length.
-    expect(rounds.heldMemberWatermarkAdvance(3, 7)).toBe(7)
+    expect(heldMemberWatermarkAdvance(3, 7)).toBe(7)
     // Already consumed → no write, no spin.
-    expect(rounds.heldMemberWatermarkAdvance(7, 7)).toBeNull()
-    expect(rounds.heldMemberWatermarkAdvance(9, 7)).toBeNull()
+    expect(heldMemberWatermarkAdvance(7, 7)).toBeNull()
+    expect(heldMemberWatermarkAdvance(9, 7)).toBeNull()
     // Unset watermark treated as 0.
-    expect(rounds.heldMemberWatermarkAdvance(undefined, 2)).toBe(2)
+    expect(heldMemberWatermarkAdvance(undefined, 2)).toBe(2)
   })
 })
 

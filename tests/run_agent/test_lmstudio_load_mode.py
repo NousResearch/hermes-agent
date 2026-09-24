@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from typing import Any, cast
 
-from hermes_cli.models import LMStudioLoadResult
+from hermes_cli.models_local import LMStudioLoadResult
 from run_agent import AIAgent
 
 
@@ -25,7 +25,7 @@ def test_lmstudio_jit_load_mode_skips_explicit_preload(monkeypatch):
         calls.append((args, kwargs))
         return LMStudioLoadResult(64_000)
 
-    monkeypatch.setattr("hermes_cli.models.ensure_lmstudio_model_loaded", fake_ensure)
+    monkeypatch.setattr("hermes_cli.models_local.ensure_lmstudio_model_loaded", fake_ensure)
 
     result = AIAgent._ensure_lmstudio_runtime_loaded(cast(Any, _agent("jit")))
 

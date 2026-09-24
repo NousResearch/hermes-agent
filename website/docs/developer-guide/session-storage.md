@@ -4,8 +4,66 @@ Hermes Agent uses a SQLite database (`~/.hermes/state.db`) to persist session
 metadata, full message history, and model configuration across CLI and gateway
 sessions. This replaces the earlier per-session JSONL file approach.
 
-Source file: `hermes_state.py`
+Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
+### Desktop profile isolation and compaction generations
+
+Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
+including when one `hermes serve` process serves several profiles. In-session
+agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
+that session's database handle and bind its profile home during construction.
+Releasing the outgoing agent must not close the handle inherited by its replacement.
+`tools.configure` resolves configuration from the live session's `profile_home`,
+even when the client supplies only `session_id`. Rebuilds prepare model configuration
+before allocating a replacement, then install the agent and transfer ownership
+together; preparation failure leaves the existing agent responsible for teardown.
+Explicit profiles that cannot be resolved or whose directory has disappeared fail
+before accessing launch configuration or history. A stale `tools.configure`
+session ID likewise returns `session not found` without changing configuration;
+omitting the session ID still supports the global settings operation.
+
+In-place compaction archives old rows with `active=0` and inserts the retained
+context as `active=1` rows. A protected message can therefore legitimately appear
+in both generations with identical content and timestamp. Do not delete these
+archive rows as duplicates. Diagnose duplicate *live* writes using `active=1`,
+and check the database's profile as well as the session ID when investigating
+history that appears to revert.
+
+
+
+## Codex app-server input ownership
+
+The agent persists an accepted user input before starting its Codex turn. Codex
+then projects that input as a leading `userMessage` notification. At the runtime
+splice boundary, Hermes excludes only that leading item when it exactly matches
+the text serialized into `turn/start`, including rich-input coercion. Later or
+nonmatching user events remain intact, as do separately accepted identical turns.
+This also applies to synthetic/keyless input; it does not depend on a platform
+message ID. Existing historical duplicates are not rewritten. The gateway skips
+its transcript write when the agent reports that it owns persistence.
+
+## Gateway exception-path input ownership
+
+A gateway exception can occur before agent construction or after its input reaches
+SQLite. The gateway gives the accepted input an owner marker in the existing
+`display_metadata` sidecar and passes it through the agent's normal persistence
+path. Provider messages never contain this metadata. Platform markers namespace
+the inbound message ID by platform, profile, scope, chat, and thread; the original
+`platform_message_id` remains unchanged for quote/reply resolution. Keyless turns
+receive a fresh marker, even for identical text and timestamps.
+
+The exception writer probes only for that marker, following the published reroute
+and canonical live compression successor, then compression ancestors. Active rows
+and compaction archives count; undone rows, observed input, and unrelated writers
+do not. An unrelated process writing the same session cannot suppress this turn.
+No whole-history baseline or archived message-body allocation is needed. Failed
+ownership reads do not authorize a speculative append; ordinary history-read
+failures retain the existing history-unavailable response.
+
+Normal agent-owned persistence is unchanged. This is failure-writer arbitration,
+not universal exactly-once delivery, content deduplication, or a schema migration.
+Historical rows are not rewritten; unmarked historical inputs cannot establish
+ownership for a redelivered event.
 
 ## Architecture Overview
 
@@ -21,8 +79,14 @@ Source file: `hermes_state.py`
 ├── gateway_routing       — Gateway routing metadata
 ├── compression_locks     — Cross-process compression locking
 ├── async_delegations     — Async delegation bookkeeping
+├── delivery_obligations  — Gateway outbox (owed replies); created lazily by gateway/delivery_ledger.py
 └── schema_version        — Single-row table tracking migration state
 ```
+
+`hermes sessions recover` copies the row-bearing tables above into the
+recovered database (FTS indexes and `schema_version` are regenerated), including
+the lazily-created `delivery_obligations` ledger when the source has one — its
+row count is verified like `sessions`/`messages`.
 
 Key design decisions:
 - **WAL mode** for concurrent readers + one writer (gateway multi-platform)
@@ -36,7 +100,7 @@ Key design decisions:
 
 ### Sessions Table
 
-Abridged — see `SCHEMA_SQL` in `hermes_state.py` for the full current column list
+Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_state_schema.py`) for the full current column list
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
@@ -116,6 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
+- Desktop history hydration retains assistant sidecars in both REST and JSON-RPC (`session.resume`, `session.activate`, `session.history`) projections, including rows with reasoning and tool calls. REST may return the SQLite JSON string while RPC returns decoded items; Desktop accepts both. A final Responses reply may live only in `codex_message_items` while `content` is empty. Canonical content still takes precedence, and analysis/commentary items are not promoted to reply text.
 - `reasoning` stores the raw reasoning text for providers that expose it
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
@@ -136,7 +201,7 @@ The FTS5 table is kept in sync via three triggers that fire on INSERT, UPDATE,
 and DELETE of the `messages` table. The current triggers are gated on the
 `fts_rebuild_high_water` / `fts_rebuild_progress` markers in `state_meta` (so a
 background FTS rebuild can proceed without double-indexing) and cover all three
-indexed columns — see `SCHEMA_SQL` in `hermes_state.py` for the exact SQL.
+indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact SQL.
 
 
 ## Schema Version and Migrations
@@ -163,6 +228,8 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 20 | Per-model usage attribution — seed `session_model_usage` rows from historical per-session aggregate totals |
 | 22 | Task-dimension usage attribution — rebuild `session_model_usage` so the `task` column participates in the PRIMARY KEY |
 | 23 | FTS storage redesign — external-content FTS tables replacing the v11 inline-mode copies (opt-in transition for existing DBs) |
+| 29 | Cron sessions leave the trigram (substring/CJK) index; `messages_fts_trigram_src` view + triggers filter on `sessions.source`, one-time rebuild purges historical rows |
+| 30 | Delegate-child (subagent) sessions leave the trigram index too — `source='subagent'` or the `$._delegate_from` marker (`FTS_TRIGRAM_SESSION_SQL`). Rows stay in `messages` and the standard `messages_fts` word index, so `session_search` still finds them; only the ~2.6× trigram shadow tables shrink. Same one-time rebuild as v29 |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 

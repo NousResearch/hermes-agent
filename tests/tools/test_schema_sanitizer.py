@@ -463,7 +463,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
     the remaining null branch by collapsing consts and keeping nullability as
     a hint.
     """
-    from tools.mcp_tool import _normalize_mcp_input_schema
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",
@@ -486,7 +486,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
 
 
 def test_normalize_mcp_input_schema_collapses_const_unions():
-    from tools.mcp_tool import _normalize_mcp_input_schema
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",

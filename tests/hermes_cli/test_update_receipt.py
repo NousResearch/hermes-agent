@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.update_receipt as ur
+from hermes_cli import update_cmd
 
 
 @pytest.fixture()
@@ -217,7 +218,7 @@ class TestCommandBoundaryFinalization:
             ur.record_step("windows_preflight", False, "hermes.exe holds venv")
             sys.exit(2)
 
-        monkeypatch.setattr(hermes_main, "_cmd_update_impl", _fake_impl)
+        monkeypatch.setattr(update_cmd, "_cmd_update_impl", _fake_impl)
         monkeypatch.setattr(
             hermes_main, "detect_install_method", lambda *a, **k: "git", raising=False
         )

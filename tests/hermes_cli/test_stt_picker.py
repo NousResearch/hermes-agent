@@ -89,7 +89,7 @@ class TestActiveDetection:
 class TestModelPicker:
 
     def test_catalog_matches_runtime_model_sets(self):
-        from tools.transcription_tools import GROQ_MODELS, OPENAI_MODELS
+        from tools.transcription_common import GROQ_MODELS, OPENAI_MODELS
 
         assert set(STT_MODEL_CATALOG["openai"]) == OPENAI_MODELS
         assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS

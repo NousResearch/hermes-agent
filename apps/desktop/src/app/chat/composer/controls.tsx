@@ -41,6 +41,7 @@ export function ComposerControls({
   disabled,
   foldVoice = false,
   hasComposerPayload,
+  hideModelPill = false,
   minimal = false,
   state,
   voiceStatus,
@@ -57,6 +58,7 @@ export function ComposerControls({
   disabled: boolean
   foldVoice?: boolean
   hasComposerPayload: boolean
+  hideModelPill?: boolean
   minimal?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
@@ -107,7 +109,7 @@ export function ComposerControls({
     <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
-          <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+          {hideModelPill ? null : <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />}
           {voiceControls}
         </>
       )}
@@ -323,7 +325,7 @@ function ConversationIndicator({
 
 // Pure-TTS toggle: type normally, but have every assistant reply read aloud —
 // no dictation, no full conversation loop. Filled/accent when on, mirroring the
-// muted-mic pressed state above. Driven by (and persisted to) `voice.auto_tts`.
+// muted-mic pressed state above. Persisted locally, independently of gateway TTS.
 function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disabled: boolean; onToggle: () => void }) {
   const { t } = useI18n()
   const c = t.composer

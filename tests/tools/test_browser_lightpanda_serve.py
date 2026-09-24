@@ -5,11 +5,16 @@ import json
 import os
 import stat
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import tools.browser_lightpanda as lp
+
+# The autouse _isolate fixture swaps _binary_supports_http_cache for a lambda;
+# the probe test needs the real (lru_cache-wrapped) function back.
+_real_probe = lp._binary_supports_http_cache
 
 
 class FakeProc:
@@ -42,6 +47,8 @@ def _isolate(tmp_path, monkeypatch):
     # Never touch the developer's real ~/.local/bin/lightpanda.
     monkeypatch.setattr(lp, "_home_candidates", lambda: [])
     monkeypatch.setattr(lp, "_safe_start_time", lambda pid: 111)
+    lp._binary_supports_http_cache.cache_clear()
+    monkeypatch.setattr(lp, "_binary_supports_http_cache", lambda binary: True)
     with lp._servers_lock:
         lp._servers.clear()
     yield state
@@ -60,19 +67,19 @@ class TestFindBinary:
     def test_prefers_path(self, tmp_path, monkeypatch):
         exe = _exe(tmp_path / "bin" / "lightpanda")
         monkeypatch.setenv("PATH", str(tmp_path / "bin"))
-        monkeypatch.setattr("tools.browser_tool._merge_browser_path", lambda p: p)
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
         assert lp.find_lightpanda_binary() == str(exe)
 
     def test_falls_back_to_home_candidates(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr("tools.browser_tool._merge_browser_path", lambda p: p)
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
         exe = _exe(tmp_path / ".lightpanda" / "lightpanda")
         monkeypatch.setattr(lp, "_home_candidates", lambda: [exe])
         assert lp.find_lightpanda_binary() == str(exe)
 
     def test_none_when_absent(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr("tools.browser_tool._merge_browser_path", lambda p: p)
+        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
         assert lp.find_lightpanda_binary() is None
 
     def test_none_on_windows(self, monkeypatch):
@@ -112,6 +119,7 @@ class TestLaunch:
         assert err is None
         assert calls["argv"] == [
             "/opt/lightpanda", "serve", "--host", "127.0.0.1", "--port", "43111",
+            "--http-cache-dir", str(_isolate / "http-cache"),
         ]
         kw = calls["kwargs"]
         assert kw["stdin"] is subprocess.DEVNULL
@@ -128,6 +136,57 @@ class TestLaunch:
         assert record["port"] == 43111
         assert record["owner_pid"] == os.getpid()
         assert record["start_time"] == 111
+
+    def test_http_cache_dir_is_shared_across_sessions(self, monkeypatch, _isolate):
+        _, _, first = self._launch(monkeypatch)
+        with lp._servers_lock:
+            lp._servers.clear()
+        _, _, second = self._launch(monkeypatch)
+        cache = str(_isolate / "http-cache")
+        assert first["argv"][first["argv"].index("--http-cache-dir") + 1] == cache
+        assert second["argv"][second["argv"].index("--http-cache-dir") + 1] == cache
+        assert Path(cache).is_dir()
+        assert not list(Path(cache).glob("*.json"))  # never confused with a session record
+
+    def test_no_http_cache_flag_on_old_binary(self, monkeypatch, _isolate):
+        monkeypatch.setattr(lp, "_binary_supports_http_cache", lambda binary: False)
+        _, err, calls = self._launch(monkeypatch)
+        assert err is None
+        assert "--http-cache-dir" not in calls["argv"]
+        assert calls["argv"][-1] == "43111"
+
+    def test_http_cache_probe_caches_and_detects_flag(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp, "_binary_supports_http_cache", _real_probe)
+        _real_probe.cache_clear()
+        exe = _exe(tmp_path / "lightpanda")
+        runs = []
+
+        def fake_run(argv, **kwargs):
+            runs.append(argv)
+            return subprocess.CompletedProcess(
+                argv, returncode=0,
+                stdout="--http-cache-dir <PATH>" if len(runs) == 1 else "",
+            )
+
+        monkeypatch.setattr(lp.subprocess, "run", fake_run)
+        assert lp._binary_supports_http_cache(str(exe)) is True
+        assert lp._binary_supports_http_cache(str(exe)) is True  # cached, single probe
+        assert len(runs) == 1
+
+        lp._binary_supports_http_cache.cache_clear()
+
+        def fake_run_old(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, returncode=0, stdout="no such flag")
+
+        monkeypatch.setattr(lp.subprocess, "run", fake_run_old)
+        assert lp._binary_supports_http_cache(str(exe)) is False
+
+        def fake_run_hangs(argv, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=3.0)
+
+        lp._binary_supports_http_cache.cache_clear()
+        monkeypatch.setattr(lp.subprocess, "run", fake_run_hangs)
+        assert lp._binary_supports_http_cache(str(exe)) is False
 
     def test_block_private_networks_flag(self, monkeypatch):
         _, err, calls = self._launch(monkeypatch, block_private_networks=True)

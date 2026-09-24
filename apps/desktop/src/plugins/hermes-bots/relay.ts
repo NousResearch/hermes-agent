@@ -49,10 +49,10 @@ const RELAY_DRAIN_INTERVAL_MS = 30_000
 //
 // These three are mirrors of backend values, so a change there must not
 // silently invalidate this constant: relay-deliver-budget.test.ts reads
-// hermes_cli/config_defaults.py and tui_gateway/methods_bot_relay.py and fails
-// if the mirrors drift or the margin stops being positive.
+// hermes_cli/config_defaults.py and tools/bot_relay.py and fails if the
+// mirrors drift or the margin stops being positive.
 const RELAY_TURN_LOCK_WAIT_MS = 120_000 // bot_mode.turn_wait_seconds default
-const RELAY_TURN_ATTEMPT_MS = 600_000 // subprocess.run(..., timeout=600)
+const RELAY_TURN_ATTEMPT_MS = 600_000 // tools/bot_relay.py TURN_ATTEMPT_TIMEOUT_SECONDS
 const RELAY_TURN_MAX_ATTEMPTS = 2 // first attempt + the policy-gated re-run
 
 const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_ATTEMPT_MS * RELAY_TURN_MAX_ATTEMPTS
@@ -60,6 +60,7 @@ const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_AT
 // Settlement + transport headroom on top of the ceiling, so a backend that
 // answers at its own limit still wins the race against this timer.
 const RELAY_DELIVER_SETTLEMENT_MARGIN_MS = 180_000
+// tools/bot_relay.py REPLY_WAIT_SECONDS rebuilds this sum and waits past it for the timeout reply below.
 const RELAY_DELIVER_TIMEOUT_MS = RELAY_DELIVER_BACKEND_CEILING_MS + RELAY_DELIVER_SETTLEMENT_MARGIN_MS
 // Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
 // an envelope lands on disk; a burst of signals inside this window collapses
@@ -124,6 +125,8 @@ interface RelayAgentRow {
 interface RelayEnvelope {
   id?: string
   message?: string
+  from_profile?: string
+  from_handle?: string
   target_connection?: string
   target_profile?: string
 }
@@ -398,7 +401,10 @@ async function drainRelayOutboxes() {
             'bot_relay.deliver',
             {
               profile: String(envelope?.target_profile || ''),
-              message: String(envelope?.message || '')
+              message: String(envelope?.message || ''),
+              from_profile: String(envelope?.from_profile || ''),
+              from_handle: String(envelope?.from_handle || ''),
+              from_connection: String(sender.id)
             },
             RELAY_DELIVER_TIMEOUT_MS
           )

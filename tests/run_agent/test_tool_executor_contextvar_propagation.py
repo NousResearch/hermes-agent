@@ -4,7 +4,7 @@ propagation into concurrent tool worker threads.
 Background
 ----------
 Gateway adapters (Slack, Telegram, Discord, ...) set
-``tools.approval._approval_session_key`` as a ContextVar before calling
+``tools.approval_context._approval_session_key`` as a ContextVar before calling
 ``agent.run_conversation`` so that dangerous-command approval prompts route
 back to the channel/session that initiated the tool call. When the agent
 dispatches multiple tools in parallel, it uses
@@ -77,17 +77,15 @@ def test_run_tool_worker_sees_parent_approval_session_key():
     Mirrors the exact shape of the fixed call site in
     ``run_agent.py::_execute_tool_calls_concurrent`` — a
     ``ThreadPoolExecutor`` with ``executor.submit(ctx.run, fn, *args)``.
-    Sets the real ``tools.approval._approval_session_key`` ContextVar
+    Sets the real ``tools.approval_context._approval_session_key`` ContextVar
     in the caller and asserts the worker observes it via
     ``tools.approval.get_current_session_key()``.
 
     If the PR's ``copy_context().run`` wrapper is reverted, this test
     fails with ``Expected 'session-A' but worker saw 'default'``.
     """
-    from tools.approval import (
-        _approval_session_key,
-        get_current_session_key,
-    )
+    from tools.approval import get_current_session_key
+    from tools.approval_context import _approval_session_key
 
     observed: dict = {}
     barrier = threading.Event()
@@ -129,10 +127,8 @@ def test_two_concurrent_tool_batches_keep_session_keys_isolated():
     snapshot across callers (which would collapse isolation the same way
     the unfixed ``submit`` does).
     """
-    from tools.approval import (
-        _approval_session_key,
-        get_current_session_key,
-    )
+    from tools.approval import get_current_session_key
+    from tools.approval_context import _approval_session_key
 
     results: dict = {}
 

@@ -11,6 +11,8 @@ NOT mislabelled custom.
 from fastapi.testclient import TestClient
 
 import hermes_cli.web_server as web_server
+import hermes_cli.config as _cfg_mod
+import hermes_cli.web_server_messaging as _web_server_messaging
 from hermes_cli.web_server import _SESSION_TOKEN, app
 
 client = TestClient(app)
@@ -19,10 +21,10 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 
 def _env_rows(monkeypatch, env_on_disk):
     """Drive GET /api/env with a controlled on-disk env mapping."""
-    monkeypatch.setattr(web_server, "load_env", lambda: dict(env_on_disk))
+    monkeypatch.setattr(_cfg_mod, "load_env", lambda: dict(env_on_disk))
     # Channel-managed key detection reads real config; force empty so the test
     # is hermetic and the custom-key path is exercised directly.
-    monkeypatch.setattr(web_server, "_channel_managed_env_keys", lambda: set())
+    monkeypatch.setattr(_web_server_messaging, "_channel_managed_env_keys", lambda: set())
     resp = client.get("/api/env", headers=HEADERS)
     assert resp.status_code == 200
     return resp.json()

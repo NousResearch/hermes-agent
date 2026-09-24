@@ -1,42 +1,28 @@
-"""Keyless web search/extract via public MCP endpoints.
-
-Exa and Parallel both operate public, anonymous MCP endpoints with a free
-tier (the same endpoints the opencode CLI ships as its default search
-path):
-
-- Exa:      https://mcp.exa.ai/mcp           (tools: web_search_exa, web_fetch_exa)
-- Parallel: https://search.parallel.ai/mcp   (tools: web_search, web_fetch)
-
-This module implements a minimal JSON-RPC ``tools/call`` client for those
-two endpoints so a fresh Hermes install with **zero web credentials** still
-gets working ``web_search`` / ``web_extract`` tools. The keyless tier is
-resolved strictly LAST — after every keyed backend, the managed tool
-gateway, ddgs, and custom plugin providers — so it never pre-empts a
-deliberate setup (see ``tools.web_tools._get_backend`` and the registry's
-``_KEYLESS_PREFERENCE`` walk).
-
-Privacy: requests carry no user identifiers. Parallel's free tier asks for
-a ``session_id`` used for rate limiting; we send a random per-process UUID
-(rotates every restart, never persisted). Their optional ``model_name``
-analytics field is deliberately omitted.
-
-Disable the whole tier with ``web.keyless_fallback: false`` in config.yaml.
+"""Keyless web search/extract via public free-tier endpoints (Exa, Parallel, Firecrawl, Keenable).
+Resolved strictly LAST — after every keyed backend, the managed gateway, ddgs and custom plugin
+providers — so it never pre-empts a deliberate setup. Privacy: no user identifiers are sent;
+Parallel gets a random per-process ``session_id`` (rate limiting only) and its optional
+``model_name`` analytics field is deliberately omitted. Disable with ``web.keyless_fallback: false``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+from plugins.web._common import document as _page, page_error as _page_error, search_fail, search_ok, web_hit as _row
 
 logger = logging.getLogger(__name__)
 
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
+KEENABLE_API_URL = "https://api.keenable.ai"
+_KEENABLE_TITLE = "hermes-agent"
 
-# Free-tier rate-limit correlation id for Parallel — random per process,
-# never persisted, not derived from any user/machine identifier.
+# Parallel free-tier rate-limit correlation id — random per process, never persisted.
 _SESSION_ID = uuid.uuid4().hex
 
 _TIMEOUT_SECONDS = 30
@@ -46,55 +32,74 @@ class KeylessMCPError(RuntimeError):
     """A keyless MCP call failed (transport, rate limit, or tool error)."""
 
 
-_RATE_LIMIT_MARKERS = (
-    "rate limit",
-    "rate-limit",
-    "ratelimit",
-    "too many requests",
-    "429",
-    "quota exceeded",
-    "slow down",
-)
+_RATE_LIMIT_MARKERS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429", "quota exceeded", "slow down")
+
+# vendor -> (display label, env key, signup URL) for the standard failure hint.
+_VENDOR_HINTS = {
+    "exa": ("Exa", "EXA_API_KEY", "https://exa.ai"), "parallel": ("Parallel", "PARALLEL_API_KEY", "https://parallel.ai"),
+    "firecrawl": ("Firecrawl", "FIRECRAWL_API_KEY", "https://firecrawl.dev"), "keenable": ("Keenable", "KEENABLE_API_KEY", "https://keenable.ai"),
+}
 
 
 def _is_rate_limitish(message: str) -> bool:
     """Heuristic: does an error message look like free-tier throttling?"""
-    lowered = (message or "").lower()
-    return any(marker in lowered for marker in _RATE_LIMIT_MARKERS)
+    return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
 
 
+def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
+    label, env_key, site = _VENDOR_HINTS[vendor]
+    alt = " or another web backend via `hermes tools`" if other_backends else ""
+    return f"Keyless {label} {kind} failed: {exc}. Set {env_key} ({site}){alt} for reliable service."
+
+
+def _search(vendor: str, rows: Callable[[], List[Dict[str, Any]]], catch: Any = (), fmt: Optional[Callable[[Exception], str]] = None) -> Dict[str, Any]:
+    """``search_ok(rows())``; :class:`KeylessMCPError` → standard vendor hint, exception
+    types in ``catch`` → ``fmt(exc)``; anything else propagates."""
+    try:
+        return search_ok(rows())
+    except KeylessMCPError as exc:
+        return search_fail(_fail_msg(vendor, "search", exc))
+    except catch as exc:
+        return search_fail(fmt(exc))
+
+
+def _per_url(urls: List[str], fetch: Callable[[str], Dict[str, Any]], vendor: str, catch: Any = Exception, hint: bool = False) -> List[Dict[str, Any]]:
+    """Per-URL extract loop: a ``catch`` failure becomes an error entry (``hint`` adds the ``hermes tools`` hint)."""
+    def _one(url: str) -> Dict[str, Any]:
+        try:
+            return fetch(url)
+        except catch as exc:  # noqa: BLE001 — per-URL error entry
+            return _page_error(url, _fail_msg(vendor, "extract", exc, other_backends=hint))
+
+    return [_one(u) for u in urls]
+
+
+# --- Tier / config ------------------------------------------------------------
 def keyless_enabled() -> bool:
-    """Return True when the keyless fallback tier is enabled.
-
-    Delegates to :func:`agent.web_search_registry._keyless_tier_enabled` so
-    the config chokepoint (``web.keyless_fallback``, default on) lives in
-    one place alongside the rest of backend resolution.
-    """
+    """Delegates to the registry so the ``web.keyless_fallback`` (default on) chokepoint lives with backend resolution."""
     try:
         from agent.web_search_registry import _keyless_tier_enabled
-
         return _keyless_tier_enabled()
     except Exception as exc:  # noqa: BLE001 — resolver optional in stripped envs
         logger.debug("keyless_enabled(): registry helper unavailable: %s", exc)
         return True
 
 
-def provider_tier(name: str) -> str:
-    """Return the user-selected tier for *name*: ``free``, ``paid``, or ``auto``.
+_BACKEND_KEYS = ("backend", "search_backend", "extract_backend")
 
-    Reads ``web.provider_tier.<name>`` from config.yaml (set by the
-    ``hermes tools`` picker's Free/Paid rows). ``free`` forces the keyless
-    public endpoint even when the vendor API key is present; ``paid``
-    forces the keyed SDK path (missing key surfaces the standard
-    "X_API_KEY not set" error instead of silently downgrading to the free
-    tier). Anything else — including unset — is ``auto``: key present →
-    keyed, otherwise keyless when the tier is enabled.
-    """
+
+def _web_config_selects(name: str) -> bool:
+    """True when any ``web.backend`` / ``search_backend`` / ``extract_backend`` names *name*."""
+    import tools.web_tools as _wt
+    web_cfg = _wt._load_web_config()
+    return any((web_cfg.get(key) or "").lower().strip() == name for key in _BACKEND_KEYS)
+
+
+def provider_tier(name: str) -> str:
+    """``web.provider_tier.<name>`` (``hermes tools`` Free/Paid rows): ``free``, ``paid``, or ``auto`` (anything else/unset)."""
     try:
         from hermes_cli.config import load_config
-
-        web_cfg = load_config().get("web") or {}
-        tiers = web_cfg.get("provider_tier") or {}
+        tiers = (load_config().get("web") or {}).get("provider_tier") or {}
         value = str(tiers.get(name, "") or "").lower().strip()
         return value if value in ("free", "paid") else "auto"
     except Exception as exc:  # noqa: BLE001 — config layer optional
@@ -103,33 +108,19 @@ def provider_tier(name: str) -> str:
 
 
 def use_keyless(name: str, api_key: str) -> bool:
-    """Decide whether provider *name* should route via the keyless endpoint.
-
-    Single chokepoint shared by the Exa/Parallel search + extract paths so
-    tier semantics can't drift between capabilities:
-
-    - tier ``free``  → keyless, even when *api_key* is set
-    - tier ``paid``  → keyed, even when *api_key* is missing (the keyed
-      path then raises its usual missing-key error)
-    - tier ``auto``  → keyed when *api_key* is set; otherwise keyless when
-      ``web.keyless_fallback`` is enabled
-    """
+    """Single chokepoint for search + extract: ``free`` → keyless even with a key; ``paid`` → keyed even
+    without one (the keyed path raises its usual missing-key error); ``auto`` → keyless only when no key + tier enabled."""
     tier = provider_tier(name)
-    if tier == "free":
-        return True
-    if tier == "paid":
-        return False
+    if tier in ("free", "paid"):
+        return tier == "free"
     return not api_key and keyless_enabled()
 
 
+# --- MCP transport ------------------------------------------------------------
 def _parse_mcp_body(body: str) -> str:
-    """Extract the first text content item from an MCP tools/call response.
-
-    Handles both plain-JSON bodies and SSE (``data: {...}`` lines) — the
-    Exa endpoint answers as an event stream, Parallel as direct JSON.
-    Raises :class:`KeylessMCPError` for JSON-RPC errors and ``isError``
-    tool results (e.g. Exa's free-tier rate-limit message).
-    """
+    """First text content item from an MCP tools/call response — plain-JSON bodies
+    (Parallel) or SSE ``data: {...}`` lines (Exa). Raises :class:`KeylessMCPError` for
+    JSON-RPC errors and ``isError`` tool results (e.g. Exa's free-tier rate limit)."""
 
     def _from_payload(payload: str) -> Optional[str]:
         payload = payload.strip()
@@ -140,543 +131,200 @@ def _parse_mcp_body(body: str) -> str:
         if err:
             raise KeylessMCPError(str(err.get("message") or err))
         result = data.get("result") or {}
-        content = result.get("content") or []
+        texts = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict)]
         if result.get("isError"):
-            texts = [c.get("text", "") for c in content if isinstance(c, dict)]
-            raise KeylessMCPError(
-                " ".join(t for t in texts if t) or "MCP tool call failed"
-            )
-        for item in content:
-            if isinstance(item, dict) and item.get("text"):
-                return str(item["text"])
-        return None
+            raise KeylessMCPError(" ".join(t for t in texts if t) or "MCP tool call failed")
+        return next((str(t) for t in texts if t), None)
 
     stripped = body.strip()
-    if stripped.startswith("{"):
+    candidates = [stripped] if stripped.startswith("{") else []
+    candidates += [line[len("data: "):] for line in body.splitlines() if line.startswith("data: ")]
+    for candidate in candidates:
         try:
-            text = _from_payload(stripped)
-            if text is not None:
-                return text
-        except json.JSONDecodeError:
-            pass
-
-    for line in body.splitlines():
-        if not line.startswith("data: "):
-            continue
-        try:
-            text = _from_payload(line[len("data: "):])
+            text = _from_payload(candidate)
         except json.JSONDecodeError:
             continue
         if text is not None:
             return text
-
     raise KeylessMCPError("Unrecognized MCP response shape")
 
 
-def mcp_call(
-    url: str,
-    tool: str,
-    arguments: Dict[str, Any],
-    timeout: int = _TIMEOUT_SECONDS,
-) -> str:
-    """POST a JSON-RPC ``tools/call`` to *url* and return the text payload.
-
-    Raises :class:`KeylessMCPError` on transport failures, non-2xx
-    statuses, JSON-RPC errors, and error-shaped tool results.
-    """
+def mcp_call(url: str, tool: str, arguments: Dict[str, Any], timeout: int = _TIMEOUT_SECONDS) -> str:
+    """POST a JSON-RPC ``tools/call`` and return the text payload. Raises
+    :class:`KeylessMCPError` on transport failures, non-2xx, JSON-RPC and tool errors."""
     import requests
-
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": tool, "arguments": arguments},
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        "User-Agent": "hermes-agent",
-    }
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "User-Agent": "hermes-agent"}
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=timeout)
     except requests.RequestException as exc:
         raise KeylessMCPError(f"request failed: {exc}") from exc
     if response.status_code >= 400:
-        raise KeylessMCPError(
-            f"HTTP {response.status_code}: {response.text[:300]}"
-        )
+        raise KeylessMCPError(f"HTTP {response.status_code}: {response.text[:300]}")
     return _parse_mcp_body(response.text)
 
 
-# ---------------------------------------------------------------------------
-# Parallel (search.parallel.ai) — JSON text payloads
-# ---------------------------------------------------------------------------
-
-
+# --- Parallel (search.parallel.ai) — JSON text payloads -----------------------
 def parallel_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Keyless Parallel web search → legacy search response shape."""
-    try:
-        text = mcp_call(
-            PARALLEL_MCP_URL,
-            "web_search",
-            {
-                "objective": query,
-                "search_queries": [query],
-                "session_id": _SESSION_ID,
-            },
-        )
-        data = json.loads(text)
-        web_results = []
-        for i, result in enumerate(data.get("results") or []):
-            if limit and i >= limit:
-                break
-            excerpts = result.get("excerpts") or []
-            web_results.append(
-                {
-                    "url": result.get("url") or "",
-                    "title": result.get("title") or "",
-                    "description": " ".join(excerpts) if excerpts else "",
-                    "position": i + 1,
-                }
-            )
-        return {"success": True, "data": {"web": web_results}}
-    except KeylessMCPError as exc:
-        return {
-            "success": False,
-            "error": (
-                f"Keyless Parallel search failed: {exc}. "
-                "Set PARALLEL_API_KEY (https://parallel.ai) or another web "
-                "backend via `hermes tools` for reliable service."
-            ),
-        }
-    except (json.JSONDecodeError, TypeError, KeyError) as exc:
-        return {"success": False, "error": f"Keyless Parallel search returned an unexpected payload: {exc}"}
+    def _rows() -> List[Dict[str, Any]]:
+        text = mcp_call(PARALLEL_MCP_URL, "web_search", {"objective": query, "search_queries": [query], "session_id": _SESSION_ID})
+        results = json.loads(text).get("results") or []
+        return [
+            _row(r.get("url") or "", r.get("title") or "", " ".join(r.get("excerpts") or []), i + 1)
+            for i, r in enumerate(results[:max(limit, 0)] if limit else results)
+        ]
+
+    return _search("parallel", _rows, (json.JSONDecodeError, TypeError, KeyError), lambda exc: f"Keyless Parallel search returned an unexpected payload: {exc}")
 
 
 def parallel_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
-    """Keyless Parallel web fetch → legacy extract result list."""
     try:
-        text = mcp_call(
-            PARALLEL_MCP_URL,
-            "web_fetch",
-            {
-                "urls": list(urls),
-                "objective": "Full page content",
-                "session_id": _SESSION_ID,
-            },
-        )
-        data = json.loads(text)
+        data = json.loads(mcp_call(PARALLEL_MCP_URL, "web_fetch", {"urls": list(urls), "objective": "Full page content", "session_id": _SESSION_ID}))
     except (KeylessMCPError, json.JSONDecodeError, TypeError) as exc:
-        message = (
-            f"Keyless Parallel extract failed: {exc}. "
-            "Set PARALLEL_API_KEY (https://parallel.ai) or another web "
-            "backend via `hermes tools` for reliable service."
-        )
-        return [
-            {"url": u, "title": "", "content": "", "error": message}
-            for u in urls
-        ]
-
-    results: List[Dict[str, Any]] = []
-    seen = set()
-    for result in data.get("results") or []:
-        url = result.get("url") or ""
-        title = result.get("title") or ""
-        content = (
-            result.get("full_content")
-            or result.get("content")
-            or "\n\n".join(result.get("excerpts") or [])
-        )
-        seen.add(url)
-        results.append(
-            {
-                "url": url,
-                "title": title,
-                "content": content,
-                "raw_content": content,
-                "metadata": {"sourceURL": url, "title": title},
-            }
-        )
+        message = _fail_msg("parallel", "extract", exc)
+        return [_page_error(u, message) for u in urls]
+    results = [
+        _page(r.get("url") or "", r.get("title") or "", r.get("full_content") or r.get("content") or "\n\n".join(r.get("excerpts") or []))
+        for r in data.get("results") or []
+    ]
     for error in data.get("errors") or []:
         url = error.get("url") or ""
-        seen.add(url)
-        results.append(
-            {
-                "url": url,
-                "title": "",
-                "content": "",
-                "error": str(
-                    error.get("content") or error.get("error_type") or "extraction failed"
-                ),
-                "metadata": {"sourceURL": url},
-            }
-        )
-    # Any URL the endpoint silently dropped still gets an error entry so the
-    # caller's per-URL contract holds.
-    for u in urls:
-        if u not in seen:
-            results.append(
-                {"url": u, "title": "", "content": "", "error": "no content returned"}
-            )
+        results.append({**_page_error(url, str(error.get("content") or error.get("error_type") or "extraction failed")), "metadata": {"sourceURL": url}})
+    # URLs the endpoint silently dropped still get an error entry (per-URL contract).
+    seen = {r["url"] for r in results}
+    results.extend(_page_error(u, "no content returned") for u in urls if u not in seen)
     return results
 
 
-# ---------------------------------------------------------------------------
-# Exa (mcp.exa.ai) — formatted plain-text payloads
-# ---------------------------------------------------------------------------
+# --- Exa (mcp.exa.ai) — formatted plain-text payloads -------------------------
+def _after(line: str, prefix: str) -> str:
+    return line[len(prefix):].strip()
+
+
+_EXA_LABELS = ("Title:", "URL:", "Highlights:", "Published:", "Author:")
 
 
 def _parse_exa_search_text(text: str, limit: int) -> List[Dict[str, Any]]:
-    """Parse Exa's formatted search text into result dicts.
-
-    The payload is blocks separated by ``---`` lines, each shaped like::
-
-        Title: <title>
-        URL: <url>
-        Published: ...
-        Author: ...
-        Highlights:
-        <free text>
-    """
+    """Parse Exa's ``---``-separated ``Title:/URL:/Published:/Author:/Highlights:`` blocks."""
     results: List[Dict[str, Any]] = []
     for block in text.split("\n---\n"):
-        title = ""
-        url = ""
+        title = url = ""
         highlight_lines: List[str] = []
         in_highlights = False
-        for line in block.splitlines():
-            stripped = line.strip()
+        for stripped in map(str.strip, block.splitlines()):
             if stripped.startswith("Title:"):
-                title = stripped[len("Title:"):].strip()
-                in_highlights = False
+                title = _after(stripped, "Title:")
             elif stripped.startswith("URL:"):
-                url = stripped[len("URL:"):].strip()
-                in_highlights = False
-            elif stripped.startswith("Highlights:"):
-                in_highlights = True
-            elif stripped.startswith(("Published:", "Author:")):
-                in_highlights = False
-            elif in_highlights and stripped:
+                url = _after(stripped, "URL:")
+            elif in_highlights and stripped and not stripped.startswith(_EXA_LABELS):
                 highlight_lines.append(stripped)
+            # Highlights run until the next labelled field.
+            if stripped.startswith(_EXA_LABELS):
+                in_highlights = stripped.startswith("Highlights:")
         if url:
-            results.append(
-                {
-                    "url": url,
-                    "title": title,
-                    "description": " ".join(highlight_lines),
-                    "position": len(results) + 1,
-                }
-            )
+            results.append(_row(url, title, " ".join(highlight_lines), len(results) + 1))
         if limit and len(results) >= limit:
             break
     return results
 
 
 def exa_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Keyless Exa web search → legacy search response shape."""
-    try:
-        text = mcp_call(
-            EXA_MCP_URL,
-            "web_search_exa",
-            {"query": query, "numResults": max(1, int(limit))},
-        )
-    except KeylessMCPError as exc:
-        return {
-            "success": False,
-            "error": (
-                f"Keyless Exa search failed: {exc}. "
-                "Set EXA_API_KEY (https://exa.ai) or another web backend "
-                "via `hermes tools` for reliable service."
-            ),
-        }
-    return {"success": True, "data": {"web": _parse_exa_search_text(text, limit)}}
+    return _search("exa", lambda: _parse_exa_search_text(mcp_call(EXA_MCP_URL, "web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit))
 
 
 def exa_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
-    """Keyless Exa web fetch → legacy extract result list.
+    """Called per-URL; the tool returns one combined text payload."""
+    def _fetch(url: str) -> Dict[str, Any]:
+        text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+        # Title: first markdown H1 or ``Title:`` line, whichever comes first.
+        titles = (_after(s, "# " if s.startswith("# ") else "Title:") for s in map(str.strip, text.splitlines()) if s.startswith(("# ", "Title:")))
+        return _page(url, next(titles, ""), text)
 
-    ``web_fetch_exa`` takes a ``urls`` array but returns one combined text
-    payload; we call it per-URL so each result maps cleanly.
-    """
-    results: List[Dict[str, Any]] = []
-    for url in urls:
-        try:
-            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
-        except KeylessMCPError as exc:
-            results.append(
-                {
-                    "url": url,
-                    "title": "",
-                    "content": "",
-                    "error": (
-                        f"Keyless Exa extract failed: {exc}. "
-                        "Set EXA_API_KEY (https://exa.ai) or another web "
-                        "backend via `hermes tools` for reliable service."
-                    ),
-                }
-            )
-            continue
-        title = ""
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("# "):
-                title = stripped[2:].strip()
-                break
-            if stripped.startswith("Title:"):
-                title = stripped[len("Title:"):].strip()
-                break
-        results.append(
-            {
-                "url": url,
-                "title": title,
-                "content": text,
-                "raw_content": text,
-                "metadata": {"sourceURL": url, "title": title},
-            }
-        )
-    return results
+    return _per_url(urls, _fetch, "exa", catch=KeylessMCPError, hint=True)
 
 
-
-# ---------------------------------------------------------------------------
-# Firecrawl keyless (public cloud API, no auth header)
-# ---------------------------------------------------------------------------
-
-
+# --- Firecrawl keyless (public cloud API, no auth header) ---------------------
 def firecrawl_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Keyless Firecrawl cloud search → legacy search response shape."""
-    from plugins.web.firecrawl.provider import (
-        _KeylessFirecrawlClient,
-        _extract_web_search_results,
-    )
-
-    try:
-        response = _KeylessFirecrawlClient().search(query=query, limit=limit)
-        return {"success": True, "data": {"web": _extract_web_search_results(response)}}
-    except Exception as exc:  # noqa: BLE001 — normalized below
-        return {
-            "success": False,
-            "error": (
-                f"Keyless Firecrawl search failed: {exc}. "
-                "Set FIRECRAWL_API_KEY (https://firecrawl.dev) or another web "
-                "backend via `hermes tools` for reliable service."
-            ),
-        }
+    from plugins.web.firecrawl.provider import _KeylessFirecrawlClient, _extract_web_search_results
+    rows = lambda: _extract_web_search_results(_KeylessFirecrawlClient().search(query=query, limit=limit))  # noqa: E731
+    return _search("firecrawl", rows, Exception, lambda exc: _fail_msg("firecrawl", "search", exc))
 
 
 def firecrawl_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
-    """Keyless Firecrawl cloud scrape → legacy extract result list."""
-    from plugins.web.firecrawl.provider import (
-        _KeylessFirecrawlClient,
-        _extract_scrape_payload,
-    )
-
+    from plugins.web.firecrawl.provider import _KeylessFirecrawlClient, _extract_scrape_payload
     client = _KeylessFirecrawlClient()
-    results: List[Dict[str, Any]] = []
-    for url in urls:
-        try:
-            response = client.scrape(url=url, formats=["markdown"])
-            payload = _extract_scrape_payload(response) or {}
-            metadata = payload.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-            content = payload.get("markdown") or payload.get("html") or ""
-            title = metadata.get("title") or ""
-            results.append(
-                {
-                    "url": url,
-                    "title": title,
-                    "content": content,
-                    "raw_content": content,
-                    "metadata": {"sourceURL": url, "title": title},
-                }
-            )
-        except Exception as exc:  # noqa: BLE001 — per-URL error entry
-            results.append(
-                {
-                    "url": url,
-                    "title": "",
-                    "content": "",
-                    "error": (
-                        f"Keyless Firecrawl extract failed: {exc}. "
-                        "Set FIRECRAWL_API_KEY (https://firecrawl.dev) for "
-                        "reliable service."
-                    ),
-                }
-            )
-    return results
+
+    def _fetch(url: str) -> Dict[str, Any]:
+        payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"])) or {}
+        metadata = payload.get("metadata") or {}
+        title = metadata.get("title") if isinstance(metadata, dict) else None
+        return _page(url, title or "", payload.get("markdown") or payload.get("html") or "")
+
+    return _per_url(urls, _fetch, "firecrawl")
 
 
-# ---------------------------------------------------------------------------
-# Keenable keyless (api.keenable.ai public endpoints)
-# ---------------------------------------------------------------------------
-
-
-KEENABLE_API_URL = "https://api.keenable.ai"
-_KEENABLE_TITLE = "hermes-agent"
+# --- Keenable keyless (api.keenable.ai public endpoints) ----------------------
+def _keenable_request(method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
+    """Call a Keenable public endpoint with the mandatory X-Keenable-Title app id."""
+    import requests
+    headers = {"X-Keenable-Title": _KEENABLE_TITLE}
+    if method == "post":
+        headers["Content-Type"] = "application/json"
+    response = getattr(requests, method)(f"{KEENABLE_API_URL}{path}", headers=headers, timeout=_TIMEOUT_SECONDS, **kwargs)
+    if response.status_code >= 400:
+        raise KeylessMCPError((response.text or "").strip() or f"HTTP {response.status_code}")
+    return response.json()
 
 
 def keenable_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Keyless Keenable search → legacy search response shape.
+    def _rows() -> List[Dict[str, Any]]:
+        data = _keenable_request("post", "/v1/search/public", json={"query": query, "max_results": max(1, int(limit))})
+        return [
+            _row(r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1)
+            for i, r in enumerate(data.get("results") or [])
+        ]
 
-    POST /v1/search/public with the mandatory X-Keenable-Title app
-    identifier (their keyless tier requires an app name; no user
-    identifiers are sent). Response: {results: [{title, url, snippet}]}.
-    """
-    import requests
-
-    try:
-        response = requests.post(
-            f"{KEENABLE_API_URL}/v1/search/public",
-            json={"query": query, "max_results": max(1, int(limit))},
-            headers={
-                "Content-Type": "application/json",
-                "X-Keenable-Title": _KEENABLE_TITLE,
-            },
-            timeout=_TIMEOUT_SECONDS,
-        )
-        if response.status_code >= 400:
-            raise KeylessMCPError(
-                (response.text or "").strip() or f"HTTP {response.status_code}"
-            )
-        data = response.json()
-    except KeylessMCPError as exc:
-        return {
-            "success": False,
-            "error": (
-                f"Keyless Keenable search failed: {exc}. "
-                "Set KEENABLE_API_KEY (https://keenable.ai) or another web "
-                "backend via `hermes tools` for reliable service."
-            ),
-        }
-    except Exception as exc:  # noqa: BLE001 — transport/JSON errors
-        return {
-            "success": False,
-            "error": f"Keyless Keenable search failed: {exc}.",
-        }
-    web_results = []
-    for i, result in enumerate(data.get("results") or []):
-        web_results.append(
-            {
-                "url": result.get("url") or "",
-                "title": result.get("title") or "",
-                "description": result.get("snippet")
-                or result.get("description")
-                or "",
-                "position": i + 1,
-            }
-        )
-    return {"success": True, "data": {"web": web_results}}
+    return _search("keenable", _rows, Exception, lambda exc: f"Keyless Keenable search failed: {exc}.")
 
 
 def keenable_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
-    """Keyless Keenable page fetch → legacy extract result list.
+    def _fetch(url: str) -> Dict[str, Any]:
+        data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+        return _page(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url)
 
-    GET /v1/fetch/public?url=... returns {url, title, content} (markdown).
-    Called per-URL; failures become per-URL error entries.
-    """
-    import requests
-
-    results: List[Dict[str, Any]] = []
-    for url in urls:
-        try:
-            response = requests.get(
-                f"{KEENABLE_API_URL}/v1/fetch/public",
-                params={"url": url},
-                headers={"X-Keenable-Title": _KEENABLE_TITLE},
-                timeout=_TIMEOUT_SECONDS,
-            )
-            if response.status_code >= 400:
-                raise KeylessMCPError(
-                    (response.text or "").strip() or f"HTTP {response.status_code}"
-                )
-            data = response.json()
-            content = data.get("content") or ""
-            title = data.get("title") or ""
-            results.append(
-                {
-                    "url": data.get("url") or url,
-                    "title": title,
-                    "content": content,
-                    "raw_content": content,
-                    "metadata": {"sourceURL": url, "title": title},
-                }
-            )
-        except Exception as exc:  # noqa: BLE001 — per-URL error entry
-            results.append(
-                {
-                    "url": url,
-                    "title": "",
-                    "content": "",
-                    "error": (
-                        f"Keyless Keenable extract failed: {exc}. "
-                        "Set KEENABLE_API_KEY (https://keenable.ai) for "
-                        "reliable service."
-                    ),
-                }
-            )
-    return results
+    return _per_url(urls, _fetch, "keenable")
 
 
-# ---------------------------------------------------------------------------
-# Round-robin ring + next-in-line failover (rate-limited free tiers)
-# ---------------------------------------------------------------------------
-
+# --- Round-robin ring + next-in-line failover (rate-limited free tiers) -------
 _KEYLESS_RING = ("exa", "parallel", "firecrawl", "keenable")
 
-_KEYLESS_SEARCHERS = {
-    "exa": lambda query, limit: exa_search_keyless(query, limit),
-    "parallel": lambda query, limit: parallel_search_keyless(query, limit),
-    "firecrawl": lambda query, limit: firecrawl_search_keyless(query, limit),
-    "keenable": lambda query, limit: keenable_search_keyless(query, limit),
-}
+# Late-bound lookups (not bare references) so ``patch.object(keyless_mcp, "<vendor>_search_keyless")``
+# is honored at call time. Tests also ``setitem`` these dicts directly.
+_KEYLESS_SEARCHERS: Dict[str, Callable[[str, int], Dict[str, Any]]] = {v: (lambda query, limit, _v=v: globals()[f"{_v}_search_keyless"](query, limit)) for v in _KEYLESS_RING}
+_KEYLESS_EXTRACTORS: Dict[str, Callable[[List[str]], List[Dict[str, Any]]]] = {v: (lambda urls, _v=v: globals()[f"{_v}_extract_keyless"](urls)) for v in _KEYLESS_RING}
 
-_KEYLESS_EXTRACTORS = {
-    "exa": lambda urls: exa_extract_keyless(urls),
-    "parallel": lambda urls: parallel_extract_keyless(urls),
-    "firecrawl": lambda urls: firecrawl_extract_keyless(urls),
-    "keenable": lambda urls: keenable_extract_keyless(urls),
-}
-
-# Per-process round-robin cursor, seeded by the random session id so the
-# fleet spreads evenly across all five free tiers; advances once per
-# unpinned keyless request so a single process also rotates.
-_ring_lock = __import__("threading").Lock()
+# Per-process round-robin cursor, seeded by the random session id so the fleet
+# spreads across vendors; advances once per unpinned keyless request.
+_ring_lock = threading.Lock()
 _ring_cursor = int(_SESSION_ID, 16) % len(_KEYLESS_RING)
 
 
 def _vendor_pinned(name: str) -> bool:
-    """True when config explicitly routes web traffic to *name*.
-
-    A pinned vendor starts every keyless request (rotation off); the ring
-    is only walked past it on throttle. Pin signals: web.backend /
-    web.search_backend / web.extract_backend naming the vendor, or a
-    free-tier pin in web.provider_tier.
-    """
+    """True when config explicitly routes web traffic to *name* (backend keys or a
+    ``free`` tier pin). A pinned vendor starts every keyless request."""
     if provider_tier(name) == "free":
         return True
     try:
-        import tools.web_tools as _wt
-
-        web_cfg = _wt._load_web_config()
-        return any(
-            (web_cfg.get(key) or "").lower().strip() == name
-            for key in ("backend", "search_backend", "extract_backend")
-        )
+        return _web_config_selects(name)
     except Exception as exc:  # noqa: BLE001 — config layer optional
         logger.debug("_vendor_pinned(%r) config read failed: %s", name, exc)
         return False
 
 
 def _ring_order(name: str) -> List[str]:
-    """Return the vendor walk order for a request entering via *name*.
-
-    Pinned vendor → start at it (its position in the ring determines the
-    failover succession). Unpinned → true round-robin: start at the next
-    cursor position, advancing the cursor per request. Vendors whose tier
-    is pinned ``paid`` are excluded entirely (an explicit paid selection
-    opts that vendor's free endpoint out).
-    """
+    """Vendor walk order: pinned → start at *name* (its ring position fixes the failover
+    succession); else round-robin from the cursor, advancing it per request. Vendors
+    pinned ``paid`` are excluded (explicit paid opts their free endpoint out)."""
     global _ring_cursor
     if _vendor_pinned(name):
         start = _KEYLESS_RING.index(name) if name in _KEYLESS_RING else 0
@@ -684,77 +332,54 @@ def _ring_order(name: str) -> List[str]:
         with _ring_lock:
             start = _ring_cursor
             _ring_cursor = (_ring_cursor + 1) % len(_KEYLESS_RING)
-    ordered = [
-        _KEYLESS_RING[(start + i) % len(_KEYLESS_RING)]
-        for i in range(len(_KEYLESS_RING))
-    ]
+    ordered = _KEYLESS_RING[start:] + _KEYLESS_RING[:start]
     return [v for v in ordered if provider_tier(v) != "paid"]
 
 
-def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Keyless search across the vendor ring with next-in-line failover.
+_ALL_PAID_MSG = "All keyless web providers are pinned to paid tiers."
 
-    Starts at *name* when the user pinned it, otherwise at the round-robin
-    cursor. Rate-limit-shaped errors advance to the next ring vendor;
-    non-throttle errors stop the walk (a malformed query fails everywhere).
-    The result notes the serving vendor via ``data.served_by`` whenever it
-    differs from *name*.
-    """
+
+def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
+    """Call each vendor from :func:`_ring_order` until a result is not ``throttled``.
+    Returns ``(order, vendor, result, exhausted)``; ``order`` is empty (result None)
+    when every vendor is pinned paid."""
     order = _ring_order(name)
-    if not order:
-        return {
-            "success": False,
-            "error": "All keyless web providers are pinned to paid tiers.",
-        }
-    last: Dict[str, Any] = {}
+    vendor, result = None, None
     for i, vendor in enumerate(order):
-        result = _KEYLESS_SEARCHERS[vendor](query, limit)
-        if result.get("success"):
-            if vendor != name:
-                result.setdefault("data", {})["served_by"] = vendor
-            return result
-        last = result
-        if not _is_rate_limitish(result.get("error", "")):
-            return result
-        nxt = order[i + 1] if i + 1 < len(order) else None
-        if nxt:
-            logger.info(
-                "keyless %s search throttled; failing over to %s", vendor, nxt
-            )
-    last["error"] = (
-        f"{last.get('error', '')} (all keyless vendors throttled: "
-        f"{', '.join(order)})"
-    )
-    return last
+        result = call(vendor)
+        if not throttled(result):
+            return order, vendor, result, False
+        if i + 1 < len(order):
+            logger.info("keyless %s %s throttled; failing over to %s", vendor, kind, order[i + 1])
+    return order, vendor, result, True
+
+
+def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
+    """Rate-limit-shaped errors advance to the next vendor, other errors stop the walk
+    (a malformed query fails everywhere). ``data.served_by`` is set when the serving
+    vendor differs from *name*."""
+
+    def _throttled(result: Dict[str, Any]) -> bool:
+        return not result.get("success") and _is_rate_limitish(result.get("error", ""))
+
+    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
+    if not order:
+        return search_fail(_ALL_PAID_MSG)
+    if exhausted:
+        result["error"] = f"{result.get('error', '')} (all keyless vendors throttled: {', '.join(order)})"
+    elif result.get("success") and vendor != name:
+        result.setdefault("data", {})["served_by"] = vendor
+    return result
 
 
 def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
-    """Keyless extract across the vendor ring, failing over per-batch.
+    """Fails over only when EVERY url in a batch is rate-limit-shaped (partial failures
+    are page problems, returned as-is)."""
 
-    Advances to the next ring vendor only when EVERY url in a batch comes
-    back with a rate-limit-shaped error — partial failures are page
-    problems, not throttling, and return as-is.
-    """
-    order = _ring_order(name)
+    def _all_throttled(results: List[Dict[str, Any]]) -> bool:
+        return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
+
+    order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
     if not order:
-        return [
-            {"url": u, "title": "", "content": "",
-             "error": "All keyless web providers are pinned to paid tiers."}
-            for u in urls
-        ]
-    last: List[Dict[str, Any]] = []
-    for i, vendor in enumerate(order):
-        results = _KEYLESS_EXTRACTORS[vendor](list(urls))
-        errors = [r.get("error", "") for r in results]
-        all_throttled = bool(results) and all(
-            e and _is_rate_limitish(e) for e in errors
-        )
-        if not all_throttled:
-            return results
-        last = results
-        nxt = order[i + 1] if i + 1 < len(order) else None
-        if nxt:
-            logger.info(
-                "keyless %s extract throttled; failing over to %s", vendor, nxt
-            )
-    return last
+        return [_page_error(u, _ALL_PAID_MSG) for u in urls]
+    return results

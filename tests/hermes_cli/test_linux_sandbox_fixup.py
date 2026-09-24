@@ -16,25 +16,25 @@ import subprocess
 import sys
 from unittest.mock import patch
 
-from hermes_cli import main as cli_main
+from hermes_cli import main_desktop
 
 
 class TestDesktopLinuxUsernsSandboxAvailable:
     def test_false_on_non_linux(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "darwin")
-        assert cli_main._desktop_linux_userns_sandbox_available() is False
+        assert main_desktop._desktop_linux_userns_sandbox_available() is False
 
     def test_false_when_unshare_is_missing(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch.object(cli_main.shutil, "which", return_value=None):
-            assert cli_main._desktop_linux_userns_sandbox_available() is False
+        with patch.object(main_desktop.shutil, "which", return_value=None):
+            assert main_desktop._desktop_linux_userns_sandbox_available() is False
 
     def test_true_when_probe_succeeds(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch.object(cli_main.shutil, "which", return_value="/usr/bin/unshare"), \
-             patch.object(cli_main.subprocess, "run") as run:
+        with patch.object(main_desktop.shutil, "which", return_value="/usr/bin/unshare"), \
+             patch.object(main_desktop.subprocess, "run") as run:
             run.return_value.returncode = 0
-            assert cli_main._desktop_linux_userns_sandbox_available() is True
+            assert main_desktop._desktop_linux_userns_sandbox_available() is True
         probe = run.call_args.args[0]
         assert probe[0] == "/usr/bin/unshare"
         assert "--user" in probe
@@ -42,20 +42,20 @@ class TestDesktopLinuxUsernsSandboxAvailable:
     def test_false_when_probe_fails(self, monkeypatch):
         """EPERM from the kernel (userns disabled or AppArmor-restricted)."""
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch.object(cli_main.shutil, "which", return_value="/usr/bin/unshare"), \
-             patch.object(cli_main.subprocess, "run") as run:
+        with patch.object(main_desktop.shutil, "which", return_value="/usr/bin/unshare"), \
+             patch.object(main_desktop.subprocess, "run") as run:
             run.return_value.returncode = 1
-            assert cli_main._desktop_linux_userns_sandbox_available() is False
+            assert main_desktop._desktop_linux_userns_sandbox_available() is False
 
     def test_false_when_probe_raises(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch.object(cli_main.shutil, "which", return_value="/usr/bin/unshare"), \
+        with patch.object(main_desktop.shutil, "which", return_value="/usr/bin/unshare"), \
              patch.object(
-                 cli_main.subprocess,
+                 main_desktop.subprocess,
                  "run",
                  side_effect=subprocess.TimeoutExpired(cmd="unshare", timeout=5),
              ):
-            assert cli_main._desktop_linux_userns_sandbox_available() is False
+            assert main_desktop._desktop_linux_userns_sandbox_available() is False
 
 
 class TestDesktopLinuxSandboxFixup:
@@ -79,10 +79,10 @@ class TestDesktopLinuxSandboxFixup:
         monkeypatch.setattr(sys, "platform", "linux")
         exe = self._fake_packaged_app(tmp_path)
         with patch.object(
-                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=True
+                 main_desktop, "_desktop_linux_userns_sandbox_available", return_value=True
              ), \
-             patch.object(cli_main.subprocess, "run") as run:
-            assert cli_main._desktop_linux_sandbox_fixup(exe) is True
+             patch.object(main_desktop.subprocess, "run") as run:
+            assert main_desktop._desktop_linux_sandbox_fixup(exe) is True
         run.assert_not_called()
 
     def test_restricted_host_without_sudo_still_fails(self, monkeypatch, tmp_path):
@@ -90,10 +90,10 @@ class TestDesktopLinuxSandboxFixup:
         monkeypatch.setattr(sys, "platform", "linux")
         exe = self._fake_packaged_app(tmp_path)
         with patch.object(
-                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=False
+                 main_desktop, "_desktop_linux_userns_sandbox_available", return_value=False
              ), \
-             patch.object(cli_main.shutil, "which", return_value=None):
-            assert cli_main._desktop_linux_sandbox_fixup(exe) is False
+             patch.object(main_desktop.shutil, "which", return_value=None):
+            assert main_desktop._desktop_linux_sandbox_fixup(exe) is False
 
     def test_root_owned_setuid_helper_short_circuits(self, monkeypatch, tmp_path):
         """A correctly configured helper wins before the userns probe runs."""
@@ -108,11 +108,11 @@ class TestDesktopLinuxSandboxFixup:
             def __getattr__(self, name):
                 return getattr(real_lstat, name)
 
-        with patch.object(cli_main.Path, "lstat", return_value=_RootSetuidStat()), \
+        with patch.object(main_desktop.Path, "lstat", return_value=_RootSetuidStat()), \
              patch.object(
-                 cli_main, "_desktop_linux_userns_sandbox_available"
+                 main_desktop, "_desktop_linux_userns_sandbox_available"
              ) as probe:
-            assert cli_main._desktop_linux_sandbox_fixup(exe) is True
+            assert main_desktop._desktop_linux_sandbox_fixup(exe) is True
         probe.assert_not_called()
 
 
@@ -131,9 +131,9 @@ class TestDesktopLinuxNeedsDisableSetuidSandbox:
         monkeypatch.setattr(sys, "platform", "linux")
         exe = self._fake_packaged_app(tmp_path)
         with patch.object(
-            cli_main, "_desktop_linux_userns_sandbox_available", return_value=True
+            main_desktop, "_desktop_linux_userns_sandbox_available", return_value=True
         ):
-            assert cli_main._desktop_linux_needs_disable_setuid_sandbox(exe) is True
+            assert main_desktop._desktop_linux_needs_disable_setuid_sandbox(exe) is True
 
     def test_false_for_root_owned_setuid_helper(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sys, "platform", "linux")
@@ -147,11 +147,11 @@ class TestDesktopLinuxNeedsDisableSetuidSandbox:
             def __getattr__(self, name):
                 return getattr(real_lstat, name)
 
-        with patch.object(cli_main.Path, "lstat", return_value=_RootSetuidStat()), \
+        with patch.object(main_desktop.Path, "lstat", return_value=_RootSetuidStat()), \
              patch.object(
-                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=True
+                 main_desktop, "_desktop_linux_userns_sandbox_available", return_value=True
              ) as probe:
-            assert cli_main._desktop_linux_needs_disable_setuid_sandbox(exe) is False
+            assert main_desktop._desktop_linux_needs_disable_setuid_sandbox(exe) is False
         probe.assert_not_called()
 
     def test_false_when_helper_missing(self, monkeypatch, tmp_path):
@@ -160,4 +160,4 @@ class TestDesktopLinuxNeedsDisableSetuidSandbox:
         unpacked.mkdir()
         exe = unpacked / "Hermes"
         exe.write_text("", encoding="utf-8")
-        assert cli_main._desktop_linux_needs_disable_setuid_sandbox(exe) is False
+        assert main_desktop._desktop_linux_needs_disable_setuid_sandbox(exe) is False

@@ -25,18 +25,17 @@ import ast
 from pathlib import Path
 
 
-def _load_handle_enter_node() -> ast.FunctionDef:
-    """Extract the ``handle_enter`` nested function node from cli.py."""
-    cli_path = Path(__file__).resolve().parents[2] / "cli.py"
-    tree = ast.parse(cli_path.read_text(encoding="utf-8"))
+ENTER_HANDLERS = ("_tui_handle_enter", "_tui_enter_inline_command", "_tui_enter_overlay",
+                  "_tui_enter_clarify_freetext", "_tui_enter_clarify_choice")
 
-    target = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "handle_enter":
-            target = node
-            break
-    assert target is not None, "handle_enter closure not found in cli.py"
-    return target
+
+def _load_handle_enter_node() -> ast.Module:
+    """Return a synthetic module holding the Enter handler and its phase helpers."""
+    cli_path = Path(__file__).resolve().parents[2] / "hermes_cli" / "cli_tui_mixin.py"
+    tree = ast.parse(cli_path.read_text(encoding="utf-8"))
+    found = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ENTER_HANDLERS]
+    assert {n.name for n in found} == set(ENTER_HANDLERS), "Enter handlers not found in cli_tui_mixin.py"
+    return ast.Module(body=found, type_ignores=[])
 
 
 def _is_buffer_reset(node: ast.stmt) -> bool:
@@ -61,7 +60,7 @@ def _is_invalidate(node: ast.stmt) -> bool:
     return isinstance(func, ast.Attribute) and func.attr == "invalidate"
 
 
-def _collect_reset_blocks(func: ast.FunctionDef) -> list[list[ast.stmt]]:
+def _collect_reset_blocks(func: ast.AST) -> list[list[ast.stmt]]:
     """Find every statement sequence (a block body/orelse/finalbody) within
     ``handle_enter`` that contains a ``buffer.reset()`` call."""
     blocks: list[list[ast.stmt]] = []

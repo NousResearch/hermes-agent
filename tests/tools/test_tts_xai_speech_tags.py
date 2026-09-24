@@ -5,11 +5,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools.tts_tool import (
+from tools.tts_tool import _generate_xai_tts
+from tools.tts_tool_providers import (
     _XAI_INLINE_SPEECH_TAGS,
     _XAI_WRAPPING_SPEECH_TAGS,
     _apply_xai_auto_speech_tags,
-    _generate_xai_tts,
 )
 
 

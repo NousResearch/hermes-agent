@@ -16,7 +16,8 @@ import logging
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _jittered
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_common import _jittered
 
 
 # ── Jitter ───────────────────────────────────────────────────────────────────

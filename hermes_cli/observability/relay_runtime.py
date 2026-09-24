@@ -1,14 +1,6 @@
-"""Compatibility alias for the core Hermes Relay runtime.
+"""PLUGIN-COMPAT stub (revert-scheduled; see COMPAT_MANIFEST.md).
 
-New code should import :mod:`agent.relay_runtime`. This module remains an
-alias, rather than a copy, so existing plugins and tests share the same
-profile registry and test-reset state during the migration.
+``hermes_cli.observability.relay_runtime`` was folded into ``agent.relay_runtime`` in the Sep 2026 decomposition. This stub keeps the
+old import path alive for external plugins only; internal code must import ``agent.relay_runtime``.
 """
-
-from __future__ import annotations
-
-import sys
-
-from agent import relay_runtime as _core_relay_runtime
-
-sys.modules[__name__] = _core_relay_runtime
+from agent.relay_runtime import *  # noqa: F401,F403

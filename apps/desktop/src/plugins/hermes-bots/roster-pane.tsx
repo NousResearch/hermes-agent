@@ -1,3 +1,20 @@
+import { host, useI18n, useValue } from '@hermes/plugin-sdk'
+import { useEffect, useRef, useState } from 'react'
+
+import { BotRow } from './bot-row'
+import {
+  $botChatFocused,
+  $botsPaneVisible,
+  $focusedBotOwner,
+  $openBotChat,
+  $rosterHydrated,
+  $selectedRosterHydrated,
+  $selectedRosterKey,
+  clearSelectedRosterKey,
+  focusedRosterOwner,
+  parseRosterKey,
+  saveSelectedRosterBot
+} from './bot-state'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
  * workspace-ownership reads its lifecycle keys off, and the pane that lists
@@ -6,82 +23,35 @@
  * The top of the roster stack. It composes the rows, the section headings and
  * the dialogs; nothing in Bot Mode imports it except the plugin entry point.
  */
-
-import {
-  atom,
-  Button,
-  cn,
-  Codicon,
-  ConfirmDialog,
-  DisclosureCaret,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-  GlyphSpinner,
-  host,
-  PanelEmpty,
-  RowButton,
-  SearchField,
-  Tip,
-  useI18n,
-  useValue
-} from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
-
-import { BotRow, GroupRow } from './bot-row'
-import {
-  $botChatFocused,
-  $botsPaneVisible,
-  $openBotChat,
-  $rosterHydrated,
-  $selectedRosterHydrated,
-  $selectedRosterKey,
-  clearSelectedRosterKey,
-  parseRosterKey,
-  saveSelectedRosterBot
-} from './bot-state'
-import { CreateAgentDialog, CreateGroupChatDialog, GroupDialog } from './create-dialog'
 import {
   $botMeta,
   $lastRoster,
   annotateBotSource,
-  botActivitySession,
   botRosterKey,
   botSourceStatus,
-  filterBots,
-  preferReachableSameNameRows,
   sourceByConnection,
   useRoster
 } from './data'
-import { EditProfileDialog } from './edit-profile-dialog'
-import { $groupChats, $groupChatWorkspace, $groupNeedsYou } from './group-chat'
-import { disbandGroupChat, GroupChatWorkspace, openGroupChat } from './group-chat-view'
-import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
+import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
+import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
+import { groupChatMemberBots } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
-import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
+import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
-import { deleteBot, mergeServerMeta, pullServerAvatars } from './profile-ops'
-import { $activityToasts, setActivityToasts, trackInboundActivity } from './roster-actions'
-import {
-  botNeedsHandleLabel,
-  filterBotsByGateway,
-  GatewayKindGlyph,
-  GatewaySectionHeading,
-  groupMatchesRosterFilters,
-  rosterGatewayOptions,
-  rosterGatewaySections,
-  RosterSectionHeader
-} from './roster-sections'
-import type { ResolvedRosterGatewaySection } from './roster-sections'
-import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { ACTIVE_WINDOW_S, activeBots, BOT_ROSTER_SEARCH_THRESHOLD, rosterActivityMatches } from './row-helpers'
-import { backfillMessagingProtocol } from './soul'
+import { $activityToasts } from './roster-actions'
+import { renderRosterContent } from './roster-pane-content'
+import { deriveRosterPresentation, deriveRosterRows, sortRosterBots } from './roster-pane-derivation'
+import { renderRosterDialogs } from './roster-pane-dialogs'
+import { RosterGroupRowView } from './roster-pane-groups'
+import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
+import { rosterSectionRenderers } from './roster-pane-sections'
+import { renderRosterToolbar } from './roster-pane-toolbar'
+import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
+import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-
-/** Last source inventory returned by the desktop-wide agent roster. */
-const $lastSources = atom<GatewaySource[]>([])
+import { $botSections, $draggingBot } from './user-sections'
+import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
 
@@ -220,21 +190,35 @@ export function releaseStaleOpenBotChat(focusedStoredId: null | string | undefin
   }
 }
 
-/** The two row shapes the roster sorts together — `kind` is the discriminant. */
-interface RosterBotRow {
-  active: boolean
-  activity: number
-  bot: RosterRow
-  kind: 'bot'
-  pinned: boolean
-}
-interface RosterGroupRow {
-  active: boolean
-  activity: number
-  kind: 'group'
-  members: GroupMember[]
-  name: string
-  pinned: boolean
+function useReconcileRosterOwner(
+  data: ReturnType<typeof useRoster>['data'],
+  error: ReturnType<typeof useRoster>['error'],
+  selectionHydrated: boolean,
+  roster: RosterRow[],
+  sourceSnapshot: GatewaySource[],
+  allMeta: Record<string, BotMeta>
+) {
+  // The roster has ANSWERED once data or a terminal error exists — that, not
+  // row count, is what lets this pane stop showing its loading state (an empty
+  // answer is a real answer; a pending one must not flash "No bots"). Keep the
+  // persisted-selection writes out of render: React may replay a render, but
+  // an abandoned render must never become a storage mutation.
+  useEffect(() => {
+    if (!data && !error) {
+      return
+    }
+
+    $rosterHydrated.set(true)
+
+    if (selectionHydrated) {
+      reconcileRosterSelection(roster, sourceSnapshot, allMeta)
+      const selected = selectedRosterBot(roster, $selectedRosterKey.get())
+
+      if ($botsPaneVisible.get() && !$groupChatWorkspace.get() && selected) {
+        setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
+      }
+    }
+  }, [data, error, selectionHydrated, roster, sourceSnapshot, allMeta])
 }
 
 export function BotsPane() {
@@ -243,7 +227,10 @@ export function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
   const gatewayUp = gatewayState === 'open'
-  const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
+
+  const turnBusy = useTurnBusy()
+  const workingOwner = focusedRosterOwner(useValue($focusedBotOwner))
+  const activeConnectionId = host.state.connectionId?.get?.() || 'local'
   const [createOpen, setCreateOpen] = useState(false)
   const [groupCreateOpen, setGroupCreateOpen] = useState(false)
   const [editing, setEditing] = useState<null | RosterRow>(null)
@@ -251,6 +238,16 @@ export function BotsPane() {
   // it is not part of the shared RosterRow model, so it rides as an extra here.
   const [deleting, setDeleting] = useState<null | (RosterRow & { path?: string })>(null)
   const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
+  const userSections = useValue($botSections)
+  const dragging = useValue($draggingBot)
+  useEscapeCancelsBotDrag()
+
+  // The one name dialog serves both New section (optionally filing the bot
+  // whose menu opened it) and Rename.
+  const [sectionDialog, setSectionDialog] = useState<
+    null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  >(null)
+
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
   const [query, setQuery] = useState('')
   const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
@@ -266,6 +263,7 @@ export function BotsPane() {
   // room beside a live main tab and stick).
   useValue($groupMainTabsRev)
   const groupNeedsYou = useValue($groupNeedsYou)
+  const groupClarify = useValue($groupClarify)
   const groupRooms = useValue($groupChats)
   const rememberedSources = useValue($lastSources)
   const rosterHydrated = useValue($rosterHydrated)
@@ -281,19 +279,6 @@ export function BotsPane() {
   }, [gatewayUp, refetch])
   const allMeta = useValue($botMeta)
 
-  // Messaging-app order: most recent activity first, where "activity" is
-  // the newest of (bot created, last message in any of its sessions). A
-  // freshly created bot tops the list until another bot gets a message.
-  // No special slot for the primary bot — it competes on recency too.
-  const activityOf = (bot: RosterRow): number => {
-    const created = botRosterMeta(bot, allMeta)?.created || bot.ui_meta?.['hermes-bots']?.created || 0
-    const lastMsg = (botActivitySession(bot)?.last_active || 0) * 1000
-
-    return Math.max(created, lastMsg)
-  }
-
-  // Pin is a source-qualified Desktop preference, not gateway profile state.
-  const isPinned = (bot: RosterRow): boolean => isBotPinned(bot, allMeta)
   // Resilience (@wesleysimplicio, #13): a failed refresh must not erase a
   // roster the user already had — mixed local+cloud gateways and remotes
   // waking from sleep fail transiently. Render the last good snapshot with
@@ -305,22 +290,17 @@ export function BotsPane() {
   const sourceWithSelectedOwner =
     selectionHydrated && rosterHydrated ? rosterWithSelectedOwner(source, sourceSnapshot, selectedRosterKey) : source
 
-  const roster = sourceWithSelectedOwner.slice().sort((a, b) => {
-    const pa = isPinned(a) ? 1 : 0
-    const pb = isPinned(b) ? 1 : 0
-
-    if (pa !== pb) {
-      return pb - pa
-    }
-
-    return activityOf(b) - activityOf(a)
-  })
+  const { roster, activityOf, isPinned } = sortRosterBots(sourceWithSelectedOwner, allMeta)
 
   // React Query can briefly report neither loading nor data while the plugin
   // and the persisted connection registry hydrate. Keep that transition in a
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
-  const activeRosterKeys = new Set(activeBots(roster, activeProfile, gatewayState).map(botRosterKey))
+
+  const activeRosterKeys = new Set(
+    activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId).map(botRosterKey)
+  )
+
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)
@@ -329,117 +309,58 @@ export function BotsPane() {
       setGatewayFilter('all')
     }
   }, [gatewayFilterExists])
-  const activeSourceRoster = roster.filter(bot => !bot.remoteSource)
-  // Hidden rows remain fully alive and recoverable at the bottom. Every
-  // non-display consumer continues to receive the complete roster.
   const hiddenExpanded = useValue($showHiddenBots)
-  const hiddenBots = roster.filter(bot => isBotHidden(bot, allMeta))
-  const visibleRoster = roster.filter(bot => !isBotHidden(bot, allMeta))
-  const gatewayRoster = filterBotsByGateway(visibleRoster, gatewayFilter)
 
-  const filteredRoster = filterBots(gatewayRoster, allMeta, query).filter((bot: RosterRow) =>
-    rosterActivityMatches(
-      {
-        activity: activityOf(bot),
-        active: activeRosterKeys.has(botRosterKey(bot))
-      },
-      activityFilter
-    )
-  )
-
-  const filteredHiddenBots = filterBots(filterBotsByGateway(hiddenBots, gatewayFilter), allMeta, query).filter(
-    (bot: RosterRow) =>
-      rosterActivityMatches(
-        {
-          activity: activityOf(bot),
-          active: activeRosterKeys.has(botRosterKey(bot))
-        },
-        activityFilter
-      )
-  )
-
-  const groupNames = groupChatNames(allMeta, groupRooms)
-
-  const groupRows = groupNames
-    .map(name => ({
-      name,
-      members: groupChatMemberBots(name, roster, allMeta)
-    }))
-    .filter(row => groupMatchesRosterFilters(row.name, row.members, allMeta, query, gatewayFilter))
-    .map((row): RosterGroupRow => ({
-      kind: 'group',
-      name: row.name,
-      members: row.members,
-      pinned: Boolean(groupRooms[row.name]?.pinned),
-      activity: groupLastActivity(groupRooms[row.name]),
-      active:
-        Boolean(
-          groupLastActivity(groupRooms[row.name]) &&
-          Date.now() - groupLastActivity(groupRooms[row.name]) <= ACTIVE_WINDOW_S * 1000
-        ) || row.members.some(member => activeRosterKeys.has(botRosterKey(member)))
-    }))
-    .filter(row => rowKindFilter !== 'bots' && rosterActivityMatches(row, activityFilter))
-
-  const botRows =
-    rowKindFilter === 'groups'
-      ? []
-      : preferReachableSameNameRows(filteredRoster).map((bot): RosterBotRow => ({
-          kind: 'bot',
-          bot,
-          pinned: isPinned(bot),
-          activity: activityOf(bot),
-          active: activeRosterKeys.has(botRosterKey(bot))
-        }))
-
-  const sortRosterRows = <T extends { activity: number; pinned: boolean }>(rows: T[]): T[] =>
-    rows.slice().sort((a, b) => {
-      const pa = a.pinned ? 1 : 0
-      const pb = b.pinned ? 1 : 0
-
-      if (pa !== pb) {
-        return pb - pa
-      }
-
-      return b.activity - a.activity
-    })
-
-  const rosterRows = sortRosterRows([...botRows, ...groupRows])
-  const sortedGroupRows = sortRosterRows(groupRows)
-  const gatewaySections = rosterGatewaySections(botRows, gatewayOptions, gatewayFilter)
-  const showGatewaySections = gatewaySections.sectioned && botRows.length > 0
-
-  const activeFilterCount =
-    (rowKindFilter === 'all' ? 0 : 1) + (activityFilter === 'all' ? 0 : 1) + (gatewayFilter === 'all' ? 0 : 1)
-
-  const hasRosterConstraint = Boolean(query.trim()) || activeFilterCount > 0
-  const matchingHiddenBots = rowKindFilter === 'groups' ? [] : filteredHiddenBots
-  const showHiddenSection = hiddenBots.length > 0 && (!hasRosterConstraint || matchingHiddenBots.length > 0)
-  const showHiddenRows = hiddenExpanded || hasRosterConstraint
-  const rosterItemCount = roster.length + groupNames.length
-
-  const allBotsHidden =
-    !hasRosterConstraint && visibleRoster.length === 0 && groupNames.length === 0 && hiddenBots.length > 0
-
-  const showRosterSearch =
-    gatewayOptions.length > 1 || rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD || Boolean(query.trim())
-
-  const showRosterFilters =
-    gatewayOptions.length > 1 ||
-    groupNames.length > 0 ||
-    rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD ||
-    activeFilterCount > 0
-
-  const showRosterTools = showRosterSearch || showRosterFilters
-  const rosterSectionCollapsed = (id: string): boolean => !hasRosterConstraint && collapsedRosterSections.has(id)
-
-  const hiddenGatewaySections = rosterGatewaySections(
-    matchingHiddenBots.map((bot: RosterRow) => ({
-      kind: 'bot',
-      bot
-    })),
+  const {
+    activeSourceRoster,
+    hiddenBots,
+    visibleRoster,
+    filteredHiddenBots,
+    groupNames,
+    rosterRows,
+    sortedGroupRows,
+    gatewaySections,
+    showGatewaySections
+  } = deriveRosterRows({
+    roster,
+    allMeta,
+    gatewayFilter,
+    query,
+    activityFilter,
+    rowKindFilter,
+    groupRooms,
+    activeRosterKeys,
     gatewayOptions,
-    gatewayFilter
-  )
+    activityOf,
+    isPinned
+  })
+
+  const {
+    activeFilterCount,
+    hasRosterConstraint,
+    matchingHiddenBots,
+    showHiddenSection,
+    showHiddenRows,
+    allBotsHidden,
+    showRosterSearch,
+    showRosterFilters,
+    showRosterTools,
+    hiddenGatewaySections
+  } = deriveRosterPresentation({
+    rowKindFilter,
+    activityFilter,
+    gatewayFilter,
+    query,
+    filteredHiddenBots,
+    hiddenBots,
+    hiddenExpanded,
+    roster,
+    groupNames,
+    visibleRoster,
+    gatewayOptions
+  })
+
+  const rosterSectionCollapsed = (id: string): boolean => !hasRosterConstraint && collapsedRosterSections.has(id)
 
   const toggleRosterSection = (id: string): void => {
     setCollapsedRosterSections(previous => {
@@ -468,51 +389,9 @@ export function BotsPane() {
 
     return () => cancelAnimationFrame(frame)
   }, [hiddenExpanded, hasRosterConstraint])
-  useEffect(() => {
-    if (!live) {
-      return
-    }
+  usePublishRosterSnapshot({ data, live, roster, allMeta, activeSourceRoster })
 
-    // Offline-owner ghosts belong only to this render. Shared roster state
-    // feeds merge caching, group membership, creation, and durable sync. These
-    // writes must settle after render: other subscribers of the same atoms
-    // would otherwise be updated while BotsPane was still rendering.
-    $lastRoster.set(roster.filter(row => !row?.ghost))
-
-    if (Array.isArray(data?.sources)) {
-      $lastSources.set(data.sources)
-    }
-
-    mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
-    pullServerAvatars(activeSourceRoster)
-    trackInboundActivity(roster)
-    backfillMessagingProtocol(activeSourceRoster)
-    // React Query owns the stable server snapshot; derived arrays intentionally
-    // follow that snapshot rather than retriggering on their own atom writes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data])
-
-  // The roster has ANSWERED once data or a terminal error exists — that, not
-  // row count, is what lets this pane stop showing its loading state (an empty
-  // answer is a real answer; a pending one must not flash "No bots"). Keep the
-  // persisted-selection writes out of render: React may replay a render, but
-  // an abandoned render must never become a storage mutation.
-  useEffect(() => {
-    if (!data && !error) {
-      return
-    }
-
-    $rosterHydrated.set(true)
-
-    if (selectionHydrated) {
-      reconcileRosterSelection(roster, sourceSnapshot, allMeta)
-      const selected = selectedRosterBot(roster, $selectedRosterKey.get())
-
-      if ($botsPaneVisible.get() && !$groupChatWorkspace.get() && selected) {
-        setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
-      }
-    }
-  }, [data, error, selectionHydrated, roster, sourceSnapshot, allMeta])
+  useReconcileRosterOwner(data, error, selectionHydrated, roster, sourceSnapshot, allMeta)
 
   const staleNotice =
     error && !live && roster.length
@@ -533,409 +412,116 @@ export function BotsPane() {
       onDelete={setDeleting}
       onEdit={setEditing}
       onGroup={setGrouping}
+      onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
       showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
     />
   )
 
   const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
-    <GroupRow
+    <RosterGroupRowView
       active={groupChatName === row.name}
+      b={b}
       group={row.name}
+      groupClarify={groupClarify}
+      groupNeedsYou={groupNeedsYou}
+      groupRooms={groupRooms}
       key={`group:${row.name}`}
       members={row.members}
-      needsYou={Boolean(groupNeedsYou[row.name])}
       onDisband={setDeletingGroup}
       onOpen={openGroupChat}
+      sortedGroupRows={sortedGroupRows}
     />
   )
 
-  const renderGatewaySection = (section: ResolvedRosterGatewaySection) => {
-    const sectionId = `gateway:${section.id}`
-    const collapsed = rosterSectionCollapsed(sectionId)
-
-    return (
-      <div className="min-w-0" key={sectionId}>
-        <GatewaySectionHeading
-          collapsed={collapsed}
-          count={section.rows.length}
-          onToggle={() => toggleRosterSection(sectionId)}
-          option={section.option}
-        />
-        {collapsed ? null : (
-          <div className="grid min-w-0 gap-0.5">{section.rows.map(row => renderBotRow(row.bot, `${section.id}:`))}</div>
-        )}
-      </div>
-    )
-  }
-
-  const renderGroupChatSection = () => {
-    const sectionId = 'group-chats'
-    const collapsed = rosterSectionCollapsed(sectionId)
-
-    return (
-      <div className="min-w-0" key={sectionId}>
-        <RosterSectionHeader
-          collapsed={collapsed}
-          count={sortedGroupRows.length}
-          icon="organization"
-          label={b.roster.groupChats}
-          onToggle={() => toggleRosterSection(sectionId)}
-          tip={`${sortedGroupRows.length} global group chat${sortedGroupRows.length === 1 ? '' : 's'}`}
-        />
-        {collapsed ? null : <div className="grid min-w-0 gap-0.5">{sortedGroupRows.map(renderGroupRow)}</div>}
-      </div>
-    )
-  }
-
-  const renderHiddenGatewaySection = (section: ResolvedRosterGatewaySection) => (
-    <div className="min-w-0" key={`hidden-gateway:${section.id}`}>
-      <div className="flex min-w-0 items-center gap-1.5 px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
-        <GatewayKindGlyph kind={section.option?.kind} />
-        <span className="min-w-0 flex-1 truncate">
-          {section.option?.label || section.option?.connectionId || 'Current gateway'}
-        </span>
-        <span className="shrink-0 font-normal tabular-nums">{section.rows.length}</span>
-      </div>
-      {section.rows.map(row => renderBotRow(row.bot, `hidden:${section.id}:`))}
-    </div>
-  )
+  const { renderUserSections, renderGatewaySection, renderGroupChatSection, renderHiddenGatewaySection } =
+    rosterSectionRenderers({
+      b,
+      userSections,
+      roster,
+      allMeta,
+      dragging,
+      rosterSectionCollapsed,
+      toggleRosterSection,
+      setSectionDialog,
+      renderBotRow,
+      renderGroupRow,
+      sortedGroupRows
+    })
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5">
-        <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
-          Bots
-        </span>
-        <div className="flex items-center gap-0.5">
-          <Tip
-            label={activityToasts ? 'Activity toasts on — click to silence' : 'Activity toasts off — click to enable'}
-          >
-            <Button
-              className="rounded-md text-(--ui-text-tertiary) hover:text-foreground"
-              onClick={() => setActivityToasts(!activityToasts)}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name={activityToasts ? 'bell' : 'bell-slash'} />
-            </Button>
-          </Tip>
-          <DropdownMenu>
-            <Tip label="New…">
-              <DropdownMenuTrigger asChild>
-                <Button
-                  aria-label={b.roster.newBotOrGroup}
-                  className="rounded-md text-(--ui-text-tertiary) hover:text-foreground"
-                  size="icon-xs"
-                  variant="ghost"
-                >
-                  <Codicon name="add" />
-                </Button>
-              </DropdownMenuTrigger>
-            </Tip>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
-                <Codicon className="mr-1.5" name="hubot" />
-                {b.bot.newTitle}
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={activeSourceRoster.length < 2} onSelect={() => setGroupCreateOpen(true)}>
-                <Codicon className="mr-1.5" name="organization" />
-                {b.group.newTitle}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
-      {showRosterTools ? (
-        <div className="flex min-w-0 items-center gap-1 px-2.5 pb-1.5">
-          {showRosterSearch ? (
-            <SearchField
-              aria-label={b.roster.search}
-              containerClassName={cn('min-w-0 flex-1', query ? 'opacity-100!' : 'opacity-50 focus-within:opacity-100')}
-              inputClassName="w-full text-[0.75rem] placeholder:text-(--ui-text-tertiary)"
-              key={'roster-search'}
-              onChange={setQuery}
-              placeholder={b.roster.searchPlaceholder}
-              value={query}
-            />
-          ) : (
-            <span className="min-w-0 flex-1" key={'roster-search-spacer'} />
-          )}
-          {showRosterFilters ? (
-            <DropdownMenu key={'roster-filters'}>
-              <Tip label={activeFilterCount ? `Filters (${activeFilterCount} active)` : 'Filter roster'}>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    aria-label={activeFilterCount ? `Filter roster, ${activeFilterCount} active` : 'Filter roster'}
-                    className={cn(
-                      'size-7 shrink-0 rounded-md text-(--ui-text-tertiary) hover:text-foreground',
-                      activeFilterCount && 'text-(--ui-accent)'
-                    )}
-                    size="icon-xs"
-                    variant="ghost"
-                  >
-                    <Codicon name="list-filter" />
-                  </Button>
-                </DropdownMenuTrigger>
-              </Tip>
-              <DropdownMenuContent align="end">
-                {(
-                  [
-                    ['all', b.roster.botsAndGroups],
-                    ['bots', b.roster.botsOnly],
-                    ['groups', b.roster.groupsOnly]
-                  ] as [RosterKindFilter, string][]
-                ).map(([value, label]) => (
-                  <DropdownMenuItem key={`kind:${value}`} onSelect={() => setRowKindFilter(value)}>
-                    <span className="min-w-0 flex-1">{label}</span>
-                    {rowKindFilter === value ? <Codicon name="check" /> : null}
-                  </DropdownMenuItem>
-                ))}
-                <DropdownMenuSeparator />
-                {(
-                  [
-                    ['all', b.roster.anyActivity],
-                    ['active', b.roster.activeNow],
-                    ['recent', b.roster.recentlyActive],
-                    ['older', b.roster.older]
-                  ] as [RosterActivityFilter, string][]
-                ).map(([value, label]) => (
-                  <DropdownMenuItem key={`activity:${value}`} onSelect={() => setActivityFilter(value)}>
-                    <span className="min-w-0 flex-1">{label}</span>
-                    {activityFilter === value ? <Codicon name="check" /> : null}
-                  </DropdownMenuItem>
-                ))}
-                {gatewayOptions.length > 1 ? <DropdownMenuSeparator /> : null}
-                {gatewayOptions.length > 1 ? (
-                  <DropdownMenuItem onSelect={() => setGatewayFilter('all')}>
-                    <Codicon className="mr-1.5" name="globe" />
-                    <span className="min-w-0 flex-1">All gateways</span>
-                    {gatewayFilter === 'all' ? <Codicon name="check" /> : null}
-                  </DropdownMenuItem>
-                ) : null}
-                {gatewayOptions.length > 1
-                  ? gatewayOptions.map(option => {
-                      const status = botSourceStatus({
-                        sourceError: option.error,
-                        sourceReachable: option.reachable
-                      })
-
-                      return (
-                        <DropdownMenuItem
-                          key={option.connectionId}
-                          onSelect={() => setGatewayFilter(option.connectionId)}
-                        >
-                          <GatewayKindGlyph
-                            className={cn('mr-1.5', !status.available && 'text-amber-600 dark:text-amber-300')}
-                            kind={option.kind}
-                          />
-                          <span className="min-w-0 flex-1 truncate">{option.label || option.connectionId}</span>
-                          <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">
-                            {option.count}
-                          </span>
-                          {gatewayFilter === option.connectionId ? <Codicon name="check" /> : null}
-                        </DropdownMenuItem>
-                      )
-                    })
-                  : []}
-                {activeFilterCount ? <DropdownMenuSeparator /> : null}
-                {activeFilterCount ? (
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      setRowKindFilter('all')
-                      setActivityFilter('all')
-                      setGatewayFilter('all')
-                    }}
-                  >
-                    {b.roster.clearFilters}
-                  </DropdownMenuItem>
-                ) : null}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-        </div>
-      ) : null}
-      {staleNotice ? (
-        <div className="mx-2.5 mb-1 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
-          {staleNotice}
-        </div>
-      ) : null}
-      {(isLoading || initialRosterLoading) && !roster.length ? (
-        <div className="flex flex-1 items-center justify-center">
-          <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
-        </div>
-      ) : error && !roster.length ? (
-        <div className="grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)">
-          <div>
-            {gatewayUp
-              ? b.roster.rosterUnavailable(error instanceof Error ? error.message : 'gateway error')
-              : b.roster.waitingForGateway}
-          </div>
-          <Button className="justify-self-start" onClick={() => void refetch()} size="sm" variant="secondary">
-            {b.roster.retryNow}
-          </Button>
-        </div>
-      ) : roster.length === 0 ? (
-        <PanelEmpty description={b.roster.emptyDesc} icon="hubot" title={b.roster.emptyTitle} />
-      ) : allBotsHidden && !hiddenExpanded ? (
-        <div className="grid content-start gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)">
-          <div className="flex items-center gap-1.5 font-medium text-(--ui-text-secondary)">
-            <Codicon className="text-(--ui-text-quaternary)" name="eye-closed" />
-            {b.roster.allHidden}
-          </div>
-          <p className="leading-relaxed">{b.roster.allHiddenDesc}</p>
-          <Button
-            className="justify-self-start"
-            onClick={() => $showHiddenBots.set(true)}
-            size="sm"
-            variant="secondary"
-          >
-            {b.roster.showHidden}
-          </Button>
-        </div>
-      ) : rosterRows.length === 0 && matchingHiddenBots.length === 0 ? (
-        <div aria-live="polite" className="flex min-h-0 flex-1 flex-col" role="status">
-          <PanelEmpty
-            description={
-              query.trim()
-                ? selectedGateway
-                  ? b.roster.noMatchQueryOn(query.trim(), String(selectedGateway.label))
-                  : b.roster.noMatchQuery(query.trim())
-                : selectedGateway
-                  ? b.roster.noMatchFiltersOn(String(selectedGateway.label))
-                  : b.roster.noMatchFilters
-            }
-            icon="search"
-          />
-        </div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          <div className="grid w-full min-w-0 gap-0.5 px-1.5 pb-2">
-            {showGatewaySections
-              ? [
-                  sortedGroupRows.length ? renderGroupChatSection() : null,
-                  ...gatewaySections.sections.map(renderGatewaySection)
-                ].filter(Boolean)
-              : rosterRows.map(row => (row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot)))}
-            {showHiddenSection ? (
-              <div
-                className="mt-1 border-t border-(--ui-stroke-tertiary) pt-1"
-                key={'hidden-section'}
-                ref={hiddenSectionRef}
-              >
-                {hasRosterConstraint ? (
-                  <div className="flex w-full items-center gap-1 px-2 py-1.5 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
-                    <Codicon name="eye-closed" />
-                    <span>Hidden</span>
-                    <span className="text-(--ui-text-quaternary)">{matchingHiddenBots.length}</span>
-                  </div>
-                ) : (
-                  <RowButton
-                    aria-expanded={hiddenExpanded}
-                    className="flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                    onClick={() => $showHiddenBots.set(!hiddenExpanded)}
-                  >
-                    <DisclosureCaret open={hiddenExpanded} />
-                    <span>Hidden</span>
-                    <span className="text-(--ui-text-quaternary)">{hiddenBots.length}</span>
-                  </RowButton>
-                )}
-                {showHiddenRows ? (
-                  matchingHiddenBots.length ? (
-                    hiddenGatewaySections.sectioned ? (
-                      hiddenGatewaySections.sections.map(renderHiddenGatewaySection)
-                    ) : (
-                      matchingHiddenBots.map((bot: RosterRow) => renderBotRow(bot, 'hidden:'))
-                    )
-                  ) : (
-                    <div className="px-2 py-2 text-xs text-(--ui-text-quaternary)">{b.roster.noHiddenMatch}</div>
-                  )
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      )}
-      <CreateAgentDialog
-        onClose={() => {
-          setCreateOpen(false)
-          void refetch()
-        }}
-        open={createOpen}
-        roster={activeSourceRoster}
-      />
-      <CreateGroupChatDialog
-        onClose={() => setGroupCreateOpen(false)}
-        onCreated={groupName => openGroupChat(groupName)}
-        open={groupCreateOpen} // Full multi-source roster: group chats can seat bots from other
-        // registered connections — their turns route to their own machines.
-        roster={roster}
-      />
-      <EditProfileDialog
-        bot={editing}
-        onClose={() => {
-          setEditing(null)
-          void refetch()
-        }}
-        open={Boolean(editing)}
-      />
-      {grouping ? <GroupDialog bot={grouping} onClose={() => setGrouping(null)} /> : null}
-      <ConfirmDialog
-        busyLabel="Deleting…"
-        confirmLabel={t.common.delete}
-        description={
-          deleting ? (
-            <span>
-              {'This will permanently delete the bot '}
-              <span className="font-medium text-foreground">{deleting.name}</span>
-              {' and its associated Hermes profile at '}
-              <span className="font-mono text-xs">{deleting.path}</span>. This cannot be undone.
-            </span>
-          ) : null
-        }
-        destructive
-        doneLabel="Deleted"
-        onClose={() => setDeleting(null)}
-        onConfirm={async () => {
-          if (!deleting) {
-            return
-          }
-
-          const name = deleting.name
-          await deleteBot(deleting)
-          await refetch()
-          host.notify({
-            kind: 'success',
-            message: `Deleted profile ${name}`
-          })
-        }}
-        open={Boolean(deleting)}
-        title={b.bot.deleteTitle}
-      />
-      <ConfirmDialog
-        busyLabel="Deleting…"
-        confirmLabel={b.group.deleteAction}
-        description={
-          deletingGroup
-            ? `This removes “${deletingGroup.name}” from its bots and clears the shared room log. The bots and their individual chats are kept.`
-            : null
-        }
-        destructive
-        doneLabel="Deleted"
-        onClose={() => setDeletingGroup(null)}
-        onConfirm={async () => {
-          if (!deletingGroup) {
-            return
-          }
-
-          await disbandGroupChat(deletingGroup.name, deletingGroup.members)
-          host.notify({
-            kind: 'success',
-            message: `Deleted group “${deletingGroup.name}”`
-          })
-        }}
-        open={Boolean(deletingGroup)}
-        title={b.group.deleteTitle}
-      />
+      {renderRosterToolbar({
+        b,
+        activityToasts,
+        activeSourceRoster,
+        setCreateOpen,
+        setGroupCreateOpen,
+        setSectionDialog,
+        showRosterTools,
+        showRosterSearch,
+        showRosterFilters,
+        query,
+        setQuery,
+        activeFilterCount,
+        gatewayOptions,
+        rowKindFilter,
+        setRowKindFilter,
+        activityFilter,
+        setActivityFilter,
+        gatewayFilter,
+        setGatewayFilter
+      })}
+      {renderRosterContent({
+        b,
+        staleNotice,
+        isLoading,
+        initialRosterLoading,
+        roster,
+        error,
+        gatewayUp,
+        refetch,
+        allBotsHidden,
+        hiddenExpanded,
+        rosterRows,
+        matchingHiddenBots,
+        query,
+        selectedGateway,
+        showGatewaySections,
+        sortedGroupRows,
+        gatewaySections,
+        showHiddenSection,
+        hiddenSectionRef,
+        hasRosterConstraint,
+        hiddenBots,
+        showHiddenRows,
+        hiddenGatewaySections,
+        renderBotRow,
+        renderGroupChatSection,
+        renderGatewaySection,
+        renderUserSections,
+        renderHiddenGatewaySection
+      })}
+      {renderRosterDialogs({
+        b,
+        t,
+        createOpen,
+        setCreateOpen,
+        groupCreateOpen,
+        setGroupCreateOpen,
+        editing,
+        setEditing,
+        deleting,
+        setDeleting,
+        deletingGroup,
+        setDeletingGroup,
+        grouping,
+        setGrouping,
+        sectionDialog,
+        setSectionDialog,
+        roster,
+        activeSourceRoster,
+        refetch
+      })}
     </div>
   )
 }

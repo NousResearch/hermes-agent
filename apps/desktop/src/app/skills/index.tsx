@@ -21,6 +21,7 @@ import {
   getSkills,
   getToolsets,
   getUsageAnalytics,
+  getWisdomEntitlement,
   previewSkillHub,
   type ProfileScope,
   profileScopeKey,
@@ -35,6 +36,7 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $hubActions, installHubSkill, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
@@ -66,14 +68,16 @@ import { TerminalBackendPanel } from '../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { CollectiveTab } from './collective-tab'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
+import { PluginsTab } from './plugins-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 
 // 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
 // Skills tab now (EmbeddedHubPicker below the installed list). Legacy
 // `?tab=hub` links fall back to 'skills' via useRouteEnumParam.
-const SKILLS_MODES = ['skills', 'toolsets', 'mcp'] as const
+const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'plugins', 'collective'] as const
 
 // Skills + toolsets live in the RQ cache so switching tabs/pages paints the
 // cached lists instantly (no reload flash) and mount only fires a deduped
@@ -117,6 +121,18 @@ const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'number' ?
 
 const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
+type SkillPresentation = {
+  description: string
+  editorial_description?: string
+  editorial_name?: string
+  name: string
+}
+
+const skillDisplayName = (skill: SkillPresentation): string => asText(skill.editorial_name) || skill.name
+
+const skillDisplayDescription = (skill: SkillPresentation): string =>
+  asText(skill.editorial_description) || skill.description
+
 // Row subtitle: category, with non-default origins badged.
 function skillSubtitle(skill: SkillInfo): React.ReactNode {
   const category = prettyName(categoryFor(skill))
@@ -146,9 +162,14 @@ function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): Skil
   return skills
     .filter(
       skill =>
-        !q || includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
+        !q ||
+        includesQuery(skill.name, q) ||
+        includesQuery(skill.description, q) ||
+        includesQuery(skillDisplayName(skill), q) ||
+        includesQuery(skillDisplayDescription(skill), q) ||
+        includesQuery(skill.category, q)
     )
-    .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
+    .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || skillDisplayName(a).localeCompare(skillDisplayName(b)))
 }
 
 // Catalog rows have no usage yet — plain A–Z, same query fields as installed
@@ -162,10 +183,12 @@ function filteredOfficial(skills: OfficialSkillInfo[], query: string): OfficialS
         !q ||
         includesQuery(skill.name, q) ||
         includesQuery(skill.description, q) ||
+        includesQuery(skillDisplayName(skill), q) ||
+        includesQuery(skillDisplayDescription(skill), q) ||
         includesQuery(skill.category, q) ||
         skill.tags.some(tag => includesQuery(tag, q))
     )
-    .sort((a, b) => asText(a.name).localeCompare(asText(b.name)))
+    .sort((a, b) => skillDisplayName(a).localeCompare(skillDisplayName(b)))
 }
 
 const toolsetCalls = (toolset: ToolsetInfo, toolCalls: Record<string, number>): number =>
@@ -285,6 +308,71 @@ export function SkillsView({
   // tab's live-reload RPC rides the active gateway socket, which would reload
   // the wrong machine — withhold it for cross-backend scopes.
   const crossBackendScope = scopeConnectionId !== null && scopeConnectionId !== (activeGatewayConnectionId() ?? 'local')
+
+  // Poll the refresh-free local claim probe so an open page cannot retain a
+  // positive gate indefinitely. A profile change is fail-closed even if React
+  // Query has cached that profile from an earlier visit.
+  const wisdomEntitlement = useQuery({
+    queryKey: ['wisdom-entitlement', scopeKey],
+    queryFn: () => getWisdomEntitlement(scopeProfile),
+    staleTime: 0,
+    refetchInterval: 15_000,
+    retry: false
+  })
+
+  // Identity changes on every scope visit, including A -> B -> A.
+  const wisdomScope = useMemo(() => ({ key: scopeKey }), [scopeKey])
+
+  const [acceptedWisdomResult, setAcceptedWisdomResult] = useState<null | {
+    scope: typeof wisdomScope
+    updatedAt: number
+  }>(null)
+
+  const [entitlementClock, setEntitlementClock] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (wisdomEntitlement.isSuccess && wisdomEntitlement.fetchStatus === 'idle') {
+      setAcceptedWisdomResult({ scope: wisdomScope, updatedAt: wisdomEntitlement.dataUpdatedAt })
+    }
+  }, [wisdomScope, wisdomEntitlement.dataUpdatedAt, wisdomEntitlement.fetchStatus, wisdomEntitlement.isSuccess])
+
+  const entitlementExpiresAt = wisdomEntitlement.data?.expires_at
+  useEffect(() => {
+    if (typeof entitlementExpiresAt !== 'number') {
+      return
+    }
+
+    const remaining = entitlementExpiresAt * 1000 - Date.now()
+
+    if (remaining <= 0) {
+      setEntitlementClock(Date.now())
+
+      return
+    }
+
+    const timeout = window.setTimeout(() => setEntitlementClock(Date.now()), Math.min(remaining, 2_147_483_647))
+
+    return () => window.clearTimeout(timeout)
+  }, [entitlementExpiresAt])
+
+  const freshWisdomEntitlement =
+    wisdomEntitlement.data?.entitled === true &&
+    typeof entitlementExpiresAt === 'number' &&
+    entitlementExpiresAt * 1000 > entitlementClock
+
+  const wisdomEntitled =
+    acceptedWisdomResult?.scope === wisdomScope &&
+    acceptedWisdomResult.updatedAt === wisdomEntitlement.dataUpdatedAt &&
+    !wisdomEntitlement.isError &&
+    freshWisdomEntitlement
+
+  const wisdomDenied = wisdomEntitlement.isError || (wisdomEntitlement.isSuccess && !freshWisdomEntitlement)
+
+  useEffect(() => {
+    if (mode === 'collective' && wisdomDenied && !wisdomEntitlement.isFetching) {
+      setMode('skills')
+    }
+  }, [mode, setMode, wisdomDenied, wisdomEntitlement.isFetching])
 
   const { data: profilesData } = useQuery({
     queryKey: ['capabilities-profiles'],
@@ -820,12 +908,25 @@ export function SkillsView({
   // Browse Hub). Lets the user configure ANY profile's capabilities — on any
   // registered gateway — without switching the whole app. Only meaningful
   // with >1 option; hidden otherwise to avoid clutter.
+  // Plugins embeds the selector in its Agent-column header (compact, no label,
+  // no border): desktop halves on that page are app-level and must not read as
+  // governed by "Configuring: <profile>".
+  const compactSelector = mode === 'plugins'
+  const scopeLabel = scopeOptions.find(option => option.value === scopeSelectValue)?.label
+
   const profileScopeSelector =
     scopeOptions.length > 1 ? (
-      <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
-        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+      <div
+        className={cn(
+          'flex min-w-0 items-center gap-2',
+          compactSelector ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
+        )}
+      >
+        {!compactSelector && (
+          <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+        )}
         <Select onValueChange={changeScope} value={scopeSelectValue}>
-          <SelectTrigger className="h-7 w-56 text-xs">
+          <SelectTrigger className={cn('text-xs', compactSelector ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -847,24 +948,48 @@ export function SkillsView({
       onTabChange={id => setMode(id as (typeof SKILLS_MODES)[number])}
       // MCP manages a handful of entries with the editor right there —
       // searching it is noise.
-      searchHidden={mode === 'mcp'}
+      searchHidden={mode === 'mcp' || mode === 'plugins'}
       searchHints={searchHints}
-      searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
+      searchPlaceholder={
+        mode === 'skills'
+          ? t.skills.searchSkills
+          : mode === 'collective' && wisdomEntitled
+            ? t.skills.searchCollective
+            : t.skills.searchToolsets
+      }
       searchValue={query}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
-        { id: 'mcp', label: t.skills.tabMcp }
+        { id: 'mcp', label: t.skills.tabMcp },
+        { id: 'plugins', label: t.skills.tabPlugins },
+        ...(wisdomEntitled ? [{ id: 'collective', label: t.skills.tabCollective }] : [])
       ]}
     >
       {/* One shared column: the scope selector sits above whichever tab is
           active, so Skills / Tools / MCP all read and write the SAME selected
           profile. */}
       <div className="flex h-full flex-col">
-        {profileScopeSelector}
+        {/* Plugins renders the selector INSIDE its agent section: desktop
+            plugins on that page belong to the app, not to any profile, and
+            must not sit under a "Configuring: <profile>" header. */}
+        {mode !== 'plugins' && profileScopeSelector}
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
-            {mode === 'mcp' ? (
+          <div className={cn(mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1', 'relative')}>
+            {mode === 'collective' && wisdomEntitled ? (
+              <CollectiveTab profile={scopeProfile} query={query} />
+            ) : mode === 'plugins' ? (
+              // Agent plugins for the scoped profile (selector in the section
+              // header), app-level desktop plugins, the live catalog picker
+              // underneath. Keyed on scope so a profile/connection switch
+              // reloads the agent list.
+              <PluginsTab
+                key={`plugins-${scopeKey}`}
+                profile={scopeProfile}
+                scopeLabel={scopeLabel}
+                scopeSelector={profileScopeSelector}
+              />
+            ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
               // it is the ACTIVE gateway's socket — for a scope pinned to a
               // different backend that RPC would hot-reload the wrong
@@ -928,8 +1053,8 @@ export function SkillsView({
                         }}
                         onToggle={enabled => void handleToggleSkill(skill, enabled)}
                         subtitle={skillSubtitle(skill)}
-                        title={skill.name}
-                        toggleLabel={skill.name}
+                        title={skillDisplayName(skill)}
+                        toggleLabel={skillDisplayName(skill)}
                       />
                     ))}
                     {/* The built-in optional-skills catalog, below the
@@ -962,7 +1087,7 @@ export function SkillsView({
                           key={skill.identifier}
                           onSelect={() => setSelectedOfficial(skill.identifier)}
                           subtitle={prettyName(skill.category)}
-                          title={skill.name}
+                          title={skillDisplayName(skill)}
                         />
                       )
                     })}
@@ -1184,7 +1309,7 @@ function SkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={skillDisplayDescription(skill) || t.skills.noDescription}
         pills={
           <>
             <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
@@ -1195,7 +1320,7 @@ function SkillDetail({
             )}
           </>
         }
-        title={skill.name}
+        title={skillDisplayName(skill)}
       />
       {editable && (
         <div className="flex items-center gap-2">
@@ -1262,14 +1387,14 @@ function OfficialSkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={skillDisplayDescription(skill) || t.skills.noDescription}
         pills={
           <>
             <PanelPill>{prettyName(skill.category)}</PanelPill>
             <PanelPill tone="muted">{t.skills.officialPill}</PanelPill>
           </>
         }
-        title={skill.name}
+        title={skillDisplayName(skill)}
       />
       <div className="flex items-center gap-2">
         <Button disabled={installing} onClick={onInstall} size="xs" variant="textStrong">

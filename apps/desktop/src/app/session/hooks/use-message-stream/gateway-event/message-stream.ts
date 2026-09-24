@@ -10,6 +10,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { reportLocalSetupTurnComplete } from '@/store/local-setup-offer'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
@@ -378,6 +379,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // Onboarding's first build: between turns is the only moment Setup may
     // put a check-in into that session (no-op everywhere else).
     reportFirstBuildTurnComplete(sessionId, finalText)
+
+    // The whole agent loop has returned: the end of a task, not a step in one.
+    // Only the session on screen counts, which drops subagent mirrors (child ids).
+    if (isActiveEvent) {
+      reportLocalSetupTurnComplete({ failed: payload?.status !== 'complete', sessionId })
+    }
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.

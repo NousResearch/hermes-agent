@@ -14,6 +14,7 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $localSetupMenuRequest, acceptLocalSetupOffer } from '@/store/local-setup-offer'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
 import { useComposerModelPillLabel } from './contrib'
@@ -110,6 +111,22 @@ export function ModelPill({
         } else {
           setModelPickerOpen(true)
         }
+      }),
+    [scope.target, disabled, hasLiveMenu]
+  )
+
+  // The local-setup card's "Show me": open THIS composer's menu (the card names
+  // its own composer), where the offer row sits on top. The offer is accepted
+  // only once a menu actually opened. A click fired it, never a background event.
+  useEffect(
+    () =>
+      $localSetupMenuRequest.listen(request => {
+        if (!request || request.target !== scope.target || disabled || !hasLiveMenu) {
+          return
+        }
+
+        acceptLocalSetupOffer()
+        setOpen(true)
       }),
     [scope.target, disabled, hasLiveMenu]
   )

@@ -3136,6 +3136,8 @@ export interface Translations {
     editingQueuedInComposer: string
     restoredDraftNotice: string
     restoredDraftUndo: string
+    /** The local-setup offer above the input after the first finished task. */
+    localSetup: { title: string; text: (model: string) => string; action: string }
     queueEdit: string
     queueSendNext: string
     queueSend: string
@@ -3449,6 +3451,8 @@ export interface Translations {
     sessionsText: string
     stayTitle: string
     stayText: string
+    localTitle: string
+    localText: (model: string) => string
   }
   guidedGreeting: {
     line: string
@@ -3694,6 +3698,7 @@ export interface Translations {
       editModels: string
       refreshModels: string
       fast: string
+      localSetup: { title: string; text: (model: string, size: string) => string; action: string }
     }
     modelOptions: {
       noOptions: string
@@ -4453,7 +4458,6 @@ export interface Translations {
      *  a button, and `action` is its label. */
     items: Record<TipId, { title: string; text: string }> & {
       'local-runtime-update': { title: string; text: string; action: string }
-      'local-setup': { title: string; text: string; action: string }
     }
   }
 

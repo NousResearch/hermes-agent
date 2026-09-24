@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 
+import { LocalSetupMenuRow } from './local-setup-menu-row'
 import { ModelCatalogMenu } from './model-catalog-menu'
 import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
 
@@ -77,6 +78,7 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
         </DropdownMenuItem>
       }
       gateway={gateway}
+      header={<LocalSetupMenuRow />}
       includeMoa
       ownerConnectionId={ownerConnectionId}
       profile={profile}

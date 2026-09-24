@@ -4268,6 +4268,11 @@ export const de = defineLocale({
     editingQueuedInComposer: 'Bearbeitet eingereihten Turn im Composer',
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
+    localSetup: {
+      title: 'Das könnte auf Ihrem Computer laufen',
+      text: (model: string) => `${model} passt auf diesen Rechner. Kostenlos, und Chats bleiben auf Ihrem Computer.`,
+      action: 'Zeigen'
+    },
     queueEdit: 'Bearbeiten',
     queueSendNext: 'Weiter',
     queueSteer: 'Steuern — laufenden Turn jetzt umleiten',
@@ -4606,6 +4611,9 @@ export const de = defineLocale({
     }
   },
   handoffTour: {
+    localTitle: 'Dieser Rechner kann Modelle lokal ausführen',
+    localText: (model: string) =>
+      `${model} passt zu Ihrer Hardware. Es läuft kostenlos, und Chats verlassen Ihren Computer nie. Wählen Sie es jederzeit hier im Modellmenü.`,
     profileTitle: 'Ihre erste Aufgabe läuft im Standardprofil',
     profileText:
       'Diese Leiste wechselt die Profile. Das jetzt hervorgehobene ist „Standard", wo die Aufgaben-Session lebt. Das andere ist das Einrichtungsprofil, wo der Willkommens-Chat lebt.',
@@ -4903,6 +4911,11 @@ export const de = defineLocale({
       noModels: 'Keine Modelle gefunden',
       editModels: 'Modelle bearbeiten…',
       refreshModels: 'Modelle aktualisieren',
+      localSetup: {
+        title: 'Lokal ausführen · kostenlos, privat',
+        text: (model: string, size: string) => `${model} passt auf diesen Rechner · ${size} Download`,
+        action: 'Einrichten'
+      },
       fast: 'Schnell'
     },
     modelOptions: {
@@ -5977,11 +5990,6 @@ export const de = defineLocale({
         title: 'Ein Update für die lokale Engine ist verfügbar',
         text: 'Aktualisieren Sie die Engine, die Ihre lokalen Modelle ausführt. Laufende lokale Anfragen können unterbrochen werden.',
         action: 'Jetzt aktualisieren'
-      },
-      'local-setup': {
-        title: 'Dieses Gerät kann Modelle lokal ausführen',
-        text: 'Ihre Hardware kann ein lokales Modell ausführen. Chats bleiben auf Ihrem Computer und kosten nichts.',
-        action: 'Einrichten'
       },
       'right-pane': {
         title: 'Der Arbeitsbereich',

@@ -118,6 +118,68 @@ class TestAvailability:
 
 
 class TestGenerate:
+    @pytest.mark.parametrize("edit", [False, True])
+    def test_custom_codex_route_keeps_image_request_on_configured_host(
+        self, provider, codex_backend, monkeypatch, edit,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://images.example.test/codex/")
+        kwargs = {"image_url": "data:image/png;base64," + _b64_png()} if edit else {}
+        result = provider.generate("a cat", **kwargs)
+        assert result["success"] is True
+        (request,) = codex_backend["requests"]
+        path = "images/edits" if edit else "images/generations"
+        assert str(request.url) == f"https://images.example.test/codex/{path}"
+        assert request.headers["Authorization"] == "Bearer codex-token"
+        assert request.headers["originator"] == "codex_cli_rs"
+
+    @pytest.mark.parametrize("override", ["", "   "])
+    def test_blank_override_preserves_official_route(
+        self, provider, codex_backend, monkeypatch, override,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", override)
+        assert provider.generate("a cat")["success"] is True
+        (request,) = codex_backend["requests"]
+        assert str(request.url) == "https://chatgpt.com/backend-api/codex/images/generations"
+        assert request.headers["originator"] == "hermes-agent"
+
+    def test_profile_scope_routes_each_request_without_borrowing_process_override(
+        self, provider, codex_backend, monkeypatch,
+    ):
+        from agent import secret_scope
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://other-profile.example.test/codex")
+        for scope, expected in [
+            ({"HERMES_CODEX_BASE_URL": "https://profile.example.test/images-api/"},
+             "https://profile.example.test/images-api/images/generations"),
+            ({}, "https://chatgpt.com/backend-api/codex/images/generations"),
+        ]:
+            token = set_secret_scope(scope)
+            try:
+                assert provider.generate("a cat")["success"] is True
+            finally:
+                reset_secret_scope(token)
+            assert str(codex_backend["requests"][-1].url) == expected
+
+    @pytest.mark.parametrize("failure", ["http", "empty", "exception"])
+    def test_custom_route_failure_never_retries_on_official_host(
+        self, provider, codex_backend, monkeypatch, failure,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://images.example.test/codex")
+
+        def respond(request):
+            if failure == "exception":
+                raise httpx.ConnectError("fixture connection failed", request=request)
+            if failure == "http":
+                return httpx.Response(403, json={"error": {"message": "denied"}})
+            return httpx.Response(200, json={"data": []})
+
+        codex_backend["respond"] = respond
+        assert provider.generate("a cat")["success"] is False
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "images.example.test"
+
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         result = provider.generate("a cat")

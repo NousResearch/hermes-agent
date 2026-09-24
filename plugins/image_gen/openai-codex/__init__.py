@@ -191,9 +191,13 @@ def _post_image_request(
     """POST to the native Codex images endpoint; return the decoded JSON body plus
     ``imagegen_request_id`` (backend correlation id, for support tickets)."""
     import httpx
+    from agent.auxiliary_client import _codex_base_url_override
     from agent.codex_headers import codex_cloudflare_headers
 
-    headers = codex_cloudflare_headers(token)
+    # Match the text auxiliary route, including profile-scoped overrides. Resolve
+    # per request: a multiplexed process can serve different Codex gateways.
+    base_url = _codex_base_url_override() or _CODEX_BASE_URL
+    headers = codex_cloudflare_headers(token, base_url=base_url)
     headers.update({
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -202,7 +206,7 @@ def _post_image_request(
     path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        response = http.post(f"{_CODEX_BASE_URL}/{path}", json=body)
+        response = http.post(f"{base_url}/{path}", json=body)
     if response.status_code >= 400:
         raise RuntimeError(
             f"Codex images API returned HTTP {response.status_code}: "

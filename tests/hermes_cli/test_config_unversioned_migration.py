@@ -54,6 +54,9 @@ def test_update_keeps_user_values_of_an_unversioned_config_and_migrates_legacy_k
     plugin = hermes_home / "plugins" / "notes-helper"
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: notes-helper\nversion: 0.1.0\n", encoding="utf-8")
+    # User-authored SOUL.md section that happens to carry the v41 heading.
+    soul = "# Me\n\n## Messaging other agents\nmy own notes\n\n## Prefs\nkeep\n"
+    (hermes_home / "SOUL.md").write_text(soul, encoding="utf-8")
     assert persist_personality("kawaii")
     for key, value in USER_CHOICES.items():
         set_config_value(key, value)
@@ -66,6 +69,7 @@ def test_update_keeps_user_values_of_an_unversioned_config_and_migrates_legacy_k
     assert "summary_model" not in after["compression"]
     assert _at(after, "auxiliary.compression.model") == _at(before, "compression.summary_model")
     assert after["_config_version"] == DEFAULT_CONFIG["_config_version"]
+    assert (hermes_home / "SOUL.md").read_text(encoding="utf-8") == soul
 
 
 def test_config_seeded_from_the_template_reads_as_current(hermes_home):

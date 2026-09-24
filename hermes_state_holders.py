@@ -7,11 +7,13 @@ SQLite connection factory needed by the final lock probe.
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import logging
 import os
 import sqlite3
 import sys
+from ctypes import wintypes
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Tuple
 
@@ -285,10 +287,7 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     db_path_str = os.path.abspath(os.fspath(db_path))
     this_home = os.path.dirname(db_path_str)
     install_root, our_profile = _store_install_layout(this_home)
-    sidecars = {
-        os.path.normcase(candidate)
-        for candidate in (db_path_str, db_path_str + "-wal", db_path_str + "-shm")
-    }
+    sidecars = {os.path.normcase(candidate) for candidate in _sqlite_family(db_path_str)}
     this_home_norm = os.path.normcase(this_home)
     root_norm = os.path.normcase(install_root) if install_root else None
     path_tokens = _argv_path_tokens(argv)
@@ -321,55 +320,65 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     return other_home_seen
 
 
+# Restart Manager ctypes metadata lives at module level: ``ctypes.POINTER()`` on a freshly defined Structure
+# pins it in ``ctypes._pointer_type_cache`` forever, so rebuilding these per scan leaked one class set per call.
+_RM_ERROR_MORE_DATA = 234
+_RM_SESSION_KEY_LEN = 33  # CCH_RM_SESSION_KEY + 1
+
+
+class _RmUniqueProcess(ctypes.Structure):
+    _fields_ = [("pid", wintypes.DWORD), ("started", wintypes.FILETIME)]
+
+
+class _RmProcessInfo(ctypes.Structure):
+    _fields_ = [
+        ("process", _RmUniqueProcess),
+        ("app_name", wintypes.WCHAR * 256),  # CCH_RM_MAX_APP_NAME + 1
+        ("service_name", wintypes.WCHAR * 64),  # CCH_RM_MAX_SVC_NAME + 1
+        ("app_type", wintypes.DWORD),
+        ("app_status", wintypes.ULONG),
+        ("ts_session_id", wintypes.DWORD),
+        ("restartable", wintypes.BOOL),
+    ]
+
+
+_RM_ARGTYPES = {
+    "RmStartSession": [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR],
+    "RmRegisterResources": [
+        wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
+        wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p,
+    ],
+    "RmGetList": [
+        wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+        ctypes.POINTER(_RmProcessInfo), ctypes.POINTER(wintypes.DWORD),
+    ],
+    "RmEndSession": [wintypes.DWORD],
+}
+
+
+def _sqlite_family(base: str) -> Tuple[str, str, str]:
+    """The main database file plus the ``-wal``/``-shm`` sidecars SQLite may hold alongside it."""
+    return (base, base + "-wal", base + "-shm")
+
+
 def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
     """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
-    import ctypes
-    from ctypes import wintypes
-
-    error_more_data = 234
-    max_app_name, max_svc_name = 255, 63
-
-    class _UniqueProcess(ctypes.Structure):
-        _fields_ = [("pid", wintypes.DWORD), ("started", wintypes.FILETIME)]
-
-    class _ProcessInfo(ctypes.Structure):
-        _fields_ = [
-            ("process", _UniqueProcess),
-            ("app_name", wintypes.WCHAR * (max_app_name + 1)),
-            ("service_name", wintypes.WCHAR * (max_svc_name + 1)),
-            ("app_type", wintypes.DWORD),
-            ("app_status", wintypes.ULONG),
-            ("ts_session_id", wintypes.DWORD),
-            ("restartable", wintypes.BOOL),
-        ]
-
+    # WinDLL per call (not memoised) so the unit test can inject a fake rstrtmgr through ctypes.WinDLL.
     api = ctypes.WinDLL("rstrtmgr", use_last_error=True)
     start, register, get_list, end = (
         api.RmStartSession, api.RmRegisterResources, api.RmGetList, api.RmEndSession
     )
-    start.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR]
-    register.argtypes = [
-        wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
-        wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p,
-    ]
-    get_list.argtypes = [
-        wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
-        ctypes.POINTER(_ProcessInfo), ctypes.POINTER(wintypes.DWORD),
-    ]
-    end.argtypes = [wintypes.DWORD]
-    for fn in (start, register, get_list, end):
+    for name, fn in zip(_RM_ARGTYPES, (start, register, get_list, end)):
+        fn.argtypes = _RM_ARGTYPES[name]
         fn.restype = wintypes.DWORD
 
-    resources = [
-        os.path.abspath(path)
-        for path in (os.fspath(db_path), os.fspath(db_path) + "-wal", os.fspath(db_path) + "-shm")
-        if os.path.exists(path)
-    ]
+    db_abspath = os.path.abspath(os.fspath(db_path))
+    resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
     if not resources:
         return []
 
     session = wintypes.DWORD()
-    key = ctypes.create_unicode_buffer(33)
+    key = ctypes.create_unicode_buffer(_RM_SESSION_KEY_LEN)
     rc = start(ctypes.byref(session), 0, key)
     if rc:
         raise OSError(rc, "RmStartSession failed")
@@ -379,28 +388,24 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
         if rc:
             raise OSError(rc, "RmRegisterResources failed")
 
-        needed, count, reasons = wintypes.UINT(), wintypes.UINT(), wintypes.DWORD()
-        rc = get_list(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reasons))
-        if rc == 0:
-            return []
-        if rc != error_more_data:
-            raise OSError(rc, "RmGetList failed")
-
-        # The process set can change between the sizing and data calls. Retry the bounded race.
-        for _ in range(3):
-            apps = (_ProcessInfo * needed.value)()
+        # Pass 1 sizes (ERROR_MORE_DATA); the process set can change before the data pass, so retry the
+        # bounded race with a re-sized buffer.
+        needed, reasons = wintypes.UINT(), wintypes.DWORD()
+        for _ in range(4):
+            apps = (_RmProcessInfo * needed.value)()
             count = wintypes.UINT(needed.value)
             rc = get_list(
-                session, ctypes.byref(needed), ctypes.byref(count), apps, ctypes.byref(reasons)
+                session, ctypes.byref(needed), ctypes.byref(count),
+                apps if needed.value else None, ctypes.byref(reasons),
             )
             if rc == 0:
                 own_pid = os.getpid()
                 return [
-                    (int(apps[index].process.pid), os.path.abspath(os.fspath(db_path)))
+                    (int(apps[index].process.pid), db_abspath)
                     for index in range(count.value)
                     if int(apps[index].process.pid) != own_pid
                 ]
-            if rc != error_more_data:
+            if rc != _RM_ERROR_MORE_DATA:
                 raise OSError(rc, "RmGetList failed")
         raise RuntimeError("Restart Manager holder set kept changing")
     finally:
@@ -427,15 +432,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
     # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
     db_path_str = os.path.realpath(os.fspath(db_path))
-    watched = {
-        canonical_sqlite_path(db_path_str),
-        canonical_sqlite_path(db_path_str + "-wal"),
-        canonical_sqlite_path(db_path_str + "-shm"),
-    }
+    watched = {canonical_sqlite_path(candidate) for candidate in _sqlite_family(db_path_str)}
     holders: List[Tuple[int, str]] = []
     watched_ids: Set[Tuple[int, int]] = set()
     db_dev: Optional[int] = None
-    for candidate in (db_path_str, db_path_str + "-wal", db_path_str + "-shm"):
+    for candidate in _sqlite_family(db_path_str):
         try:
             stat_result = os.stat(candidate)
         except OSError as exc:

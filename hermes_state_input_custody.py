@@ -223,10 +223,26 @@ def native_preparation_holds(conn, copy_id, generation, now):
     # Older initialized databases acquire this additive table on explicit reopen.
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_native_items'").fetchone():
         return False
-    return conn.execute('''SELECT 1 FROM input_custody_native_items i
+    preparations = conn.execute('''SELECT p.* FROM input_custody_native_items i
         JOIN input_custody_preparations p USING(preparation_id)
-        WHERE i.copy_id=? AND i.generation=? AND p.state IN ('preparing','ready')
-        AND p.expires_at>? LIMIT 1''', (copy_id, generation, now)).fetchone() is not None
+        WHERE i.copy_id=? AND i.generation=?
+        AND p.state IN ('preparing','ready','consumed')''', (copy_id, generation)).fetchall()
+    for row in preparations:
+        if row['state'] != 'consumed':
+            if row['expires_at'] > now:
+                return True
+            continue
+        admission = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?',
+                                 (row['admission_id'],)).fetchone()
+        if admission is None:
+            if not positively_retired(conn, row):
+                return True
+        elif (not _same_identity(row, admission) or admission['status'] != 'terminal'
+              or admission['outcome'] == 'interrupted'):
+            # Interrupted original inputs outlive execution until exact raw
+            # retirement. Ordinary successful native release remains unchanged.
+            return True
+    return False
 
 
 def copy_branch_input_refs(conn, source_session, child_session, *, physical_session=None):

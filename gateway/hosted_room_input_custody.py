@@ -133,6 +133,14 @@ def custody_holds(conn, db_path, reference):
         return True
     if backed:
         return True
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_native_items'").fetchone():
+        from hermes_state_input_custody import copy_is_held
+        import time
+        copy = conn.execute("""SELECT * FROM input_custody_copies
+            WHERE namespace='native' AND digest=? AND name=? AND size=? AND state!='removed'""",
+            (reference['sha256'], path.name, reference['size'])).fetchone()
+        if copy is not None and path == root / copy['digest'] / copy['name'] and copy_is_held(conn, copy, time.time()):
+            return True
     if not _legacy_active(conn):
         return False
     for row in conn.execute('SELECT path,device,inode FROM gateway_legacy_input_paths WHERE digest=?', (reference['sha256'],)):

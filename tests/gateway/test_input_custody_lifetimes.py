@@ -15,7 +15,11 @@ from gateway.hosted_room_input_reclamation import (
 )
 from gateway.session_contract import Submission
 from gateway.session_ingress_media import _media_root
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
+from hermes_state_input_custody import PreparedInputHandle
+from hermes_state_runtime import (
+    RuntimeStoreError, admit_session_input, claim_session_input, get_session_admission,
+    settle_session_input,
+)
 from tests.gateway.input_reclamation_fixtures import owned, close, rpc_files, retire_metadata
 
 
@@ -109,6 +113,102 @@ async def test_refused_mixed_preparation_native_bytes_are_collectible(tmp_path, 
         initialize_working_copies(db, epoch=owner.epoch)
         collect_legacy_input_aliases(db, epoch=owner.epoch)
         assert image.exists() is held
+    finally:
+        close(db, tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damaged_proof', ['absent', 'foreign'])
+async def test_interrupted_consumed_native_image_waits_for_exact_raw_retirement(tmp_path, monkeypatch, damaged_proof):
+    from gateway.hosted_room_input_custody import custody_holds
+    from gateway.session_ingress_media import release_admission_media
+    from hermes_state_mutation_retirement import retire_prunable
+    from hermes_state_terminal import ADMISSION_PREFIX
+
+    db, owner = owned(tmp_path, monkeypatch)
+    try:
+        rpc, bound = rpc_files(tmp_path, owner, count=2, image=True)
+        prepared = prepare_hosted_input(rpc, request_id='hosted:interrupted', prompt='read',
+                                        attachments=[item for item, _ in bound])
+        assert isinstance(prepared.handle, PreparedInputHandle)
+        receipt = await owner.submit(rpc.principal, Submission('hosted:interrupted', rpc.ref,
+            prepared.payload, 'queue'), _input_custody=prepared.handle)
+        admission = get_session_admission(db, admission_id=receipt.admission_id)
+        assert admission is not None
+        reference, = admission['payload']['attachments_v1']['media']
+        image = Path(reference['path'])
+        claimed = claim_session_input(db, epoch=owner.epoch, session_id=rpc.ref.session_id)
+        assert claimed is not None and claimed['admission_id'] == receipt.admission_id
+        terminal = settle_session_input(db, epoch=owner.epoch, admission_id=receipt.admission_id,
+            generation=claimed['generation'], outcome='interrupted')
+        assert terminal['status'] == 'terminal' and terminal['outcome'] == 'interrupted'
+        db._execute_write(lambda conn: conn.execute(
+            'UPDATE input_custody_preparations SET expires_at=0 WHERE preparation_id=?',
+            (prepared.handle.preparation_id,)))
+        with db._read_ctx() as conn:
+            assert custody_holds(conn, db.db_path, reference)
+        assert release_admission_media(db, receipt.admission_id) == 0
+        assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 0
+        assert image.read_bytes() == bound[-1][1]
+
+        # The lower raw-retirement operation, not a completed Output task, emits proof.
+        assert db._execute_write(lambda conn: retire_prunable(conn, [rpc.ref.session_id])) == [rpc.ref.session_id]
+        key = ADMISSION_PREFIX + receipt.admission_id
+        with db._read_ctx() as conn:
+            saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0]
+        def damage(conn):
+            if damaged_proof == 'absent':
+                conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
+            else:
+                conn.execute("UPDATE state_meta SET value=json_set(value,'$.principal_id','foreign') WHERE key=?", (key,))
+        db._execute_write(damage)
+        with db._read_ctx() as conn:
+            assert custody_holds(conn, db.db_path, reference)
+        assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 0
+        assert image.read_bytes() == bound[-1][1]
+        db._execute_write(lambda conn: conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+                                                   (key, saved)))
+        with db._read_ctx() as conn:
+            assert not custody_holds(conn, db.db_path, reference)
+        assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 1
+        assert not image.exists()
+    finally:
+        close(db, tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('uncertainty', ['live', 'foreign_admission'])
+async def test_consumed_native_image_rejects_live_or_foreign_admission(tmp_path, monkeypatch, uncertainty):
+    from hermes_state_input_custody import copy_is_held
+
+    db, owner = owned(tmp_path, monkeypatch)
+    try:
+        rpc, bound = rpc_files(tmp_path, owner, count=2, image=True)
+        prepared = prepare_hosted_input(rpc, request_id='hosted:uncertain', prompt='read',
+                                        attachments=[item for item, _ in bound])
+        assert isinstance(prepared.handle, PreparedInputHandle)
+        receipt = await owner.submit(rpc.principal, Submission('hosted:uncertain', rpc.ref,
+            prepared.payload, 'queue'), _input_custody=prepared.handle)
+        row = get_session_admission(db, admission_id=receipt.admission_id)
+        assert row is not None
+        reference, = row['payload']['attachments_v1']['media']
+        image = Path(reference['path'])
+        if uncertainty == 'foreign_admission':
+            claimed = claim_session_input(db, epoch=owner.epoch, session_id=rpc.ref.session_id)
+            assert claimed is not None
+            settle_session_input(db, epoch=owner.epoch, admission_id=receipt.admission_id,
+                                 generation=claimed['generation'], outcome='completed')
+            db._execute_write(lambda conn: conn.execute(
+                "UPDATE session_admissions SET principal_id='foreign' WHERE admission_id=?",
+                (receipt.admission_id,)))
+        db._execute_write(lambda conn: conn.execute(
+            'UPDATE input_custody_preparations SET expires_at=0 WHERE preparation_id=?',
+            (prepared.handle.preparation_id,)))
+        with db._read_ctx() as conn:
+            copy = conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native'").fetchone()
+            assert copy is not None and copy_is_held(conn, copy, float('inf'))
+        assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 0
+        assert image.read_bytes() == bound[-1][1]
     finally:
         close(db, tmp_path)
 

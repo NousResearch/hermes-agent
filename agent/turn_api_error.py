@@ -15,6 +15,7 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
+from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
@@ -221,7 +222,7 @@ def handle_api_error(
 
 def _is_local_validation_error(api_error: Any) -> bool:
     """ValueError/TypeError are local bugs, except: UnicodeEncodeError (surrogate recovery
-    path), json.JSONDecodeError (transient provider/network failure, must retry),
+    path), json.JSONDecodeError / provider stream-parse ValueErrors (transient provider/network failure, must retry),
     ssl.SSLError (inherits OSError *and* ValueError — a TLS failure is not a local bug)
     and "NoneType is not iterable" TypeErrors (upstream shape mismatches, e.g. Codex
     response.completed.output=null — retryable so the fallback path runs)."""
@@ -230,6 +231,8 @@ def _is_local_validation_error(api_error: Any) -> bool:
     if isinstance(api_error, (UnicodeEncodeError, json.JSONDecodeError, ssl.SSLError)):
         return False
     _text = str(api_error).lower()
+    if is_provider_stream_parse_error(api_error):
+        return False  # corrupted provider SSE chunk (jiter), transient — not a local bug (#65147)
     return not (isinstance(api_error, TypeError) and "nonetype" in _text and "not iterable" in _text)
 
 

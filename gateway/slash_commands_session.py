@@ -1039,6 +1039,14 @@ class GatewaySessionCommandsMixin:
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
+        # The child sends the parent's exact system prompt: a row without one makes the branch's
+        # first turn rebuild (re-probing the workspace) and forfeits the warm cache the copied
+        # transcript buys.
+        parent_prompt = None
+        try:
+            parent_prompt = ((await self._session_db.get_session(parent_session_id)) or {}).get("system_prompt")
+        except Exception:
+            logger.debug("branch: parent system prompt read failed for %s", parent_session_id, exc_info=True)
         try:
             await self._session_db.create_session(
                 session_id=new_session_id,
@@ -1048,7 +1056,7 @@ class GatewaySessionCommandsMixin:
                 parent_session_id=parent_session_id, user_id=dest_source.user_id,
                 session_key=dest_key, chat_id=dest_source.chat_id, chat_type=dest_source.chat_type,
                 thread_id=dest_source.thread_id, origin_json=_branch_origin_json,
-                display_name=current_entry.display_name)
+                display_name=current_entry.display_name, system_prompt=parent_prompt or None)
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
             return t("gateway.branch.create_failed", error=e)

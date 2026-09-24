@@ -440,8 +440,9 @@ Two rules keep a transparent theme flicker-free:
    alpha carry legibility alone — the fills are alpha-mixed by design, so the
    blur is decoration there, not contrast.
 
-This is also the contract future first-party wallpaper support will follow, so
-theme authors should treat these as the supported way to go transparent.
+This is also the constraint any first-party wallpaper support (#92813) will
+run into from the other side of the glass, so theme authors should treat these
+as the supported way to go transparent today.
 
 ### Composer extensions
 

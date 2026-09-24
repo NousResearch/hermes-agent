@@ -222,6 +222,117 @@ def _is_full_sha(value: Optional[str]) -> bool:
     return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdefABCDEF" for c in value)
 
 
+# --- GitHub API credentials for the update check ------------------------------
+# The passive check used to be fully anonymous: 60 requests/hour per network address, shared by
+# every install behind one NAT/VPN/proxy exit (#108804, #112615 for the desktop twin). A resolved
+# credential spends 5,000/hour instead. Resolution reuses the ladder Skills Hub and the desktop
+# app already use (GITHUB_TOKEN/GH_TOKEN -> gh CLI -> GitHub App -> anonymous); any failure leaves
+# the request anonymous and the credential itself is never logged.
+_update_github_auth = None            # resolver memo: rebuilt whenever the credential scope changes
+_update_github_auth_key = None         # the scope key the memo above was built for
+_update_github_401_warned = False     # one 401 log line per process, never naming the token
+
+
+def _github_credential_key() -> tuple:
+    """Identity of the credentials the *current* secret scope resolves to.
+
+    ``agent.secret_scope`` holds the active scope in a ContextVar that the multiplexed gateway
+    rebinds per routed profile, and ``GitHubAuth`` memoises whichever token it resolves first.
+    Keying our own memo on this identity means a profile switch — or a rotated ``GITHUB_TOKEN`` —
+    builds a fresh resolver instead of reusing the previous profile's credential. Anything that
+    cannot be read degrades to ``None``, which just means resolution happens anonymously.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, get_secret
+    except Exception:
+        return (None, None, None)
+    scope: Any = None
+    pat: Any = None
+    gh_token: Any = None
+    try:
+        scope = current_secret_scope()
+    except Exception:
+        pass
+    try:
+        pat = get_secret("GITHUB_TOKEN")
+        gh_token = get_secret("GH_TOKEN")
+    except Exception:
+        pass
+    return (scope, pat, gh_token)
+
+
+def _github_auth() -> Any:
+    """``GitHubAuth`` for the current credential scope, or None when it cannot be constructed."""
+    global _update_github_auth, _update_github_auth_key
+    key = _github_credential_key()
+    if _update_github_auth is not None and _update_github_auth_key == key:
+        return _update_github_auth
+    try:
+        from tools.skills_hub_github import GitHubAuth
+        _update_github_auth = GitHubAuth()
+    except Exception as exc:      # environmental (missing module/import cycle) -> stay anonymous
+        logger.debug("Update check credential resolution unavailable: %s", exc)
+        _update_github_auth = None
+        return None
+    _update_github_auth_key = key
+    return _update_github_auth
+
+
+def _github_auth_source() -> str:
+    """Credential source in use: 'pat' / 'gh-cli' / 'github-app' / 'anonymous' / 'unavailable'."""
+    auth = _github_auth()
+    if auth is None:
+        return "unavailable"
+    try:
+        return auth.auth_method()
+    except Exception:
+        return "unknown"
+
+
+def _github_api_headers(accept: str) -> Dict[str, str]:
+    """Headers for ``api.github.com``, carrying the user's credential when one resolves."""
+    headers = {"Accept": accept, "User-Agent": "hermes-cli-update-check"}
+    auth = _github_auth()
+    if auth is not None:
+        try:
+            authorization = auth.get_headers().get("Authorization")
+        except Exception as exc:
+            logger.debug("Update check credential resolution failed: %s", exc)
+            authorization = None
+        if authorization:
+            headers["Authorization"] = authorization
+    return headers
+
+
+def _github_api_get(url: str, accept: str) -> bytes:
+    """GET ``url`` with the credential attached; retry once anonymously on HTTP 401.
+
+    Raises the underlying urllib error (callers wrap this in ``_quiet``). A rejected credential
+    is reported once per process by source name — never the token itself.
+    """
+    global _update_github_401_warned
+    import urllib.error
+    import urllib.request
+
+    def _open(headers: Dict[str, str]):
+        return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=10)
+
+    headers = _github_api_headers(accept)
+    try:
+        with _open(headers) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401 or "Authorization" not in headers:
+            raise
+        if not _update_github_401_warned:
+            _update_github_401_warned = True
+            logger.warning(
+                "Update check: GitHub rejected the configured credential (HTTP 401) — retrying "
+                "anonymously (credential source: %s)", _github_auth_source())
+        with _open({"Accept": accept, "User-Agent": "hermes-cli-update-check"}) as resp:
+            return resp.read()
+
+
 _compare_payload_cache: Dict[tuple, dict] = {}
 
 
@@ -240,12 +351,7 @@ def _github_compare(current_rev: str, target_rev: str) -> Optional[dict]:
     url = f"https://api.github.com/repos/nousresearch/hermes-agent/compare/{current_rev}...{target_rev}"
 
     def _fetch():
-        import urllib.request
-        # api.github.com 403s requests without a User-Agent.
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github+json", "User-Agent": "hermes-cli-update-check"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return json.loads(_github_api_get(url, "application/vnd.github+json").decode("utf-8"))
     payload = _quiet(_fetch)
     if not isinstance(payload, dict):
         return None
@@ -314,11 +420,7 @@ def _github_branch_tip(repo_slug: str, branch: str) -> Optional[str]:
     url = f"https://api.github.com/repos/{repo_slug}/commits/{quote(branch, safe='')}"
 
     def _fetch():
-        import urllib.request
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github.sha", "User-Agent": "hermes-cli-update-check"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.read().decode("utf-8").strip()
+        return _github_api_get(url, "application/vnd.github.sha").decode("utf-8").strip()
     sha = _quiet(_fetch)
     return sha if _is_full_sha(sha) else None
 

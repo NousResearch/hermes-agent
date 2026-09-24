@@ -534,20 +534,28 @@ mcp_servers:
       Authorization: "Bearer ***"
 ```
 
-## Built-in presets
+## MCP presets
 
-For well-known MCP servers, `hermes mcp add` accepts a `--preset` flag that fills in the transport details so you don't have to look up the command and args. The preset only supplies defaults — anything else (env vars, headers, filtering) you pass on the same command line still wins.
+`hermes mcp add <name> --preset <id>` accepts MCP catalog ids and fills in transport defaults. Legacy preset names remain supported and are resolved first in the CLI. You can choose any local server name.
+
+An explicit `--url` or `--command` bypasses preset lookup entirely, including unknown names. Without either transport, an unknown name is rejected. `--args` alone does not override preset arguments. For stdio servers, explicit `--env` replaces the preset's env block.
+
+`add --preset` does not run installation. If a stdio command or argument contains unresolved `${INSTALL_DIR}`, use `hermes mcp install <id>` instead. The install command also provides the catalog credential setup workflow.
+
+### Legacy Codex preset
+
+The legacy mapping below is retained pending removal in #118943. **It does not work with Codex 0.154.0 or later**, which removed the `mcp-server` entry point.
 
 | Preset | What it wires up |
 |---|---|
-| `codex` | The Codex CLI's MCP server (`codex mcp-server` over stdio). Requires the `codex` CLI on PATH. |
+| `codex` | Legacy `codex mcp-server` stdio mapping; unavailable on Codex ≥ 0.154.0. |
 
 ```bash
-# Add Codex CLI as an MCP server in one line
+# Legacy recipe — does not work on Codex ≥ 0.154.0
 hermes mcp add codex --preset codex
 ```
 
-That writes the equivalent of:
+The retained preset writes this mapping:
 
 ```yaml
 mcp_servers:
@@ -556,7 +564,7 @@ mcp_servers:
     args: ["mcp-server"]
 ```
 
-You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); the preset only provides the `command`/`args` defaults.
+Changing the local server name does not restore the removed Codex entry point.
 
 ## How Hermes registers MCP tools
 

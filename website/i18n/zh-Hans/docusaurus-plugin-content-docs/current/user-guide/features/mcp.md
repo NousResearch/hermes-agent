@@ -127,20 +127,28 @@ mcp_servers:
       Authorization: "Bearer ***"
 ```
 
-## 内置预设
+## MCP 预设
 
-对于知名 MCP 服务器，`hermes mcp add` 接受 `--preset` 标志，自动填写传输层细节，无需手动查找命令和参数。预设只提供默认值——你在同一命令行传入的其他内容（环境变量、头信息、过滤规则）仍然优先生效。
+`hermes mcp add <name> --preset <id>` 支持 MCP 目录中的 id，并据此填写传输配置默认值。旧版预设名称仍然受支持，CLI 会优先解析旧版预设。你可以自由选择本地服务器名称。
+
+显式指定 `--url` 或 `--command` 会完全跳过预设查找，即使预设名称未知也不受影响。未指定这两种传输参数时，未知名称会被拒绝。单独指定 `--args` 不会覆盖预设参数。对于 stdio 服务器，显式指定的 `--env` 会替换预设的整个 env 配置块。
+
+`add --preset` 不执行安装。如果 stdio 命令或参数包含尚未解析的 `${INSTALL_DIR}`，请使用 `hermes mcp install <id>`。安装命令还提供目录条目的凭据配置流程。
+
+### 旧版 Codex 预设
+
+以下旧版映射暂时保留，其移除工作由 #118943 跟踪。**此预设不适用于 Codex 0.154.0 及更高版本**，因为这些版本已移除 `mcp-server` 入口。
 
 | 预设 | 配置内容 |
 |---|---|
-| `codex` | Codex CLI 的 MCP 服务器（通过 stdio 运行 `codex mcp-server`）。需要 PATH 中存在 `codex` CLI。 |
+| `codex` | 旧版 `codex mcp-server` stdio 映射；不适用于 Codex ≥ 0.154.0。 |
 
 ```bash
-# 一行命令将 Codex CLI 添加为 MCP 服务器
+# 旧版用法 — 不适用于 Codex ≥ 0.154.0
 hermes mcp add codex --preset codex
 ```
 
-等价于写入：
+保留的预设会写入以下映射：
 
 ```yaml
 mcp_servers:
@@ -149,7 +157,7 @@ mcp_servers:
     args: ["mcp-server"]
 ```
 
-你可以使用任意本地名称（`hermes mcp add my-codex --preset codex` 完全可以）；预设只提供 `command`/`args` 默认值。
+更改本地服务器名称并不能恢复已移除的 Codex 入口。
 
 ## Hermes 注册 MCP 工具的方式
 

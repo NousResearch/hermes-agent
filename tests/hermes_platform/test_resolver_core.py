@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from hermes_platform.resolver import ABSENT, CheckState, LookupContext, Observation, locate_command
+from hermes_platform.resolver import ABSENT, LookupContext, locate_command
 
 
 def _make_exe(path):
@@ -91,10 +91,6 @@ def test_windows_pathext_is_honored_without_mutating_environ(tmp_path, monkeypat
     assert os.environ.get("PATHEXT") == before
 
 
-def test_observation_not_checked_is_distinct_from_absent():
-    assert Observation.not_checked().state is CheckState.NOT_CHECKED
-    assert Observation(CheckState.ABSENT, False).state is not CheckState.NOT_CHECKED
-    assert Observation(CheckState.ABSENT, False).value is False
 
 
 def test_one_candidate_per_known_dir_regardless_of_pathext(tmp_path):

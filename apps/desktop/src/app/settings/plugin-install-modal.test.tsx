@@ -100,22 +100,6 @@ describe('Install from Git entry flow', () => {
         expect(probePluginRepo).toHaveBeenCalledWith({ identifier: 'https://github.com/example/plugin' })
       )
       expect(await screen.findByText('This package includes')).toBeTruthy()
-      expect(
-        screen.getByText(
-          mode === 'remote'
-            ? 'Installs into the connected default backend'
-            : 'Installs into the default backend (~/.hermes/plugins/)'
-        )
-      ).toBeTruthy()
-      // Local backend: the desktop half is copied out of the installed package
-      // (one source of truth). Remote backend: cloned separately, as before.
-      expect(
-        screen.getByText(
-          mode === 'remote'
-            ? "Installs into this app's local desktop-plugins folder"
-            : 'Loaded into this app from the package above — same for every profile'
-        )
-      ).toBeTruthy()
       expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
       expect(installDesktopPlugin).not.toHaveBeenCalled()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))

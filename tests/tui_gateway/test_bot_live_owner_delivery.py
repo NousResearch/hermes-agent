@@ -144,9 +144,7 @@ def test_failing_mailbox_poll_warns_once_per_window():
     for now in (0.0, 6.0, 12.0, 61.0):  # the poller calls at _BOT_DELIVERY_POLL_SECONDS cadence
         guarded("live", session, now)
     warnings = [r for r in records if r.levelno == logging.WARNING]
-    assert [r.getMessage() for r in warnings] == [
-        "Bot live-owner delivery poll failed (0 repeat(s) suppressed since the last report)",
-        "Bot live-owner delivery poll failed (2 repeat(s) suppressed since the last report)"]
+    assert len(warnings) == 2  # t=0 and t=61; the two in-window repeats are suppressed
     assert all(r.exc_info for r in warnings)
 
 

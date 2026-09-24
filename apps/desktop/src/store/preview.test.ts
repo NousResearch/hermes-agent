@@ -16,7 +16,9 @@ import {
   openPreview,
   previewTabId,
   type PreviewTarget,
-  progressPreviewServerRestart
+  progressPreviewServerRestart,
+  renderedHtmlTarget,
+  setPreviewRenderMode
 } from './preview'
 
 function fileTarget(source: string): PreviewTarget {
@@ -57,15 +59,15 @@ describe('preview store', () => {
   })
 
   it('opens the pane and fronts the new tab', () => {
-    openPreview(fileTarget('/work/demo.html'), 'tool-result')
+    openPreview(fileTarget('/work/demo.html'))
 
     expect($rightRailActiveTabId.get()).toBe('file:file:///work/demo.html')
     expect($previewTarget.get()?.path).toBe('/work/demo.html')
   })
 
   it('gives every kind of target its own tab, side by side', () => {
-    openPreview(fileTarget('/work/demo.html'), 'file-browser')
-    openPreview(urlTarget('http://localhost:5174'), 'tool-result')
+    openPreview(fileTarget('/work/demo.html'))
+    openPreview(urlTarget('http://localhost:5174'))
     openPreview(artifactTarget('session-1:dashboard'))
 
     expect($previewTabs.get().map(tab => tab.target.kind)).toEqual(['file', 'url', 'artifact'])
@@ -75,8 +77,8 @@ describe('preview store', () => {
   // already looking at. New tabs are something you ask for (`newBrowserTab`) —
   // otherwise an agent opening five pages leaves five Browsers behind.
   it('navigates the open Browser rather than stacking a second one', () => {
-    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
-    openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
+    openPreview(urlTarget('https://news.ycombinator.com'))
+    openPreview(urlTarget('https://www.reddit.com'))
 
     const urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
 
@@ -86,7 +88,7 @@ describe('preview store', () => {
   })
 
   it('commits the live page onto a Browser tab without changing its id', () => {
-    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    openPreview(urlTarget('https://news.ycombinator.com'))
     const id = $previewTabs.get()[0].id
 
     commitBrowserTabLocation(id, 'https://news.ycombinator.com/item?id=1', 'Item')
@@ -98,9 +100,9 @@ describe('preview store', () => {
   })
 
   it('opens more than one Browser on request, each holding its own page', () => {
-    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    openPreview(urlTarget('https://news.ycombinator.com'))
     newBrowserTab()
-    openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
+    openPreview(urlTarget('https://www.reddit.com'))
 
     const urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
 
@@ -111,12 +113,12 @@ describe('preview store', () => {
   // Which Browser a link lands in: the one on screen. Selecting the older tab
   // must send the next page there, not to whichever was opened most recently.
   it('navigates the Browser you are looking at', () => {
-    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    openPreview(urlTarget('https://news.ycombinator.com'))
     const first = $previewTabs.get()[0].id
 
     newBrowserTab()
     selectRightRailTab(first)
-    openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
+    openPreview(urlTarget('https://www.reddit.com'))
 
     expect($previewTabs.get().find(tab => tab.id === first)?.target.url).toBe('https://www.reddit.com')
     expect($previewTabs.get()).toHaveLength(2)
@@ -139,26 +141,87 @@ describe('preview store', () => {
   })
 
   it('re-fronts an existing tab instead of duplicating it, refreshing its target', () => {
-    openPreview({ ...fileTarget('/work/demo.html'), label: 'old' }, 'file-browser')
-    openPreview({ ...fileTarget('/work/demo.html'), label: 'new' }, 'file-browser')
+    openPreview({ ...fileTarget('/work/demo.html'), label: 'old' })
+    openPreview({ ...fileTarget('/work/demo.html'), label: 'new' })
 
     expect($previewTabs.get()).toHaveLength(1)
     expect($previewTarget.get()?.label).toBe('new')
   })
 
-  // Browsing to an HTML file means "let me read it"; a tool or link handing you
-  // one means "run it". Same road, different render mode on the target.
-  it('renders browsed html as source and handed-over html live', () => {
-    openPreview(fileTarget('/work/browsed.html'), 'file-browser')
-    expect($previewTarget.get()?.renderMode).toBe('source')
+  // Local HTML files default to a live Render, whether opened from the file
+  // browser or handed over by a tool. Source is an explicit fallback only.
+  it('renders browsed html and handed-over html live', () => {
+    openPreview(fileTarget('/work/browsed.html'))
+    expect($previewTarget.get()?.renderMode).toBe('preview')
 
-    openPreview(fileTarget('/work/handed.html'), 'tool-result')
+    openPreview(fileTarget('/work/handed.html'))
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+
+    openPreview(fileTarget('/work/manual.html'))
     expect($previewTarget.get()?.renderMode).toBe('preview')
   })
 
+  it('preserves an explicit HTML source fallback from the file browser', () => {
+    openPreview({ ...fileTarget('/work/fallback.html'), renderMode: 'source' })
+
+    expect($previewTarget.get()?.renderMode).toBe('source')
+  })
+
+  it('switches render mode on the same tab without duplicating it', () => {
+    openPreview(fileTarget('/work/toggle.html'))
+
+    const tabId = previewTabId(fileTarget('/work/toggle.html'))
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+
+    setPreviewRenderMode(tabId, 'source')
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
+    expect($previewTarget.get()?.renderMode).toBe('source')
+
+    setPreviewRenderMode(tabId, 'preview')
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+  })
+
+  it('keeps a tab in Source when the same file is opened again', () => {
+    const target = fileTarget('/work/again.html')
+
+    openPreview(target)
+    setPreviewRenderMode(previewTabId(target), 'source')
+    openPreview({ ...target, label: 'again.html (renamed)' })
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTarget.get()?.label).toBe('again.html (renamed)')
+    expect($previewTarget.get()?.renderMode).toBe('source')
+
+    openPreview({ ...target, renderMode: 'preview' })
+
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+  })
+
+  it('renders an agent hand-over of an HTML file even when its tab sits in Source', () => {
+    const target = fileTarget('/work/handed.html')
+
+    openPreview(target)
+    setPreviewRenderMode(previewTabId(target), 'source')
+    openPreview(renderedHtmlTarget(target))
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+
+    // An explicit mode and non-HTML targets pass through untouched.
+    expect(renderedHtmlTarget({ ...target, renderMode: 'source' }).renderMode).toBe('source')
+    expect(renderedHtmlTarget({ ...fileTarget('/work/notes.md'), previewKind: 'text' }).renderMode).toBeUndefined()
+  })
+
   it('falls back to a neighbouring tab when the active one closes, and clears the selection on the last', () => {
-    openPreview(fileTarget('/work/one.html'), 'file-browser')
-    openPreview(fileTarget('/work/two.html'), 'file-browser')
+    openPreview(fileTarget('/work/one.html'))
+    openPreview(fileTarget('/work/two.html'))
 
     closeRightRailTab(previewTabId(fileTarget('/work/two.html')))
 
@@ -176,7 +239,7 @@ describe('preview store', () => {
   })
 
   it('closes by the raw source the composer rows were handed', () => {
-    openPreview(urlTarget('http://localhost:5174'), 'tool-result')
+    openPreview(urlTarget('http://localhost:5174'))
 
     expect(closePreviewForSource('http://localhost:5174')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
@@ -184,22 +247,24 @@ describe('preview store', () => {
   })
 
   it('closes a tab whose url or label matches even when source differs', () => {
-    openPreview(
-      { kind: 'url', label: 'HN', source: 'https://news.ycombinator.com', url: 'https://news.ycombinator.com/' },
-      'tool-result'
-    )
+    openPreview({
+      kind: 'url',
+      label: 'HN',
+      source: 'https://news.ycombinator.com',
+      url: 'https://news.ycombinator.com/'
+    })
 
     expect(closePreviewMatching('https://news.ycombinator.com/')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
 
-    openPreview({ ...fileTarget('/work/demo.html'), label: 'Demo' }, 'tool-result')
+    openPreview({ ...fileTarget('/work/demo.html'), label: 'Demo' })
 
     expect(closePreviewMatching('Demo')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
   })
 
   it('does not wipe the rail on an empty or unknown close query', () => {
-    openPreview(fileTarget('/work/keep.html'), 'file-browser')
+    openPreview(fileTarget('/work/keep.html'))
 
     expect(closePreviewMatching()).toBe(false)
     expect(closePreviewMatching('   ')).toBe(false)
@@ -208,8 +273,8 @@ describe('preview store', () => {
   })
 
   it('persists file and url tabs but never artifacts, whose content is memory-only', () => {
-    openPreview(fileTarget('/work/demo.html'), 'file-browser')
-    openPreview(urlTarget('http://localhost:5174'), 'tool-result')
+    openPreview(fileTarget('/work/demo.html'))
+    openPreview(urlTarget('http://localhost:5174'))
     openPreview(artifactTarget('session-1:dashboard'))
 
     const stored = window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? ''
@@ -234,7 +299,7 @@ describe('preview store', () => {
   })
 
   it('preserves an explicit HTML source fallback', () => {
-    openPreview({ ...fileTarget('/remote/report.html'), renderMode: 'source' }, 'tool-result')
+    openPreview({ ...fileTarget('/remote/report.html'), renderMode: 'source' })
 
     expect($previewTarget.get()?.renderMode).toBe('source')
   })
@@ -242,7 +307,7 @@ describe('preview store', () => {
   it('does not persist transient remote HTML source fallbacks', () => {
     const target = { ...fileTarget('/remote/report.html'), renderMode: 'source' as const, transient: true }
 
-    openPreview(target, 'tool-result')
+    openPreview(target)
 
     // Nothing persistable, so the profile's bucket is empty and the key is
     // removed rather than stored as an empty list (matching the tiles store).

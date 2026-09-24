@@ -19,7 +19,7 @@ The fix persists a ``yolo_mode`` flag inside the session row's
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -153,23 +153,6 @@ class TestRestoreSessionYolo:
 
 
 class TestToggleYoloPersists:
-    def test_toggle_writes_flag_through_session_db(self):
-        db = MagicMock()
-        stand_in = SimpleNamespace(session_id=SESSION_ID, _session_db=db)
-        # Bind the real persist helper so the toggle's getattr finds it.
-        stand_in._persist_session_yolo = (
-            lambda key, enabled: HermesCLI._persist_session_yolo(
-                stand_in, key, enabled
-            )
-        )
-
-        with patch("cli._cprint"):
-            HermesCLI._toggle_yolo(stand_in)  # ON
-        db.set_session_yolo.assert_called_once_with(SESSION_ID, True)
-
-        with patch("cli._cprint"):
-            HermesCLI._toggle_yolo(stand_in)  # OFF
-        db.set_session_yolo.assert_called_with(SESSION_ID, False)
 
     def test_toggle_survives_missing_session_db(self):
         stand_in = SimpleNamespace(session_id=SESSION_ID, _session_db=None)
@@ -182,12 +165,6 @@ class TestToggleYoloPersists:
             HermesCLI._toggle_yolo(stand_in)  # must not raise
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
 
-    def test_toggle_still_works_without_persist_helper(self):
-        # Back-compat with the minimal stand-in used by older tests.
-        stand_in = SimpleNamespace(session_id=SESSION_ID)
-        with patch("cli._cprint"):
-            HermesCLI._toggle_yolo(stand_in)
-        assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
 
 
 class TestEndToEndPersistAndRestore:

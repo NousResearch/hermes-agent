@@ -259,7 +259,7 @@ export function InlinePreviewDirective({
   // which fetches over the authenticated /api/fs bridge in remote mode, so a
   // URL connection — including a same-machine `hermes serve` — renders live.)
   if (!file || !HTML_FILE_RE.test(file)) {
-    return file ? <PreviewAttachment source="explicit-link" target={file} /> : null
+    return file ? <PreviewAttachment target={file} /> : null
   }
 
   return <InlineHtmlFrame file={file} initialHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />
@@ -382,7 +382,7 @@ function InlineHtmlFrame({
   }, [doc, token])
 
   if (!path || failed) {
-    return <PreviewAttachment source="explicit-link" target={file} />
+    return <PreviewAttachment target={file} />
   }
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT

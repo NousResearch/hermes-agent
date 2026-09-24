@@ -111,7 +111,7 @@ import {
   type KanbanText,
   lockedReason,
   matchesProfileTab,
-  RunClock,
+  PriorityGlyph,  RunClock,
   runtimeCapBadge,
   shortId,
   staleBlocked,
@@ -368,12 +368,7 @@ function CardFooter({ arc, kids, task }: { arc: ArcState | null; kids: null | De
         </Tip>
       )}
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
-        {typeof task.priority === 'number' && task.priority > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-amber-500">
-            <Codicon name="arrow-up" size="0.7rem" />
-            {task.priority}
-          </span>
-        )}
+        {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
         {kids && (
           <Tip label={k.childrenTip(task.link_counts?.children ?? task.links?.children?.length ?? 0)}>
             <span className="cursor-help">
@@ -1668,9 +1663,11 @@ export function KanbanBoardPage() {
   // row that doesn't reshuffle when cards move.
   const tabs = useMemo(() => {
     const names: string[] = []
+
     for (const col of board?.columns ?? []) {
       for (const card of col.tasks) {
         if (card.tenant) {names.push(card.tenant)}
+
         if (card.assignee) {names.push(card.assignee)}
       }
     }

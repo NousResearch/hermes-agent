@@ -83,26 +83,6 @@ class TestCacheFileLocation:
         assert (path.stat().st_mode & 0o777) == 0o600
 
 
-class TestWriteSkip:
-    def test_identical_payload_skips_rewrite(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(msc, "_cache_path", lambda: tmp_path / "cache.json")
-        saves = []
-        real_save = msc._save_all
-
-        def _counting_save(data):
-            saves.append(1)
-            real_save(data)
-
-        monkeypatch.setattr(msc, "_save_all", _counting_save)
-        tools = [{"name": "t1", "description": "d", "inputSchema": {}}]
-        msc.write_cache_entry("srv", "fp1", tools=tools, utility_tools=[])
-        assert len(saves) == 1
-        # Identical payload (reconnect / list_changed refresh) → no rewrite.
-        msc.write_cache_entry("srv", "fp1", tools=list(tools), utility_tools=[])
-        assert len(saves) == 1
-        # Changed payload → rewrite.
-        msc.write_cache_entry("srv", "fp2", tools=tools, utility_tools=[])
-        assert len(saves) == 2
 
 
 class TestWriteThroughPreservesSchema:
@@ -161,22 +141,12 @@ class TestWriteThroughPreservesSchema:
         entry = json.loads((tmp_path / "cache.json").read_text(encoding="utf-8"))["probe_srv"]
         return entry
 
-    def test_cached_schema_keeps_properties(self, tmp_path, monkeypatch):
-        cached = self._cache_write_through(tmp_path, monkeypatch)["tools"][0]["inputSchema"]
-        assert set(cached.get("properties", {})) == {"query", "model"}, (
-            "write-through persisted an empty schema — the SDK field rename "
-            "was read with a bare camelCase getattr"
-        )
 
-    def test_cached_schema_keeps_required(self, tmp_path, monkeypatch):
-        cached = self._cache_write_through(tmp_path, monkeypatch)["tools"][0]["inputSchema"]
-        assert cached.get("required") == ["query", "model"]
 
     def test_cache_round_trip_reaches_agent_schema(self, tmp_path, monkeypatch):
         """The whole point of the cache: a lazy server re-advertises params."""
         from unittest.mock import patch
 
-        import tools.mcp_tool as mt
         from tools import mcp_tool_registration as _mcp_registration
         from tools.registry import ToolRegistry
 

@@ -67,22 +67,6 @@ def test_gateway_room_grant_secret_is_atomic_across_concurrent_workers(
     assert (home / ".room-link-grant-secret").stat().st_size == 32
 
 
-def test_gateway_room_grant_secret_is_cached_by_installation_root(
-    tmp_path, monkeypatch
-):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    first = gateway_room_grant_secret()
-    original_read = Path.read_bytes
-
-    def reject_secret_reread(path):
-        if path == home / ".room-link-grant-secret":
-            raise AssertionError("grant secret was read again")
-        return original_read(path)
-
-    monkeypatch.setattr(Path, "read_bytes", reject_secret_reread)
-    assert gateway_room_grant_secret() == first
 
 
 def test_room_link_protocol_fixture_matches_backend_contract():

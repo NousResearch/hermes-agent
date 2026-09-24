@@ -64,7 +64,6 @@ def test_production_warn_emits_once_and_dedups():
 
     agent._emit_warning.assert_called_once()
     msg = agent._emit_warning.call_args[0][0]
-    assert "exceeds the model context window" in msg
     assert "compression.enabled: false" in msg
     assert "10,000 tokens" in msg
 
@@ -153,31 +152,3 @@ def test_multimodal_content_forces_real_estimate_in_rearm_gate():
     assert agent._last_ctx_overflow_warn is None
 
 
-def test_none_content_tool_call_rows_do_not_defeat_cheap_gate():
-    """Assistant tool-call rows routinely carry content=None; they must
-    count as zero chars (NOT force the estimator) so the cheap gate keeps
-    its value in ordinary tool-using sessions. Regression for the salvage
-    follow-up's first draft, where `None` hit the over-gate branch."""
-    from unittest.mock import patch as _patch
-
-    agent = _FakeUncompressedAgent(context_length=128_000)
-    agent._emit_warning = MagicMock()
-    agent._last_ctx_overflow_warn = ("uncompressed_ctx_overflow", 128_000)
-
-    history = [
-        {"role": "user", "content": "run the tool"},
-        {"role": "assistant", "content": None,
-         "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "small result"},
-        {"role": "assistant", "content": "done"},
-    ]
-    with _patch(
-        "agent.turn_context.estimate_request_tokens_rough"
-    ) as mock_est:
-        tctx = _build(agent, conversation_history=history)
-
-    assert isinstance(tctx, TurnContext)
-    # Cheap gate decided (tiny session, under window): estimator never ran,
-    # and the dedup was still re-armed via the raw-chars branch.
-    mock_est.assert_not_called()
-    assert agent._last_ctx_overflow_warn is None

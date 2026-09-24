@@ -427,13 +427,17 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
   )
 }
 
-/** True when `connectionId` is the window's already-attached source AND that
- *  source is a one-host-many-profiles remote (`sharedRemote`). Named member
- *  profiles on that host must reuse the primary socket — a registry secondary
- *  dials a second WebSocket at the same Tailscale URL, which accept/closes in
- *  ~30ms (`messages=1`) and never runs `session.create` (#96493). Isolated
- *  SSH/pooled backends (`sharedRemote: false`) still get their own secondary. */
-async function isAttachedSharedRemote(
+/** True when `connectionId` is the window's already-attached source AND main
+ *  says `profile` rides the backend that source's primary socket is already
+ *  connected to — a one-host-many-profiles remote (`sharedRemote`, #96493) or
+ *  the one local host backend that serves every local profile under
+ *  multiplex-only (`sharedPrimary`, #118246). Either way a registry secondary
+ *  would be a SECOND WebSocket to the SAME process: on a remote it accept/closes
+ *  in ~30ms and never runs `session.create`; on the local host backend it joins
+ *  the chat's transport fan-out and the renderer receives every event twice
+ *  (garbled streaming text + a duplicate interim bubble, #120005). Isolated
+ *  SSH/pooled backends (neither flag) still get their own secondary. */
+async function ridesPrimaryBackend(
   connectionId: null | string,
   profile: string,
   spawnPriority: SpawnPriority = 'background'
@@ -454,40 +458,39 @@ async function isAttachedSharedRemote(
     return false
   }
 
-  // A local primary is one `hermes serve --profile <primary>` child; every other
-  // local profile has its own pooled child and `sharedRemote` is a remote-only
-  // answer, so the probe below can only cost the pooled dial a 20 s timeout.
-  if (g.primaryConnectionMode === 'local') {
-    return false
-  }
-
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnectionFor) {
     return false
   }
 
+  // Resolved per call, never cached: main answers the route per request
+  // (`resolveProfileBackendRoute` case 6 keeps a pooled backend for
+  // `HERMES_DESKTOP_ISOLATED_BACKEND=1`), and for a pooled profile this is the
+  // same dial `openSecondary` makes next, coalesced by main's claim key.
   try {
     const conn = await withTimeout(
       desktop.getConnectionFor({ connectionId: id, profile: key, ...dialPriority(spawnPriority) }),
       RECONNECT_ATTEMPT_TIMEOUT_MS,
-      `Timed out resolving shared-remote route for "${key}"`
+      `Timed out resolving the backend route for "${key}"`
     )
 
-    return Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
+    const flags =
+      conn && typeof conn === 'object' ? (conn as { sharedPrimary?: boolean; sharedRemote?: boolean }) : null
+
+    return flags?.sharedRemote === true || flags?.sharedPrimary === true
   } catch {
     // Probe failed on a remote (or not-yet-classified) primary: a secondary at
     // this already-attached source is the #96493 ghost WebSocket (accept/close,
     // messages=1), so prefer the primary until a later probe can prove
-    // isolation (`sharedRemote: false`). A LOCAL primary never reaches here
-    // (early return above): it is one `hermes serve --profile <primary>` child
-    // and every other local profile has its own pooled child. The primary
-    // would still ACCEPT a `profile`-tagged session.create (profile_home
-    // multiplexing) and mint the session under its own pid, but the exact-owner
-    // route then names the pool backend — after a renderer reload or a pool
-    // respawn the resume dials that backend and is refused SESSION_NOT_OWNED by
-    // a pid of the same Desktop (#101416).
-    return true
+    // isolation (`sharedRemote: false`). A LOCAL primary must NOT get that
+    // fallback: when main routes the profile to a pooled child (isolated
+    // backend), the primary would still ACCEPT a `profile`-tagged
+    // session.create (profile_home multiplexing) and mint the session under
+    // its own pid, but the exact-owner route names the pool backend — after a
+    // renderer reload or a pool respawn the resume dials that backend and is
+    // refused SESSION_NOT_OWNED by a pid of the same Desktop (#101416).
+    return g.primaryConnectionMode !== 'local'
   }
 }
 
@@ -528,6 +531,34 @@ export function activeGateway(): HermesGateway | null {
   // teardown sites keep the invariant "activeKey always resolves" by
   // re-pointing the active key at the primary when they evict it.
   return g.secondaries.get(g.activeKey)?.gateway ?? null
+}
+
+/** Passive ordering barrier for a runtime's transcript reads. Inspect only
+ * existing sockets: waiting must never dial, activate, or retain a backend.
+ * Each client names its own replaying runtime IDs; no ambient route is used
+ * to decide which session's events are safe to paint over. A pruned or
+ * pool-retired secondary keeps its closed socket's watermarks but will never
+ * reopen to replay them, so it must not veto reads forever. */
+export function pendingSessionReplay(runtimeId: string): Promise<boolean> | undefined {
+  const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen && !entry.retiredByPool)
+  const clients = new Set([g.primaryGateway, ...reconnectable.map(entry => entry.gateway)])
+
+  // A closed socket's false means only that IT cannot replay yet. When another
+  // open socket already serves this runtime, that socket orders the read.
+  const servedOpen = [...clients].some(client => isOpen(client) && client?.getSeqWatermarks?.()[runtimeId] != null)
+
+  const pending = [...clients].flatMap(client => {
+    if (servedOpen && !isOpen(client)) {
+      return []
+    }
+
+    // A dev-HMR survivor can predate the barrier method.
+    const barrier = client?.sessionReplayBarrier?.(runtimeId)
+
+    return barrier ? [barrier] : []
+  })
+
+  return pending.length ? Promise.all(pending).then(results => results.every(Boolean)) : undefined
 }
 
 /**
@@ -693,12 +724,21 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 
     if (reopening) {
       try {
-        const { reconcileBusyStatesOnReconnect, resetTileRuntimeBindings } = await import('@/store/session-states')
+        const { reconcileBusyStatesOnReconnect, resetRouteOwnedTileRuntimeBindings, resetTileRuntimeBindings } =
+          await import('@/store/session-states')
 
-        resetTileRuntimeBindings({
-          connectionId: entry.connectionId || 'local',
-          profile: entry.profile
-        })
+        const scope = { connectionId: entry.connectionId || 'local', profile: entry.profile }
+
+        // Only the window's ambient gateway carries un-owned tiles and the main
+        // thread. A background route (e.g. a relay request lease that disposed
+        // its socket after the last tick) can only have minted runtimes for
+        // tiles that name it as their owner route.
+        if (g.activeKey === entry.scope) {
+          resetTileRuntimeBindings(scope)
+        } else {
+          resetRouteOwnedTileRuntimeBindings(scope)
+        }
+
         reconcileBusyAfterOpen = () => reconcileBusyStatesOnReconnect(entry.scope)
       } catch {
         // Best effort for partial test/HMR graphs. Production always loads the
@@ -1204,7 +1244,7 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  if (await isAttachedSharedRemote(connectionId, key, spawnPriority)) {
+  if (await ridesPrimaryBackend(connectionId, key, spawnPriority)) {
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
   }
 
@@ -1422,7 +1462,7 @@ export async function retainGatewayForAgent(
     return route.release
   }
 
-  if (isPrimaryRegistryRoute(connectionId, key) || (await isAttachedSharedRemote(connectionId, key, spawnPriority))) {
+  if (isPrimaryRegistryRoute(connectionId, key) || (await ridesPrimaryBackend(connectionId, key, spawnPriority))) {
     // Primary socket stays open for the window lifetime — no secondary to hold.
     return () => undefined
   }
@@ -1702,7 +1742,7 @@ export async function openGatewayForAgent(
     return openGatewayForProfile(profile, { spawnPriority })
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile, spawnPriority)) {
+  if (await ridesPrimaryBackend(connectionId, profile, spawnPriority)) {
     if (!isOpen(g.primaryGateway)) {
       throw new Error('Hermes gateway unavailable')
     }
@@ -1758,7 +1798,7 @@ export async function ensureGatewayForAgent(
 
   const activationEpoch = beginGatewayActivation()
 
-  if (await isAttachedSharedRemote(connectionId, profile, 'foreground')) {
+  if (await ridesPrimaryBackend(connectionId, profile, 'foreground')) {
     // A retained primary can be open while the foreground still points at a
     // different source. Reusing its socket must also move the active route.
     return Boolean(isOpen(g.primaryGateway) && !signal?.aborted && applyActive(g.primaryProfile, activationEpoch))

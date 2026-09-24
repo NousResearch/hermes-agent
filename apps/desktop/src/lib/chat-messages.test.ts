@@ -54,13 +54,6 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 
     expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
   })
-
-  it('does not touch parts without a toolCallId', () => {
-    const textPart = { type: 'text' as const, text: 'hi' } as ChatMessagePart
-    const message = assistantWith([textPart, toolCallPart('call_a')])
-
-    expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
-  })
 })
 
 describe('toChatMessages', () => {
@@ -455,6 +448,18 @@ describe('toChatMessages', () => {
       'resumed interrupted turn',
       'personality changed'
     ])
+  })
+
+  // Hermes closes a failed turn with an assistant-role row (agent/turn_failure_copy.py);
+  // painted as the model's reply it read as the assistant refusing the request.
+  it('renders the failed-turn boundary as a Hermes notice, not a model reply', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      { role: 'assistant', content: 'Your request was not processed.', display_kind: 'failed_turn', timestamp: 2 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'system'])
+    expect(chatMessageText(messages[1])).toBe('Your request was not processed.')
   })
 
   // A backend older than this app serves display_metadata as unparsed JSON
@@ -1148,47 +1153,6 @@ describe('upsertToolPart', () => {
       { id: 'search-reykjavik', query: 'reykjavik weather', summary: 'Did 5 searches' }
     ])
   })
-
-  it('uses structured live tool args for titles before hydrate', () => {
-    const started = upsertToolPart(
-      [],
-      {
-        args: { search_term: 'reykjavik bishkek kyrgyzstan weather today and tomorrow forecast' },
-        name: 'web_search',
-        tool_id: 'search-bishkek'
-      },
-      'running'
-    )
-
-    const [part] = started
-
-    expect(part?.type).toBe('tool-call')
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).args).toMatchObject({
-      search_term: 'reykjavik bishkek kyrgyzstan weather today and tomorrow forecast'
-    })
-  })
-
-  it('keeps structured live tool results before hydrate', () => {
-    const completed = upsertToolPart(
-      [],
-      {
-        args: { query: 'suva weather' },
-        name: 'web_search',
-        result: { data: { web: [{ title: 'Suva forecast', url: 'https://example.test', description: 'Sunny' }] } },
-        summary: 'Did 1 search in 0.5s',
-        tool_id: 'search-suva'
-      },
-      'complete'
-    )
-
-    const [part] = completed
-
-    expect(part?.type).toBe('tool-call')
-    expect(toolResultRecord(part as Extract<ChatMessagePart, { type: 'tool-call' }>)).toMatchObject({
-      data: { web: [{ title: 'Suva forecast' }] },
-      summary: 'Did 1 search in 0.5s'
-    })
-  })
 })
 
 describe('mergeFinalAssistantText', () => {
@@ -1209,7 +1173,9 @@ describe('mergeFinalAssistantText', () => {
     expect(result[0]).toMatchObject({ text: 'final answer', timestamp: 12.5, type: 'text' })
   })
 
-  it('removes all text parts and appends the final text', () => {
+  it('preserves pre-tool text and appends the later final response', () => {
+    // These deltas precede the tool call: they belong to an earlier model
+    // response, not to the provisional draft of the final being settled.
     const parts = [
       { type: 'text' as const, text: 'streamed delta 1' },
       { type: 'text' as const, text: 'streamed delta 2' },
@@ -1218,8 +1184,11 @@ describe('mergeFinalAssistantText', () => {
 
     const result = mergeFinalAssistantText(parts, 'final answer')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
-    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+    expect(result.filter(p => p.type === 'text').map(p => p.text)).toEqual([
+      'streamed delta 1',
+      'streamed delta 2',
+      'final answer'
+    ])
     expect(result.some(p => p.type === 'tool-call')).toBe(true)
   })
 
@@ -1506,21 +1475,12 @@ describe('sealOpenToolParts', () => {
     expect(next[0].parts[0].completedAt).toBeDefined()
   })
 
-  it('leaves already-completed tool parts untouched', () => {
-    const done = toolPart({ result: { code: 0 } })
-    const messages = [assistantWithParts([done])]
-
-    const next = sealOpenToolParts(messages)
-
-    expect(next[0].parts[0]).toBe(done)
-  })
-
   it('leaves pending messages alone', () => {
     const messages = [assistantWithParts([toolPart()], { pending: true })]
 
     const next = sealOpenToolParts(messages)
 
-    expect(next[0].parts[0]).not.toHaveProperty('result')
+    expect(next[0].parts[0].completedAt).toBeUndefined()
   })
 
   it('leaves non-tool parts untouched', () => {

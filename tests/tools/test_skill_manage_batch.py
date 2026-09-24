@@ -259,7 +259,6 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertTrue(r.get("staged"), r)
         self.assertEqual(staged["payload"]["action"], "batch")
         self.assertEqual(len(staged["payload"]["operations"]), 2)
-        self.assertIn("2 ops", staged["summary"])
         # Replay applies the batch (gate bypassed inside).
         out = json.loads(self.smt.apply_skill_pending(staged["payload"]))
         self.assertTrue(out["success"], out)

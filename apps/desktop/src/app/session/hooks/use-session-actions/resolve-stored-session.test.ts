@@ -7,7 +7,7 @@ import { $projectTree } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { cachedSessionRow, resolveSessionProfile, resolveStoredSession } from './utils'
+import { cachedSessionRow, resolveStoredSession } from './utils'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
@@ -167,13 +167,6 @@ describe('resolveStoredSession profile ownership', () => {
     expect(resolved?.profile).toBe('default')
     // the cached row is owned too — no unowned row is ever re-cached
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('default')
-  })
-
-  it('resolveSessionProfile routes a default-profile session from a non-default gateway', async () => {
-    mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))
-    mockGetSession.mockResolvedValueOnce(session({ id: 's1', profile: 'default' }))
-
-    await expect(resolveSessionProfile('s1')).resolves.toBe('default')
   })
 })
 

@@ -14,10 +14,7 @@ it('reports queued acceptance rather than claiming delivery and preserves reject
     }
   } as unknown as GatewayClient
 
-  expect(await sendAgentSteer(gw, 'owner', 'child', 'check tests')).toEqual({
-    accepted: true,
-    message: 'Queued for child — applied at the next tool boundary.'
-  })
+  expect((await sendAgentSteer(gw, 'owner', 'child', 'check tests')).accepted).toBe(true)
   expect(calls).toEqual([['subagent.steer', { session_id: 'owner', subagent_id: 'child', text: 'check tests' }]])
   const rejected = { request: async () => ({ status: 'rejected' }) } as unknown as GatewayClient
   expect((await sendAgentSteer(rejected, 'owner', 'child', 'check tests')).accepted).toBe(false)

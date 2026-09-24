@@ -92,7 +92,14 @@ Don't add per-overlay `shadow-[…]` or `border-(--ui-stroke-secondary)`
 one-offs; if elevation needs to change, change the token.
 
 Menus and popovers use their own shared `shadow-md` +
-`--ui-stroke-secondary` primitive treatment. Drag affordances may use tokenized
+`--ui-stroke-secondary` primitive treatment. Every floating list —
+`DropdownMenu`, `Select`, and Popover + cmdk pickers
+(`<PopoverContent variant="menu">` + `<Command variant="menu">`) — paints
+through `src/components/ui/menu.ts`, so a list reads the same wherever it
+opens. Typed fields with suggestions use `ComboboxInput`, never
+`<input list>` + `<datalist>` (Chromium paints that as its own OS popup).
+
+Drag affordances may use tokenized
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
@@ -480,9 +487,12 @@ long transcript or a busy terminal.
 
 - Every user-facing string goes through `useI18n()` (`src/i18n/context.tsx`).
   No literals in JSX.
-- **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`. A string change
-  in `en.ts` that skips the others is a regression (drifted punctuation,
-  stale labels). Keep trailing-punctuation and tone consistent across all four.
+- **Update all locales together** — every catalog registered in
+  `src/i18n/catalog.ts`. A string change in `en.ts` that skips the others is a
+  regression (drifted punctuation, stale labels). Keep trailing-punctuation and
+  tone consistent across all of them. `fr`, `de`, and `es` are complete
+  `Translations` objects, so a key missing there fails the type check; the
+  `defineLocale()` overlays fall back to English instead.
 
 ## State (TypeScript)
 
@@ -528,7 +538,7 @@ The detailed state contract lives in the scoped
 - [ ] Hot interactions avoid broad subscriptions, layout thrash, and
       `transition-all`?
 - [ ] Keyboard ownership and single-action `Esc` behavior are correct?
-- [ ] All four locales updated for any new/changed string?
+- [ ] All registered locales updated for any new/changed string?
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.

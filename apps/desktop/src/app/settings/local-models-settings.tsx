@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 
 import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
+import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import {
   activateLocalModel,
@@ -1003,15 +1004,13 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
       <div id="local-model-browse">
         <p className="text-[0.75rem] text-muted-foreground">{copy.browseHint}</p>
 
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            className="w-full rounded-md border border-(--ui-border) bg-transparent py-1.5 pl-8 pr-3 text-[0.8rem] outline-none placeholder:text-muted-foreground focus:border-primary"
-            onChange={e => setQuery(e.target.value)}
-            placeholder={copy.browsePlaceholder}
-            value={query}
-          />
-        </div>
+        <SearchField
+          containerClassName="w-full"
+          inputClassName="flex-1"
+          onChange={setQuery}
+          placeholder={copy.browsePlaceholder}
+          value={query}
+        />
 
         {searching && (
           <p className="flex items-center gap-2 text-[0.75rem] text-muted-foreground">

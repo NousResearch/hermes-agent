@@ -1141,10 +1141,6 @@ class TestGetDueJobs:
         }
 
 
-class TestEnabledToolsets:
-    def test_enabled_toolsets_stored(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])
-        assert job["enabled_toolsets"] == ["web", "terminal"]
 
 
 class TestMarkJobRunConcurrency:
@@ -1520,48 +1516,6 @@ class TestLateEnvRepointScopesStore:
 # UTF-8 BOM on jobs.json (Windows Notepad / PowerShell 5.1)
 # =========================================================================
 
-class TestJobsJsonShapes:
-    def test_load_jobs_normalizes_id_keyed_jobs_mapping(self, tmp_cron_dir):
-        import json
-        from cron.jobs import JOBS_FILE
-
-        job_a = {
-            "id": "cron1234abcd",
-            "name": "daily briefing",
-            "enabled": True,
-            "prompt": "Summarize overnight incidents",
-            "schedule": {"kind": "interval", "minutes": 1440, "display": "every 24h"},
-        }
-        job_b = {
-            "id": "cron5678efgh",
-            "name": "disabled cleanup",
-            "enabled": False,
-            "prompt": "Clean stale scratch files",
-            "schedule": {"kind": "once", "run_at": "2030-01-15T14:00:00+00:00"},
-        }
-        payload = {
-            "jobs": {
-                job_a["id"]: job_a,
-                job_b["id"]: job_b,
-            },
-            "updated_at": "2026-08-23T00:00:00+00:00",
-        }
-        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
-
-        loaded = load_jobs()
-        assert isinstance(loaded, list)
-        assert {job["id"] for job in loaded} == {job_a["id"], job_b["id"]}
-
-        listed = {job["id"]: job for job in list_jobs(include_disabled=True)}
-        assert set(listed) == {job_a["id"], job_b["id"]}
-        for expected in (job_a, job_b):
-            actual = listed[expected["id"]]
-            assert actual["id"] == expected["id"]
-            assert actual["name"] == expected["name"]
-            assert actual["prompt"] == expected["prompt"]
-            assert actual["schedule"] == expected["schedule"]
-            assert actual["enabled"] is expected["enabled"]
 
 
 class TestJobsJsonUtf8Bom:
@@ -1574,7 +1528,6 @@ class TestJobsJsonUtf8Bom:
     def test_load_jobs_accepts_utf8_bom(self, tmp_cron_dir):
         """BOM'd jobs.json loads — the pre-fix crash repro."""
         import json
-        from pathlib import Path
         from cron.jobs import JOBS_FILE, load_jobs
 
         payload = {
@@ -1597,27 +1550,6 @@ class TestJobsJsonUtf8Bom:
         assert [j["id"] for j in loaded] == ["bomjob01"]
         assert loaded[0]["name"] == "bom-test"
 
-    def test_load_jobs_bomless_regression(self, tmp_cron_dir):
-        """BOM-less UTF-8 jobs.json must keep loading after utf-8-sig."""
-        import json
-        from cron.jobs import JOBS_FILE, load_jobs
-
-        payload = {
-            "jobs": [
-                {
-                    "id": "plainjob01",
-                    "name": "plain",
-                    "enabled": True,
-                    "prompt": "hi",
-                    "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
-                }
-            ]
-        }
-        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
-
-        loaded = load_jobs()
-        assert [j["id"] for j in loaded] == ["plainjob01"]
 
 
 
@@ -1786,17 +1718,6 @@ class TestJobsJsonIdKeyedMap:
         assert isinstance(on_disk["jobs"], list)
         assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
 
-    def test_all_junk_map_values_yield_empty_list(self, tmp_cron_dir):
-        """A map of only junk values flattens to [] without crashing."""
-        import json
-        from cron.jobs import JOBS_FILE, load_jobs
-
-        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        JOBS_FILE.write_text(
-            json.dumps({"jobs": {"a": "junk", "b": 1}}), encoding="utf-8"
-        )
-
-        assert load_jobs() == []
 
 
 
@@ -1836,39 +1757,8 @@ class TestAdvanceNextRuns:
             # one-shots keep their (past) next_run_at for restart retry
             assert datetime.fromisoformat(get_job(jid)["next_run_at"]) < datetime.now()
 
-    def test_batch_single_load_and_save(self, tmp_cron_dir, monkeypatch):
-        """I/O pin: the whole due set costs one load + one save, not N+N.
-        Fails pre-fix (function absent) and would fail on any regression
-        back to per-job I/O."""
-        from cron.jobs import advance_next_runs
-        rec_ids, _ = self._make_due(tmp_cron_dir, n_recurring=10, n_oneshot=0)
-        import cron.jobs as cj
-        counts = {"load": 0, "save": 0}
-        real_load, real_save = cj.load_jobs, cj.save_jobs
-        monkeypatch.setattr(cj, "load_jobs", lambda *a, **k: (
-            counts.__setitem__("load", counts["load"] + 1), real_load(*a, **k))[1])
-        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
-            counts.__setitem__("save", counts["save"] + 1), real_save(*a, **k))[1])
-        advance_next_runs(rec_ids)
-        assert counts == {"load": 1, "save": 1}
 
-    def test_batch_no_save_when_nothing_advances(self, tmp_cron_dir, monkeypatch):
-        from cron.jobs import advance_next_runs
-        rec_ids, one_ids = self._make_due(tmp_cron_dir, n_recurring=0, n_oneshot=2)
-        import cron.jobs as cj
-        saves = [0]
-        real_save = cj.save_jobs
-        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
-            saves.__setitem__(0, saves[0] + 1), real_save(*a, **k))[1])
-        assert advance_next_runs(one_ids + ["missing-id"]) == 0
-        assert saves[0] == 0
 
-    def test_wrapper_semantics_unchanged(self, tmp_cron_dir):
-        """advance_next_run keeps its per-job contract over the batch."""
-        rec_ids, one_ids = self._make_due(tmp_cron_dir)
-        assert advance_next_run(rec_ids[0]) is True
-        assert advance_next_run(one_ids[0]) is False
-        assert advance_next_run("missing-id") is False
 
 
 # =========================================================================

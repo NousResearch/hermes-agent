@@ -50,6 +50,7 @@ const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
+const DICTATION_EVENT = 'hermes:composer-dictation'
 const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 
 /** Inline edit composer root — mounted only while a user bubble is being edited. */
@@ -365,6 +366,14 @@ export const requestVoiceToggle = (target: ComposerTarget | 'active' = 'active')
 
 export const onComposerVoiceToggleRequest = (handler: (target: ComposerTarget) => void) =>
   subscribe<{ target: ComposerTarget }>(VOICE_TOGGLE_EVENT, ({ target }) => handler(target))
+
+/** Start or stop dictation on one composer. Like voice conversation, the
+ * rebindable action targets only the active visible composer. */
+export const requestComposerDictation = (target: ComposerTarget | 'active' = 'active') =>
+  dispatch<{ target: ComposerTarget }>(DICTATION_EVENT, { target: resolve(target) })
+
+export const onComposerDictationRequest = (handler: (target: ComposerTarget) => void) =>
+  subscribe<{ target: ComposerTarget }>(DICTATION_EVENT, ({ target }) => handler(target))
 
 /** The chat surface inside the zone the pointer is over, if any. Mirrors the
  *  tab verbs' hover-first targeting (`tabTargetGroupId`, #74447): the model

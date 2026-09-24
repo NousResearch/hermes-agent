@@ -742,6 +742,8 @@ def _reconcile(destination: sqlite3.Connection, table: str, where: str, mutation
 
 
 _DEPENDENT_TABLES = ("messages", "session_model_usage", "compression_locks", "telegram_dm_topic_bindings")
+_DANGLING_TOOL_PIN = (
+    "length(tool_names) = 64 AND NOT EXISTS (SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.tool_names)")
 _RELINK_COUNTERS = ("session_prompt_refs_cleared", "sessions_parent_cleared")
 
 
@@ -768,9 +770,17 @@ def _cleanup_partial_orphans(destination: sqlite3.Connection) -> dict[str, Any]:
             "SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.system_prompt_hash)",
             "UPDATE sessions SET system_prompt_hash = NULL",
         )
+        # A tools[] pin is a system_prompts row too, referenced by hash from sessions.tool_names
+        # (legacy rows hold an inline JSON list, never 64 chars of hex).
+        result["session_prompt_refs_cleared"] += _reconcile(
+            destination, "sessions",
+            _DANGLING_TOOL_PIN,
+            "UPDATE sessions SET tool_names = NULL",
+        )
         result["system_prompts_removed"] = _reconcile(
             destination, "system_prompts",
-            "NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash)",
+            "NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) "
+            "AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)",
             "DELETE FROM system_prompts",
         )
         for table in _DEPENDENT_TABLES:

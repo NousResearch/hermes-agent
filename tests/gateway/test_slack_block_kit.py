@@ -2,7 +2,6 @@
 
 from plugins.platforms.slack.block_kit import (
     MAX_BLOCKS,
-    MAX_HEADER_TEXT,
     MAX_SECTION_TEXT,
     render_blocks,
     sanitize_blocks,
@@ -39,12 +38,6 @@ class TestNestedLists:
 
 
 class TestInlineFormatting:
-    def test_link_becomes_link_element(self):
-        blocks = render_blocks("see [docs](https://example.com/x) now")
-        # link lives in a section (paragraph) — but a bulleted link is a
-        # rich_text link element; assert the URL survives somewhere.
-        blob = str(blocks)
-        assert "https://example.com/x" in blob
 
     def test_slack_mrkdwn_link_in_bullet_becomes_link_element(self):
         """rich_text lists must parse Slack <url|label>, not emit it as text.

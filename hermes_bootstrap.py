@@ -280,6 +280,116 @@ def suppress_platform_ver_console() -> None:
         pass  # hardening only — never break an entry point
 
 
+def _glibc_frees_environ() -> bool:
+    """True on glibc < 2.41, whose ``setenv`` of a NEW name reallocs the ``environ`` array
+    and frees the old one (2.41+ never frees it, so a concurrent ``getenv`` stays safe)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc, _, version = (os.confstr("CS_GNU_LIBC_VERSION") or "").partition(" ")
+        return libc == "glibc" and tuple(int(p) for p in version.split(".")[:2]) < (2, 41)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
+def install_never_free_environ() -> None:
+    """Make ``os.environ`` writes safe against native ``getenv`` in other threads.
+
+    On glibc < 2.41 adding a name reallocs ``environ`` and frees the old array while a
+    thread that dropped the GIL (``getaddrinfo``, OpenSSL's ``SSL_CERT_FILE`` lookup) may
+    still be walking it; the freed slots hold tcache pointers, so the walk segfaults the
+    whole process. Hermes writes new names at runtime from many places (``session.create``
+    turns on gateway prompts, the agent build sets ``HERMES_SESSION_ID``) while background
+    threads fetch catalogs, so the tui_gateway died with SIGSEGV. This is glibc 2.41's own
+    fix: entry strings are cached per ``NAME=value`` and never freed; a new name is
+    appended in place to an array with spare room, and only a full array is replaced by
+    a bigger one, the old one kept forever. Set/del churn of the same names therefore
+    allocates nothing after the first cycle.
+
+    Residual: a NEW-name ``setenv`` from native code (a C or Rust extension, not
+    ``os.environ``) bypasses the lock and still reallocs glibc's own last array, so a
+    ``getenv`` that started walking that array before our swap can still fault. None of
+    the gateway's crash paths do this.
+    """
+    if getattr(os.putenv, "_hermes_never_free_environ", False) or not _glibc_frees_environ():
+        return
+    import _thread
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None)
+        environ = ctypes.c_void_p.in_dll(libc, "environ")
+        getenv = libc.getenv
+    except (AttributeError, OSError, ValueError):
+        return
+    getenv.restype, getenv.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+    real_putenv, real_unsetenv = os.putenv, os.unsetenv
+    # Two unserialized writers both copy the live array and the later publish drops the
+    # other's new name or undoes its replacement. Reentrant: audit hooks run inside it.
+    lock = _thread.RLock()
+    # A fork while another thread holds the lock would leave it held forever in the child.
+    os.register_at_fork(before=lock.acquire, after_in_parent=lock.release, after_in_child=lock.release)
+    lines: dict[bytes, ctypes.Array] = {}  # b"NAME=value" -> its C string (glibc's known_values)
+    arrays: list[tuple[ctypes.Array, int]] = []  # every array we published + its address; only the last grows
+    gen = [0]  # bumped by every publish, so a nested write inside an audited call forces a redo
+
+    def _putenv(key, value) -> None:
+        name, val = os.fsencode(key), os.fsencode(value)
+        if not name or b"=" in name or b"\0" in name + val:
+            real_putenv(key, value)  # the usual OSError/ValueError
+            return
+        sys.audit("os.putenv", name, val)
+        prefix = name + b"="
+        with lock:
+            if (line := lines.get(prefix + val)) is None:
+                line = lines[prefix + val] = ctypes.create_string_buffer(prefix + val)
+            entry = ctypes.addressof(line)
+            # create_string_buffer/addressof above are audited and a hook may write os.environ
+            # re-entrantly (RLock): redo the read if any write was published before ours. The loop
+            # itself makes no audited call, so a hook that writes on every event cannot spin it.
+            while True:
+                start = gen[0]
+                # getenv returns a pointer just past "NAME=" inside the matching entry, so the
+                # walk compares pointers instead of reading every string.
+                found = getenv(name)
+                target = found - len(prefix) if found else None
+                live = ctypes.cast(environ.value, ctypes.POINTER(ctypes.c_void_p)) if environ.value else None
+                n, hit = 0, False
+                while live and (current := live[n]):
+                    if current == target:
+                        hit = True
+                        break
+                    n += 1
+                own, own_addr = arrays[-1] if arrays else (None, None)
+                grow = not hit and not (own is not None and environ.value == own_addr and n + 2 <= len(own))
+                if grow:
+                    fresh = (ctypes.c_void_p * max(2 * (n + 2), 64))(*(live[:n] if live else ()), entry)
+                    fresh_addr = ctypes.cast(fresh, ctypes.c_void_p).value  # unaudited, unlike addressof
+                if gen[0] == start:
+                    break
+            # No audited call from here on. Plain aligned stores: a concurrent walker sees them in
+            # order on x86-64 (TSO). aarch64 may reorder them, which is theoretical there and
+            # matches glibc < 2.41's own plain-store publish; Python has no cheap portable fence.
+            gen[0] += 1
+            if hit:
+                live[n] = entry  # replace in place, as glibc does
+            elif not grow:
+                own[n + 1] = None  # terminator first, so a walker never runs past the new entry
+                own[n] = entry
+            else:
+                arrays.append((fresh, fresh_addr))
+                environ.value = fresh_addr
+
+    def _unsetenv(key) -> None:
+        with lock:  # glibc shifts the entries of the live array (ours included) in place
+            real_unsetenv(key)
+            gen[0] += 1
+
+    _putenv._hermes_never_free_environ = True  # type: ignore[attr-defined]
+    _unsetenv._hermes_never_free_environ = True  # type: ignore[attr-defined]
+    os.putenv, os.unsetenv = _putenv, _unsetenv
+
+
 def harden_import_path(src_root: str | None = None) -> None:
     """Stop a package in the current directory from shadowing Hermes modules.
 
@@ -337,6 +447,7 @@ def export_scratch_tmp_env() -> None:
 # Apply on import — entry points only need ``import hermes_bootstrap`` first.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
+install_never_free_environ()
 activate_durable_lazy_target()
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()

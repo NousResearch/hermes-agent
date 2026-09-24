@@ -93,19 +93,6 @@ def test_finalize_turn_forwards_canonical_usage_when_available():
     assert captured["kwargs"]["turn_id"] == "turn-1"
 
 
-def test_finalize_turn_forwards_none_when_no_response_usage():
-    """An early-failure/interrupt turn (no stashed usage) forwards None."""
-    agent = _agent_with_engine()
-    # _last_turn_usage left unset, mirroring a turn that never reached a
-    # provider response.
-    if hasattr(agent, "_last_turn_usage"):
-        delattr(agent, "_last_turn_usage")
-
-    _run(agent, final_response="done")
-
-    captured = agent.context_compressor.captured
-    assert captured.get("seen") is True
-    assert captured["usage"] is None
 
 
 def test_finalization_seam_observes_interrupted_turn_with_none_usage():

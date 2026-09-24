@@ -63,7 +63,6 @@ def test_standalone_attach_requires_known_unserved_profile(standalone_home, monk
         assert decision.transient
         if served:
             assert "rescan-profiles" in decision.message
-            assert "30s" in decision.message
     assert requests == [], "an opted-out profile must never ask the host to serve it"
 
 

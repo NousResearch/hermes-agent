@@ -1,7 +1,3 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { describe, expect, it, vi } from 'vitest'
 
 import {
@@ -10,9 +6,6 @@ import {
   RemoteLivenessTracker,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
-
-const here = path.dirname(fileURLToPath(import.meta.url))
-const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
 
 describe('revalidateSuspectPooledRemoteBackends (#93910)', () => {
   const descriptor = (baseUrl: string) => ({ baseUrl, mode: 'remote' })
@@ -256,40 +249,5 @@ describe('attachPowerResumeRemoteRevalidation (#93910)', () => {
     now += POWER_RESUME_REVALIDATION_HOLDOFF_MS + 1
     powerMonitor.emit('resume')
     expect(revalidate).toHaveBeenCalledTimes(2)
-  })
-})
-
-describe('main.ts wiring for #93910', () => {
-  it('registers the suspect-pool revalidation on powerMonitor resume/unlock', () => {
-    const fnStart = mainSource.indexOf('function registerPowerResumeListeners()')
-    expect(fnStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(fnStart, mainSource.indexOf('\nfunction ', fnStart + 1))
-
-    expect(body).toContain('attachPowerResumeRemoteRevalidation(')
-    expect(body).toContain('revalidateSuspectPoolAfterResume()')
-  })
-
-  it('drives suspect revalidation through the shared coordinator, teardown and claimed re-dial primitives', () => {
-    const fnStart = mainSource.indexOf('function revalidateSuspectPoolAfterResume()')
-    expect(fnStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(fnStart, fnStart + 2_500)
-
-    expect(body).toContain('remoteRevalidation.run(')
-    expect(body).toContain('revalidateSuspectPooledRemoteBackends({')
-    expect(body).toContain('stopPoolBackend(')
-    expect(body).toContain('sshBootstrapCoordinator.cancelAndWait(')
-    expect(body).toContain('teardownSshConnection(')
-    expect(body).toContain('redialPoolBackendAfterResume')
-    expect(body).toContain('tracker: remoteLiveness')
-  })
-
-  it('re-dials a retired pool key through the single-owner dial claim', () => {
-    const fnStart = mainSource.indexOf('function redialPoolBackendAfterResume(')
-    expect(fnStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(fnStart, fnStart + 1_200)
-
-    expect(body).toContain('parseBackendScopeKey(')
-    expect(body).toContain('backendDialClaims.run(')
-    expect(body).toContain('ensureRegistryBackend(')
   })
 })

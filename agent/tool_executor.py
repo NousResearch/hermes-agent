@@ -1098,6 +1098,17 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    # Prepare presentation data before the append. The emitting completion callback
+    # stays below the durability fence; raw tool/model content remains unchanged.
+    prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)
+    if not blocked and prepare_metadata:
+        try:
+            display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+            metadata = prepare_metadata(tool_call_id, function_name, display_args, function_result)
+            if metadata:
+                tool_message["display_metadata"] = metadata
+        except Exception as callback_error:
+            logging.debug("Tool result metadata callback error: %s", callback_error)
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

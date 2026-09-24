@@ -177,6 +177,11 @@ export interface ClientSessionState {
   interrupted: boolean
   /** True after message.interim finalized a bubble in the still-running turn. */
   interimBoundaryPending: boolean
+  /** Stream bubble a running=false heartbeat settled before its turn's
+   *  message.complete arrived. The frame can be reordered behind the
+   *  heartbeat (#119569); when it lands it settles onto this bubble instead of
+   *  appending a duplicate. Cleared by the next message.start or complete. */
+  heartbeatSettledStreamId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean

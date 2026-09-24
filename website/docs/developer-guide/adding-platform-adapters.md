@@ -760,6 +760,21 @@ async def _handle_callback(self, request):
 
 For platforms with tight response deadlines (e.g., WeCom's 5-second limit), always acknowledge immediately and deliver the agent's reply proactively via API later. Agent sessions run 3–30 minutes — inline replies within a callback response window are not feasible.
 
+### Inbound Deduplication
+
+Platforms redeliver: websocket resumes replay recent events, webhooks retry, and an unacknowledged poll batch comes back. Drop repeats with the shared helper, keyed on the platform's message ID:
+
+```python
+from gateway.platforms.helpers import MessageDeduplicator
+
+self._dedup = MessageDeduplicator(ttl_seconds=600)  # in __init__
+
+if self._dedup.is_duplicate(msg_id):  # in the inbound handler
+    return
+```
+
+When the gateway's reconnect watcher replaces a failed adapter with a new instance, it copies every `MessageDeduplicator` attribute's live IDs from the old instance to the new one, so a replay right after the reconnect is still dropped. A cache kept in another structure (a plain dict or set) starts empty on the new instance.
+
 ### Token Locks
 
 If the adapter holds a persistent connection with a unique credential, add a scoped lock to prevent two profiles from using the same credential:

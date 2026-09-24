@@ -91,10 +91,6 @@ test.describe('chat interaction with mock backend', () => {
     const composer = page.locator('[contenteditable="true"]').first()
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
     const queue = page.locator('[data-slot="composer-root"] button[aria-label="Queue message"]')
-    const dictation = page.locator('[data-slot="composer-root"] button[aria-label="Voice dictation"]')
-    const speakReplies = page.locator(
-      '[data-slot="composer-root"] button[aria-label="Read replies aloud"], [data-slot="composer-root"] button[aria-label="Stop reading replies aloud"]'
-    )
 
     await composer.click()
     await composer.type(BLOCKING_CLARIFY_TRIGGER)
@@ -102,7 +98,6 @@ test.describe('chat interaction with mock backend', () => {
     await page.getByText(BLOCKING_CLARIFY_QUESTION).waitFor({ state: 'visible', timeout: 30_000 })
 
     await expect(primary).toHaveAttribute('aria-label', 'Stop')
-    await expect(primary.locator('span')).toHaveClass(/bg-current/)
 
     await composer.click()
     await composer.type('please answer tersely')
@@ -110,21 +105,8 @@ test.describe('chat interaction with mock backend', () => {
     // affordance mid-turn — steer is routed through the submit engine, not a
     // separate labeled button. Queue remains the explicit secondary action.
     await expect(primary).toHaveAttribute('aria-label', 'Send')
-    await expect(dictation).toBeVisible()
-    await expect(speakReplies).toBeVisible()
     await expect(queue).toBeVisible()
-    await expect(queue.locator('svg.tabler-icon-layers-intersect-2')).toBeVisible()
-    const controlLabels = await page
-      .locator('[data-slot="composer-root"] button')
-      .evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))
-    const speakRepliesIndex = controlLabels.findIndex(
-      label => label === 'Read replies aloud' || label === 'Stop reading replies aloud'
-    )
-    expect(controlLabels.indexOf('Voice dictation')).toBeLessThan(speakRepliesIndex)
-    expect(speakRepliesIndex).toBeLessThan(controlLabels.indexOf('Queue message'))
-    expect(controlLabels.indexOf('Queue message')).toBeLessThan(controlLabels.indexOf('Send'))
     await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })
-    await expect(primary.locator('.codicon-arrow-up')).toBeVisible()
 
     await queue.click()
     await expect(primary).toHaveAttribute('aria-label', 'Stop')

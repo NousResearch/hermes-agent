@@ -1254,8 +1254,8 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
                 return False, (
                     f"Failed to upload {rel}: {resp.status_code} {resp.text[:200]}"
                 )
-        except httpx.HTTPError as e:
-            return False, f"Network error uploading {rel}: {e}"
+        except (httpx.HTTPError, OSError) as e:
+            return False, f"Failed to upload {rel}: {e}"
 
     try:
         resp = call("post", f"{target_repo}/pulls", json={

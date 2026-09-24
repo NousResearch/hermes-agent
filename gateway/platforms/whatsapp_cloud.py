@@ -779,8 +779,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if state != "failed":
                 logger.debug("[whatsapp_cloud] status %s for %s", status.get("status"), status.get("id"))
                 return
-            wamid = str(status.get("id") or "<unknown>")
-            recipient = redact_phone(str(status.get("recipient_id") or ""))
+            wamid = _one_line(status.get("id") or "<unknown>")
+            recipient = _one_line(redact_phone(str(status.get("recipient_id") or "")))
             errors = status.get("errors")
             if not isinstance(errors, list) or not errors:
                 logger.warning(
@@ -794,7 +794,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 data = error.get("error_data")
                 details = (data.get("details") if isinstance(data, dict) else None) or error.get("message")
                 parts.append(
-                    f"code={error.get('code')} title={_one_line(error.get('title'))!r}"
+                    f"code={_one_line(error.get('code'))} title={_one_line(error.get('title'))!r}"
                     f" details={_one_line(details)!r}")
             if not parts:
                 logger.warning(
@@ -804,7 +804,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning(
                 "[whatsapp_cloud] delivery failed for wamid %s to %s: %s", wamid, recipient, "; ".join(parts))
         except Exception:
-            logger.warning("[whatsapp_cloud] delivery failed for an unparseable status payload", exc_info=True)
+            logger.warning("[whatsapp_cloud] delivery failed for an unparseable status payload")
+            logger.debug("[whatsapp_cloud] unparseable status payload", exc_info=True)
 
     async def _ingest_message(self, raw_message: Dict[str, Any], contacts_by_waid: Dict[str, str], metadata: Dict[str, Any]) -> None:
         """Dedup → build event → handle_message. Neither build nor dispatch errors may

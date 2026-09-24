@@ -572,6 +572,7 @@ class TestDeliveryFailureStatuses:
         assert "Re-engagement message" in text
         assert "24 hours" in text
         assert "15551234567" not in text
+        assert "1555****4567" in text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("state", ["sent", "delivered", "read"])
@@ -665,6 +666,58 @@ class TestDeliveryFailureStatuses:
         assert "\n" not in text and "\r" not in text
         assert "x" * 500 not in text
         assert "line1 line2 line3" in text
+
+    @pytest.mark.asyncio
+    async def test_failed_status_identifiers_flattened_and_bounded(self, caplog):
+        import logging
+
+        adapter = _make_adapter()
+        payload = self._status_payload(
+            [
+                {
+                    "id": "wamid\nINJECT\n" + "A" * 1200,
+                    "status": "failed",
+                    "recipient_id": "1555\n1234567" + "9" * 1200,
+                    "errors": [
+                        {
+                            "code": "13\n1047" + "7" * 1200,
+                            "title": "Re-engagement message",
+                        }
+                    ],
+                }
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            await adapter._dispatch_payload(payload)
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        text = warnings[0].getMessage()
+        assert "\n" not in text and "\r" not in text
+        assert "A" * 1200 not in text
+        assert "9" * 1200 not in text
+        assert "7" * 1200 not in text
+        assert len(text) < 1500
+
+    @pytest.mark.asyncio
+    async def test_failed_status_nonstring_fields_never_raise(self, caplog):
+        import logging
+
+        adapter = _make_adapter()
+        payload = self._status_payload(
+            [
+                {
+                    "id": 12345,
+                    "status": "failed",
+                    "recipient_id": ["not", "a", "string"],
+                    "errors": [{"code": 1, "title": 2, "error_data": ["x"]}],
+                },
+                {"id": "wamid.STRERR", "status": "failed", "errors": "boom"},
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            await adapter._dispatch_payload(payload)  # must not raise
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 2
 
     @pytest.mark.asyncio
     async def test_message_still_dispatched_alongside_failed_status(self, caplog):

@@ -87,6 +87,21 @@ describe('preview store', () => {
     expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
   })
 
+  // Every Watch mints a fresh `#ticket=`; the viewer is the same page, so the
+  // new Watch must replace the old (ticketless, dead) tab instead of stacking.
+  it('reuses an isolated viewer tab for the same location with a new ticket', () => {
+    const viewer = (url: string): PreviewTarget => ({ ...urlTarget(url), browserContext: 'isolated', transient: true })
+
+    openPreview(viewer('http://127.0.0.1:9876/viewer.html?realm=a#ticket=one'))
+    openPreview(viewer('http://127.0.0.1:9876/viewer.html?realm=a#ticket=two'))
+    openPreview(viewer('http://127.0.0.1:9876/viewer.html?realm=b#ticket=three'))
+
+    expect($previewTabs.get().map(tab => tab.target.url)).toEqual([
+      'http://127.0.0.1:9876/viewer.html?realm=a#ticket=two',
+      'http://127.0.0.1:9876/viewer.html?realm=b#ticket=three'
+    ])
+  })
+
   it('commits the live page onto a Browser tab without changing its id', () => {
     openPreview(urlTarget('https://news.ycombinator.com'))
     const id = $previewTabs.get()[0].id

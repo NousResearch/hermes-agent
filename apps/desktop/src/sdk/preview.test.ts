@@ -62,6 +62,32 @@ it('keeps parked previews alive independently of foreground session and stops ir
   expect(onKeepAlive).toHaveBeenCalledTimes(2)
 })
 
+it('renews a re-Watch ticket on the rebuilt viewer, not the replaced document', async () => {
+  vi.useFakeTimers()
+  $sessionTiles.set([
+    { storedSessionId: 'stored', runtimeId: 'runtime', ownerRoute: { connectionId: 'local', profile: 'worker' } }
+  ])
+  const base = 'https://viewer.example/view'
+  const first = vi.fn(async () => {})
+  await host.openPreview({ url: `${base}#ticket=one`, session, onKeepAlive: first })
+  const tab = $previewTabs.get()[0]!
+  let oldLive = true
+  noteBrowserPage(tab.id, { title: 'Viewer', url: base, document: { isLive: () => oldLive } })
+  await vi.advanceTimersByTimeAsync(0)
+
+  const second = vi.fn(async () => {})
+  await host.openPreview({ url: `${base}#ticket=two`, session, onKeepAlive: second })
+  expect($previewTabs.get().map(item => item.id)).toEqual([tab.id])
+  // The pane rebuilds the guest for the new ticket: old document drops, a new one loads.
+  oldLive = false
+  noteBrowserPage(tab.id, { title: 'Viewer', url: base, document: undefined })
+  noteBrowserPage(tab.id, { title: 'Viewer', url: base, document: { isLive: () => true } })
+  await vi.advanceTimersByTimeAsync(120_000)
+
+  expect(first).toHaveBeenCalledOnce()
+  expect(second).toHaveBeenCalledTimes(3)
+})
+
 it('retires the original preview on same-URL replacement or close, including pending callbacks', async () => {
   vi.useFakeTimers()
   $sessionTiles.set([

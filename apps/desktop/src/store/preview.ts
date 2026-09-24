@@ -3,6 +3,8 @@ import { atom, computed } from 'nanostores'
 import { readJson, readKey, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
+import { sameViewerLocation } from '../../electron/plugin-viewer-policy'
+
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
@@ -561,8 +563,9 @@ export function openPreview(target: PreviewTarget) {
     target.kind !== 'url'
       ? previewTabId(target)
       : target.browserContext === 'isolated'
-        ? (current.find(tab => tab.target.browserContext === 'isolated' && tab.target.url === target.url)?.id ??
-          mintBrowserTabId())
+        ? (current.find(
+            tab => tab.target.browserContext === 'isolated' && sameViewerLocation(tab.target.url, target.url)
+          )?.id ?? mintBrowserTabId())
         : browserTabId(current)
 
   const index = current.findIndex(tab => tab.id === id)

@@ -47,6 +47,8 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
     return false
   }
 
+  const before = $previewTabs.get()
+
   const tab = openPreview({
     kind: 'url',
     url,
@@ -55,6 +57,10 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
     transient: true,
     browserContext: 'isolated'
   })
+
+  // A new ticket on a reused tab rebuilds its guest; never bind to the outgoing one.
+  const prior = before.find(item => item.id === tab.id)
+  const replaced = prior && prior.target.url !== url ? $browserPages.get()[tab.id]?.document : undefined
 
   if (input.onKeepAlive) {
     const onKeepAlive = input.onKeepAlive
@@ -101,7 +107,7 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
       if (!document) {
         const page = $browserPages.get()[tab.id]
 
-        if (!page?.document?.isLive()) {
+        if (!page?.document?.isLive() || page.document === replaced) {
           return
         }
 

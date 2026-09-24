@@ -922,8 +922,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     lastReloadRequestRef.current = reloadRequest
 
     // An agent's file edit can only change a page a local dev server serves.
-    // Reloading any other site just throws away the user's page state.
-    if (target.kind !== 'url' || !isLoopbackPreviewUrl(currentUrl)) {
+    // Reloading any other site just throws away the user's page state. An
+    // isolated viewer strips its one-time ticket on load, so a reload kills it.
+    if (target.kind !== 'url' || target.browserContext === 'isolated' || !isLoopbackPreviewUrl(currentUrl)) {
       return
     }
 
@@ -932,7 +933,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       message: copy.workspaceReloading
     })
     reloadPreview()
-  }, [appendConsoleEntry, copy.workspaceReloading, currentUrl, reloadPreview, reloadRequest, target.kind])
+  }, [
+    appendConsoleEntry,
+    copy.workspaceReloading,
+    currentUrl,
+    reloadPreview,
+    reloadRequest,
+    target.browserContext,
+    target.kind
+  ])
 
   useEffect(() => {
     if (

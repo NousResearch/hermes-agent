@@ -473,6 +473,28 @@ describe('PreviewPane console state', () => {
     expect(reloadIgnoringCache).toHaveBeenCalledOnce()
   })
 
+  // A plugin viewer bootstraps from a one-time `#ticket=` it strips on load, so
+  // a reload lands ticketless. Agent edits can't change it anyway.
+  it('workspace edits never reload an isolated viewer tab, even on loopback', async () => {
+    const target = {
+      browserContext: 'isolated',
+      kind: 'url',
+      label: 'Viewer',
+      source: 'http://127.0.0.1:9876/viewer.html#ticket=one',
+      transient: true,
+      url: 'http://127.0.0.1:9876/viewer.html#ticket=one'
+    } as const
+
+    const rendered = render(<PreviewPane reloadRequest={0} tabId="viewer" target={target} />)
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+    const reloadIgnoringCache = vi.fn()
+
+    Object.assign(webview, { reloadIgnoringCache })
+
+    await act(async () => rendered.rerender(<PreviewPane reloadRequest={1} tabId="viewer" target={target} />))
+    expect(reloadIgnoringCache).not.toHaveBeenCalled()
+  })
+
   it('renders authenticated remote HTML safely and honors source mode', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
 

@@ -54,14 +54,15 @@ def test_served_profile_projects_the_default_listener_mirrors_with_their_url(ser
     assert "ingress_url" not in profile_platforms_from_multiplexer(live.runtime, "default").get("api_server", {})
 
 
-def test_messaging_card_for_a_served_profile_reads_connected_not_restart_needed(served_root, monkeypatch):
+def test_messaging_card_for_a_served_profile_inherits_api_server_enablement(served_root):
     from hermes_cli.web_routers import messaging
-    monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
     entry = {"id": "api_server", "name": "API server", "description": "", "docs_url": "", "env_vars": [],
              "required_env": []}
     alpha = served_root / "profiles" / "alpha"
     [payload] = messaging._platform_payloads(alpha, [entry])
     assert payload["gateway_running"] is True
+    assert payload["enabled"] is True
+    assert payload["configured"] is True
     assert payload["state"] == "connected", payload
     assert payload["ingress_url"] == "http://127.0.0.1:45719/p/alpha/v1"
 

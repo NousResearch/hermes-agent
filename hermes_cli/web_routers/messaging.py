@@ -238,6 +238,12 @@ def _messaging_platform_payload(
     ]
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    # A multiplexed secondary has no api_server adapter or credentials of its own: the default
+    # gateway's live listener is projected above as a mirror. That live mirror is authoritative
+    # for the card's enablement too, otherwise its empty scoped config incorrectly renders it
+    # disabled/not configured while its /p/<profile>/v1 endpoint is serving requests.
+    if runtime_platform.get("mirrored_from") == "default":
+        enabled = configured = True
 
     state = runtime_platform.get("state")
     if not enabled:

@@ -45,6 +45,17 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     mode = _hermes_holder_subcommand(command)
+    if mode is None:
+        # The legacy script entry point is not a console-script token. Normalize only
+        # that argv head before applying the same flag-aware subcommand parser.
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+        mode = _hermes_holder_subcommand(shlex.join([
+            "hermes" if token.replace("\\", "/").endswith("/hermes_cli/main.py") else token
+            for token in tokens
+        ]))
     if mode not in ("dashboard", "serve"):
         return None
 

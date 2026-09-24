@@ -911,6 +911,9 @@ class TestLaunchdSupervisedBackends:
         assert main_dashboard._launchd_job_owning_backend(9999, argv, [job]) == job[:2] + (4321,)
         assert main_dashboard._parse_dashboard_runtime(
             "python -m hermes_cli.main -p default gateway run --port 9119") is None
+        assert main_dashboard._parse_dashboard_runtime(
+            "python /opt/hermes/hermes_cli/main.py -p default dashboard --port 8642") == (
+                "dashboard", "127.0.0.1", 8642)
 
     @staticmethod
     def _fake_kill(pid, sig):

@@ -547,7 +547,6 @@ import { decodeWebText } from './web-text-decoder'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
-import { liveWindowState, overlayWindowState } from './connection-window-state'
 import {
   registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,

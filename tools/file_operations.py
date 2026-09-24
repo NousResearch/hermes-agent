@@ -277,11 +277,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             full = path if os.path.isabs(path) else os.path.join(
                 getattr(self.env, "cwd", None) or self.cwd, path)
             try:
-                if _stat.S_ISREG(os.stat(full).st_mode):
-                    with open(full, "rb") as fh:
-                        return fh.read(), None
+                # One lookup, not two: a stat-then-open pair can have the path swapped for a FIFO in
+                # between, and that open blocks this thread forever (no backend timeout covers it).
+                # O_NONBLOCK returns a descriptor for a FIFO instead of waiting, and fstat judges THAT
+                # descriptor, so a non-regular file is rejected rather than read.
+                fd = os.open(full, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+                try:
+                    if _stat.S_ISREG(os.fstat(fd).st_mode):
+                        with open(fd, "rb", closefd=False) as fh:
+                            return fh.read(), None
+                finally:
+                    os.close(fd)
             except OSError:
-                pass  # missing/unreadable: the shell read below reports it the usual way
+                pass  # missing/unreadable/would-block: the shell read below reports it the usual way
         # Fenced like the compound read probe, and for the same reason: a backend whose merged
         # stdout carries login-shell noise (a remote shell announcing TERM, a banner) would
         # otherwise have it whitespace-joined onto the payload and decoded INTO the file's bytes,
@@ -301,6 +309,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             read_rc = int(status[0])
         except (IndexError, ValueError):
             return None, garbled
+        if read_rc == 127:  # no base64 on this backend (busybox, distroless): try the hex transport
+            return self._read_exact_bytes_hex(path)
         if read_rc != 0:
             # stderr is merged into the fenced segment, so that segment holds base64's own diagnostic
             # ("No such file or directory", "Permission denied"): keep it for the caller's message.
@@ -311,6 +321,41 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if data is None:  # stray output in the payload: refuse rather than guess (never echo it back)
             return None, garbled
         return data, None
+
+    def _read_exact_bytes_hex(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+        """``od`` fallback for a backend without ``base64``, fenced the same way.
+
+        ``read_file_raw`` is the edit paths' source read AND, through ``_apply_add``, their
+        existence check, so a transport that simply is not installed must not read as "no such
+        file" — that clobbers the file the Add was refusing to overwrite. ``od`` is POSIX and
+        present in busybox; when it is missing too the caller gets a transport error, never a
+        not-found."""
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        mark = f"echo {sentinel}"
+        result = self._exec(
+            f"{mark}; od -An -v -tx1 < {self._escape_shell_arg(path)}; __hb=$?; {mark}; echo $__hb")
+        segments = _split_segments(result.stdout or "", sentinel)
+        unavailable = ExecuteResult(
+            stdout=f"{path}: this backend has neither base64 nor od, so a byte-exact read is unavailable",
+            exit_code=1)
+        if len(segments) != 3:
+            return None, result if result.exit_code != 0 else unavailable
+        status = _strip_terminal_fence_leaks(segments[2]).split()
+        try:
+            read_rc = int(status[0])
+        except (IndexError, ValueError):
+            return None, unavailable
+        if read_rc == 127:
+            return None, unavailable
+        if read_rc != 0:
+            return None, ExecuteResult(
+                stdout=_strip_terminal_fence_leaks(segments[1]).strip() or f"{path}: exit {read_rc}",
+                exit_code=read_rc)
+        try:
+            return bytes.fromhex("".join(_strip_terminal_fence_leaks(segments[1]).split())), None
+        except ValueError:
+            return None, ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read",
+                                       exit_code=1)
 
     @staticmethod
     def _decode_base64_sample(text: str) -> Optional[bytes]:
@@ -1059,7 +1104,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 if score > 0:
                     scored.append((score, os.path.join(dir_path, f)))
         scored.sort(key=lambda x: -x[0])
-        return ReadResult(error=f"File not found: {path}", similar_files=[fp for _, fp in scored[:5]])
+        return ReadResult(error=f"File not found: {path}", not_found=True,
+                          similar_files=[fp for _, fp in scored[:5]])
 
     def read_file_raw(self, path: str) -> ReadResult:
         """Whole file as a plain string (no pagination/line numbers/clamping)."""
@@ -1092,7 +1138,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         path = self._expand_path(path)
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
-            return ReadResult(error=f"File not found: {path}")
+            return ReadResult(error=f"File not found: {path}", not_found=True)
         if status == "not_regular":
             return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):

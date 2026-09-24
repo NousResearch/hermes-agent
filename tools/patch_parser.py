@@ -328,6 +328,10 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
     read_back = file_ops.read_file_raw(op.file_path)
     if not read_back.error:
         return _fail(f"{op.file_path}: file already exists — use Update File, not Add File")
+    if not getattr(read_back, "not_found", False):
+        # The read FAILED; it did not report an absent path. Treating that as "the path is free"
+        # writes the Add payload over whatever is actually there.
+        return _fail(f"{op.file_path}: could not confirm the path is free — {read_back.error}")
     content_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+']
     result = file_ops.write_file(op.file_path, '\n'.join(content_lines))
     diff = f"--- /dev/null\n+++ b/{op.file_path}\n" + '\n'.join(f"+{line}" for line in content_lines)

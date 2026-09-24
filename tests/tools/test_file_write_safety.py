@@ -432,6 +432,78 @@ class TestBomHandling:
         ops.patch_replace(str(target), "VERSION=1", "VERSION=2")
         assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
 
+    @staticmethod
+    def _env_without(*missing: str):
+        """A real shell where only the named BINARIES are absent (busybox, distroless)."""
+        import re as _re
+        from tools.environments.local import LocalEnvironment
+        stub = "( echo 'sh: not found' >&2; exit 127 )"  # a SUBSHELL: `exit` must not kill the shell
+
+        class Env(LocalEnvironment):
+            def execute(self, command, *args, **kwargs):
+                for name in missing:
+                    command = _re.sub(rf"\b{name} <", f"{stub} <", command)
+                    command = _re.sub(rf"\b{name}\b(?! <)", stub, command)
+                return super().execute(command, *args, **kwargs)
+        return Env
+
+    def test_byte_exact_read_falls_back_to_hex_without_base64(self, tmp_path: Path, monkeypatch):
+        # base64 is not on every backend. The sample path already degrades when it is missing
+        # (_detect_binary), so the byte-exact read must too, and byte-exactly.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        target = tmp_path / "conf.txt"
+        original = b"HEADER\nVERSION=1\n"
+        target.write_bytes(original)
+        ops = ShellFileOperations(self._env_without("base64")(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        assert ops._read_exact_bytes(str(target)) == (original, None)
+        assert ops.patch_replace(str(target), "VERSION=1", "VERSION=2").success
+        assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+    def test_add_file_refuses_when_the_read_failed_rather_than_the_path_being_free(
+            self, tmp_path: Path, monkeypatch):
+        # `Add File` uses read_file_raw's error as its existence check. A backend with no byte
+        # transport at all makes that read FAIL, which must not read as "the path is free" —
+        # that writes the Add payload over the file the check exists to protect.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        target = tmp_path / "KEEP.txt"
+        precious = b"KEEP ME\n"
+        target.write_bytes(precious)
+        ops = ShellFileOperations(self._env_without("base64", "od")(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        read = ops.read_file_raw(str(target))
+        assert read.error and not read.not_found  # a failed read, NOT an absent path
+        res = ops.patch_v4a(f"*** Begin Patch\n*** Add File: {target}\n+clobbered\n*** End Patch")
+        assert not res.success
+        assert target.read_bytes() == precious
+
+    def test_native_byte_exact_read_never_opens_a_non_regular_file(self, tmp_path: Path, monkeypatch):
+        # The native fast path bypasses the backend timeout, so a blocking open there hangs the
+        # thread with nothing to interrupt it. The shell path below has a timeout and is allowed
+        # to take a FIFO; the native path must hand it over instead of opening it. Stubbing the
+        # shell read keeps this about the native branch: if it opens the FIFO the test hangs.
+        import signal
+        from tools.file_operations import ExecuteResult, ShellFileOperations
+        from tools.environments.local import LocalEnvironment
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)  # no writer: a blocking open never returns
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_exec",
+                            lambda *a, **k: ExecuteResult(stdout="handed to the shell", exit_code=1))
+
+        def _bail(*_args):
+            raise TimeoutError("the native read opened a FIFO and blocked")
+        previous = signal.signal(signal.SIGALRM, _bail)
+        signal.alarm(5)
+        try:
+            data, failed = ops._read_exact_bytes(str(fifo))
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        assert data is None and failed is not None and "handed to the shell" in failed.stdout
+
 
 class TestProtectedInstructionFiles:
     """Writes to agent-instruction files ALWAYS require approval.

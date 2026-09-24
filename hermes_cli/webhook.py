@@ -3,9 +3,11 @@
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Dict
@@ -55,8 +57,54 @@ def _is_webhook_enabled() -> bool:
     return bool(_get_webhook_config().get("enabled"))
 
 
+_log = logging.getLogger(__name__)
+
+# De-duplicated per distinct raw value: a changed typo warns afresh, a repeated
+# `webhook list` does not spam (the URL is re-derived on every subscribe/list call).
+_warned_malformed_public_base_urls: set = set()
+
+# Reject characters that have no business in a base URL (typo or injection attempt):
+# never sanitise, always fall back to the listener-derived URL.
+_URL_REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t"))
+
+
+def _normalise_public_base_url(raw) -> str:
+    """Cleaned ``scheme://netloc[/path]`` (trailing slash stripped) or ``""`` when
+    empty/malformed (= fall back to the listener-derived URL)."""
+    url = raw.strip() if isinstance(raw, str) else ""
+    if not url or any(c in url for c in _URL_REJECT_CHARS):
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return url.rstrip("/")
+
+
+def _warn_if_malformed_public_base_url(source: str, raw: str) -> None:
+    """Warn once when a non-empty public_base_url was rejected (almost always a missing
+    scheme); printing a proxy-fronted URL derived from the listener misleads silently."""
+    cleaned = raw.strip()
+    if not cleaned or (source, cleaned) in _warned_malformed_public_base_urls:
+        return
+    _warned_malformed_public_base_urls.add((source, cleaned))
+    _log.warning(
+        "%s is set to %r but was ignored because it is not a valid absolute "
+        "URL — it must include an http:// or https:// scheme (e.g. https://%s). "
+        "Falling back to the listener-derived URL, which points at the internal "
+        "address when a reverse proxy fronts the gateway.",
+        source, cleaned, cleaned.split("://")[-1] or "hooks.example.com")
+
+
 def _get_webhook_base_url() -> str:
     wh = _get_webhook_config().get("extra", {})
+    raw = str(wh.get("public_base_url") or "")
+    public = _normalise_public_base_url(raw)
+    if public:
+        return public
+    _warn_if_malformed_public_base_url("platforms.webhook.extra.public_base_url", raw)
     host = wh.get("host")
     display_host = "localhost" if not host or host in {"0.0.0.0", "::"} else host
     if ":" in display_host and not display_host.startswith("["):

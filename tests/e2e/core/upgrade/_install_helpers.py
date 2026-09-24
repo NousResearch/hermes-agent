@@ -171,9 +171,13 @@ def provider_config(base_url: str, version: int | None, extra: str = "") -> str:
 
 
 def tree_digest(path: Path) -> dict[str, str]:
-    """{relative path: sha256} of every regular file / symlink target under ``path``."""
+    """{relative path: sha256} of every regular file / symlink target under ``path``.
+    ``__pycache__`` is skipped: Python writes it whenever the code is imported (a plugin the
+    config migration enabled loads on the next run); it is not the user's content."""
     out: dict[str, str] = {}
     for p in sorted(path.rglob("*")):
+        if "__pycache__" in p.relative_to(path).parts:
+            continue
         rel = str(p.relative_to(path))
         if p.is_symlink():
             out[rel] = "link:" + os.readlink(p)

@@ -5,7 +5,10 @@ local bare origin), then a home built the way users build it, mostly through the
 
 * three profiles (default + two made with ``hermes profile create``), each with a hand-edited
   config.yaml carrying comments and a key HEAD does not know, its own .env, SOUL.md and
-  MEMORY.md, and sessions in its own state.db from real one-shot turns;
+  MEMORY.md, and sessions in its own state.db from real one-shot turns. The default profile's
+  config sits at the oldest ``_config_version`` HEAD still migrates and ``work``'s one version
+  behind, so the update's config migration (active profile + siblings) runs; ``research`` is
+  current and must come through byte-for-byte;
 * a custom skill, a user plugin under ``~/.hermes/plugins/``, a cron job made by ``hermes cron``;
 * two broken profiles next to them (a dangling symlink, a profile whose config.yaml is not YAML);
 * local files the user dropped inside the checkout (an untracked notes file and an extension dir).
@@ -25,6 +28,7 @@ import os
 import shutil
 
 import pytest
+import yaml
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
@@ -41,6 +45,9 @@ pytestmark = [
 
 UPDATE_TIMEOUT = 1500
 PROFILES = ("default", "work", "research")
+_VERSIONS_PY = ("from hermes_cli.config_defaults import DEFAULT_CONFIG as D; "
+                "from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION as F; "
+                "print(D['_config_version'], F)")
 
 
 def _profile_home(sb: I.Sandbox, name: str):
@@ -54,6 +61,29 @@ def _pargs(name: str) -> list[str]:
 def _ok(cp):
     assert cp.returncode == 0 and I.TRACEBACK not in cp.stdout + cp.stderr, I.describe(cp)
     return cp
+
+
+def _config_versions(sb: I.Sandbox) -> tuple[int, int]:
+    """(latest, support floor) ``_config_version`` of the code in the sandbox checkout's venv."""
+    cp = _ok(sb.run([str(sb.checkout / "venv" / "bin" / "python"), "-c", _VERSIONS_PY]))
+    latest, floor = cp.stdout.strip().splitlines()[-1].split()
+    return int(latest), int(floor)
+
+
+def _leaves(node, path: tuple = ()):
+    if isinstance(node, dict) and node:
+        for k, v in node.items():
+            yield from _leaves(v, (*path, k))
+    else:
+        yield path, node
+
+
+def _at(node, path: tuple):
+    for k in path:
+        if not isinstance(node, dict) or k not in node:
+            return "<missing>"
+        node = node[k]
+    return node
 
 
 def _snapshot(sb: I.Sandbox) -> dict:
@@ -77,18 +107,21 @@ def _snapshot(sb: I.Sandbox) -> dict:
     return snap
 
 
-def _seed_home(sb: I.Sandbox, provider: FakeLLMServer) -> dict[str, str]:
-    """Build the realistic home; returns {profile: marker of its pre-update session}."""
-    py = str(sb.checkout / "venv" / "bin" / "python")
-    ver = _ok(sb.run([py, "-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"]))
-    version = int(ver.stdout.strip().splitlines()[-1])
+def _seed_home(sb: I.Sandbox, provider: FakeLLMServer) -> tuple[dict[str, str], dict[str, int]]:
+    """Build the realistic home; returns ({profile: marker of its pre-update session},
+    {profile: the _config_version its config.yaml was written at})."""
+    latest, floor = _config_versions(sb)
+    assert floor < latest, f"harness: no older config version to migrate from (floor {floor}, latest {latest})"
+    versions = {"default": floor, "work": max(floor, latest - 1), "research": latest}
     for name in PROFILES[1:]:
         _ok(sb.cli("profile", "create", name, "--no-alias"))
     markers = {}
     for name in PROFILES:
         home = _profile_home(sb, name)
-        extra = f"display:\n  personality: helpful  # {name}'s choice\n"
-        (home / "config.yaml").write_text(I.provider_config(provider.base_url, version, extra), encoding="utf-8")
+        # The per-profile marker lives in a key of the user's own: known keys the ladder resets
+        # on purpose (display.personality, stale defaults) are not user state it must keep.
+        extra = f"my_profile_note: \"{name}'s own value\"  # {name}'s choice\n"
+        (home / "config.yaml").write_text(I.provider_config(provider.base_url, versions[name], extra), encoding="utf-8")
         (home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}-{name}\n# {name} keys\n", encoding="utf-8")
         (home / "SOUL.md").write_text(f"You are the {name} agent. Keep it short.\n", encoding="utf-8")
         (home / "memories").mkdir(exist_ok=True)
@@ -109,7 +142,7 @@ def _seed_home(sb: I.Sandbox, provider: FakeLLMServer) -> dict[str, str]:
     os.symlink(str(sb.root / "moved-away-home"), hh / "profiles" / "ghost")
     (hh / "profiles" / "badyaml").mkdir()
     (hh / "profiles" / "badyaml" / "config.yaml").write_text("model: [unclosed\n  : :\n", encoding="utf-8")
-    return markers
+    return markers, versions
 
 
 @pytest.fixture(scope="module")
@@ -124,13 +157,13 @@ def world(tmp_path_factory, provider):
     origin = I.make_origin(root, I.head_sha())
     sb = I.new_sandbox(root / "sb", origin)
     _ok(I.run_installer(sb))
-    markers = _seed_home(sb, provider)
+    markers, versions = _seed_home(sb, provider)
     (sb.checkout / "my_local_notes.txt").write_text("untracked notes in the checkout\n", encoding="utf-8")
     snap = _snapshot(sb)
     target = I.publish_commit(origin, root, "release: e2e bump 1", {"docs/e2e-update-marker.txt": "release 1\n"})
     update = sb.cli("update", "--yes", timeout=UPDATE_TIMEOUT)
-    return {"sb": sb, "origin": origin, "root": root, "markers": markers, "snap": snap,
-            "target": target, "update": update}
+    return {"sb": sb, "origin": origin, "root": root, "markers": markers, "versions": versions,
+            "snap": snap, "target": target, "update": update}
 
 
 def test_update_on_a_realistic_home_exits_clean_at_the_new_commit(world):
@@ -146,8 +179,12 @@ def test_user_state_survives_byte_for_byte(world):
     sb, before = world["sb"], world["snap"]
     assert world["update"].returncode == 0, I.describe(world["update"])
     after = _snapshot(sb)
+    latest = max(world["versions"].values())
     for name in PROFILES:
-        for key in ("config.yaml", ".env", "SOUL.md", "MEMORY.md"):
+        # An outdated config.yaml is migrated on purpose (see the migration test below).
+        keys = ("config.yaml", ".env", "SOUL.md", "MEMORY.md") if world["versions"][name] == latest else (
+            ".env", "SOUL.md", "MEMORY.md")
+        for key in keys:
             assert after[name][key] == before[name][key], (
                 f"{name}/{key} changed by the update\n--- before ---\n{before[name][key].decode()}"
                 f"\n--- after ---\n{after[name][key].decode()}")
@@ -156,6 +193,29 @@ def test_user_state_survives_byte_for_byte(world):
     for key in ("custom_skill", "plugin", "cron", "badyaml", "ghost"):
         assert after[key] == before[key], f"{key} changed by the update: {before[key]!r} -> {after[key]!r}"
     assert before["cron"], "harness: no cron job was seeded"
+
+
+def test_outdated_configs_migrate_to_the_current_version_keeping_user_values(world):
+    """Active profile (``_check_and_apply_config_migration``) and sibling
+    (``_migrate_sibling_profile_configs``) alike: the version reaches the running code's, and
+    every value the user wrote (known keys, unknown keys, nested and unicode) is still there."""
+    sb, up = world["sb"], world["update"]
+    assert up.returncode == 0, I.describe(up)
+    latest, _floor = _config_versions(sb)
+    outdated = [n for n in PROFILES if world["versions"][n] < latest]
+    assert {"default", "work"} <= set(outdated), f"harness: {world['versions']} vs latest {latest}"
+    for name in outdated:
+        before = yaml.safe_load(world["snap"][name]["config.yaml"])
+        text = (_profile_home(sb, name) / "config.yaml").read_text(encoding="utf-8")
+        after = yaml.safe_load(text)
+        assert before["_config_version"] == world["versions"][name], (
+            f"harness: {name}'s config was migrated before the update ran")
+        assert isinstance(after, dict) and after.get("_config_version") == latest, (
+            f"{name}: config.yaml left at v{before['_config_version']} (code is v{latest}) by the update\n"
+            f"{text}\n{I.describe(up)}")
+        lost = {".".join(p): (v, _at(after, p)) for p, v in _leaves(before)
+                if p != ("_config_version",) and _at(after, p) != v}
+        assert not lost, f"{name}: config migration lost or changed user values {{key: (before, after)}}: {lost}\n{text}"
 
 
 def test_every_profile_session_resumes_after_update(world, provider):

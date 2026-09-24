@@ -11,7 +11,6 @@ per-call script ship, tool calls as request files polled via env.execute()
 scrubbing, interpreter/cwd), tools/code_execution_rpc.py (RPC servers).
 """
 
-import base64
 import json
 import logging
 import os
@@ -30,7 +29,7 @@ from tools.registry import registry, tool_error
 
 from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
-from tools.code_execution_rpc import _rpc_poll_loop
+from tools.code_execution_rpc import _private_dirs_cmd, _remote_write, _rpc_poll_loop
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
@@ -358,7 +357,10 @@ def _call(tool_name, args):
     # (or any non-UTF-8 locale) the default open() mode would mangle
     # non-ASCII chars in tool args when encoding them as JSON.
     tmp = req_file + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    # The request carries the RPC token and tool args: owner-only even under a
+    # permissive process umask.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump({
             "tool": tool_name,
             "args": args,
@@ -451,10 +453,35 @@ def _get_or_create_env(task_id: str):
 
 
 def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
-    """Write *content* to *remote_path* via ``echo … | base64 -d`` — some backends (Modal) don't
-    reliably deliver stdin_data to chained commands; base64 is shell-safe inside single quotes."""
-    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    env.execute(f"echo '{encoded}' | base64 -d > {shlex.quote(remote_path)}", cwd="/", timeout=30)
+    """Write *content* owner-only to *remote_path*. stdin-capable backends carry
+    the payload on stdin so it never appears in remote argv; the rest get the
+    base64 echo form (see _remote_write_cmd). Raises on write failure: the
+    caller ships secrets and code into dirs it believes are locked down, so a
+    silent failure would run the next step against a missing or half-written
+    file."""
+    result = _remote_write(env, remote_path, content)
+    if not isinstance(result, dict) or result.get("returncode", 1) != 0:
+        raise RuntimeError(
+            f"remote file ship failed for {remote_path!r}: "
+            f"{(result or {}).get('output', result)!r}")
+
+
+def _ship_env_file_and_launch_prefix(env, remote_dir: str, env_name: str,
+                                     env_map: dict) -> str:
+    """Ship *env_map* as KEY=value lines to ``remote_dir/env_name`` and return a
+    command prefix that sources it inside a subshell; the caller appends the
+    launch command and the closing ``)``.
+
+    The subshell is load-bearing: every env.execute() runs inside the backend's
+    session wrapper, which re-dumps ``export -p`` into the shared session
+    snapshot after each command. A plain ``set -a; . file`` in the outer shell
+    would export HERMES_RPC_TOKEN/PYTHONPATH/TZ into that snapshot and re-export
+    them into every later command on the backend (the #71296 snapshot-leak
+    class). The token also stays off the remote shell's argv, which co-tenant
+    users can read via ps for the command's lifetime."""
+    lines = "".join(f"{k}={shlex.quote(v)}\n" for k, v in env_map.items())
+    _ship_file_to_remote(env, f"{remote_dir}/{env_name}", lines)
+    return f"cd {shlex.quote(remote_dir)} && ( set -a && . ./{env_name} && set +a && "
 
 
 def _env_temp_dir(env: Any) -> str:
@@ -565,10 +592,17 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
-    quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
     tool_call_counter, stop_event, rpc_thread = [0], threading.Event(), None
     try:
-        env.execute(f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10)
+        # Private dirs: the sandbox lives under a shared temp dir and carries the
+        # RPC token (in req files) and tool results. Fail closed on setup
+        # failure rather than ship secrets into a dir that stayed permissive.
+        setup = env.execute(
+            _private_dirs_cmd([f"{sandbox_dir}/rpc"], [sandbox_dir, f"{sandbox_dir}/rpc"]),
+            cwd="/", timeout=10)
+        if not isinstance(setup, dict) or setup.get("returncode", 1) != 0:
+            raise RuntimeError(
+                f"remote sandbox setup failed: {(setup or {}).get('output', setup)!r}")
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
@@ -581,13 +615,19 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
                   max_tool_calls, sandbox_tools, stop_event, rpc_token))
         rpc_thread.start()
-        env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
-                      "PYTHONDONTWRITEBYTECODE=1")
+        # The token travels in a sourced env file, never in argv. No umask on
+        # the launch command: the 700 dirs + explicit 0600 writes cover Hermes'
+        # files, and user code keeps the remote's default file modes.
+        env_map = {"HERMES_RPC_DIR": f"{sandbox_dir}/rpc",
+                   "HERMES_RPC_TOKEN": rpc_token,
+                   "PYTHONDONTWRITEBYTECODE": "1"}
         tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
         if tz:
-            env_prefix += f" TZ={shlex.quote(tz)}"
+            env_map["TZ"] = tz
+        launch_prefix = _ship_env_file_and_launch_prefix(
+            env, sandbox_dir, "sandbox.env", env_map)
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
-        script_result = env.execute(f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
+        script_result = env.execute(f"{launch_prefix} exec python3 script.py )",
                                     timeout=timeout)
         stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)

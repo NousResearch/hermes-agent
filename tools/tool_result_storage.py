@@ -185,7 +185,11 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     Heredoc-mode backends append exactly one trailing newline by construction
     (``BaseEnvironment._embed_stdin_heredoc``), so one extra byte is accepted there."""
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    # Private dir: archived results carry tool output (can hold secrets) under a
+    # shared temp root on remote backends. The umask also covers the cat redirect.
+    from tools.code_execution_rpc import _private_dirs_cmd
+    cmd = (f"{_private_dirs_cmd([storage_dir], [storage_dir])} "
+           f"&& cat > {shlex.quote(remote_path)}")
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
         return False
 

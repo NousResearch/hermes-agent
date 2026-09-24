@@ -52,6 +52,11 @@ class TestWriteToSandbox:
         # persisted size (unparseable probe output = best-effort success).
         cmd = env.execute.call_args_list[0][0][0]
         assert "mkdir -p" in cmd
+        # The storage dir sits under shared temp and holds tool output that can
+        # contain secrets: it must be owner-only at creation, and the umask must
+        # cover the cat redirect too.
+        assert "umask 077" in cmd
+        assert "chmod 700" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).

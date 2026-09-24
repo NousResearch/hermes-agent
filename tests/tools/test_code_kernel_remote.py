@@ -10,6 +10,7 @@ state_lost/state_reset reporting, fail-open, and owner isolation.
 """
 import json
 import os
+import shutil
 import sys
 import time
 import unittest
@@ -33,15 +34,19 @@ class ScriptedEnv:
     receives the command and returns the result dict.
     """
 
+    _stdin_mode = "pipe"  # contract-faithful: ssh/docker/local deliver stdin
+
     def __init__(self, handlers):
         self.handlers = handlers
         self.commands = []
+        self.stdin_payloads = []
 
     def get_temp_dir(self):
         return "/tmp"
 
-    def execute(self, command, cwd=None, timeout=None):
+    def execute(self, command, cwd=None, timeout=None, stdin_data=None):
         self.commands.append(command)
+        self.stdin_payloads.append(stdin_data)
         for needle, handler in self.handlers:
             if needle in command:
                 return handler(command)
@@ -338,6 +343,201 @@ class TestDispatchIntegration(unittest.TestCase):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")
         self.assertIn("per-call ran", result["output"])
+
+
+class TestSharedHostLockdown(RemoteKernelBase):
+    """Shared-host hardening: the kernel dir lives under a shared temp dir, so
+    every dir must be owner-only, every remote write owner-only, and the RPC
+    token must travel in a sourced env file rather than a ps-visible argv."""
+
+    def test_spawn_locks_down_dirs_and_hides_token(self):
+        self._ship.stop()  # let the real ship commands reach env.commands
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(stdout="hi\n")]))
+        result = _run(env)
+        self.assertEqual(result["status"], "success", result)
+        kernel = next(iter(_REMOTE_KERNELS.values()))
+        # The token never rides a command line: a remote shell's argv is
+        # world-readable via ps for the command's whole lifetime.
+        self.assertFalse(
+            any(kernel.rpc_token in c for c in env.commands),
+            "rpc token appeared in a remote command line")
+        spawn_cmd = next(c for c in env.commands if "nohup" in c)
+        # The env file is sourced inside a subshell so set -a's exports never
+        # reach the backend's session-snapshot dump (issue #71296 class).
+        self.assertIn("( set -a", spawn_cmd)
+        self.assertIn(". ./kernel.env", spawn_cmd)
+        self.assertIn("rm -f ./kernel.env", spawn_cmd)
+        self.assertNotIn("HERMES_RPC_TOKEN=", spawn_cmd)
+        # Every dir under the shared temp dir is owner-only (mkdir -p's -m
+        # applies only to the leaf, so the chmod must name all three; umask 077
+        # covers the creation-time window).
+        mkdir_cmd = next(c for c in env.commands if "mkdir -p" in c)
+        self.assertIn("umask 077", mkdir_cmd)
+        self.assertIn("chmod 700", mkdir_cmd)
+        for d in (kernel.kernel_dir, f"{kernel.kernel_dir}/cells",
+                  f"{kernel.kernel_dir}/rpc"):
+            self.assertIn(d, mkdir_cmd)
+        # Ships write owner-only; on a pipe-capable backend the payload rides
+        # stdin, so the base64 (which decodes to the token for kernel.env)
+        # never enters argv either.
+        ship_cmds = [c for c in env.commands if "base64 -d" in c]
+        self.assertTrue(ship_cmds)
+        self.assertTrue(all("umask 077" in c for c in ship_cmds))
+        self.assertTrue(any("kernel.env" in c for c in ship_cmds))
+        self.assertFalse(any("echo '" in c for c in ship_cmds),
+                         "payload echoed into argv on a stdin-capable backend")
+        import base64
+        env_ship = next(p for p, c in zip(env.stdin_payloads, env.commands)
+                        if p and "kernel.env" in c)
+        env_content = base64.b64decode(env_ship).decode()
+        self.assertIn(f"HERMES_RPC_TOKEN={kernel.rpc_token}", env_content)
+
+    def test_remote_write_transport_follows_stdin_mode(self):
+        """Pipe-mode backends carry the payload on stdin (never argv); heredoc
+        backends embed stdin in the command anyway, so they keep the echo pipe."""
+        import base64
+        from tools.code_execution_rpc import _remote_write_cmd
+
+        class HeredocEnv:
+            _stdin_mode = "heredoc"
+
+        cmd, stdin = _remote_write_cmd(HeredocEnv(), "/x/f", "data")
+        self.assertIsNone(stdin)
+        self.assertIn("echo '", cmd)
+        cmd2, stdin2 = _remote_write_cmd(ScriptedEnv([]), "/x/f", "data")
+        self.assertIsNotNone(stdin2)
+        self.assertNotIn("echo '", cmd2)
+        self.assertEqual(base64.b64decode(stdin2).decode(), "data")
+
+    def test_stub_req_files_are_owner_only(self):
+        """The generated file-RPC stub writes req files mode 600: they carry
+        the token + tool args and sit in a dir a same-uid kernel shares."""
+        import tempfile
+        import types
+        from tools.code_execution_tool import generate_hermes_tools_module
+        src = generate_hermes_tools_module(["read_file"], transport="file")
+        rpc_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, rpc_dir, True)
+        with patch.dict(os.environ, {"HERMES_RPC_DIR": rpc_dir,
+                                     "HERMES_RPC_TOKEN": "test-token"}):
+            mod = types.ModuleType("hermes_tools")
+            exec(compile(src, "hermes_tools.py", "exec"), mod.__dict__)
+            with open(os.path.join(rpc_dir, "res_000001"), "w") as f:
+                f.write(json.dumps("ok"))
+            mod.read_file("/etc/hostname")
+            req = os.path.join(rpc_dir, "req_000001")
+            self.assertTrue(os.path.exists(req))
+            self.assertEqual(os.stat(req).st_mode & 0o777, 0o600)
+
+    def test_runner_cell_res_files_are_owner_only(self):
+        """The remote runner writes cell_res files mode 600: they carry the
+        cell's output in a dir under shared temp."""
+        import tempfile
+        import threading
+        import types
+        from tools.code_kernel import RUNNER_CELL_SOURCE
+        from tools.code_kernel_remote import REMOTE_KERNEL_RUNNER_SOURCE
+        kdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, kdir, True)
+        cells = os.path.join(kdir, "cells")
+        os.makedirs(cells)
+        src = REMOTE_KERNEL_RUNNER_SOURCE.format(
+            cell_source=RUNNER_CELL_SOURCE, capture_limit=10000, idle_exit=2)
+        with patch.dict(os.environ, {"HERMES_KERNEL_DIR": kdir,
+                                     "HERMES_RPC_DIR": f"{kdir}/rpc",
+                                     "HERMES_RPC_TOKEN": "t"}):
+            mod = types.ModuleType("kernel_runner")
+            exec(compile(src, "kernel_runner.py", "exec"), mod.__dict__)
+            with open(os.path.join(cells, "cell_req_000001.json"), "w") as f:
+                json.dump({"code": "print('hi')", "id": "000001"}, f)
+            runner = threading.Thread(target=mod.main, daemon=True)
+            runner.start()
+            res = os.path.join(cells, "cell_res_000001.json")
+            deadline = time.monotonic() + 10
+            while not os.path.exists(res):
+                self.assertLess(time.monotonic(), deadline,
+                                "runner never wrote the cell result")
+                time.sleep(0.02)
+            self.assertEqual(os.stat(res).st_mode & 0o777, 0o600)
+            runner.join(5)
+
+
+@unittest.skipUnless(os.name == "posix" and shutil.which("bash"),
+                     "needs a POSIX bash transport")
+class TestRemoteKernelLocalEnvE2E(RemoteKernelBase):
+    """Real end-to-end: spawn the remote kernel through LocalEnvironment's real
+    bash transport, run a cell, and stat the modes on disk. This is the same
+    code path an ssh backend drives, pointed at this host."""
+
+    def test_kernel_tree_is_owner_only_on_real_fs(self):
+        self._ship.stop()
+        self._poll.stop()
+        from tools.environments.local import LocalEnvironment
+        env = LocalEnvironment(cwd="/", timeout=60)
+        try:
+            result = _run(env, code=(
+                "import os\n"
+                "print('KDIR_MODE=%o' % (os.stat(os.environ['HERMES_KERNEL_DIR']).st_mode & 0o777))\n"
+                "print('RPC_MODE=%o' % (os.stat(os.environ['HERMES_RPC_DIR']).st_mode & 0o777))\n"
+                "print('PP_DELIVERED=%s' % (os.environ.get('PYTHONPATH') == os.environ['HERMES_KERNEL_DIR']))\n"
+                "print('TOKEN_DELIVERED=%s' % bool(os.environ.get('HERMES_RPC_TOKEN')))\n"
+            ), timeout=60)
+            self.assertEqual(result["status"], "success", result)
+            blob = json.dumps(result)
+            self.assertIn("KDIR_MODE=700", blob)
+            self.assertIn("RPC_MODE=700", blob)
+            # The env file must actually deliver its vars to the runner — a
+            # broken source would silently degrade cells to no-RPC.
+            self.assertIn("PP_DELIVERED=True", blob)
+            self.assertIn("TOKEN_DELIVERED=True", blob)
+            kernel = next(iter(_REMOTE_KERNELS.values()))
+            # kernel.env is consumed by the subshell source: the token file is
+            # gone after launch while the runner keeps the values in its env.
+            self.assertFalse(os.path.exists(
+                os.path.join(kernel.kernel_dir, "kernel.env")))
+            for name in ("kernel_runner.py", "hermes_tools.py", "runner.log"):
+                p = os.path.join(kernel.kernel_dir, name)
+                self.assertTrue(os.path.exists(p), p)
+                self.assertEqual(os.stat(p).st_mode & 0o777, 0o600, p)
+            # The subshell confinement keeps the token and execution-scoped vars
+            # out of the backend's session snapshot: they must not leak into the
+            # snapshot file or the environ of a later command on the same env
+            # (issue #71296 snapshot-leak class).
+            probe = env.execute(
+                "printenv HERMES_RPC_TOKEN; printenv HERMES_KERNEL_DIR; "
+                "printenv HERMES_RPC_DIR; printenv PYTHONPATH",
+                cwd="/", timeout=15)
+            self.assertNotIn(kernel.rpc_token, probe.get("output", ""))
+            self.assertNotIn(kernel.kernel_dir, probe.get("output", ""))
+            self.assertNotIn(
+                kernel.rpc_token,
+                open(env._snapshot_path).read() if os.path.exists(env._snapshot_path) else "")
+        finally:
+            shutdown_all_remote_kernels()
+
+    def test_per_call_sandbox_is_owner_only_on_real_fs(self):
+        self._ship.stop()
+        self._poll.stop()
+        from tools.environments.local import LocalEnvironment
+        from tools.code_execution_tool import _run_remote_per_call
+        env = LocalEnvironment(cwd="/", timeout=60)
+        code = (
+            "import os\n"
+            "print('SANDBOX_MODE=%o' % (os.stat(os.path.dirname(os.environ['HERMES_RPC_DIR'])).st_mode & 0o777))\n"
+            "print('RPC_MODE=%o' % (os.stat(os.environ['HERMES_RPC_DIR']).st_mode & 0o777))\n"
+            "print('SCRIPT_MODE=%o' % (os.stat('script.py').st_mode & 0o777))\n"
+            "print('TOOLS_MODE=%o' % (os.stat('hermes_tools.py').st_mode & 0o777))\n"
+            "print('ENVFILE_MODE=%o' % (os.stat('sandbox.env').st_mode & 0o777))\n"
+        )
+        out = json.loads(_run_remote_per_call(
+            env, "local", code, "t-e2e", frozenset({"read_file"}),
+            timeout=60, max_tool_calls=5, exec_start=time.monotonic()))
+        self.assertEqual(out["status"], "success", out)
+        self.assertIn("SANDBOX_MODE=700", out["output"])
+        self.assertIn("RPC_MODE=700", out["output"])
+        self.assertIn("SCRIPT_MODE=600", out["output"])
+        self.assertIn("TOOLS_MODE=600", out["output"])
+        self.assertIn("ENVFILE_MODE=600", out["output"])
 
 
 if __name__ == "__main__":

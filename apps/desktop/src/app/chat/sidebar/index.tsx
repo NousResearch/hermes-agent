@@ -29,6 +29,7 @@ import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { $interfaceMode, $showsAdvancedChrome, shownInMode } from '@/store/interface-mode'
@@ -150,10 +151,9 @@ import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session
 import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
-import { useGatewaySessionGroups } from './gateway-group-model'
+import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
-import { buildProfileGroups } from './profile-groups'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -172,7 +172,6 @@ import {
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
-  type SidebarSessionGroup,
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
@@ -1308,13 +1307,6 @@ export function ChatSidebar({
     }
   }
 
-  // Grouping by profile: one collapsible group per profile, color on the header
-  // (not on every row). Default profile floats to the top, the rest alpha.
-  // Only reachable while the sidebar is showing every profile — scoped to one,
-  // it would draw a single group around the whole list.
-  const profileGrouped = showAllProfiles && grouping === 'profile'
-  const profileColors = useStore($profileColors)
-
   // Each messaging platform is its own self-managed section: split the
   // separately-fetched messaging slice by source, newest platform first, rows
   // within a platform by recency. Per-platform totals (when a "load more" has
@@ -1348,12 +1340,6 @@ export function ChatSidebar({
       bySource.set(sourceId, list)
     }
 
-    // When profileGrouped is true, also group by profile within each platform.
-    // Same helper (and therefore same keying/colors/order) as the recents
-    // profileGroups, so a platform's sub-groups line up with the recents view.
-    const buildProfileGroupsForPlatform = (sessions: SessionInfo[]): SidebarSessionGroup[] =>
-      buildProfileGroups(sessions, profileColors)
-
     return [...bySource.entries()]
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
@@ -1361,7 +1347,7 @@ export function ChatSidebar({
         const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
         const total = Math.max(ordered.length, unpinnedKnown ?? 0)
 
-        const section: MessagingSection = {
+        return {
           // Known exact total → more exist iff total exceeds loaded; otherwise
           // the seed fetch was capped, so assume more until a per-platform load
           // resolves the count.
@@ -1371,18 +1357,16 @@ export function ChatSidebar({
           sourceId,
           total
         }
-
-        // When profileGrouped is true, split sessions into per-profile groups.
-        if (profileGrouped) {
-          section.profileGroups = buildProfileGroupsForPlatform(ordered)
-        }
-
-        return section
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile, profileGrouped, profileColors])
+  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
-  const profileGroups = useGatewaySessionGroups(agentSessions, profileScope === ALL_PROFILES && grouping === 'profile')
+  // Recents and every messaging platform resolve owner groups the same way
+  // ([connectionId, profile]), so a platform's groups line up with recents.
+  const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
+  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped)
+  const connectionsRegistry = useStore($connectionsRegistry)
+  const profileColors = useStore($profileColors)
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.
@@ -1989,51 +1973,20 @@ export function ChatSidebar({
                 // still has older threads on disk.
                 const canRevealMore = visible < group.sessions.length || group.hasMore
 
-                // When profileGrouped is true, render profile groups instead of flat sessions.
-                if (profileGrouped && group.profileGroups && group.profileGroups.length > 0) {
-                  return (
-                    <SidebarSessionsSection
-                      activeSessionId={activeSidebarSessionId}
-                      contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
-                      emptyState={null}
-                      footer={
-                        canRevealMore ? (
-                          <SidebarLoadMoreRow
-                            loading={Boolean(messagingLoadMorePending[group.sourceId])}
-                            onClick={() => revealMoreMessaging(group.sourceId, group.sessions.length, group.hasMore)}
-                            step={Math.min(NON_SESSION_LOAD_STEP, Math.max(0, group.total - shownSessions.length))}
-                          />
-                        ) : null
-                      }
-                      groups={group.profileGroups}
-                      key={group.sourceId}
-                      label={group.label}
-                      labelIcon={
-                        <PlatformAvatar
-                          className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
-                          platformId={group.sourceId}
-                          platformName={group.label}
-                        />
-                      }
-                      onArchiveSession={onArchiveSession}
-                      onDeleteSession={onDeleteSession}
-                      onResumeSession={onResumeSession}
-                      onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
-                      onTogglePin={pinSession}
-                      onToggleUnread={toggleUnread}
-                      open={messagingOpenIds.includes(group.sourceId)}
-                      pinned={false}
-                      rootClassName="shrink-0 p-0"
-                      sessions={[]}
-                      showProfileTags={false}
-                    />
-                  )
-                }
+                // Group only what the cap lets through, so the footer's count
+                // and load-more stay about the platform, not one of its groups.
+                const ownerGroups = ownerGrouped
+                  ? scopeGatewaySessionGroups(
+                      buildGatewaySessionGroups(shownSessions, connectionsRegistry, profileColors),
+                      `messaging:${group.sourceId}`
+                    )
+                  : undefined
 
                 return (
                   <SidebarSessionsSection
                     activeSessionId={activeSidebarSessionId}
                     contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
+                    embeddedGroups
                     emptyState={null}
                     footer={
                       canRevealMore ? (
@@ -2044,6 +1997,7 @@ export function ChatSidebar({
                         />
                       ) : null
                     }
+                    groups={ownerGroups}
                     key={group.sourceId}
                     label={group.label}
                     labelIcon={
@@ -2063,6 +2017,7 @@ export function ChatSidebar({
                     pinned={false}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
+                    showProfileTags={showAllProfiles && !ownerGrouped}
                   />
                 )
               })}
@@ -2104,7 +2059,4 @@ interface MessagingSection {
   sessions: SessionInfo[]
   total: number
   hasMore: boolean
-  // When profileGrouped is true, sessions are split into per-profile groups.
-  // Each group is a SidebarSessionGroup with mode='profile' and the profile's color.
-  profileGroups?: SidebarSessionGroup[]
 }

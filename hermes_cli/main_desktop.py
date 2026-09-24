@@ -1543,6 +1543,11 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")
+    # Explicit -p/--profile only. A bare `hermes desktop` must not forward the
+    # sticky CLI profile — Electron would persist it over the stored desktop one.
+    from hermes_cli.main import explicit_cli_profile
+    if profile := explicit_cli_profile():
+        launch_command.extend(["--profile", profile])
     if not source_mode:
         desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     pass_fds: tuple[int, ...] = ()

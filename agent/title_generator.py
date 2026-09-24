@@ -268,6 +268,25 @@ def _strip_one_wrapper(text: str) -> str:
     return text
 
 
+# Matches an ``@file:``/``@folder:`` context reference the way the canonical
+# ``agent.context_references`` reference pattern does: an unquoted ``\S+``
+# value, or a backtick/double/single-quoted value (a space-bearing path is
+# written backtick-quoted). Kept local so the titler doesn't import the
+# context-reference machinery (circularity / startup cost) just to detect the
+# attachment-only shape (#92068).
+_CONTEXT_REFERENCE_TOKEN_RE = re.compile(
+    r"(?<![\w/])@(?:file|folder):(?:(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')|\S+)"
+)
+
+
+def _attachment_only_opener(message: str) -> bool:
+    """True when nothing but context references (and their expansion footer)
+    remain — a manual-attach opener with no typed request and no paste
+    preview has no topic of its own to title (#92068)."""
+    residual = _CONTEXT_REFERENCE_TOKEN_RE.sub("", _CONTEXT_FOOTER_RE.sub("", message))
+    return not residual.strip()
+
+
 def _summarize_user_message(user_message: str) -> str:
     """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
     if not user_message:
@@ -310,11 +329,19 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
 def is_titleable_user_message(user_message: str) -> bool:
     """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
     return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
-            and bool(_summarize_user_message(user_message).strip()))
+            and bool(_summarize_user_message(user_message).strip())
+            # An attachment-only opener (manual attach, no paste preview) is a
+            # file drop, not a request: deriving its "title" from the message
+            # names the session after the truncated file path (#92068).
+            and not _attachment_only_opener(user_message))
 
 
 def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
+    # Attachment-only opener, no paste preview: a file drop has no topic —
+    # refuse rather than name the session after the truncated path (#92068).
+    if not title_preview and _attachment_only_opener(user_message):
+        return None
     line = " ".join(_first_line(build_title_input(user_message, title_preview)).split())
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
@@ -462,7 +489,12 @@ def generate_title(
     except Exception:  # fail open: a broken validator must not disable titling
         logger.debug("Title runtime validator raised; proceeding", exc_info=True)
     user_snippet = build_title_input(user_message, title_preview)
-    if not user_snippet.strip():
+    if not user_snippet.strip() or (
+        # An attachment-only opener (manual attach, no paste preview) reaches
+        # here via auto_title_session, which lacks the instant-title guard:
+        # refuse it rather than titling the session after the file path (#92068).
+        not title_preview and _attachment_only_opener(user_snippet)
+    ):
         return None
     language = _title_language()
     # str.replace, not str.format: the prompt embeds literal JSON braces.

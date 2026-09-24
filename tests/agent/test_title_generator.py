@@ -11,6 +11,7 @@ from agent.title_generator import (
     derive_title,
     generate_title,
     auto_title_session,
+    is_titleable_user_message,
     maybe_auto_title,
     wait_for_title_upgrades,
     _title_language,
@@ -54,6 +55,30 @@ class TestGenerateTitle:
             assert title_input.startswith(preview)
             assert "---" not in title_input and "@file:" not in title_input
             assert derive_title(ref + footer, preview).startswith("Quarterly incident analysis")
+
+    def test_manual_attachment_only_opener_yields_no_path_title(self):
+        """#92068: the manual-attach path (composer attach chip / hand-typed
+        ``@file:``) sends NO Desktop paste preview, so the build_title_input
+        ref-only shortcut cannot rescue it. The titler must still refuse to
+        name the session after the truncated file path."""
+        msg = "@file:AppData/Local/hermes/profiles/local/attachments/report.pdf"
+
+        assert is_titleable_user_message(msg) is False
+        assert derive_title(msg) is None
+        assert derive_title(msg + "\n\n--- Attached Context ---\n(file content)") is None
+        # Backtick-quoted (space-bearing) paths and @folder: refs too.
+        assert is_titleable_user_message("@file:`my file.txt`") is False
+        assert is_titleable_user_message("@folder:/some/dir") is False
+        # The background model-title path refuses the same opener.
+        assert generate_title(msg) is None
+
+    def test_attachment_plus_instruction_titles_from_the_instruction(self):
+        """Prose around a manual attachment keeps driving the title — an
+        attachment WITH a typed request is a real question, not a file drop."""
+        msg = "Review @file:notes.txt and fix the off-by-one"
+
+        assert is_titleable_user_message(msg) is True
+        assert derive_title(msg) == "Review @file:notes.txt and fix the off-by-one"
 
     def test_title_input_budget_and_manual_attachments_stay_unread(self):
         title_input = build_title_input("Describe the release plan", "p" * MAX_TITLE_INPUT_CHARS)

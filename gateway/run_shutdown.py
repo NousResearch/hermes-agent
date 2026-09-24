@@ -1774,6 +1774,13 @@ class GatewayShutdownMixin:
             0.0, min(_EXECUTOR_QUIESCE_TIMEOUT, resolve_shutdown_watchdog_delay(timeout) - ctx.elapsed() - 1.0),
         )
         _exec_live = GatewayRunner._shutdown_executor(self, drain_timeout=_exec_quiesce_budget)
+        # The detached hygiene compressor runs on the loop's DEFAULT executor, not
+        # self._executor, so it is invisible to the check above. Quiesce it with the same
+        # budget; a still-alive hygiene worker must skip the close exactly like an
+        # agent-pool worker (its late write on the shared handle would otherwise split the
+        # WAL generation behind the checkpoint).
+        _def_live = GatewayRunner._shutdown_default_executor(self, drain_timeout=_exec_quiesce_budget)
+        _exec_live = _exec_live + _def_live
         if _exec_live:
             # A live worker may be mid-write (the #101093 corruption sequence): skip the close and let
             # SQLite recover from its WAL on next open (at worst a transient "database is locked").

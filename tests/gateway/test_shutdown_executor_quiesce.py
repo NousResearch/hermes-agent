@@ -50,7 +50,10 @@ class _FakeGateway:
         self._exit_with_failure = False
         self._exit_reason = None
         self._exit_code = None
-        self._restart_drain_timeout = 0.01
+        # Enough that the quiesce budget is the 2s ceiling, not clamped to ~0 by
+        # the watchdog (a 0.01s budget would make every still-finishing worker
+        # read as "still alive" and skip the close, even a benign one).
+        self._restart_drain_timeout = 3.0
         self._running_agents = {}
         self._running_agents_ts = {}
         self._agent_cache = OrderedDict()
@@ -264,3 +267,89 @@ def test_shutdown_executor_without_executor_returns_zero():
     gw._executor.shutdown(wait=True)
     gw._executor = None
     assert gw_mod.GatewayRunner._shutdown_executor(gw, drain_timeout=1.0) == 0
+
+
+@pytest.mark.asyncio
+async def test_default_executor_worker_is_seen_by_the_close_guard():
+    """A worker on the loop's DEFAULT executor (the detached hygiene compressor's
+    pool) must be visible to the SessionDB-close guard: with a zero quiesce budget
+    a still-alive default-pool worker makes stop() SKIP the close.
+
+    This is the state.db WAL-generation failure: the hygiene worker runs on
+    ``loop.run_in_executor(None, ...)`` while the old quiesce joined only
+    ``self._executor``, so the close ran (and checkpointed the WAL) while the
+    worker was still mid-commit; the worker's late write then minted a fresh
+    sidecar and the next open refused with DeletedWalGenerationError.
+    """
+    events = []
+    gw = _FakeGateway(events)
+    release = threading.Event()
+    started = threading.Event()
+
+    def _work():
+        started.set()
+        release.wait(5.0)
+        events.append("default_worker_write")
+
+    loop = asyncio.get_running_loop()
+    # Force the lazy default executor to materialize (3.11 creates it on first use).
+    await loop.run_in_executor(None, lambda: None)
+    future = loop._default_executor.submit(_work)
+    assert started.wait(2.0), "default-pool worker never started"
+
+    original_timeout = gw_mod._EXECUTOR_QUIESCE_TIMEOUT
+    gw_mod._EXECUTOR_QUIESCE_TIMEOUT = 0.0
+    try:
+        await gw_mod.GatewayRunner.stop(gw)
+    finally:
+        gw_mod._EXECUTOR_QUIESCE_TIMEOUT = original_timeout
+
+    assert "close:session_db" not in events, (
+        f"SessionDB was closed/checkpointed while a default-executor worker was "
+        f"still alive: {events}"
+    )
+    release.set()
+    future.result(timeout=5)
+    assert "default_worker_write" in events, "worker never finished"
+
+
+
+@pytest.mark.asyncio
+async def test_default_executor_work_finishes_before_session_db_close():
+    """A default-pool worker that fits the quiesce budget writes before the close,
+    and the close still happens (no false skip)."""
+    events = []
+    gw = _FakeGateway(events)
+    started = threading.Event()
+
+    def _work():
+        started.set()
+        time.sleep(0.2)
+        events.append("default_worker_write")
+
+    loop = asyncio.get_running_loop()
+    # Force the lazy default executor to materialize (3.11 creates it on first use).
+    await loop.run_in_executor(None, lambda: None)
+    future = loop._default_executor.submit(_work)
+    assert started.wait(2.0)
+    await gw_mod.GatewayRunner.stop(gw)
+    future.result(timeout=5)
+
+    assert "default_worker_write" in events, "worker never ran"
+    assert "close:session_db" in events, "SessionDB was never closed"
+    assert events.index("default_worker_write") < events.index("close:session_db"), (
+        f"state.db was closed while a default-executor worker was still writing: {events}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_default_executor_without_pool_returns_zero():
+    """No default executor (test double / unused loop) = nothing to join."""
+    gw = _FakeGateway([])
+    loop = asyncio.get_running_loop()
+    orig = getattr(loop, "_default_executor", None)
+    loop._default_executor = None
+    try:
+        assert gw_mod.GatewayRunner._shutdown_default_executor(gw, drain_timeout=1.0) == 0
+    finally:
+        loop._default_executor = orig

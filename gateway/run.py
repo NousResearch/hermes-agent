@@ -4267,6 +4267,49 @@ class GatewayRunner(
             worker.join(remaining)
         return sum(1 for worker in workers if worker.is_alive())
 
+    def _shutdown_default_executor(self, drain_timeout: float = 0.0) -> int:
+        """Quiesce the event loop's DEFAULT executor and return the number of its worker
+        threads still alive.
+
+        The detached session-hygiene compressor runs via ``loop.run_in_executor(None, ...)``
+        (``run_turn.py``), i.e. on the loop's default executor -- NOT ``self._executor``.
+        A worker mid-LLM-summary therefore outlived the close quiesce (which joined only the
+        gateway-owned pool) and its late write on the shared state.db handle split the WAL
+        generation behind the close-time checkpoint, so the next open refused with
+        ``DeletedWalGenerationError``. Joining the default pool's worker threads with the same
+        bounded budget makes a live hygiene worker visible to the close-skip guard: a live
+        worker skips the close (the safe path -- the connection stays open for the worker to
+        finish, and SQLite recovers the valid WAL on the next open) instead of the close
+        racing the write. The pool is left running when the budget runs out (bounded), matching
+        the gateway-owned pool's contract; when the budget is fully honoured the threads have
+        simply finished -- the pool stays available for any later ``run_in_executor(None, ...)``.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return 0
+        executor = getattr(loop, "_default_executor", None)
+        if not isinstance(executor, concurrent.futures.ThreadPoolExecutor):
+            return 0
+        # Mirror _shutdown_executor: terminate idle threads first. A ThreadPoolExecutor's
+        # threads stay alive while idle and only exit on shutdown() -- counting is_alive()
+        # without that would treat every idle thread as "live" and skip the close forever.
+        # stop() is terminal for the loop, so shutting down its default pool here is safe
+        # and also removes the lingering-thread race.
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+        # _threads is private but stable across 3.8-3.13; absent on test doubles (no wait).
+        workers = list(getattr(executor, "_threads", None) or ())
+        deadline = time.monotonic() + max(float(drain_timeout or 0.0), 0.0)
+        for worker in workers:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            worker.join(remaining)
+        return sum(1 for worker in workers if worker.is_alive())
+
     # (section, key) config values baked into the agent at construction: a change MUST invalidate the
     # cached agent or a mid-gateway edit is silently ignored. Add new baked-in settings here.
     # _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)

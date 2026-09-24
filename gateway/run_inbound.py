@@ -46,6 +46,20 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+class _STTTranscript(str):
+    """Transcript text with fallback metadata used only by user-facing echo paths."""
+
+    fallback_from: str | None
+    provider_used: str | None
+
+    def __new__(cls, transcript: str, *, fallback_from: str | None = None,
+                provider_used: str | None = None):
+        value = super().__new__(cls, transcript)
+        value.fallback_from = fallback_from
+        value.provider_used = provider_used
+        return value
+
+
 def discord_triggering_note(message_id: Any) -> str:
     """Model-facing routing note for a Discord turn (rides the API-bound user message only)."""
     return (
@@ -1508,9 +1522,23 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
         for tx in transcripts:
             try:
-                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
+                await adapter.send(source.chat_id, self._format_stt_echo(tx), metadata=metadata)
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+
+    @staticmethod
+    def _format_stt_echo(transcript: str) -> str:
+        """Format a user-facing echo without putting fallback details in the transcript itself."""
+        fallback_from = getattr(transcript, "fallback_from", None)
+        transcript_echo = t("gateway.voice.transcript_echo_short", text=transcript)
+        if fallback_from:
+            provider_used = getattr(transcript, "provider_used", None) or "local"
+            return (
+                f"{transcript_echo}\n\n"
+                f"⚠️ STT fallback: {fallback_from} failed, so Hermes used "
+                f"{provider_used} / faster-whisper."
+            )
+        return transcript_echo
 
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
@@ -1756,6 +1784,23 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if not self._pending_event_audio_paths(event):
             return (event.text or "").strip()
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
+        source = getattr(event, "source", None)
+        if successful_transcripts and source is not None:
+            adapter_for_source = getattr(self, "_delivery_adapter_for", None)
+            adapter = adapter_for_source(source) if callable(adapter_for_source) else None
+            reply_anchor_for_event = getattr(self, "_reply_anchor_for_event", None)
+            reply_anchor = reply_anchor_for_event(event) if callable(reply_anchor_for_event) else None
+            thread_metadata_for_source = getattr(self, "_thread_metadata_for_source", None)
+            metadata = (thread_metadata_for_source(source, reply_anchor)
+                        if callable(thread_metadata_for_source) else None)
+            await self._echo_pending_stt_transcripts_once(
+                event,
+                adapter,
+                source,
+                successful_transcripts,
+                metadata=metadata,
+                log_context="Clarify transcript",
+            )
         return "\n\n".join(t.strip() for t in successful_transcripts if t.strip())
 
     def _consume_pending_native_image_paths(self, session_key: str) -> list[str]:
@@ -1936,6 +1981,13 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 "empty or inaudible — speech-to-text returned no "
                 "words. Do not guess at the content; ask the user "
                 "to resend or type it out.]"
+            )
+        fallback_from = result.get("fallback_from")
+        if fallback_from:
+            transcript = _STTTranscript(
+                transcript,
+                fallback_from=str(fallback_from),
+                provider_used=str(result.get("provider") or "local"),
             )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
         # and made the LLM comment on voice mode instead.

@@ -130,7 +130,8 @@ async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning()
 
 
 def test_format_stt_echo_includes_fallback_notice_without_changing_raw_text():
-    from gateway.run import GatewayRunner, _STTTranscript
+    from gateway.run import GatewayRunner
+    from gateway.run_inbound import _STTTranscript
 
     fallback_transcript = _STTTranscript(
         "fallback transcript",
@@ -149,7 +150,8 @@ def test_format_stt_echo_includes_fallback_notice_without_changing_raw_text():
 
 @pytest.mark.asyncio
 async def test_clarify_reply_uses_raw_transcript_after_stt_fallback():
-    from gateway.run import GatewayRunner, _STTTranscript
+    from gateway.run import GatewayRunner
+    from gateway.run_inbound import _STTTranscript
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._pending_event_audio_paths = lambda event: ["/tmp/voice.ogg"]
@@ -163,7 +165,7 @@ async def test_clarify_reply_uses_raw_transcript_after_stt_fallback():
     )
     echo_pending = AsyncMock()
     runner._echo_pending_stt_transcripts_once = echo_pending
-    runner._adapter_for_source = lambda source: "adapter"
+    runner._delivery_adapter_for = lambda source: "adapter"
     runner._thread_metadata_for_source = (
         lambda source, reply_to_message_id=None: {"thread_id": "thread-1"}
     )
@@ -194,7 +196,8 @@ async def test_clarify_reply_uses_raw_transcript_after_stt_fallback():
 
 @pytest.mark.asyncio
 async def test_pending_echo_preserves_fallback_notice():
-    from gateway.run import GatewayRunner, _STTTranscript
+    from gateway.run import GatewayRunner
+    from gateway.run_inbound import _STTTranscript
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._should_echo_stt_transcripts = lambda: True

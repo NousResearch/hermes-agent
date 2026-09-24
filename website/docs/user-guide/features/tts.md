@@ -652,6 +652,7 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 #### STT command-provider behavior notes
 
 - **Built-ins always win.** Declaring `stt.providers.openai: type: command` does NOT override the real OpenAI Whisper handler. The built-in name is short-circuited before the command-provider resolver runs.
+- **Command-provider fallback.** Set `fallback_provider: local` (or `fallback: local`) to retry a failed command with faster-whisper. The fallback uses `stt.local.model` (or the local default), not the command provider's model override. Successful fallback is noted alongside the transcript echo; the command's raw failure text is not added to the agent's transcript.
 - **Process-tree cleanup.** A command running over `timeout` has its entire process tree killed, not just the shell wrapper. Long-running ASR pipelines that fork model-loading subprocesses are reaped reliably.
 - **Shell-quoting is automatic.** Placeholders inside `'…'` get single-quote-safe escaping; inside `"…"` get `$`/`` ` ``/`"` escaping; outside quotes get `shlex.quote`. Don't pre-quote placeholder values.
 

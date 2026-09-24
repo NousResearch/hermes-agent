@@ -1956,12 +1956,23 @@ def _wsl_systemd_operational() -> bool:
 
 def _systemd_operational(system: bool = False) -> bool:
     """Return True when the requested systemd scope is usable."""
+    if system:
+        try:
+            result = _run_systemctl(["is-system-running"], system=True, timeout=5, **_CAPTURE_TEXT)
+        except (RuntimeError, subprocess.TimeoutExpired, OSError):
+            return False
+        # "running", "degraded", "starting" all mean systemd is PID 1
+        return result.stdout.strip().lower() in {"running", "degraded", "starting", "initializing"}
+    # ``is-system-running`` reports the *system* manager's state even under ``--user``, so inside a
+    # container whose only manager is the user one it answers "offline" and the user scope is
+    # declared unusable. Ask the user manager a question it answers itself instead. See #121961.
     try:
-        result = _run_systemctl(["is-system-running"], system=system, timeout=5, **_CAPTURE_TEXT)
+        result = _run_systemctl(
+            ["show", "--property", "SystemState"], system=False, timeout=5, **_CAPTURE_TEXT
+        )
     except (RuntimeError, subprocess.TimeoutExpired, OSError):
         return False
-    # "running", "degraded", "starting" all mean systemd is PID 1
-    return result.stdout.strip().lower() in {"running", "degraded", "starting", "initializing"}
+    return result.returncode == 0 and bool(result.stdout.strip())
 
 
 def supports_systemd_services() -> bool:

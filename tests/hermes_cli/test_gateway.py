@@ -274,6 +274,90 @@ class TestContainerSystemdSupport:
 
         assert gateway.supports_systemd_services() is True
 
+    @staticmethod
+    def _fake_systemctl(monkeypatch, answers):
+        calls = []
+
+        def fake(args, *, system=False, **kwargs):
+            calls.append((tuple(args), system))
+            rc, out = answers[(tuple(args), system)]
+            return subprocess.CompletedProcess(
+                args, returncode=rc, stdout=out, stderr=""
+            )
+
+        monkeypatch.setattr(gateway, "_run_systemctl", fake)
+        return calls
+
+    def test_systemd_operational_user_scope_asks_the_user_manager_itself(
+        self, monkeypatch
+    ):
+        # ``is-system-running`` answers for the system manager even under ``--user`` (offline inside
+        # a container with no system manager); ``show`` is answered by the user manager itself. See
+        # #121961 for the measured container transcript.
+        calls = self._fake_systemctl(
+            monkeypatch,
+            {
+                (("show", "--property", "SystemState"), False): (
+                    0,
+                    "SystemState=degraded\n",
+                )
+            },
+        )
+
+        assert gateway._systemd_operational(system=False) is True
+        assert calls == [(("show", "--property", "SystemState"), False)]
+
+    def test_systemd_operational_user_scope_fails_closed_when_manager_unreachable(
+        self, monkeypatch
+    ):
+        self._fake_systemctl(
+            monkeypatch,
+            {
+                (("show", "--property", "SystemState"), False): (
+                    1,
+                    "Failed to connect to bus: No medium found\n",
+                )
+            },
+        )
+
+        assert gateway._systemd_operational(system=False) is False
+
+    def test_systemd_operational_system_scope_keeps_is_system_running(self, monkeypatch):
+        answers = {
+            (("is-system-running",), True): (0, "running\n"),
+        }
+        calls = self._fake_systemctl(monkeypatch, answers)
+        assert gateway._systemd_operational(system=True) is True
+
+        answers[(("is-system-running",), True)] = (1, "offline\n")
+        assert gateway._systemd_operational(system=True) is False
+        assert {args for args, _ in calls} == {("is-system-running",)}
+
+    def test_supports_systemd_services_in_container_without_system_manager(
+        self, monkeypatch
+    ):
+        # The #121961 container: the user manager is reachable and operational (it answers
+        # manager-level verbs, restart included) while the system manager does not exist, so
+        # ``is-system-running`` answers "offline" for both scopes.
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        self._fake_systemctl(
+            monkeypatch,
+            {
+                (("show", "--property", "SystemState"), False): (
+                    0,
+                    "SystemState=degraded\n",
+                ),
+                (("is-system-running",), True): (1, "offline\n"),
+                (("is-system-running",), False): (1, "offline\n"),
+            },
+        )
+
+        assert gateway.supports_systemd_services() is True
+
 
 def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
     calls = []

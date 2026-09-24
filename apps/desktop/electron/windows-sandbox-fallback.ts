@@ -38,7 +38,7 @@ export const WINDOWS_SANDBOX_BREAKPOINT_EXIT = -2147483645
 /** Consecutive mid-boot aborts required before enabling --no-sandbox. */
 export const BOOT_ABORTS_BEFORE_FALLBACK = 2
 
-export type SandboxMarkerState = 'booting' | 'fallback' | 'ok'
+export type SandboxMarkerState = 'booting' | 'fallback' | 'ok' | 'running'
 
 export type SandboxFallbackReason = 'gpu-breakpoint' | 'renderer-crash-loop' | 'boot-loop'
 
@@ -92,7 +92,7 @@ export function parseSandboxMarker(raw: unknown): SandboxMarker | null {
   const record = raw as Record<string, unknown>
   const state = record.state
 
-  if (state !== 'booting' && state !== 'fallback' && state !== 'ok') {
+  if (state !== 'booting' && state !== 'fallback' && state !== 'ok' && state !== 'running') {
     return null
   }
 
@@ -155,6 +155,10 @@ export interface SandboxLaunchDecision {
   reason: string | null
   /** Marker to persist immediately, before GPU/sandbox children start. */
   nextMarker: SandboxMarker
+  /** A `running` leftover: the prior run reached a usable window, then died
+   *  without a clean quit (main-process abort, task-manager kill, power
+   *  loss). Steady-state evidence, never boot evidence. */
+  priorSteadyAbort?: boolean
 }
 
 /**
@@ -243,6 +247,14 @@ export function decideWindowsSandboxLaunch(
     }
   }
 
+  if (marker?.state === 'running') {
+    // The prior run reached a usable window and then died without before-quit
+    // (#112961 main-process abort, task-manager kill, power loss). This is
+    // steady-state evidence, not boot evidence: it must not count toward the
+    // boot-loop fallback and must not trigger ACL repair.
+    return { enable: false, reason: null, nextMarker: { state: 'booting' }, priorSteadyAbort: true }
+  }
+
   // No marker, or a clean `ok` from the previous run.
   return { enable: false, reason: null, nextMarker: { state: 'booting' } }
 }
@@ -261,13 +273,29 @@ export function fallbackMarker(reason: SandboxFallbackReason, appVersion?: strin
  * After the main window reaches ready-to-show: keep the sticky fallback when
  * we launched with `--no-sandbox`, otherwise mark a clean boot so future
  * launches trust the sandbox again.
+ *
+ * `steady` (window-reveal path) records `running` instead of `ok`: a later
+ * main-process abort then leaves a `running` leftover behind, so the next
+ * launch can tell a mid-session death (#112961) from a clean quit. The
+ * before-quit path keeps `ok`.
  */
 export function markerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   reason?: SandboxFallbackReason
   appVersion?: string
+  steady?: boolean
 }): SandboxMarker {
   if (!options.fallbackActive) {
+    if (options.steady) {
+      const marker: SandboxMarker = { state: 'running' }
+
+      if (options.appVersion) {
+        marker.version = options.appVersion
+      }
+
+      return marker
+    }
+
     return { state: 'ok' }
   }
 

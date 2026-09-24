@@ -37,6 +37,22 @@ afterEach(() => {
 // to survive preprocessMarkdown -> Streamdown -> MarkdownLink and come out as
 // an inline link titled after the session, not as literal text.
 describe('MarkdownTextContent session refs', () => {
+  it('keeps the full address visible for a bare external URL', async () => {
+    const url = 'https://www.ncpssd.org/resources/forms?year=2026'
+
+    render(<MarkdownTextContent isRunning={false} text={`Read ${url} for the current form.`} />)
+
+    expect((await screen.findByTitle(url)).textContent).toContain(url)
+  })
+
+  it('keeps the address visible beside an authored external-link label', async () => {
+    const url = 'https://www.ncpssd.org/resources/forms?year=2026'
+
+    render(<MarkdownTextContent isRunning={false} text={`Read [the current form](${url}).`} />)
+
+    expect((await screen.findByTitle(url)).textContent).toContain(`the current form (${url})`)
+  })
+
   it('renders an agent-written @session ref as a link showing the session title', async () => {
     $sessions.set([makeSession()])
 

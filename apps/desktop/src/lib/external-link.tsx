@@ -364,7 +364,11 @@ export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: P
   const target = useMemo(() => normalizeExternalUrl(href), [href])
   const authoredLabel = label?.trim() || fallbackLabel?.trim()
   const fetched = useLinkTitle(authoredLabel ? null : target)
-  const display = authoredLabel || fetched || urlSlugTitleLabel(target)
+  // The address came from the message, so it remains visible even when we
+  // have richer display text. A label or fetched title alone made a chat URL
+  // impossible to read or copy without opening its context menu.
+  const displayLabel = authoredLabel || fetched
+  const display = displayLabel ? `${displayLabel} (${target})` : target
 
   return (
     <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>

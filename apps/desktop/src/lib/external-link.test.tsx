@@ -196,7 +196,7 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('mailto:hi@example.com')
   })
 
-  it('renders pretty links with fetched titles and no host suffix', async () => {
+  it('renders pretty links with fetched titles while keeping the address visible', async () => {
     const bridge = vi.fn().mockResolvedValue('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
 
@@ -206,12 +206,12 @@ describe('external link helpers', () => {
     render(<LinkifiedText text={`Read ${url}`} />)
 
     const link = screen.getByTitle(url)
-    expect(link.textContent).toContain('From Fajardo Full Day Cordillera Islands Catamaran Tour')
+    expect(link.textContent).toContain(url)
 
     await waitFor(() => {
       expect(link.textContent).toContain('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     })
-    expect(link.textContent).not.toContain('getyourguide.com')
+    expect(link.textContent).toContain(url)
   })
 
   it('ignores error-like fetched titles and falls back to slug label', async () => {
@@ -225,7 +225,7 @@ describe('external link helpers', () => {
 
     const link = screen.getByTitle(url)
     await waitFor(() => {
-      expect(link.textContent).toBe('From Fajardo Full Day Cordillera Islands Catamaran Tour')
+      expect(link.textContent).toBe(`${url}`)
     })
   })
 
@@ -245,7 +245,7 @@ describe('external link helpers', () => {
     const link = screen.getByTitle(FORGEJO_URL)
 
     await waitFor(() => {
-      expect(link.textContent).toContain('FJ #101')
+      expect(link.textContent).toContain(`FJ #101 (${FORGEJO_URL})`)
     })
     expect(link.textContent).not.toContain('Kinkolino Forgejo')
     expect(bridge).not.toHaveBeenCalled()

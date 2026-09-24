@@ -185,23 +185,28 @@ class SessionProfileRepairMixin:
             session = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if session is None:
                 return None
-            prompt = None
-            if session["system_prompt_hash"]:
-                row = conn.execute(
-                    "SELECT prompt FROM system_prompts WHERE hash = ?", (session["system_prompt_hash"],)).fetchone()
-                prompt = row[0] if row else None
+            def _stored(prompt_hash):
+                row = conn.execute("SELECT prompt FROM system_prompts WHERE hash = ?", (prompt_hash,)).fetchone()
+                return row[0] if row else None
+            prompt = _stored(session["system_prompt_hash"]) if session["system_prompt_hash"] else None
+            # The tools[] pin is content-addressed the same way; a legacy inline list resolves to None.
+            tool_pin = _stored(session["tool_names"]) if session["tool_names"] else None
             messages = [dict(r) for r in conn.execute(
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (session_id,))]
             usage = [dict(r) for r in conn.execute(
                 "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))]
-            return {"session": dict(session), "system_prompt": prompt, "messages": messages, "usage": usage}
+            return {"session": dict(session), "system_prompt": prompt, "tool_pin": tool_pin, "messages": messages,
+                    "usage": usage}
         return self._read_retrying_ioerr(_read)
 
     def import_moved_session(self, payload: Dict[str, Any], *, profile_name: str) -> str:
         """Insert a moved session into THIS store as *profile_name*'s. ``present`` when the id already
         exists (an earlier run copied but did not delete), else ``imported``. The parent link survives
         only when the parent is already here — a moved row must never point across stores or at a
-        row of another profile. Columns the target schema lacks are dropped, never invented."""
+        row of another profile. Columns the target schema lacks are dropped, never invented. Titles
+        are unique per store only, so a title an unrelated row here already holds gets the moved
+        row's id tail (the :meth:`import_foreign_history` convention); the resident row keeps its
+        name, since it is the one this profile's clients resolve by title."""
         session = dict(payload["session"])
         session_id = session["id"]
 
@@ -212,7 +217,14 @@ class SessionProfileRepairMixin:
             parent_id = session.get("parent_session_id")
             if parent_id and conn.execute("SELECT 1 FROM sessions WHERE id = ?", (parent_id,)).fetchone() is None:
                 session["parent_session_id"] = None
+            title = session.get("title")
+            if title is not None and conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
+                suffix = f" ({session_id[-12:]})"
+                session["title"] = title[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix
             session["system_prompt_hash"] = self._store_system_prompt(conn, payload.get("system_prompt"))
+            if payload.get("tool_pin") is not None or len(session.get("tool_names") or "") == 64:
+                # A pin hash means nothing in this store: re-store the pin, or drop an unresolvable ref.
+                session["tool_names"] = self._store_system_prompt(conn, payload.get("tool_pin"))
             self._insert_row(conn, "sessions", session, skip=frozenset())
             for message in payload.get("messages") or []:
                 self._insert_row(conn, "messages", {**message, "session_id": session_id}, skip=_MESSAGE_MOVE_SKIP)

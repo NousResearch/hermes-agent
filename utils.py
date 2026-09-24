@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -430,6 +431,14 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
+# ruamel's emitter can change a double-quoted value when it folds a long line right after an
+# escaped backslash (``D:\\Cent…`` → ``D:\\`` + bare newline): the fold reloads as a literal space
+# and a no-op save mutates the stored value (#119844). Config writes must be value-preserving, so
+# every round-trip emitter in the tree keeps scalars on one line instead of folding (``None``
+# does NOT disable folding on 0.18.x; only a large width does).
+ROUNDTRIP_YAML_WIDTH = 2**31 - 1
+
+
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
@@ -437,6 +446,7 @@ def _roundtrip_load(path: Path):
     from ruamel.yaml.comments import CommentedMap
 
     yaml_rt = YAML(typ="rt")
+    yaml_rt.width = ROUNDTRIP_YAML_WIDTH
     yaml_rt.preserve_quotes = True
     yaml_rt.allow_unicode = True
     yaml_rt.default_flow_style = False
@@ -603,6 +613,29 @@ _fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
 def fast_safe_load(stream: Any) -> Any:
     """``yaml.safe_load`` (same inputs, same result) using the libyaml C loader when available."""
     return yaml.load(stream, Loader=_fast_yaml_loader)
+
+
+_YAML_FILE_CACHE: dict = {}
+_YAML_FILE_CACHE_LOCK = threading.Lock()
+
+
+def load_yaml_file_readonly(path: Union[str, Path]) -> Any:
+    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_signature` changes.
+
+    Returns the cached object itself — callers must never mutate it. Parse errors propagate and
+    are not cached; a missing file raises ``FileNotFoundError`` like ``open`` does."""
+    path = Path(path)
+    sig = file_signature(path.stat())
+    key = str(path)
+    with _YAML_FILE_CACHE_LOCK:
+        cached = _YAML_FILE_CACHE.get(key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+    with open(path, encoding="utf-8") as f:
+        data = fast_safe_load(f)
+    with _YAML_FILE_CACHE_LOCK:
+        _YAML_FILE_CACHE[key] = (sig, data)
+    return data
 
 
 def _env_number(key: str, default, cast):

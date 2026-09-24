@@ -7911,18 +7911,6 @@
    "target": "agent.image_gen_provider"
   },
   {
-   "facade": "plugins.memory.hindsight",
-   "name": "dataclass",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "plugins.memory.hindsight",
-   "name": "importlib",
-   "kind": "import",
-   "target": "importlib"
-  },
-  {
    "facade": "plugins.memory.honcho",
    "name": "CONCLUDE_SCHEMA",
    "kind": "restored-def",

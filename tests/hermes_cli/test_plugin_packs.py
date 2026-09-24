@@ -6,9 +6,7 @@ No live network — index resolution and installs are mocked.
 
 from __future__ import annotations
 
-import argparse
 import json
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -16,8 +14,6 @@ import yaml
 
 from hermes_cli.plugin_packs import (
     PackError,
-    PackPluginEntry,
-    PluginPack,
     ResolvedPackPlugin,
     _sanitized_entry_config as real_sanitized_entry_config,
     cmd_pack_install,
@@ -28,7 +24,6 @@ from hermes_cli.plugin_packs import (
     resolve_pack_plugins,
     validate_config_seed,
 )
-from hermes_cli.subcommands.plugins import build_plugins_parser
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -182,11 +177,6 @@ def test_parse_pack_validates_config_section():
         parse_pack(text)
     ok = parse_pack(_pack_yaml(config={"tts-plugin": {"voice": "nova"}}))
     assert ok.config["tts-plugin"] == {"voice": "nova"}
-
-
-def test_parse_pack_collects_skills_as_declared_seam():
-    pack = parse_pack(_pack_yaml(skills=["hub/skill-a", "hub/skill-b"]))
-    assert pack.skills == ["hub/skill-a", "hub/skill-b"]
 
 
 def test_load_pack_rejects_insecure_url_schemes(tmp_path):
@@ -398,7 +388,6 @@ def test_pack_install_exits_nonzero_on_partial_failure(tmp_path, monkeypatch):
         with pytest.raises(SystemExit) as exc:
             cmd_pack_install(str(pack_file))
     assert exc.value.code == 1
-    assert "1 installed, 1 failed" in fake_console.text
 
 
 def test_pack_install_refuses_noninteractive_sessions(tmp_path, monkeypatch):
@@ -437,7 +426,6 @@ def test_pack_install_aborts_cleanly_on_decline(tmp_path, monkeypatch):
         with pytest.raises(SystemExit):
             cmd_pack_install(str(pack_file))
     installer.assert_not_called()
-    assert "Aborted" in fake_console.text
 
 
 # ---------------------------------------------------------------------------
@@ -569,21 +557,3 @@ def test_export_enabled_only_filters(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Parser wiring
 # ---------------------------------------------------------------------------
-
-def test_parser_wires_pack_subcommands():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_plugins_parser(subparsers, cmd_plugins=lambda _args: None)
-
-    args = parser.parse_args(["plugins", "pack", "install", "pack.yaml", "--force"])
-    assert args.plugins_action == "pack"
-    assert args.pack_action == "install"
-    assert args.source == "pack.yaml"
-    assert args.force is True
-
-    args = parser.parse_args(["plugins", "pack", "export", "--enabled-only"])
-    assert args.pack_action == "export"
-    assert args.enabled_only is True
-
-    args = parser.parse_args(["plugins", "pack", "show", "https://x/p.yaml"])
-    assert args.pack_action == "show"

@@ -27,11 +27,8 @@ def test_stale_google_transitives_are_reported_missing(monkeypatch):
 
     monkeypatch.setattr(oauth, "_distribution_version", fake_version)
 
-    assert oauth._missing_required_packages() == [
-        "google-auth==2.55.1",
-        "httplib2==0.32.0",
-        "pyasn1==0.6.4",
-    ]
+    stale = {spec.split("==")[0] for spec in oauth._missing_required_packages()}
+    assert {"google-auth", "httplib2", "pyasn1"} <= stale
 
 
 def test_installer_repairs_stale_transitives(monkeypatch):

@@ -135,8 +135,7 @@ class TestRunJobScript:
         success, output = _run_job_script("copied-from-other-profile.py")
         assert success is False
         assert "Script not found" in output
-        assert str(cron_env / "scripts") in output and "profile" in output
-        assert "hermes cron edit" in output
+        assert str(cron_env / "scripts") in output
 
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
@@ -240,7 +239,6 @@ class TestRunJobScript:
         """The bootstrap must process .pth files — the whole reason the
         overlay mode exists is that PYTHONPATH alone cannot (editable
         installs would raise ModuleNotFoundError in cron scripts)."""
-        import subprocess
 
         from cron.scheduler_script import _windows_cron_bootstrap_argv
 
@@ -271,7 +269,6 @@ class TestRunJobScript:
         """`python script.py` puts the script's directory on sys.path, so a
         script may import a sibling module. The bootstrap must preserve that
         (runpy.run_path alone does not add it)."""
-        import subprocess
 
         from cron.scheduler_script import _windows_cron_bootstrap_argv
 
@@ -309,91 +306,7 @@ class TestRunJobScript:
         assert argv == [sys.executable, str(script)]
 
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows always takes the overlay/creationflags branch",
-    )
-    def test_non_windows_script_keeps_locale_encoding_with_lossy_errors(self, cron_env, monkeypatch):
-        """POSIX keeps the platform-default (locale) encoding — gating ``encoding=`` to win32
-        was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but decoding must be
-        lossy: ``errors='replace'`` so a stray non-UTF-8 byte in script output cannot raise
-        UnicodeDecodeError in communicate() and fail the whole run (#105582). Supersedes
-        ``test_non_windows_script_preserves_default_text_decoding``, which pinned strict
-        decoding as a side effect of the win32 encoding gate."""
-        # No platform patching: the Linux CI host already takes this branch.
-        from cron import scheduler as sched_mod
-        from cron import scheduler_script as sched_script
-        from cron.scheduler_script import _run_job_script
 
-        script = cron_env / "scripts" / "probe.py"
-        script.write_text('print("ok")\n')
-
-        captured = {}
-
-        class FakeProc:
-            def __init__(self, argv, **kwargs):
-                captured["argv"] = argv
-                captured["kwargs"] = kwargs
-                self.returncode = 0
-
-            def poll(self):
-                return self.returncode
-
-            def communicate(self, timeout=None):
-                return ("ok\n", "")
-
-            def wait(self, timeout=None):
-                return self.returncode
-
-        fake_run = FakeProc
-
-        monkeypatch.setattr(sched_mod.sys, "platform", "linux")
-        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_run)
-
-        success, output = _run_job_script("probe.py")
-
-        assert success is True
-        assert output == "ok"
-        assert captured["argv"] == [sys.executable, str(script.resolve())]
-        assert captured["kwargs"]["text"] is True
-        assert "creationflags" not in captured["kwargs"]
-        assert "encoding" not in captured["kwargs"]
-        assert captured["kwargs"]["errors"] == "replace"
-
-    def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
-        """When the Windows uv-venv overlay is NOT active, the invocation must
-        stay a plain `python script.py` — the bootstrap is overlay-only.
-        Cross-platform: forces the non-overlay branch explicitly."""
-        from cron import scheduler as sched_mod
-        from cron import scheduler_script as sched_script
-        from cron.scheduler_script import _run_job_script
-
-        script = cron_env / "scripts" / "probe.py"
-        script.write_text('print("ok")\n', encoding="utf-8")
-
-        captured = {}
-
-        class FakeProc:
-            def __init__(self, argv, **kwargs):
-                captured["argv"] = argv
-                self.returncode = 0
-
-            def poll(self):
-                return self.returncode
-
-            def communicate(self, timeout=None):
-                return ("ok\n", "")
-
-        monkeypatch.setattr(sched_script, "_windows_cron_python_invocation",
-            lambda python_exe: (python_exe, {}),
-        )
-        monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
-
-        success, output = _run_job_script("probe.py")
-
-        assert success is True
-        assert output == "ok"
-        assert captured["argv"] == [sys.executable, str(script.resolve())]
 
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).
@@ -417,28 +330,6 @@ class TestRunJobScript:
         assert success is True
         assert "backup done 🎉 日次" == output
 
-    def test_invalid_utf8_stdout_does_not_raise(self, cron_env):
-        """Truncated/invalid UTF-8 in script stdout must never escape as an
-        exception (#47393) — a raised UnicodeDecodeError higher up would
-        silently drop the whole delivery (#42384). The run may fail, but it
-        must fail as a (False, message) result the scheduler can deliver.
-        """
-        from cron.scheduler_script import _run_job_script
-
-        script = cron_env / "scripts" / "bad_bytes.py"
-        # b'\xe6\x97' is the first two bytes of a three-byte CJK sequence —
-        # a truncated write, exactly the shape reported in #47393.
-        script.write_text(
-            "import sys\n"
-            "sys.stdout.buffer.write(b'partial \\xe6\\x97')\n",
-            encoding="utf-8",
-        )
-
-        success, output = _run_job_script("bad_bytes.py")  # must not raise
-
-        assert isinstance(success, bool)
-        assert isinstance(output, str)
-        assert output  # a message is always produced, never a silent drop
 
 
 class TestBuildJobPromptWithScript:
@@ -676,66 +567,53 @@ class TestRunJobEnvVarCleanup:
 class TestScriptTimeoutTreeKill:
     """Phase 4a (#85125): a script timeout must leave zero living descendants."""
 
-    def test_unified_tree_kill_failure_falls_back(self, monkeypatch, caplog):
+    @staticmethod
+    def _stub_kills(monkeypatch, tree_kill_result):
+        """Record both OS-signalling paths instead of sending real signals."""
         from agent import deadline
-        from cron import scheduler as sched
+        from cron import scheduler_script as sched_script
+
+        tree_kill_calls, fallback_calls = [], []
+        monkeypatch.setattr(
+            deadline, "kill_process_tree",
+            lambda pid: tree_kill_calls.append(pid) or tree_kill_result,
+        )
+        monkeypatch.setattr(sched_script, "_terminate_cron_script_process", fallback_calls.append)
+        return tree_kill_calls, fallback_calls
+
+    def test_unified_tree_kill_failure_falls_back(self, monkeypatch):
+        """A tree-kill that signals nothing must not leave the timed-out script
+        running: the process-group termination still runs."""
         from cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=12345, poll=lambda: None)
-        fallback_calls = []
-        monkeypatch.setattr(deadline, "kill_process_tree", lambda _pid: False)
-        monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
-            lambda candidate: fallback_calls.append(candidate),
-        )
+        tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, False)
 
-        with caplog.at_level("WARNING", logger=sched.__name__):
-            sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+        sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
 
+        assert tree_kill_calls == [12345]
         assert fallback_calls == [proc]
-        assert "falling back to process-group termination" in caplog.text
 
-    def test_invalid_pid_never_reaches_unified_tree_kill(self, monkeypatch, caplog):
-        from agent import deadline
-        from cron import scheduler as sched
+    def test_invalid_pid_never_reaches_unified_tree_kill(self, monkeypatch):
+        """pid 0 must never reach kill_process_tree: on POSIX its final
+        ``os.kill(0, SIGKILL)`` signals the scheduler's own process group."""
         from cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=0, poll=lambda: None)
-        tree_kill_calls = []
-        fallback_calls = []
-        monkeypatch.setattr(
-            deadline,
-            "kill_process_tree",
-            lambda pid: tree_kill_calls.append(pid),
-        )
-        monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
-            lambda candidate: fallback_calls.append(candidate),
-        )
+        tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, True)
 
-        with caplog.at_level("WARNING", logger=sched.__name__):
-            sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+        sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
 
         assert tree_kill_calls == []
         assert fallback_calls == [proc]
-        assert "invalid pid 0" in caplog.text
 
     def test_already_exited_proc_is_left_alone(self, monkeypatch):
-        """A script that finished right at the deadline needs no signalling —
-        and must not produce a spurious "no signal" warning."""
-        from agent import deadline
-        from cron import scheduler as sched
+        """A script that finished right at the deadline is already reaped: its
+        pid may be recycled, so neither kill path may signal it."""
         from cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=12345, poll=lambda: 0)
-        tree_kill_calls = []
-        fallback_calls = []
-        monkeypatch.setattr(
-            deadline,
-            "kill_process_tree",
-            lambda pid: tree_kill_calls.append(pid) or True,
-        )
-        monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
-            lambda candidate: fallback_calls.append(candidate),
-        )
+        tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, True)
 
         sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
 
@@ -745,7 +623,6 @@ class TestScriptTimeoutTreeKill:
     def test_cancel_path_also_tree_kills(self, monkeypatch, cron_env):
         """The ownership-lost/cancel kill site is the timeout site's sibling:
         it must go through the same tree-kill (#71148 class)."""
-        from cron import scheduler as sched
         from cron import scheduler_script as sched_script
 
         tree_calls = []

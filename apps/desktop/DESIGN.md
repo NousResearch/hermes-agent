@@ -92,7 +92,14 @@ Don't add per-overlay `shadow-[…]` or `border-(--ui-stroke-secondary)`
 one-offs; if elevation needs to change, change the token.
 
 Menus and popovers use their own shared `shadow-md` +
-`--ui-stroke-secondary` primitive treatment. Drag affordances may use tokenized
+`--ui-stroke-secondary` primitive treatment. Every floating list —
+`DropdownMenu`, `Select`, and Popover + cmdk pickers
+(`<PopoverContent variant="menu">` + `<Command variant="menu">`) — paints
+through `src/components/ui/menu.ts`, so a list reads the same wherever it
+opens. Typed fields with suggestions use `ComboboxInput`, never
+`<input list>` + `<datalist>` (Chromium paints that as its own OS popup).
+
+Drag affordances may use tokenized
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
@@ -290,6 +297,9 @@ existing traffic-light and Window Controls Overlay measurements.
 
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
+In Simple interface mode only sidebar, settings and the layout editor render,
+and the reserved cluster width shrinks with them (`TITLEBAR_FIXED_TOOLS` is the
+one table both the buttons and the width reservation read).
 Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.

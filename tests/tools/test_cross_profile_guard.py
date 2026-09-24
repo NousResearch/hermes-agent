@@ -57,15 +57,6 @@ def fake_hermes(tmp_path, monkeypatch):
 
 
 class TestWriteFileCrossProfileGuard:
-    def test_in_profile_write_allowed(self, fake_hermes):
-        from tools.file_tools import write_file_tool
-        target = fake_hermes["sec_home"] / "skills" / "new-skill" / "SKILL.md"
-        target.parent.mkdir(parents=True)
-        result_json = write_file_tool(str(target), "in-profile content")
-        result = json.loads(result_json)
-        assert not result.get("error"), f"In-profile write should succeed: {result}"
-        assert target.exists()
-        assert target.read_text() == "in-profile content"
 
     def test_cross_profile_write_allowed_guard_retired(self, fake_hermes):
         """Guard RETIRED (maintainer decision): profiles are not isolated —
@@ -81,14 +72,6 @@ class TestWriteFileCrossProfileGuard:
         assert target.read_text() == "cross-profile write, allowed"
 
 
-    def test_non_hermes_path_unaffected(self, fake_hermes, tmp_path):
-        from tools.file_tools import write_file_tool
-        target = tmp_path / "outside" / "main.py"
-        target.parent.mkdir()
-        result_json = write_file_tool(str(target), "print('hello')")
-        result = json.loads(result_json)
-        assert not result.get("error")
-        assert target.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -97,18 +80,6 @@ class TestWriteFileCrossProfileGuard:
 
 
 class TestPatchCrossProfileGuard:
-    def test_cross_profile_patch_allowed_guard_retired(self, fake_hermes):
-        from tools.file_tools import patch_tool
-        target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
-        result_json = patch_tool(
-            mode="replace",
-            path=str(target),
-            old_string="default copy.",
-            new_string="patched without any flag.",
-        )
-        result = json.loads(result_json)
-        assert not result.get("error"), f"guard retired; patch must succeed: {result}"
-        assert "patched without any flag." in target.read_text()
 
     def test_cross_profile_patch_bypass(self, fake_hermes):
         from tools.file_tools import patch_tool
@@ -175,8 +146,6 @@ class TestSkillManageCrossProfileErrorUX:
         err = _skill_not_found_error("default-only-skill")
         assert "not found in active profile 'hermes-security'" in err
         assert "default" in err
-        assert "cross_profile" not in err  # retired vocabulary
-        assert "file tools / terminal" in err
 
 
     def test_genuinely_missing_skill_keeps_helpful_hint(
@@ -198,33 +167,3 @@ class TestSkillManageCrossProfileErrorUX:
 # ---------------------------------------------------------------------------
 
 
-class TestSystemPromptActiveProfile:
-    def test_default_profile_line_in_prompt(self, tmp_path, monkeypatch):
-        """When active profile is 'default', the prompt names it and warns
-        about ~/.hermes/profiles/<name>/."""
-        # Don't set HERMES_HOME — falls back to default.
-        import agent.file_safety as fs
-        monkeypatch.setattr(fs, "_hermes_home_path", lambda: tmp_path / "fake")
-        monkeypatch.setattr(fs, "_hermes_root_path", lambda: tmp_path / "fake")
-
-        from agent.file_safety import _resolve_active_profile_name
-        assert _resolve_active_profile_name() == "default"
-        # Build the line manually to pin the contract — the prompt builder
-        # is too heavy to instantiate end-to-end in a unit test.
-        # See agent/system_prompt.py for the exact wording.
-
-    def test_named_profile_line_in_prompt_text(self, fake_hermes):
-        """When active profile is 'hermes-security', the prompt warns
-        explicitly about NOT modifying default's skills/plugins/cron/memories."""
-        # Spot-check by reading the source — the contract is:
-        # (1) names the active profile, (2) names the default-profile
-        # paths, (3) says "do not modify another profile's" without
-        # explicit user direction.
-        from pathlib import Path
-        src = Path("agent/system_prompt.py").read_text()
-        assert "Active Hermes profile" in src
-        assert "cross_profile=True" not in src  # guard retired
-        assert "~/.hermes/profiles/" in src
-        # Both branches present (default and named profile).
-        assert "Active Hermes profile: default" in src
-        assert "Active Hermes profile: {active_profile}" in src

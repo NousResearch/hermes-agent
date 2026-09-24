@@ -26,6 +26,7 @@ import { vi } from 'vitest'
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
   content: string
+  display_kind?: string
   role: string
 }
 

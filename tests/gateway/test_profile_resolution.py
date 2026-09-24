@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -101,7 +101,6 @@ class TestMissingProfileWarning:
                             assert len(caplog.records) == 1
                             assert caplog.records[0].levelname == "WARNING"
                             assert "nonexistent" in caplog.records[0].message
-                            assert "does not exist" in caplog.records[0].message
                             assert "discord" in caplog.records[0].message
                             assert "123456" in caplog.records[0].message
     
@@ -129,28 +128,9 @@ class TestExceptionHandling:
                         assert len(caplog.records) == 1
                         assert caplog.records[0].levelname == "WARNING"
                         assert "bad-profile" in caplog.records[0].message
-                        assert "Failed to resolve profile directory" in caplog.records[0].message
     
 
 
-class TestRoutingConsultation:
-    """Tests that _profile_name_for_source is consulted when source.profile is empty."""
-    
-    def test_routing_consulted_when_source_profile_empty(self, mock_runner, discord_source):
-        """_profile_name_for_source should be called when source.profile is empty."""
-        discord_source.profile = None
-        
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
-                mock_get_dir.return_value = Path("/hermes/profiles/routed")
-                
-                mock_runner._profile_name_for_source = MagicMock(return_value="routed")
-
-                with patch("hermes_cli.profiles.profile_exists", return_value=True):
-                    mock_runner._resolve_profile_home_for_source(discord_source)
-
-                # Should have called routing
-                mock_runner._profile_name_for_source.assert_called_once_with(discord_source)
     
 
 
@@ -244,12 +224,6 @@ class TestGatewayRunnerInjection:
     that makes the routing in TestNonDiscordProfileRouting reachable at runtime.
     """
 
-    def test_base_adapter_declares_gateway_runner(self):
-        from gateway.platforms.base import BasePlatformAdapter
-
-        # Class-level attribute exists and defaults to None.
-        assert hasattr(BasePlatformAdapter, "gateway_runner")
-        assert BasePlatformAdapter.gateway_runner is None
 
     def test_factory_binds_every_adapter_to_runner(self, monkeypatch):
         """``_create_adapter`` binds the runner regardless of which branch

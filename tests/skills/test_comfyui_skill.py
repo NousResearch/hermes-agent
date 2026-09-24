@@ -13,7 +13,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 
 REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "optional-skills" / "creative" / "comfyui" / "scripts"
@@ -38,11 +37,6 @@ _ENCODING_SENSITIVE_READS = [
 ]
 
 
-@pytest.mark.parametrize("rel_path,expected", _ENCODING_SENSITIVE_READS)
-def test_readers_are_locale_independent(rel_path, expected):
-    """Every text read of a user-supplied or system file pins its codec."""
-    source = (SCRIPTS / rel_path).read_text(encoding="utf-8")
-    assert expected in source, f"{rel_path}: locale-dependent read of a UTF-8 payload"
 
 
 def _run_under_c_locale(snippet: str) -> subprocess.CompletedProcess:

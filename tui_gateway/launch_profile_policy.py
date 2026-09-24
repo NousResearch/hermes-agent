@@ -62,7 +62,7 @@ def _servable_profile_homes() -> set:
     from hermes_constants import named_profile_has_servable_identity
     from hermes_cli.profiles import profiles_to_serve
 
-    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True)
+    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)
              if name == "default" or named_profile_has_servable_identity(home)}
     homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
     return homes
@@ -166,15 +166,19 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
     home = Path(launch_home)
-    home_token = set_hermes_home_override(str(home))
-    secret_token = set_secret_scope(launch_secret_scope(home))
-    terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
+    home_token = secret_token = terminal_token = None
     try:
+        home_token = set_hermes_home_override(str(home))
+        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
+        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
         yield
     finally:
-        reset_terminal_scope(terminal_token)
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        if terminal_token is not None:
+            reset_terminal_scope(terminal_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
 
 
 def launch_profile_scope_if_multiplexed():

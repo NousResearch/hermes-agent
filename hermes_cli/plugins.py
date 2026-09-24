@@ -61,7 +61,7 @@ from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
-    _plugin_relative_segments, _plugin_settings_entry,
+    _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
 
 
@@ -280,23 +280,7 @@ class PluginContext:
 
     def set_config(self, key: str, value: Any) -> None:
         """Atomically write one value in this plugin's ``settings`` subtree."""
-        segments = self._segments(key)
-        from hermes_cli import config as config_mod
-        if config_mod.is_managed():
-            raise PermissionError("Plugin settings cannot be changed in a managed install")
-        from hermes_cli import managed_scope
-        full_path = ("plugins", "entries", self.plugin_id, "settings", *segments)
-        dotted_path = ".".join(full_path)
-        if managed_scope.is_key_managed(dotted_path):
-            raise PermissionError(f"Plugin setting {dotted_path!r} is administrator-managed")
-        partial = _nested_plugin_mapping(full_path[:4], _nested_plugin_mapping(segments, value))
-        # The lock covers merge-read plus atomic save so sibling plugin writes (threads or
-        # processes) cannot race between the two steps.
-        with _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
-            # Fail closed on malformed YAML: save_config degrades parse failures to {} — safe
-            # for reads, destructive for read-modify-write.
-            config_mod.read_user_config_raw()
-            config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
+        save_plugin_setting(self.plugin_id, self._segments(key), value)
 
     @cached_property
     def state(self) -> PluginState:
@@ -1010,9 +994,10 @@ class PluginContext:
         self, name: str, path: Path, description: str = "",
         frontmatter: Optional[Mapping[str, Any]] = None,
     ) -> PluginRegistration:
-        """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``.
-        Not in ``~/.hermes/skills/`` nor ``<available_skills>`` — explicit loads only. Raises
-        ``ValueError`` (``':'``/invalid chars) or ``FileNotFoundError``."""
+        """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``
+        and listed by ``skills_list``. Not copied into ``~/.hermes/skills/`` and not in the system
+        prompt's ``<available_skills>``. Raises ``ValueError`` (``':'``/invalid chars) or
+        ``FileNotFoundError``."""
         from agent.skill_utils import _NAMESPACE_RE
         if ":" in name:
             raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "
@@ -1149,10 +1134,13 @@ del _name, _method
 
 def _resolve_hook_callback_timeout() -> float:
     """Effective hook-callback timeout from ``plugins.hook_callback_timeout`` (default 30s; ``<= 0``
-    disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``)."""
+    disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``).
+
+    ``invoke_hook`` calls this once per hook invocation; ``load_config_readonly()`` serves cache hits
+    without ``_CONFIG_LOCK``, so this is a stat + dict lookup per call and needs no memo of its own.
+    """
     default = _HOOK_CALLBACK_TIMEOUT_SECS
     try:
-        from hermes_cli.config import load_config_readonly
         plugins_cfg = (load_config_readonly() or {}).get("plugins")
         if not isinstance(plugins_cfg, dict) or plugins_cfg.get("hook_callback_timeout") is None:
             return default
@@ -1201,10 +1189,13 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
+        self._portable_mcp_server_plugins: Dict[str, str] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
+        # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().
+        self._plugin_loaded_listeners: List[Callable] = []
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
         # registration order while emitters never block; per-worker chain depth caps mutual emitters.
         self._subscriptions: Dict[str, List[_EventSubscription]] = {}
@@ -1277,6 +1268,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             if self._discovered and not force:
                 return
+            # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
+            # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
+            loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
             if force:
                 self.unload()  # the ledger owns teardown of process-global registries
             if env_var_enabled("HERMES_SAFE_MODE"):
@@ -1308,6 +1302,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException:
                 self._discovered = False
                 raise
+        # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
+        self._notify_plugin_loaded(loaded_before)
 
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded
@@ -1545,6 +1541,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def get_portable_mcp_servers(self) -> Dict[str, Dict[str, Any]]:
         """Return a defensive copy of enabled portable MCP server configs."""
         return {name: dict(config) for name, config in self._portable_mcp_servers.items()}
+
+    def get_portable_mcp_server_plugins(self) -> Dict[str, str]:
+        return dict(self._portable_mcp_server_plugins)
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
         """Remove a stale registry entry (silently ignores missing keys)."""

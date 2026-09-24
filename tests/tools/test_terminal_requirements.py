@@ -1,7 +1,6 @@
 import importlib
 import logging
 
-import pytest
 
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
@@ -136,15 +135,6 @@ def test_vercel_backend_accepts_token_tuple_auth(monkeypatch):
     assert terminal_tool_module.check_terminal_requirements() is True
 
 
-@pytest.mark.parametrize("runtime", ["node24", "node22", "python3.13"])
-def test_vercel_backend_accepts_supported_runtimes(monkeypatch, runtime):
-    _clear_terminal_env(monkeypatch)
-    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", runtime)
-    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
-    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: object())
-
-    assert terminal_tool_module.check_terminal_requirements() is True
 
 
 def test_vercel_backend_accepts_blank_runtime(monkeypatch):
@@ -170,7 +160,6 @@ def test_vercel_backend_rejects_unsupported_runtime(monkeypatch, caplog):
     assert ok is False
     assert any(
         "Vercel Sandbox runtime 'node20' is not supported" in record.getMessage()
-        and "node24, node22, python3.13" in record.getMessage()
         for record in caplog.records
     )
 

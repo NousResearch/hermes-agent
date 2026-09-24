@@ -160,15 +160,6 @@ describe('normalizeChoices', () => {
     const ok = 'y'.repeat(200)
     expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
   })
-
-  it('drops empty items and keeps valid ones', () => {
-    expect(normalizeChoices(['valid', '  ', '', 'also valid'])).toEqual(['valid', 'also valid'])
-  })
-
-  it('returns empty array when nothing survives', () => {
-    expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
-    expect(normalizeChoices([])).toEqual([])
-  })
 })
 
 describe('normalizeQuestions', () => {

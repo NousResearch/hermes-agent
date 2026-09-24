@@ -1,19 +1,22 @@
 """macOS Full Disk Access onboarding guidance (issue #52010 follow-up).
 
-One FDA grant silences every per-folder TCC prompt permanently. Doctor
-reports the state and prints the one-switch setup; `hermes setup` surfaces
-the same tip at onboarding. The probe must never itself trigger a prompt —
-it reads the FDA-gated TCC db directory, which returns EPERM (no dialog)
-without the grant.
+One FDA grant silences every per-folder TCC prompt permanently. Doctor reports
+the state and prints the one-switch setup; ``hermes setup`` surfaces the same
+tip at onboarding. The probe reads the FDA-gated TCC db directory, which
+returns EPERM (no dialog) without the grant; any other error is indeterminate
+and must stay silent. The probe is gated on the real host, so the macOS
+branches run on the macOS lane and the off-macOS silence runs on Linux.
 """
 
-import io
 import contextlib
-
-import hermes_cli.doctor as doctor_mod
+import io
+import os
 import pathlib
-from hermes_cli.setup_quick import _print_macos_fda_tip
+
+import pytest
+
 from hermes_cli import doctor_platform
+from hermes_cli.setup_quick import _print_macos_fda_tip
 
 
 def _capture(fn):
@@ -23,77 +26,65 @@ def _capture(fn):
     return buf.getvalue()
 
 
-class TestDoctorFdaCheck:
-    def test_silent_on_non_macos(self, monkeypatch):
-        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
-        out = _capture(doctor_platform.check_macos_full_disk_access)
-        assert out == ""
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+    return tmp_path
 
-    def test_granted_reports_ok(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
-        tcc = tmp_path / "Library" / "Application Support" / "com.apple.TCC"
-        tcc.mkdir(parents=True)
-        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
-        out = _capture(doctor_platform.check_macos_full_disk_access)
-        assert "Full Disk Access granted" in out
-        assert "Privacy_AllFiles" not in out
 
-    def test_denied_prints_one_switch_guidance(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
-        tcc = tmp_path / "Library" / "Application Support" / "com.apple.TCC"
-        tcc.mkdir(parents=True)
-        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+@pytest.fixture
+def tcc_dir(home):
+    tcc = home / "Library" / "Application Support" / "com.apple.TCC"
+    tcc.mkdir(parents=True)
+    return tcc
 
-        def _eperm(path):
+
+@pytest.fixture
+def fda_denied(tcc_dir, monkeypatch):
+    """The TCC dir exists but listing it fails with EPERM, exactly as without the grant."""
+    real_listdir = os.listdir
+
+    def _listdir(path="."):
+        if pathlib.Path(path) == tcc_dir:
             raise PermissionError(13, "Operation not permitted", str(path))
+        return real_listdir(path)
 
-        monkeypatch.setattr(doctor_mod.os, "listdir", _eperm)
-        out = _capture(doctor_platform.check_macos_full_disk_access)
-        assert "Full Disk Access" in out
-        assert "Privacy_AllFiles" in out
-        assert "System Settings" in out
-
-    def test_indeterminate_probe_is_silent(self, monkeypatch, tmp_path):
-        """Missing TCC dir (weird install) must not nag."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
-        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
-        # tmp_path has no Library/Application Support/com.apple.TCC →
-        # FileNotFoundError (an OSError that is not PermissionError).
-        out = _capture(doctor_platform.check_macos_full_disk_access)
-        assert out == ""
+    monkeypatch.setattr(os, "listdir", _listdir)
+    return tcc_dir
 
 
-class TestSetupFdaTip:
-    def test_silent_on_non_macos(self, monkeypatch):
-        import hermes_cli.setup as setup_mod
+@pytest.mark.linux_only
+def test_doctor_and_setup_are_silent_off_macos(tcc_dir):
+    assert _capture(doctor_platform.check_macos_full_disk_access) == ""
+    assert _capture(_print_macos_fda_tip) == ""
 
-        monkeypatch.setattr(setup_mod.sys, "platform", "linux")
-        out = _capture(_print_macos_fda_tip)
-        assert out == ""
 
-    def test_silent_when_already_granted(self, monkeypatch, tmp_path):
-        import hermes_cli.setup as setup_mod
+@pytest.mark.macos_only
+def test_doctor_reports_granted_without_guidance(tcc_dir):
+    out = _capture(doctor_platform.check_macos_full_disk_access)
+    assert "Full Disk Access granted" in out
+    assert "Privacy_AllFiles" not in out
 
-        monkeypatch.setattr(setup_mod.sys, "platform", "darwin")
-        tcc = tmp_path / "Library" / "Application Support" / "com.apple.TCC"
-        tcc.mkdir(parents=True)
-        monkeypatch.setattr(setup_mod.Path, "home", classmethod(lambda cls: tmp_path))
-        out = _capture(_print_macos_fda_tip)
-        assert out == ""
 
-    def test_tip_printed_when_denied(self, monkeypatch, tmp_path):
-        import hermes_cli.setup as setup_mod
+@pytest.mark.macos_only
+def test_doctor_prints_one_switch_guidance_when_denied(fda_denied):
+    out = _capture(doctor_platform.check_macos_full_disk_access)
+    assert "Privacy_AllFiles" in out
+    assert "granted" not in out
 
-        monkeypatch.setattr(setup_mod.sys, "platform", "darwin")
-        tcc = tmp_path / "Library" / "Application Support" / "com.apple.TCC"
-        tcc.mkdir(parents=True)
-        monkeypatch.setattr(setup_mod.Path, "home", classmethod(lambda cls: tmp_path))
 
-        def _eperm(path):
-            raise PermissionError(13, "Operation not permitted", str(path))
+@pytest.mark.macos_only
+def test_doctor_is_silent_when_probe_is_indeterminate(home):
+    """Missing TCC dir (FileNotFoundError, not EPERM) must not nag."""
+    assert _capture(doctor_platform.check_macos_full_disk_access) == ""
 
-        monkeypatch.setattr(setup_mod.os, "listdir", _eperm)
-        out = _capture(_print_macos_fda_tip)
-        assert "Full Disk Access" in out
-        assert "Privacy_AllFiles" in out
-        assert "survives every Hermes update" in out
+
+@pytest.mark.macos_only
+def test_setup_tip_is_silent_when_already_granted(tcc_dir):
+    assert _capture(_print_macos_fda_tip) == ""
+
+
+@pytest.mark.macos_only
+def test_setup_tip_printed_when_denied(fda_denied):
+    out = _capture(_print_macos_fda_tip)
+    assert "Privacy_AllFiles" in out

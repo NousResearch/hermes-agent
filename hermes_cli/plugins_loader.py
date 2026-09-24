@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from registration_lifecycle import replacement_coordinator
 from hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
-from hermes_cli.plugins_manifest import PluginManifest, manifest_key, validate_config_schema
+from hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
 from hermes_cli.plugins_state import _plugin_settings_entry
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -183,6 +183,47 @@ def _dist_installed(req: str) -> Optional[bool]:
 
 
 class PluginLoaderMixin:
+    def on_plugin_loaded(self, callback: Callable[[List[Dict[str, Any]]], Any]) -> Callable[[], None]:
+        """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
+        :meth:`discover_and_load` (never emitted by an install RPC) with one
+        ``{name, key, activated_now, deferred}`` summary per NEWLY loaded plugin — every plugin at boot,
+        just the newcomer after a mid-run ``hermes plugins install/enable``, Desktop / dashboard /
+        ``plugins.manage`` install-enable-update, a tool-triggered force re-discovery or the gateway's
+        ``reload-plugins`` verb (all of which run ``discover_plugins(force=True)``; a non-forced call
+        short-circuits on ``_discovered`` and never fires). See
+        :func:`hermes_cli.plugins_activation.plugin_activation_summary` for the payload: ``activated_now``
+        (gateway commands/transforms/hooks/callbacks, live at once) vs ``deferred`` (``tools``/``prompt``
+        until the next session, ``mcp_servers`` — the plugin's mcp.json server names — until ``mcp.reload``).
+        Listeners belong to the process (gateway runner, TUI server), not to a plugin, so ``unload()``
+        never clears them. Returns an unsubscribe callable. Fires on the discovering thread with the
+        discovery lock released; marshal onto your own loop."""
+        if not callable(callback):
+            raise ValueError("on_plugin_loaded requires a callable")
+        listeners = self._plugin_loaded_listeners
+        listeners.append(callback)
+
+        def _unsubscribe() -> None:
+            try:
+                listeners.remove(callback)
+            except ValueError:
+                pass
+        return _unsubscribe
+
+    def _notify_plugin_loaded(self, loaded_before: frozenset) -> None:
+        """Fire every :meth:`on_plugin_loaded` listener for the plugins this sweep added over
+        ``loaded_before``; nothing new = no event. One raising listener never starves the rest."""
+        if not self._plugin_loaded_listeners:
+            return
+        from hermes_cli.plugins_activation import activation_summaries
+        summaries = [s for s in activation_summaries(self) if s["key"] not in loaded_before]
+        if not summaries:
+            return
+        for callback in list(self._plugin_loaded_listeners):
+            try:
+                callback(summaries)
+            except Exception:
+                logger.warning("plugin-loaded listener %r raised", callback, exc_info=True)
+
     @staticmethod
     def _platform_name_from_manifest(manifest: PluginManifest) -> str:
         """Derive the platform name without importing the adapter: strip a trailing ``-platform`` from the
@@ -523,16 +564,42 @@ class PluginLoaderMixin:
                     ctx.register_skill(skill.name, skill.skill_md, skill.description, skill.frontmatter)
                 except Exception as exc:
                     logger.warning("Agent Plugin '%s' skill '%s' skipped: %s", lookup_key, skill.name, exc)
-            for server_name, config in package.mcp_servers.items():
-                internal_name = f"{manifest.skill_namespace}__{server_name}"
-                if internal_name in self._portable_mcp_servers:
-                    logger.warning("Agent Plugin '%s' MCP server collision: %s", lookup_key, internal_name)
-                    continue
-                self._portable_mcp_servers[internal_name] = dict(config)
-            loaded.enabled = True
+            from hermes_cli.agent_plugins import _clear_liveness, _set_liveness
+            from hermes_platform import declaration
+            registered: list[str] = []
+            try:
+                for server_name, config in package.mcp_servers.items():
+                    internal_name = portable_mcp_server_name(lookup_key, server_name)
+                    if internal_name in self._portable_mcp_servers:
+                        logger.warning("Agent Plugin '%s' MCP server '%s' skipped: name already taken by plugin '%s'; rename one server",
+                                       lookup_key, internal_name, self._portable_mcp_server_plugins.get(internal_name, "?"))
+                        continue
+                    self._portable_mcp_servers[internal_name] = dict(config)
+                    self._portable_mcp_server_plugins[internal_name] = lookup_key
+                    server_decl = package.server_declarations.get(server_name)
+                    if server_decl is not None:
+                        declaration.register(internal_name, server_decl.declaration)
+                        _set_liveness(internal_name, server_decl.liveness)
+                    registered.append(internal_name)
+                for internal_name in registered:
+                    def release(name: str = internal_name) -> None:
+                        self._portable_mcp_servers.pop(name, None)
+                        self._portable_mcp_server_plugins.pop(name, None)
+                        declaration.unregister(name)
+                        _clear_liveness(name)
+
+                    self._track_registration(manifest, "portable_mcp", internal_name, release)
+                loaded.enabled = True
+            except BaseException:
+                for internal_name in registered:
+                    self._portable_mcp_servers.pop(internal_name, None)
+                    self._portable_mcp_server_plugins.pop(internal_name, None)
+                    declaration.unregister(internal_name)
+                    _clear_liveness(internal_name)
+                raise
         except (Exception, SystemExit) as exc:
             loaded.error = _load_error_text(exc)
-            logger.warning("Failed to load Agent Plugin '%s': %s", lookup_key, loaded.error)
+            logger.warning("Agent Plugin '%s' disabled: %s", lookup_key, loaded.error)
         self._plugins[lookup_key] = loaded
 
     def _directory_module_name(self, manifest: PluginManifest) -> str:

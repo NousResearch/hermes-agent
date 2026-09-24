@@ -430,6 +430,30 @@ def _docker_session_isolation_enabled() -> bool:
     return _session_scope().docker_session_isolated
 
 
+def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
+    """Key for a session-less task serving a routed (non-launch) profile home, else None.
+
+    A multiplexed host runs every profile's cron jobs without a session key; collapsing them all onto
+    ``"default"`` made profile B's cron tool calls reuse the environment the launch profile's job
+    created (its ``.env`` residue, its bridged ``TERMINAL_*``, its shell), so B ran with A's settings.
+    Persistent Docker keys the profile name exactly like B's session-bound work, so B keeps ONE
+    container instead of a second one per home path.
+    """
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from tools.environments.local import _is_routed_home
+
+    override = get_hermes_home_override()
+    if not override or not _is_routed_home(override):
+        return None
+    profile = profile_name_for_home(override) if profile_scoped else None
+    if profile:
+        return "default" if profile == "default" else f"profile:{profile}"
+    try:
+        return f"home:{os.path.realpath(override)}"
+    except OSError:
+        return f"home:{override}"
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """Map a tool-call ``task_id`` to the ``_active_environments`` key. Order matters —
     earlier branches are authoritative where they apply:
@@ -445,9 +469,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        default-profile gateway sessions share ONE container; other backends key
        ``session:<key>`` so switching profiles can't reuse another profile's
        SSHEnvironment on the wrong host.
-    4. No session key (CLI): ``shared:<key>`` when opted in (else a CLI run of a
-       keyed profile would split from its gateway sessions), else ``"default"``,
-       which subagent ids collapse onto to share the parent's container.
+    4. No session key (CLI, cron): ``shared:<key>`` when opted in (else a CLI run of a
+       keyed profile would split from its gateway sessions); a routed multiplexed profile
+       keys its own home (``profile:<name>`` under persistent Docker, matching branch 3);
+       else ``"default"``, which subagent ids collapse onto to share the parent's container.
     """
     if task_id and _has_isolation_overrides(task_id):
         return task_id
@@ -470,7 +495,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
         return f"shared:{shared}"
     if not session_key:
-        return "default"
+        return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
         return f"session:{session_key}"
     profile = _current_session_profile() or "default"

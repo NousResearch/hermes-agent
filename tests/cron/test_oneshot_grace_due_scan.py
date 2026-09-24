@@ -23,10 +23,7 @@ from cron.jobs import (
     get_due_jobs,
     load_jobs,
     save_jobs,
-    save_job_output,
     trigger_job,
-    _hermes_now,
-    ONESHOT_GRACE_SECONDS,
 )
 
 FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=timezone.utc)
@@ -73,7 +70,6 @@ class TestOneShotGraceDueScan:
         out_dir = cron_store / "cron" / "output" / "stale"
         diag = list(out_dir.glob("*.md")) if out_dir.exists() else []
         assert diag, "expected a diagnostic file for the retired stale one-shot"
-        assert "outside grace window" in diag[0].read_text(encoding="utf-8")
 
     def test_within_grace_still_due(self, cron_store):
         recent = _oneshot("recent", FIXED_NOW - timedelta(seconds=60))

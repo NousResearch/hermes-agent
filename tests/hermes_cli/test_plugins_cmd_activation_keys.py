@@ -60,7 +60,11 @@ def test_dashboard_toggle_writes_canonical_key_and_clears_stale_aliases(home):
 
     result = plugins_cmd.dashboard_set_agent_plugin_enabled("zzprobe", enabled=True)
 
-    assert result == {"ok": True, "name": "obs/zzprobe", "unchanged": False, "restart_required": True}
+    # The enable also loads the plugin now (#87770): with no gateway answering, a restart is still the
+    # honest hint and the activation summary rides along.
+    assert {k: result[k] for k in ("ok", "name", "unchanged", "restart_required")} == {
+        "ok": True, "name": "obs/zzprobe", "unchanged": False, "restart_required": True}
+    assert result["gateway_reloaded"] is False
     enabled, disabled = _lists()
     assert enabled == {"obs/zzprobe"} and disabled == set()
     manifest = next(m for m in collect_directory_manifests() if m.name == "zz-probe-manifest")

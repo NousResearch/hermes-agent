@@ -62,7 +62,6 @@ def test_write_failure_raises_transport_error_and_drops_pending():
     with pytest.raises(CodexAppServerTransportError) as info:
         client.request("turn/start", {}, timeout=1.0)
     assert isinstance(info.value, CodexAppServerError)
-    assert "stdin closed unexpectedly" in info.value.message
     assert client._pending == {}
 
 

@@ -275,7 +275,7 @@ def _(rid, params: dict) -> dict:
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
-               "previous_names": list(p.previous_names or [])}
+               "previous_names": list(p.previous_names or []), "role": p.role}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
@@ -427,9 +427,10 @@ def _describe_toolsets(cfg):
     """``(toolsets, pinned_set)`` as the `hermes tools` checklist presents them (the raw registry
     leaks platform composites and reports everything enabled without a pin)."""
     from hermes_cli.tools_config import (
-        _get_effective_configurable_toolsets, _get_platform_tools, _toolset_allowed_for_platform)
+        _coerce_platform_toolsets_value, _get_effective_configurable_toolsets, _get_platform_tools,
+        _toolset_allowed_for_platform)
     from toolsets import resolve_toolset
-    pinned = (cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}).get("enabled_toolsets")
+    pinned = _coerce_platform_toolsets_value((cfg.get("platform_toolsets") or {}).get("cli"), "cli")
     pinned_set = _clean_names(pinned) if isinstance(pinned, list) else None
     platform_enabled = _try(lambda: set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False)), set())
     default_off = _try(lambda: _lazy("hermes_cli.tools_config", "_DEFAULT_OFF_TOOLSETS"), set())
@@ -468,7 +469,7 @@ def _(rid, params: dict) -> dict:
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
         mcp_cfg = cfg.get("mcp_servers")
         mcp_out = _try(lambda: [
-            {"name": str(srv_name), "enabled": not is_truthy_value(entry.get("disabled", False)),
+            {"name": str(srv_name), "enabled": _mcp_entry_enabled(entry),
              "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
             for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
             if isinstance(entry, dict)
@@ -556,27 +557,38 @@ def _clean_names(values) -> set:
 
 
 def _save_toolset_pin(cfg, enabled, save_config) -> None:
-    wanted = sorted(_clean_names(enabled))
-    tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+    """Pin ``platform_toolsets.cli``: the key ``_load_enabled_toolsets`` reads and ``hermes tools`` writes.
+    An empty selection clears the pin so the platform default applies again."""
+    from hermes_cli.tools_config import _save_platform_tools
+
+    wanted = _clean_names(enabled)
     if wanted:
-        tools_cfg["enabled_toolsets"] = wanted
-    else:
-        tools_cfg.pop("enabled_toolsets", None)
-    cfg["tools"] = tools_cfg
+        _save_platform_tools(cfg, "cli", wanted)
+    elif isinstance(cfg.get("platform_toolsets"), dict):
+        cfg["platform_toolsets"].pop("cli", None)
     save_config(cfg)
 
 
+def _mcp_entry_enabled(entry: dict) -> bool:
+    """The runtime's ``enabled`` reader; a legacy ``disabled: true`` (what older editors wrote,
+    migrated by config v46) still reads as off."""
+    from hermes_cli.tools_config import _parse_enabled_flag
+    from tools.mcp_tool_common import mcp_server_enabled
+    return mcp_server_enabled(entry) and not _parse_enabled_flag(entry.get("disabled", False), default=False)
+
+
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
+    """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
+    coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
         if not isinstance(mcp_cfg.get(srv), dict) and isinstance(launch_mcp.get(srv), dict):
             mcp_cfg[srv] = dict(launch_mcp[srv])
-        if isinstance(mcp_cfg.get(srv), dict):
-            mcp_cfg[srv].pop("disabled", None)
     for srv, entry in mcp_cfg.items():
-        if srv not in wanted and isinstance(entry, dict):
-            entry["disabled"] = True
+        if isinstance(entry, dict):
+            entry["enabled"] = srv in wanted
+            entry.pop("disabled", None)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)

@@ -2,14 +2,10 @@
 
 import argparse
 import os
-import re
-import shutil
 import subprocess
 import tempfile
 
-import pytest
-
-from hermes_cli.completion import _walk, generate_bash, generate_zsh, generate_fish
+from hermes_cli.completion import _walk, generate_bash, generate_fish
 
 
 # ---------------------------------------------------------------------------
@@ -98,52 +94,11 @@ class TestGenerateBash:
 
 
 # ---------------------------------------------------------------------------
-# 3. Zsh output
-# ---------------------------------------------------------------------------
-
-class TestGenerateZsh:
-
-
-    def test_preserves_valid_zsh_arguments_alias_syntax(self):
-        out = generate_zsh(_make_parser())
-        assert "'(-)'{-h,--help}'[Show help and exit]'" in out
-        assert "'(-)'{-V,--version}'[Show version and exit]'" in out
-        assert "'(-)'{-p,--profile}'[Profile name]:profile:_hermes_profiles'" in out
-        assert "'(-h --help){-h,--help}[Show help and exit]'" not in out
-        assert '"(-h --help)"{-h,--help}"[Show help and exit]"' not in out
-
-    def test_valid_zsh_syntax(self):
-        if not shutil.which("zsh"):
-            pytest.skip("zsh not installed")
-        out = generate_zsh(_make_parser())
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".zsh", delete=False) as f:
-            f.write(out)
-            path = f.name
-        try:
-            result = subprocess.run(["zsh", "-n", path], capture_output=True, text=True)
-            assert result.returncode == 0, result.stderr
-        finally:
-            os.unlink(path)
-
-
-# ---------------------------------------------------------------------------
-# 4. Fish output
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 5. Subcommand drift prevention
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 6. Profile completion (regression prevention)
+# 3. Profile completion (regression prevention)
 # ---------------------------------------------------------------------------
 
 class TestProfileCompletion:
     """Ensure profile name completion is present in all shell outputs."""
-
-
 
 
     def test_bash_profile_actions_complete_profile_names(self):

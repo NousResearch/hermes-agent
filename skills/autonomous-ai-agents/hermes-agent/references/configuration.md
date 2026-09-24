@@ -23,6 +23,25 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 
 `hermes config check` reports sections missing from an older config.
 
+### Reversible harness overlays
+
+Use harness overlays when Hermes itself needs to tune declared runtime options without editing
+`config.yaml`. The registry is typed and excludes approvals, credentials, secret redaction,
+security/blocklist policy, tools, plugins, hooks, terminal backends, and browser permissions.
+
+```text
+hermes harness show --json
+hermes harness diff
+hermes harness explain compression.threshold
+hermes harness set experiment compression.threshold 0.65 --reason "Reduce early compaction"
+hermes harness revert experiment --reason "Experiment completed"
+```
+
+Named overlays are applied in order above `config.yaml` and below administrator-managed settings.
+Every change records its reason and stock revision; `show` reports stale overlays after an upgrade
+and prints the effective fingerprint. Changes apply to new sessions so an existing conversation's
+cached prompt/tool prefix and recorded harness identity remain stable.
+
 ### Toolsets
 
 Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable NAME`.

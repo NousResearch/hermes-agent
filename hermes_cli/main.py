@@ -382,6 +382,7 @@ from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.import_agent import build_import_agent_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.harness import build_harness_parser
 from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
@@ -2261,6 +2262,40 @@ def cmd_config(args):
         sys.exit(1)
 
 
+def cmd_harness(args):
+    """Typed harness overlay management."""
+    from hermes_cli.harness_manifest import (
+        HarnessError,
+        command_diff,
+        command_explain,
+        command_show,
+        parse_value,
+        revert_overlay,
+        set_overlay,
+    )
+
+    command = getattr(args, "harness_command", None) or "show"
+    try:
+        if command == "show":
+            command_show(as_json=bool(getattr(args, "json", False)))
+        elif command == "diff":
+            command_diff(as_json=bool(getattr(args, "json", False)))
+        elif command == "explain":
+            command_explain(args.key, as_json=bool(getattr(args, "json", False)))
+        elif command == "set":
+            value = parse_value(args.key, args.value)
+            overlay = set_overlay(args.overlay, args.key, value, args.reason)
+            print(f"Updated harness overlay {overlay['name']}; changes apply to new sessions.")
+        elif command == "revert":
+            removed = revert_overlay(args.overlay, args.reason)
+            print(f"Reverted harness overlay {removed['name']}; changes apply to new sessions.")
+        else:
+            raise HarnessError(f"unknown harness command: {command}")
+    except HarnessError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     from hermes_cli import backup
@@ -3437,6 +3472,7 @@ def _build_cli_parser():
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
     build_import_agent_parser(subparsers, cmd_import_agent=cmd_import_agent)
     build_config_parser(subparsers, cmd_config=cmd_config)
+    build_harness_parser(subparsers, cmd_harness=cmd_harness)
     build_skin_parser(subparsers, cmd_skin=cmd_skin)
     build_console_parser(subparsers, cmd_console=cmd_console)
     build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)

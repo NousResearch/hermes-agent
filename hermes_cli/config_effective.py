@@ -30,8 +30,10 @@ _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
 _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
-def _effective(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _effective(raw: Dict[str, Any], *, home: Optional[Path] = None) -> Dict[str, Any]:
     expanded = _config._expand_env_vars(raw)
+    from hermes_cli.harness_manifest import apply_harness_overlays
+    expanded = apply_harness_overlays(expanded if isinstance(expanded, dict) else {}, home=home)
     merged = managed_scope.apply_managed_overlay(expanded if isinstance(expanded, dict) else {})
     return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
 
@@ -99,7 +101,7 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         managed = managed_scope.load_managed_config()
         if managed:
             _config._env_ref_snapshot(managed, env_snapshot)
-        effective = _effective(raw)
+        effective = _effective(raw, home=config_path.parent)
         # A recovered result is never cached under the corrupt file's signature: a later
         # ``fail_closed`` caller must still see the parse error, not a cache hit.
         if cache_sig is not None and not recovered:

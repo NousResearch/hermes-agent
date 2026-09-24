@@ -287,6 +287,10 @@ def load_cli_config() -> Dict[str, Any]:
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
 
+    # Typed harness layers sit above the user's config but below administrator-managed values.
+    from hermes_cli.harness_manifest import apply_harness_overlays
+    defaults = apply_harness_overlays(defaults, home=_hermes_home)
+
     # Administrator-pinned (managed scope) values overlay LAST; cli.py builds its config
     # independently of hermes_cli.config, so this keeps parity with `hermes config`. Fail-open.
     from hermes_cli import managed_scope

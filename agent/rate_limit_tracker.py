@@ -11,6 +11,42 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
+
+@dataclass
+class CodexWindow:
+    used_percent: float = 0.0
+    window_minutes: int = 0
+    reset_after_seconds: float = 0.0
+
+
+CODEX_PROVIDER = "openai-codex"
+CODEX_STATE_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def is_codex_provider(provider: Any) -> bool:
+    """Return whether a provider label identifies the Codex backend."""
+    return str(provider or "").strip().lower() == CODEX_PROVIDER
+
+
+@dataclass
+class CodexRateLimitState:
+    primary: CodexWindow = field(default_factory=CodexWindow)
+    secondary: CodexWindow = field(default_factory=CodexWindow)
+    active_limit: str = ""
+    plan_type: str = ""
+    credits_balance: str = ""
+    credits_has_credits: Optional[bool] = None
+    credits_unlimited: Optional[bool] = None
+    captured_at: float = 0.0
+
+    @property
+    def has_data(self) -> bool:
+        return self.captured_at > 0
+
+    @property
+    def age_seconds(self) -> float:
+        return time.time() - self.captured_at if self.has_data else float("inf")
+
 # (state attribute, header tag) for the four windows.
 _BUCKET_TAGS = (
     ("requests_min", "requests"),
@@ -84,6 +120,33 @@ def lower_headers(headers: Optional[Mapping[str, str]]) -> dict[str, str]:
 
 def has_rate_limit_headers(lowered: Mapping[str, str]) -> bool:
     return any(k.startswith("x-ratelimit-") for k in lowered)
+
+
+def parse_codex_headers(headers: Mapping[str, str]) -> Optional[CodexRateLimitState]:
+    """Parse the OpenAI Codex ``x-codex-*`` response-header family."""
+    lowered = lower_headers(headers)
+    if not any(k.startswith("x-codex-") for k in lowered):
+        return None
+
+    def boolean(name: str) -> Optional[bool]:
+        value = lowered.get(name)
+        return str(value).strip().lower() in {"1", "true", "yes"} if value is not None else None
+
+    def window(prefix: str) -> CodexWindow:
+        return CodexWindow(
+            used_percent=_safe_float(lowered.get(f"x-codex-{prefix}-used-percent")),
+            window_minutes=_safe_int(lowered.get(f"x-codex-{prefix}-window-minutes")),
+            reset_after_seconds=_safe_float(lowered.get(f"x-codex-{prefix}-reset-after-seconds")),
+        )
+
+    return CodexRateLimitState(
+        primary=window("primary"), secondary=window("secondary"),
+        active_limit=lowered.get("x-codex-active-limit", ""),
+        plan_type=lowered.get("x-codex-plan-type", ""),
+        credits_balance=lowered.get("x-codex-credits-balance", ""),
+        credits_has_credits=boolean("x-codex-credits-has-credits"),
+        credits_unlimited=boolean("x-codex-credits-unlimited"), captured_at=time.time(),
+    )
 
 
 def parse_rate_limit_headers(headers: Mapping[str, str], provider: str = "") -> Optional[RateLimitState]:
@@ -168,6 +231,23 @@ def format_rate_limit_display(state: RateLimitState) -> str:
     ]
     if warnings:
         lines += [""] + warnings
+    return "\n".join(lines)
+
+
+def format_codex_rate_limit_display(state: CodexRateLimitState) -> str:
+    """Format Codex plan windows for /usage."""
+    def window(label: str, item: CodexWindow) -> str:
+        reset = _fmt_seconds(item.reset_after_seconds)
+        return f"  {label:<12} {item.used_percent:5.1f}% used (resets in {reset})"
+
+    lines = ["OpenAI-Codex Plan Limits:"]
+    if state.plan_type:
+        lines.append(f"Plan: {state.plan_type}" + (f" (limit: {state.active_limit})" if state.active_limit else ""))
+    if state.credits_unlimited is True:
+        lines.append("Credits: unlimited")
+    elif state.credits_has_credits is not None:
+        lines.append(f"Credits: {'available' if state.credits_has_credits else 'unavailable'}")
+    lines.extend([window("5h window", state.primary), window("7d window", state.secondary)])
     return "\n".join(lines)
 
 

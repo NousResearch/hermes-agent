@@ -2921,6 +2921,8 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
+        if response is None:
+            response = getattr(raw_stream, "_response", None)
         self.agent._capture_rate_limits(response)
         self.agent._capture_credits(response)
         self.agent._capture_nous_model_switch(response)

@@ -329,8 +329,8 @@ def _resolve_codex_usage_credentials(
         except AuthError:
             singleton_key = ""
         if singleton_key != explicit_key:
-            from agent.credential_pool import load_pool
-            entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
+            from agent.credential_pool import refresh_matching_persisted_credential
+            entry = refresh_matching_persisted_credential("openai-codex", api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
             return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None

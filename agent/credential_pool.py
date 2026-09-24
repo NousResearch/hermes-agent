@@ -3011,6 +3011,32 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     return seed.result
 
 
+def refresh_matching_persisted_credential(provider: str, *, api_key_hint: str) -> Optional[PooledCredential]:
+    """Refresh an exact stored credential without load_pool's seed/prune reconciliation.
+
+    Use the regular pool refresh path for token locking, peer adoption and
+    generation-fenced persistence; only the matching row may be changed by this
+    operation.  A stale hint must not fall back to another account.
+    """
+    provider = (provider or "").strip().lower()
+    if not api_key_hint:
+        return None
+    raw_entries = read_credential_pool(provider)
+    # Only materialize the matching row: _persist() serializes every in-memory
+    # entry, so even untouched rows would otherwise be normalized on write.
+    matches = [
+        entry for row in raw_entries if isinstance(row, dict)
+        if (entry := PooledCredential.from_dict(provider, row)).runtime_api_key == api_key_hint
+    ]
+    if not matches:
+        return None
+    pool = CredentialPool(provider, matches[:1])
+    pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
+    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
+        pool._borrowed_root_ids = {entry.id for entry in pool._entries}
+    return pool.try_refresh_matching(api_key_hint=api_key_hint)
+
+
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:

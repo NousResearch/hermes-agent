@@ -645,9 +645,55 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+def _fetch_ollama_cloud_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Ollama Cloud utilization: ``GET https://ollama.com/api/usage`` returns rolling
+    session/weekly ``usage`` fractions (0.0–1.0) plus 4-week spend. Auth is the plain
+    ``OLLAMA_API_KEY`` bearer. Fail-open → None."""
+    token = str(api_key or "").strip()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            payload = client.get("https://ollama.com/api/usage", headers=headers).json() or {}
+    except Exception:
+        logger.debug("ollama-cloud ▸ /usage api/usage fetch failed (fail-open)", exc_info=True)
+        return None
+
+    limits = payload.get("limits") or {}
+    activity = payload.get("activity") or {}
+    windows: list[AccountUsageWindow] = []
+    for key, label in (("session", "Session usage"), ("weekly", "Weekly usage")):
+        window = limits.get(key) or {}
+        fraction = window.get("usage")
+        if _is_finite_num(fraction) and 0.0 <= float(fraction) <= 1.0:
+            windows.append(AccountUsageWindow(label=label, used_percent=float(fraction) * 100.0))
+    details: list[str] = []
+    cost = activity.get("cost")
+    if isinstance(cost, str) or _is_num(cost):
+        try:
+            details.append(f"Spend, last 4 weeks: ${float(cost):,.2f}")
+        except (TypeError, ValueError):
+            pass
+    models = activity.get("models") or []
+    if models:
+        def _model_cost(m: Any) -> float:
+            try:
+                return abs(float(m.get("cost"))) if m.get("cost") is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        top = max(models, key=_model_cost)
+        if _model_cost(top) > 0:
+            details.append(f"Top model: {top.get('name', '?')} at ${_model_cost(top):,.2f}")
+    return _snapshot("ollama-cloud", "usage_api", windows, details)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    "ollama-cloud": _fetch_ollama_cloud_account_usage,
 }
 
 

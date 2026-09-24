@@ -159,6 +159,45 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
     assert profile.calls == 0
 
 
+def test_fetch_account_usage_ollama_cloud_scales_fractions(monkeypatch):
+    """Ollama Cloud: limits.*.usage is a 0–1 fraction; spend + top model from activity."""
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            assert url == "https://ollama.com/api/usage"
+            return _Response({
+                "activity": {"cost": "2.01533", "models": [
+                    {"name": "glm-5.3", "request_count": 52, "cost": "1.74216"},
+                    {"name": "glm-5.3-flash", "request_count": 15, "cost": "0.27317"},
+                ]},
+                "limits": {
+                    "session": {"usage": 0.208, "models": []},
+                    "weekly": {"usage": 0.631, "models": []},
+                },
+            })
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _Client(),
+    )
+
+    snapshot = fetch_account_usage("ollama-cloud", api_key="key")
+
+    assert snapshot is not None
+    assert snapshot.provider == "ollama-cloud"
+    assert [w.label for w in snapshot.windows] == ["Session usage", "Weekly usage"]
+    assert snapshot.windows[0].used_percent == 20.8
+    assert snapshot.windows[1].used_percent == 63.1
+    assert "Spend, last 4 weeks: $2.02" in snapshot.details
+    assert "Top model: glm-5.3 at $1.74" in snapshot.details
+
+
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",

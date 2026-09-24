@@ -24,7 +24,7 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
@@ -295,15 +295,16 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     # mirror still holding the previous value of this var (model.api_key /
     # auxiliary.*.api_key / custom_providers[*]), so a rotation can't leave a
     # stale higher-precedence copy that keeps authenticating with the old key.
+    # Display-only previews (sentinel or legacy mask) must never gain write authority.
+    # Checked before the error mapper: it turns HTTPException into a 500 at this site.
+    if is_redacted_credential_preview(body.value):
+        raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
     with _env_write_errors("PUT /api/env failed", http_passthrough=False):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
-        def _save():
-            if is_redacted_credential_preview(body.value):
-                raise ValueError(REDACTED_CREDENTIAL_WRITE_DETAIL)
-            return save_provider_env_credential(body.key, body.value)
-
-        return await scoped_to_thread(body.profile or profile, _save)
+        return await scoped_to_thread(
+            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
+        )
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -628,7 +629,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     if submitted_key:
         # ``${KEY_ENV}`` is the GET display for key_env entries; the helper covers the
         # sentinel and legacy masks. Either one is display-only, current or stale.
-        if re.fullmatch(r"\$\{[^}]+\}", submitted_key) or is_redacted_credential_preview(submitted_key):
+        if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
             raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var

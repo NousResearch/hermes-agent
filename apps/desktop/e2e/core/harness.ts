@@ -328,6 +328,21 @@ export function recordWebSockets(page: Page): WsRecorder {
   return rec
 }
 
+/**
+ * A successful reload destroys the previous document and all of its sockets,
+ * but Electron's Playwright transport does not emit their `close` events.
+ * Retire only the sockets recorded before the reload; sockets opened by the
+ * new document still participate in the live-socket and duplicate-event checks.
+ */
+export async function reloadRecordedPage(page: Page, recorder: WsRecorder): Promise<void> {
+  const previousDocumentSockets = [...recorder.sockets]
+  await page.reload()
+
+  for (const socket of previousDocumentSockets) {
+    socket.closed = true
+  }
+}
+
 // ─── Network fault injection ────────────────────────────────────────────
 
 export interface TcpProxy {

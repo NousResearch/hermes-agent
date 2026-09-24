@@ -27,6 +27,7 @@ import {
   currentSessionId,
   launchCoreApp,
   recordWebSockets,
+  reloadRecordedPage,
   routePrimaryWebSocket,
   send,
   splitProfileRoute,
@@ -199,7 +200,7 @@ test('transcript oracle holds across every transition', async () => {
     await routePrimaryWebSocket(app, backendPort, proxy.port)
 
     await test.step('reload: hydrated transcript equals persisted', async () => {
-      await page.reload()
+      await reloadRecordedPage(page, ws)
       await waitForInteractive(app, page)
       await installDuplicateSampler(page)
       await expect.poll(() => proxy.connections()).toBeGreaterThan(0)
@@ -315,7 +316,7 @@ test('transcript oracle holds across every transition', async () => {
     })
 
     await test.step('final reload: every session re-hydrates exactly once', async () => {
-      await page.reload()
+      await reloadRecordedPage(page, ws)
       await waitForInteractive(app, page)
       await installDuplicateSampler(page)
       await openSession(page, sessionA.sessionId, A(8))

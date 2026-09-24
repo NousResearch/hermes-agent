@@ -1682,6 +1682,22 @@ class TestCodexTransportXaiReasoningEffort:
         from agent.transports.codex import ResponsesApiTransport
         return ResponsesApiTransport()
 
+    @pytest.mark.parametrize("model,effort,wire_effort", [
+        ("grok-4.7", "low", "low"),
+        ("x-ai/grok-4.7-latest", "medium", "medium"),
+        ("grok-4.7", "xhigh", "xhigh"),
+        ("grok-4.7", "max", "xhigh"),
+    ])
+    def test_grok_47_sends_supported_effort(self, transport, model, effort, wire_effort):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+        assert kw["reasoning"] == {"effort": wire_effort}
+
     def test_grok_46_preserves_xhigh(self, transport):
         kw = transport.build_kwargs(
             model="grok-4.6",

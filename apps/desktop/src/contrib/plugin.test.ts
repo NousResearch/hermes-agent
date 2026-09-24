@@ -1,11 +1,37 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { $activePresetId, $layoutTree } from '@/components/pane-shell/tree/store'
+import { host } from '@/sdk'
 import { dispatchPluginNativeNotification } from '@/store/native-notifications'
 
 import { emitGatewayEvent } from './events'
 import { createPluginContext } from './plugin'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
+
+describe('host.applyLayoutPreset', () => {
+  it('applies a plugin layout by its namespaced id and rejects invalid or unknown ids', () => {
+    const ctx = createPluginContext('skin')
+    const tree = { active: 'workspace', id: 'skin-workspace', panes: ['workspace'], type: 'group' } as const
+
+    const dispose = ctx.registerMany([
+      { area: 'layouts', data: tree, id: 'workspace' },
+      { area: 'layouts', data: {}, id: 'broken' }
+    ])
+
+    try {
+      $layoutTree.set(null)
+      expect(host.applyLayoutPreset('skin:workspace')).toBe(true)
+      expect($layoutTree.get()).toEqual(tree)
+      expect($activePresetId.get()).toBe('skin:workspace')
+      expect(host.applyLayoutPreset('skin:broken')).toBe(false)
+      expect(host.applyLayoutPreset('skin:missing')).toBe(false)
+      expect($activePresetId.get()).toBe('skin:workspace')
+    } finally {
+      dispose()
+    }
+  })
+})
 
 describe('createPluginContext.onDispose', () => {
   it('collects arbitrary cleanups so the host runs them on deactivate', () => {

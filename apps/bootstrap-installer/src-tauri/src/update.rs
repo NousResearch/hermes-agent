@@ -110,12 +110,17 @@ pub struct LiveUpdateMarker {
     pub pid: u32,
     #[serde(rename = "ageSecs")]
     pub age_secs: u64,
+    /// True only when the marker carries a generation and a loopback cancel
+    /// port. A PID alone is not enough to offer Stop.
+    #[serde(rename = "canStop")]
+    pub can_stop: bool,
 }
 
 /// Identify the live marker PID without entering UpdateMarkerGuard::acquire.
 #[tauri::command]
 pub fn live_update_marker() -> Option<LiveUpdateMarker> {
     let marker = crate::paths::update_in_progress_marker();
+    let raw = std::fs::read_to_string(&marker).unwrap_or_default();
     let owner = live_marker_owner(&marker);
     match update_failure_retry_action(
         owner.as_ref().map(|owner| (owner.pid, owner.age_secs)),
@@ -124,33 +129,29 @@ pub fn live_update_marker() -> Option<LiveUpdateMarker> {
         UpdateFailureRetryAction::StopOrWait { pid, age_secs } => Some(LiveUpdateMarker {
             pid,
             age_secs,
+            can_stop: cooperative_cancel_port(&raw, &raw).is_some(),
         }),
         UpdateFailureRetryAction::Acquire => None,
     }
 }
 
-/// Stop the updater named by the live marker. Never acquires the lock.
+/// Ask the updater that published this marker's generation to exit.
 ///
-/// If that PID is still alive afterwards, the error says so and the caller
-/// must wait. This does not fall through into start_update.
+/// Never signals a PID. A missing, replaced, or unproved generation returns
+/// an error and leaves the marker in place. The only effect on a match is a
+/// loopback write of that generation to the port the owner published.
 #[tauri::command]
 pub fn stop_live_updater() -> Result<(), String> {
     let marker = crate::paths::update_in_progress_marker();
-    let owner = live_marker_owner(&marker);
-    match update_failure_retry_action(
-        owner.as_ref().map(|owner| (owner.pid, owner.age_secs)),
-        std::process::id(),
-    ) {
-        UpdateFailureRetryAction::Acquire => Ok(()),
-        UpdateFailureRetryAction::StopOrWait { pid, age_secs } => {
-            stop_marker_owner(pid)?;
-            if pid_is_alive(pid) {
-                return Err(live_updater_blocked_message(pid, age_secs));
-            }
-            release_marker_if_names(&marker, pid);
-            Ok(())
-        }
-    }
+    let observed = std::fs::read_to_string(&marker).unwrap_or_default();
+    let reread = std::fs::read_to_string(&marker).unwrap_or_default();
+    let Some(port) = cooperative_cancel_port(&observed, &reread) else {
+        return Err(stop_refused_message(&marker));
+    };
+    let Some(generation) = marker_generation(&reread) else {
+        return Err(stop_refused_message(&marker));
+    };
+    send_loopback_cancel(port, &generation).map_err(|_| stop_refused_message(&marker))
 }
 
 /// RAII guard that owns the "update in progress" marker (see
@@ -286,6 +287,161 @@ fn live_updater_blocked_message(pid: u32, age_secs: u64) -> String {
     )
 }
 
+fn stop_refused_message(path: &Path) -> String {
+    match live_marker_owner(path) {
+        Some(owner) => format!(
+            "Updater PID {} is still running (started {} ago). Wait for it to finish. \
+             Stopping it was refused because its identity could not be proved.",
+            owner.pid,
+            format_marker_age(owner.age_secs)
+        ),
+        None => "Another Hermes update may still be running. Wait for it to finish.".to_string(),
+    }
+}
+
+/// Cancel target only when both reads name the same non-empty generation and
+/// the same non-zero loopback port. A PID-only marker, a replaced generation,
+/// or a port that moved between the two reads is not a stop.
+fn cooperative_cancel_port(observed: &str, reread: &str) -> Option<u16> {
+    let observed = parse_marker_proof(observed)?;
+    let reread = parse_marker_proof(reread)?;
+    if observed.pid == 0 || observed.pid != reread.pid {
+        return None;
+    }
+    if observed.generation.is_empty() || observed.generation != reread.generation {
+        return None;
+    }
+    if observed.port == 0 || observed.port != reread.port {
+        return None;
+    }
+    Some(observed.port)
+}
+
+struct MarkerProof {
+    pid: u32,
+    generation: String,
+    port: u16,
+}
+
+fn parse_marker_proof(raw: &str) -> Option<MarkerProof> {
+    let mut lines = raw.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let _started_at = lines.next()?;
+    let generation = lines.next()?.trim().to_string();
+    let port = lines.next()?.trim().parse().ok()?;
+    Some(MarkerProof {
+        pid,
+        generation,
+        port,
+    })
+}
+
+fn marker_generation(raw: &str) -> Option<String> {
+    let proof = parse_marker_proof(raw)?;
+    if proof.generation.is_empty() {
+        return None;
+    }
+    Some(proof.generation)
+}
+
+/// Write the generation to 127.0.0.1 only. This does not signal a process.
+fn send_loopback_cancel(port: u16, generation: &str) -> Result<(), std::io::Error> {
+    if port == 0 || generation.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing an unproved cancel",
+        ));
+    }
+    let mut stream = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))?;
+    use std::io::Write;
+    stream.write_all(format!("{generation}\n").as_bytes())?;
+    Ok(())
+}
+
+/// Publish a generation the owner holds in memory, and a loopback port only
+/// that process accepts. Extra marker lines are ignored by the pid/age readers.
+fn publish_cancel_channel(marker: &Path) {
+    let generation = uuid::Uuid::new_v4().simple().to_string();
+    let listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)) {
+        Ok(listener) => listener,
+        Err(err) => {
+            tracing::warn!(%err, "update cancel channel did not bind; stop will wait");
+            return;
+        }
+    };
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(err) => {
+            tracing::warn!(%err, "update cancel channel has no port; stop will wait");
+            return;
+        }
+    };
+    let generation_for_thread = generation.clone();
+    let marker_for_thread = marker.to_path_buf();
+    if let Err(err) = std::thread::Builder::new()
+        .name("update-cancel".into())
+        .spawn(move || accept_owned_cancel(listener, generation_for_thread, marker_for_thread))
+    {
+        tracing::warn!(%err, "update cancel thread did not start");
+        return;
+    }
+    if let Err(err) = append_cancel_proof(marker, &generation, port) {
+        tracing::warn!(%err, "could not record update cancel proof");
+    }
+}
+
+fn append_cancel_proof(path: &Path, generation: &str, port: u16) -> std::io::Result<()> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut lines = raw.lines();
+    let pid = lines.next().unwrap_or("").trim();
+    let started_at = lines.next().unwrap_or("").trim();
+    if pid.is_empty() || started_at.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "marker has no owner",
+        ));
+    }
+    std::fs::write(path, format!("{pid}\n{started_at}\n{generation}\n{port}\n"))
+}
+
+fn release_marker_if_generation(path: &Path, generation: &str) {
+    if generation.is_empty() {
+        return;
+    }
+    let matches = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| marker_generation(&raw))
+        .is_some_and(|current| current == generation);
+    if matches {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn accept_owned_cancel(listener: std::net::TcpListener, generation: String, marker: PathBuf) {
+    for conn in listener.incoming() {
+        let Ok(mut stream) = conn else {
+            continue;
+        };
+        let loopback = stream
+            .peer_addr()
+            .map(|addr| addr.ip().is_loopback())
+            .unwrap_or(false);
+        if !loopback {
+            continue;
+        }
+        use std::io::{BufRead, BufReader};
+        let mut line = String::new();
+        if BufReader::new(&mut stream).read_line(&mut line).is_err() {
+            continue;
+        }
+        if line.trim() != generation {
+            continue;
+        }
+        release_marker_if_generation(&marker, &generation);
+        std::process::exit(0);
+    }
+}
+
 /// True when a process with `pid` currently exists.
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
@@ -318,69 +474,6 @@ fn pid_is_alive(pid: u32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-/// Signal a foreign updater to exit. Refuses pid 0 and this process.
-fn stop_marker_owner(pid: u32) -> Result<(), String> {
-    if pid == 0 || pid == std::process::id() {
-        return Err("refusing to stop this process".to_string());
-    }
-    #[cfg(windows)]
-    {
-        let status = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|err| format!("could not stop updater PID {pid}: {err}"))?;
-        if !status.success() && pid_is_alive(pid) {
-            return Err(format!(
-                "Updater PID {pid} is still running. Wait for it to finish."
-            ));
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-        if wait_until_stopped(pid, Duration::from_millis(400)) {
-            return Ok(());
-        }
-        let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-        if wait_until_stopped(pid, Duration::from_millis(400)) {
-            return Ok(());
-        }
-        Err(format!(
-            "Updater PID {pid} is still running. Wait for it to finish."
-        ))
-    }
-}
-
-#[cfg(not(windows))]
-fn wait_until_stopped(pid: u32, budget: Duration) -> bool {
-    let started = Instant::now();
-    while pid_is_alive(pid) {
-        if started.elapsed() >= budget {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    true
-}
-
-/// Drop the marker only after the named owner is confirmed dead.
-fn release_marker_if_names(path: &Path, pid: u32) {
-    if pid == 0 || pid_is_alive(pid) {
-        return;
-    }
-    let named = std::fs::read_to_string(path).ok().and_then(|raw| {
-        raw.lines()
-            .next()
-            .and_then(|line| line.trim().parse::<u32>().ok())
-    });
-    if named == Some(pid) {
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 impl UpdateMarkerGuard {
@@ -460,7 +553,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let _update_marker = match UpdateMarkerGuard::acquire(
         crate::paths::update_in_progress_marker(),
     ) {
-        Ok(guard) => guard,
+        Ok(guard) => {
+            publish_cancel_channel(crate::paths::update_in_progress_marker());
+            guard
+        }
         Err(owner) => {
             let msg = live_updater_blocked_message(owner.pid, owner.age_secs);
             emit(
@@ -1963,9 +2059,38 @@ mod tests {
         );
         // pid 0 is the process group, not an updater we may stop.
         assert_eq!(
-            update_failure_retry_action(Some((0, 4)), 1),
+            update_failure_retry_action(Some((0, 1)), 1),
             UpdateFailureRetryAction::Acquire
         );
+    }
+
+    #[test]
+    fn stop_refuses_a_pid_only_or_replaced_marker_and_does_not_return_a_port() {
+        let proved = "50214\n10\ngen-a\n9\n";
+        let replaced = "50214\n10\ngen-b\n9\n";
+        let pid_only = "50214\n10\n";
+        assert_eq!(cooperative_cancel_port(proved, replaced), None);
+        assert_eq!(cooperative_cancel_port(pid_only, pid_only), None);
+        assert_eq!(cooperative_cancel_port(proved, proved), Some(9));
+        assert!(send_loopback_cancel(0, "gen-a").is_err());
+    }
+
+    #[test]
+    fn stop_writes_the_generation_to_loopback_and_does_not_exit() {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let generation = "gen-current";
+        let handle = std::thread::spawn(move || {
+            use std::io::Read;
+            let (mut stream, addr) = listener.accept().unwrap();
+            assert!(addr.ip().is_loopback());
+            let mut got = String::new();
+            stream.read_to_string(&mut got).unwrap();
+            got
+        });
+        send_loopback_cancel(port, generation).unwrap();
+        assert_eq!(handle.join().unwrap().trim(), generation);
+        assert!(pid_is_alive(std::process::id()));
     }
 
     #[test]

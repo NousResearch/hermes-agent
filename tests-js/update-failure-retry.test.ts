@@ -13,7 +13,7 @@ import { updateFailureRetryAction } from '../apps/bootstrap-installer/src/lib/up
 
 describe('updateFailureRetryAction', () => {
   it('does not re-enter acquire while a live updater PID holds the marker', () => {
-    const action = updateFailureRetryAction({ pid: 50214, ageSecs: 6 })
+    const action = updateFailureRetryAction({ pid: 50214, ageSecs: 6, canStop: true })
 
     expect(action.kind).toBe('stop_or_wait')
     if (action.kind !== 'stop_or_wait') {
@@ -38,7 +38,7 @@ describe('updateFailureRetryAction', () => {
   })
 
   it('names the elapsed age so the wait explanation is specific', () => {
-    const action = updateFailureRetryAction({ pid: 50214, ageSecs: 6 })
+    const action = updateFailureRetryAction({ pid: 50214, ageSecs: 6, canStop: true })
 
     expect(action.kind).toBe('stop_or_wait')
     if (action.kind !== 'stop_or_wait') {
@@ -47,8 +47,21 @@ describe('updateFailureRetryAction', () => {
     expect(action.waitMessage).toContain('6s')
   })
 
+  it('does not offer to stop a live PID whose generation was not proved', () => {
+    const action = updateFailureRetryAction({ pid: 50214, ageSecs: 6 })
+
+    expect(action.kind).toBe('stop_or_wait')
+    if (action.kind !== 'stop_or_wait') {
+      return
+    }
+    expect(action.stopLabel).toBeUndefined()
+    expect(action.waitMessage).toContain('50214')
+    expect(action.waitMessage.toLowerCase()).toContain('wait')
+    expect(action.waitMessage.toLowerCase()).not.toContain('stop that updater')
+  })
+
   it('rolls marker age into minutes without dropping the PID', () => {
-    const action = updateFailureRetryAction({ pid: 88, ageSecs: 125 })
+    const action = updateFailureRetryAction({ pid: 88, ageSecs: 125, canStop: true })
 
     expect(action.kind).toBe('stop_or_wait')
     if (action.kind !== 'stop_or_wait') {

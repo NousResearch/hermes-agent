@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { FileText, RefreshCw } from 'lucide-react'
-import { useEffect, useState, type CSSProperties } from 'react'
+import { type CSSProperties, useEffect, useState } from 'react'
 
 import { Button } from '../components/button'
 import { updateFailureRetryAction } from '../lib/update-failure-retry'

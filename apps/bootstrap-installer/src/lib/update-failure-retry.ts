@@ -13,6 +13,8 @@
 export interface LiveMarkerOwner {
   pid: number
   ageSecs: number
+  /** Present only when the marker carries a generation the owner can prove. */
+  canStop?: boolean
 }
 
 export type UpdateFailureRetryAction =
@@ -22,7 +24,7 @@ export type UpdateFailureRetryAction =
       pid: number
       ageSecs: number
       waitMessage: string
-      stopLabel: string
+      stopLabel?: string
     }
 
 function formatMarkerAge(ageSecs: number): string {
@@ -42,14 +44,15 @@ export function updateFailureRetryAction(
   }
 
   const age = formatMarkerAge(owner.ageSecs)
+  const canStop = owner.canStop === true
 
   return {
     kind: 'stop_or_wait',
     pid: owner.pid,
     ageSecs: owner.ageSecs,
-    waitMessage:
-      `Another Hermes update is still running (PID ${owner.pid}, started ${age} ago). ` +
-      'Wait for it to finish, or stop that updater and try again.',
-    stopLabel: `Stop updater ${owner.pid}`
+    waitMessage: canStop
+      ? `Another Hermes update is still running (PID ${owner.pid}, started ${age} ago). Wait for it to finish, or stop that updater and try again.`
+      : `Another Hermes update is still running (PID ${owner.pid}, started ${age} ago). Wait for it to finish.`,
+    stopLabel: canStop ? `Stop updater ${owner.pid}` : undefined
   }
 }

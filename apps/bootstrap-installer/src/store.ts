@@ -3,8 +3,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { atom, computed } from 'nanostores'
 
 import {
-  updateFailureRetryAction,
-  type LiveMarkerOwner
+  type LiveMarkerOwner,
+  updateFailureRetryAction
 } from './lib/update-failure-retry'
 
 /*

@@ -709,7 +709,17 @@ DELEGATE_TASK_SCHEMA = {
                 "the child's next tool result mid-run. Be directive and specific.",
             ),
         },
-        "required": [],
+        # One of `tasks` (batch), `action` ('list'/'steer'/'stop'), or legacy single-`goal` must be present.
+        # Bare `{}` is a malformed call: schema-reject it so the model gets feedback on the first try
+        # instead of looping the handler error until the loop guard fires. (Note: Hermes core/visible
+        # tools skip the tool_search schema gate, so the handler is the live enforcement path — this
+        # hunk hardens strict-mode providers and the schema advertised to the model, not the local
+        # runtime.)
+        "anyOf": [
+            {"required": ["tasks"]},
+            {"required": ["action"]},
+            {"required": ["goal"]},
+        ],
     },
 }
 

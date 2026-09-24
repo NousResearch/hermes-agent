@@ -3922,11 +3922,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if mixer is None:
             return False
         if label == "reply":
-            # A new reply supersedes an in-flight one (e.g. a steer while a reply is still
-            # playing): cancel the old pump task so it stops pushing PCM. The mixer appends
-            # this pump's chunks behind the old child's remaining audio (play_speech_streaming
-            # reuses the live child), so the rest of the old reply finishes first - no overlap.
-            prev_task = self._stream_tts_tasks.pop(guild_id, None) if getattr(self, "_stream_tts_tasks", None) else None
+            # A new reply supersedes an in-flight one (steer): cancel the old pump so it
+            # stops pushing PCM; its already-queued audio still finishes (no overlap).
+            prev_task = self._stream_tts_tasks.pop(guild_id, None)
             if prev_task is not None and not prev_task.done():
                 prev_task.cancel()
 

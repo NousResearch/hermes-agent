@@ -1632,8 +1632,8 @@ platform_toolsets:
 #   # Fail-open: on any error the original text is spoken unchanged.
 #   rewrite:
 #     enabled: false            # Master switch (default: off)
-#     # model: ""               # Pin the rewrite model (any configured provider,
-#     #                         # e.g. an Ollama cloud model). Empty = auto-route
+#     # model: ""               # Pin the rewrite model (any configured provider's
+#     #                         # cloud model). Empty = auto-route
 #     #                         # via auxiliary.tts_rewrite, else main model.
 #     # base_url: ""            # Only read together with model (OpenAI-compatible)
 #     # api_key_env: ""         # Env var name holding the pinned model's API key

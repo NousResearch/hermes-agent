@@ -9,8 +9,6 @@ behavior, and the reply-vs-interim teardown-registration split.
 
 import asyncio
 
-import pytest  # noqa: F401  (kept for parity with sibling gateway tests)
-
 from plugins.platforms.discord import voice_mixer as _vm
 
 
@@ -266,49 +264,148 @@ def test_pump_reply_passes_pieces_to_provider_in_order():
     asyncio.run(adapter._pump_pieces_into_mixer(12345, ["x", "y", "z"]))
     assert [c[0] for c in adapter.piece_calls] == ["x", "y", "z"]
 
-def test_pump_new_reply_cancels_inflight_reply_pump():
-    """A second reply supersedes the in-flight one: the old pump task is cancelled so it
-    stops pushing PCM, and the new pump takes over the teardown slot."""
-    adapter, _mixer = _make_pump_adapter()
+def _make_lane_adapter(cfg=None):
+    """Pump adapter bound to the REAL lane entries (reply + interim) with stubbed edges."""
+    from plugins.platforms.discord.adapter import DiscordAdapter
 
-    async def _slow_synthesize(piece, timeout_s):
-        await asyncio.sleep(5.0)
-        return b"PCM"
+    adapter, mixer = _make_pump_adapter(cfg)
+    adapter._stream_tts_enabled = DiscordAdapter._stream_tts_enabled.__get__(adapter)
+    adapter._stream_tts_piece_chars = DiscordAdapter._stream_tts_piece_chars.__get__(adapter)
+    adapter._STREAM_PIECE_CHARS_DEFAULT = DiscordAdapter._STREAM_PIECE_CHARS_DEFAULT
+    adapter.prepare_tts_text = lambda text: text
+    adapter.play_reply_streaming_in_voice = DiscordAdapter.play_reply_streaming_in_voice.__get__(adapter)
+    adapter.play_interim_in_voice = DiscordAdapter.play_interim_in_voice.__get__(adapter)
+    return adapter, mixer
 
-    adapter._synthesize_piece = _slow_synthesize
+
+def _patch_lane_rewrite(monkeypatch, rewrite_calls):
+    """Replace the LLM rewrite with a marker-substituting fake; records (text, interim)."""
+    import tools.tts_rewrite as tts_rewrite
+
+    def fake_rewrite(text, interim=False):
+        rewrite_calls.append((text, interim))
+        return text.replace("reply", "REWRITTEN-REPLY")
+
+    monkeypatch.setattr(tts_rewrite, "rewrite_text_for_speech", fake_rewrite)
+
+
+def _patch_lane_provider(monkeypatch, provider_calls):
+    """Recording provider fake that writes a decodable file at the requested path."""
+    import json
+
+    import tools.tts_tool as tts_tool
+
+    def fake_tool(text, output_path, skip_rewrite=False):
+        provider_calls.append({"text": text, "skip_rewrite": skip_rewrite})
+        with open(output_path, "wb") as handle:
+            handle.write(b"fake-audio")
+        return json.dumps({"success": True, "file_path": output_path})
+
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tool)
+
+
+def test_reply_lane_rewrites_whole_text_once_before_split(monkeypatch):
+    """Main, steered, queued, background and media-final lanes all converge on this
+    entry: the FULL reply is rewritten exactly once, then split, and every piece
+    reaches the provider rewritten and with skip_rewrite set."""
+    adapter, _mixer = _make_lane_adapter()
+    _bind_real_synthesize(adapter)
+    rewrite_calls = []
+    provider_calls = []
+    _patch_lane_rewrite(monkeypatch, rewrite_calls)
+    _patch_lane_provider(monkeypatch, provider_calls)
+
+    text = " ".join("Sentence %d of the streaming reply." % n for n in range(1, 31))
+    assert len(text) >= 400
+    monkeypatch.setattr(_vm, "decode_to_pcm", lambda path: b"PCM")
 
     async def _scenario():
-        first = asyncio.run  # noqa: F841 - clarity only
-        ok1 = await adapter._pump_pieces_into_mixer(12345, ["a", "b"], label="reply")
-        assert ok1 is True
+        assert await adapter.play_reply_streaming_in_voice(12345, text) is True
+        await adapter._stream_tts_tasks.get(12345)  # drain for deterministic asserts
+
+    asyncio.run(_scenario())
+
+    assert [t for t, _interim in rewrite_calls] == [text]  # once, whole
+    assert provider_calls
+    assert all(call["skip_rewrite"] is True for call in provider_calls)
+    assert all("REWRITTEN-REPLY" in call["text"] for call in provider_calls)
+    assert len(provider_calls) > 1  # long reply was actually split
+
+
+def test_reply_lane_skips_rewrite_under_min_chars(monkeypatch):
+    adapter, _mixer = _make_lane_adapter()
+    _bind_real_synthesize(adapter)
+    rewrite_calls = []
+    provider_calls = []
+    _patch_lane_rewrite(monkeypatch, rewrite_calls)
+    _patch_lane_provider(monkeypatch, provider_calls)
+    monkeypatch.setattr(_vm, "decode_to_pcm", lambda path: b"PCM")
+
+    async def _scenario():
+        assert await adapter.play_reply_streaming_in_voice(12345, "Short spoken reply.") is True
+        await adapter._stream_tts_tasks.get(12345)
+
+    asyncio.run(_scenario())
+
+    assert rewrite_calls == []
+    assert provider_calls[0]["text"] == "Short spoken reply."
+
+
+def test_reply_lane_supersedes_inflight_reply():
+    """A second reply from any lane (steer supersede) cancels the in-flight pump so it
+    stops pushing PCM; already-queued audio still finishes via mixer child reuse."""
+    adapter, _mixer = _make_lane_adapter()
+
+    async def slow_first(piece, timeout_s):
+        if "First" in piece:
+            await asyncio.sleep(5.0)
+        return b"PCM"
+
+    adapter._synthesize_piece = slow_first
+
+    async def _scenario():
+        assert await adapter.play_reply_streaming_in_voice(
+            12345, "First reply sentence. " * 15) is True
         old_task = adapter._stream_tts_tasks.get(12345)
-        assert old_task is not None and not old_task.done()
-        ok2 = await adapter._pump_pieces_into_mixer(12345, ["c"], label="reply")
-        assert ok2 is True
+        assert not old_task.done()
+        assert await adapter.play_reply_streaming_in_voice(
+            12345, "Second reply sentence.") is True
         new_task = adapter._stream_tts_tasks.get(12345)
         assert new_task is not old_task
-        await asyncio.sleep(0)  # let the old task process the cancel
         await asyncio.sleep(0)
-        assert old_task.done()
+        await asyncio.sleep(0)
+        assert old_task.done()  # cancel delivered and processed
+        await asyncio.wait([old_task])
 
     asyncio.run(_scenario())
 
 
-def test_pump_interim_never_cancels_inflight_reply():
-    """Interim speech must not supersede a playing reply - only label='reply' cancels."""
-    adapter, _mixer = _make_pump_adapter()
+def test_interim_lane_rewrites_interim_never_supersedes_reply(monkeypatch):
+    """The interim lane uses the interim rewrite and must never cancel a playing reply."""
+    adapter, mixer = _make_lane_adapter(cfg={"speak_interims": True, "interim_max_chars": 0})
+    rewrite_calls = []
+    _patch_lane_rewrite(monkeypatch, rewrite_calls)
 
-    async def _slow_synthesize(piece, timeout_s):
-        await asyncio.sleep(5.0)
+    async def slow_reply(piece, timeout_s):
+        if "First" in piece:
+            await asyncio.sleep(5.0)
         return b"PCM"
 
-    adapter._synthesize_piece = _slow_synthesize
+    adapter._synthesize_piece = slow_reply
 
     async def _scenario():
-        await adapter._pump_pieces_into_mixer(12345, ["a"], label="reply")
-        old_task = adapter._stream_tts_tasks.get(12345)
-        await adapter._pump_pieces_into_mixer(12345, ["note"], label="interim")
-        assert adapter._stream_tts_tasks.get(12345) is old_task  # untouched
-        assert not old_task.done()
+        assert await adapter.play_reply_streaming_in_voice(
+            12345, "First reply sentence. " * 15) is True
+        reply_task = adapter._stream_tts_tasks.get(12345)
+        assert not reply_task.done()
+        assert await adapter.play_interim_in_voice(12345, "Quick interim note.") is True
+        assert adapter._stream_tts_tasks.get(12345) is reply_task  # untouched
+        await asyncio.sleep(0)
+        assert not reply_task.done()
+        reply_task.cancel()
+        await asyncio.wait([reply_task])
 
     asyncio.run(_scenario())
+
+    assert rewrite_calls == [("Quick interim note.", True)]  # interim prompt path
+    assert mixer.pushed  # interim audio queued into the mixer

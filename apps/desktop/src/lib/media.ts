@@ -131,7 +131,9 @@ export interface MediaImageDimensions {
 
 // Decoded geometry only: never retain image bytes/data URLs for every visited
 // transcript. A miss costs a letterboxed first display, not a collapsed row.
-const imageDimensions = new LruCache<string, MediaImageDimensions>(512)
+// 'broken' remembers a failed load so a remount starts as a text line instead
+// of reserving a frame that collapses again.
+const imageDimensions = new LruCache<string, 'broken' | MediaImageDimensions>(512)
 
 export function mediaImageKey(path: string, connection: HermesConnection | null, owner?: OwnerScope): string {
   // File reads ignore URL query/fragment, but callers can use them to identify
@@ -166,21 +168,33 @@ export function validImageDimensions(width: unknown, height: unknown): MediaImag
 }
 
 export function getMediaImageDimensions(key: string): MediaImageDimensions | undefined {
-  return imageDimensions.get(key)
+  const entry = imageDimensions.get(key)
+
+  return entry === 'broken' ? undefined : entry
+}
+
+export function isKnownBrokenMediaImage(key: string): boolean {
+  return imageDimensions.get(key) === 'broken'
+}
+
+// A pathological URL can still make a huge key; keep this metadata cache from
+// becoming a second copy of it.
+function rememberMediaImage(key: string, entry: 'broken' | MediaImageDimensions): void {
+  if (key.length <= 4096) {
+    imageDimensions.set(key, entry)
+  }
 }
 
 export function rememberMediaImageDimensions(key: string, width: number, height: number): void {
   const dimensions = validImageDimensions(width, height)
 
-  // Embedded images can have multi-megabyte source keys. Their bytes stay with
-  // the message; do not turn this small metadata cache into a second copy.
-  if (dimensions && key.length <= 4096) {
-    imageDimensions.set(key, dimensions)
+  if (dimensions) {
+    rememberMediaImage(key, dimensions)
   }
 }
 
-export function forgetMediaImageDimensions(key: string): void {
-  imageDimensions.delete(key)
+export function rememberMediaImageFailure(key: string): void {
+  rememberMediaImage(key, 'broken')
 }
 
 // Audio/video need a seekable source instead of a whole-file data URL. Keep

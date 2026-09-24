@@ -91,9 +91,19 @@ it.each(cases)('reserves $kind frames through cold decode, warm return and failu
   const warmSize = reserved.style.cssText
   await decode(warm.container)
   expect(frame(warm.container).style.cssText).toBe(warmSize)
+
+  // A broken image collapses to its text line instead of an empty frame, and
+  // the next mount of that source does not reserve a frame just to collapse it.
   fireEvent.error(warm.container.querySelector('img')!)
-  expect(frame(warm.container).style.cssText).toBe(warmSize)
   expect(warm.container.textContent).toMatch(/Open image/i)
+  expect(frame(warm.container)?.style.aspectRatio ?? '').toBe('')
+  warm.unmount()
+
+  const retry = render(content(kind, path, hint))
+
+  if (hint !== 'intrinsic') {
+    expect(frame(retry.container)?.style.aspectRatio ?? '').toBe('')
+  }
 })
 
 it('keeps the pending generated-image frame when its result arrives', async () => {

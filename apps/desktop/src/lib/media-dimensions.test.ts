@@ -3,10 +3,11 @@ import { expect, it } from 'vitest'
 import type { HermesConnection } from '@/global'
 
 import {
-  forgetMediaImageDimensions,
   getMediaImageDimensions,
+  isKnownBrokenMediaImage,
   mediaImageKey,
   rememberMediaImageDimensions,
+  rememberMediaImageFailure,
   validImageDimensions
 } from './media'
 
@@ -40,8 +41,11 @@ it('shares proven path aliases only within an owner and bounds regenerated metad
   expect(getMediaImageDimensions(key)).toEqual(dimensions)
   rememberMediaImageDimensions('x'.repeat(100000), 100, 100)
   expect(getMediaImageDimensions('x'.repeat(100000))).toBeUndefined()
-  forgetMediaImageDimensions(key)
+  rememberMediaImageFailure(key)
   expect(getMediaImageDimensions(key)).toBeUndefined()
+  expect(isKnownBrokenMediaImage(key)).toBe(true)
+  rememberMediaImageDimensions(key, dimensions.width, dimensions.height)
+  expect(isKnownBrokenMediaImage(key)).toBe(false)
 })
 
 it('keeps multi-megabyte inline sources to a small, distinct key', () => {

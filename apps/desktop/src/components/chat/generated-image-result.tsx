@@ -49,6 +49,22 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
     return null
   }
 
+  // Nothing will fill the frame, so collapse to the link line.
+  if (failed && image) {
+    return (
+      <a
+        className="mt-2 ref inline-block wrap-anywhere"
+        href="#"
+        onClick={event => {
+          event.preventDefault()
+          void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
+        }}
+      >
+        {copy.openImage}: {mediaName(image)}
+      </a>
+    )
+  }
+
   return (
     <>
       <span
@@ -59,28 +75,15 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         role={pending ? 'status' : undefined}
         style={media.frameStyle}
       >
-        {failed && image ? (
-          <a
-            className="absolute inset-0 ref block overflow-auto wrap-anywhere"
-            href="#"
-            onClick={event => {
-              event.preventDefault()
-              void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
-            }}
+        {canvasGone !== media.key && (
+          <div
+            className={cn('absolute inset-0 transition-opacity duration-500 ease-out', loaded && 'opacity-0')}
+            onTransitionEnd={() => loaded && setCanvasGone(media.key)}
           >
-            {copy.openImage}: {mediaName(image)}
-          </a>
-        ) : (
-          canvasGone !== media.key && (
-            <div
-              className={cn('absolute inset-0 transition-opacity duration-500 ease-out', loaded && 'opacity-0')}
-              onTransitionEnd={() => loaded && setCanvasGone(media.key)}
-            >
-              <DiffusionCanvas />
-            </div>
-          )
+            <DiffusionCanvas />
+          </div>
         )}
-        {src && !failed && (
+        {src && (
           <button
             aria-label={copy.openImage}
             className="absolute inset-0 block size-full cursor-zoom-in"

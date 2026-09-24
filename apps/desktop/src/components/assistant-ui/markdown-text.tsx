@@ -401,28 +401,42 @@ function MarkdownImageContent({
     return null
   }
 
+  // A broken link has nothing to reserve space for: one line, not an empty
+  // frame. The one-time shift on error is the lesser cost.
+  if (image.failed) {
+    return (
+      <span className="my-2 block text-sm text-muted-foreground" data-slot="aui_markdown-image">
+        Couldn&apos;t load {name}.{' '}
+        <button className="ref font-medium text-foreground" onClick={open} type="button">
+          Open image
+        </button>
+        {openFailed && <OpenMediaFailedNote name={name} />}
+      </span>
+    )
+  }
+
   // The image keeps its natural size (never upscaled) inside the fixed frame;
   // the w-fit container hugs it so the download button and shadow sit on the
-  // image, not on the letterbox.
+  // image, not on the letterbox. Without a frame (a source that failed last
+  // time) it lays out as a plain capped image, like before frames existed.
+  const framed = Boolean(image.frameStyle)
+
   return (
     <span className="relative my-2 block max-w-full" data-slot="aui_markdown-image" style={image.frameStyle}>
-      {image.failed ? (
-        <span className="absolute inset-0 block overflow-auto text-sm text-muted-foreground">
-          Couldn&apos;t load {name}.{' '}
-          <button className="ref font-medium text-foreground" onClick={open} type="button">
-            Open image
-          </button>
-          {openFailed && <OpenMediaFailedNote name={name} />}
-        </span>
-      ) : image.src ? (
+      {image.src ? (
         <ZoomableImage
           {...props}
           alt={alt}
           className={cn(
-            'm-0 block h-auto max-h-full w-auto max-w-full rounded-lg object-scale-down shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+            'm-0 block h-auto w-auto max-w-full rounded-lg object-scale-down shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+            framed ? 'max-h-full' : 'max-h-(--image-preview-height)',
             className
           )}
-          containerClassName="absolute left-0 top-0 block h-full w-fit"
+          containerClassName={
+            framed
+              ? 'absolute left-0 top-0 block h-full w-fit'
+              : 'block w-fit max-w-[min(100%,var(--image-preview-max-width))]'
+          }
           onError={event => {
             image.onError()
             onError?.(event)
@@ -435,7 +449,9 @@ function MarkdownImageContent({
           style={style}
         />
       ) : (
-        <span className="absolute inset-0 block overflow-hidden text-sm text-muted-foreground">Loading {name}...</span>
+        <span className={cn('block overflow-hidden text-sm text-muted-foreground', framed && 'absolute inset-0')}>
+          Loading {name}...
+        </span>
       )}
     </span>
   )

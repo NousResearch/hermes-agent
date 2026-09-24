@@ -3,12 +3,13 @@ import { type CSSProperties, useEffect, useMemo, useState } from 'react'
 
 import { useComposerScope } from '@/app/chat/composer/scope'
 import {
-  forgetMediaImageDimensions,
   getMediaImageDimensions,
   isInlineMediaSrc,
+  isKnownBrokenMediaImage,
   type MediaImageDimensions,
   mediaImageKey,
   rememberMediaImageDimensions,
+  rememberMediaImageFailure,
   resolveMediaDisplaySrc
 } from '@/lib/media'
 import { $connection } from '@/store/session'
@@ -43,10 +44,14 @@ export function useMediaImage(
       key,
       ownerKey,
       path,
-      frameStyle: {
-        aspectRatio: ratio,
-        width: `min(calc(var(--image-preview-height) * ${ratio}), var(--image-preview-max-width), 100%${dimensions ? `, ${dimensions.width}px` : ''})`
-      } satisfies CSSProperties,
+      // A source that just failed gets no frame: it would only collapse again.
+      frameStyle:
+        !dimensions && isKnownBrokenMediaImage(key)
+          ? undefined
+          : ({
+              aspectRatio: ratio,
+              width: `min(calc(var(--image-preview-height) * ${ratio}), var(--image-preview-max-width), 100%${dimensions ? `, ${dimensions.width}px` : ''})`
+            } satisfies CSSProperties),
       src: path && isInlineMediaSrc(path) ? path : '',
       loaded: false,
       failed: false
@@ -75,7 +80,7 @@ export function useMediaImage(
         src => {
           if (!cancelled) {
             if (!src) {
-              forgetMediaImageDimensions(key)
+              rememberMediaImageFailure(key)
             }
 
             setState(current => ({ ...current, src, failed: !src }))
@@ -83,7 +88,7 @@ export function useMediaImage(
         },
         () => {
           if (!cancelled) {
-            forgetMediaImageDimensions(key)
+            rememberMediaImageFailure(key)
             setState(current => ({ ...current, failed: true }))
           }
         }
@@ -102,7 +107,7 @@ export function useMediaImage(
       setState(current => ({ ...current, loaded: true }))
     },
     onError: () => {
-      forgetMediaImageDimensions(key)
+      rememberMediaImageFailure(key)
       setState(current => ({ ...current, failed: true, loaded: false }))
     }
   }

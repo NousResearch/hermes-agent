@@ -31,8 +31,10 @@ import {
   $newSessionTabAction,
   $paneVisible,
   adoptContributedPanes,
+  collapseTreePane,
   registerPaneCloser,
   removeTreePane,
+  restoreTreePane,
   revealTreePane,
   undismissTreePanes
 } from '@/components/pane-shell/tree/store'
@@ -1393,6 +1395,31 @@ export const host = {
     }
 
     revealTreePane(id)
+  },
+
+  /** Minimize only the zone that owns a contributed pane, preserving the pane
+   *  in the layout tree so its rail can restore it. Feature-detect on older
+   *  desktops (`typeof host.minimizePane === 'function'`). */
+  minimizePane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    collapseTreePane(id)
+  },
+
+  /** Restore, un-minimize, and front a contributed pane from an explicit user
+   *  action. Feature-detect on older desktops. */
+  restorePane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    restoreTreePane(id)
   },
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool

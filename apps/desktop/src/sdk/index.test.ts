@@ -449,3 +449,41 @@ describe('host.sessions session-list mutations', () => {
     expect($sessionColorOverrides.get()).toEqual({})
   })
 })
+
+describe('host contributed pane lifecycle', () => {
+  it('minimizes and restores only the zone that owns the requested pane', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+
+    tree.$layoutTree.set(
+      model.split('row', [
+        model.group(['sidecar:shell'], { active: 'sidecar:shell', id: 'grp-sidecar-left' }),
+        model.group(['workspace'], { active: 'workspace', id: 'grp-workspace' }),
+        model.group(['files'], { active: 'files', id: 'grp-files' }),
+        model.group(['sidecar:panel'], { active: 'sidecar:panel', id: 'grp-sidecar-right' })
+      ])
+    )
+
+    host.minimizePane('sidecar:shell')
+
+    expect(tree.$layoutTree.get()).toMatchObject({
+      children: [
+        { id: 'grp-sidecar-left', minimized: true },
+        { id: 'grp-workspace' },
+        { id: 'grp-files' },
+        { id: 'grp-sidecar-right' }
+      ]
+    })
+
+    host.restorePane('sidecar:shell')
+
+    expect(tree.$layoutTree.get()).toMatchObject({
+      children: [
+        { id: 'grp-sidecar-left', minimized: false },
+        { id: 'grp-workspace' },
+        { id: 'grp-files' },
+        { id: 'grp-sidecar-right' }
+      ]
+    })
+  })
+})

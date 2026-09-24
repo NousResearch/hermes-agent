@@ -270,6 +270,12 @@ data: {
 `'top' | 'bottom' | 'left' | 'right' | 'center'`. Declare a `width`/`height` so
 the pane doesn't claim half the zone.
 
+By default, the titlebar's left/right sidebar toggle hides every root zone on
+that physical side. Set `data.independentSide: true` for a pane whose own
+controls must remain independent from that global side toggle. Keep it in a
+zone of its own (use an edge `dock`, not `center` stacking) so hiding a native
+neighbor cannot hide the whole shared zone.
+
 Closing the only pane contributed by a plugin disables that plugin, which can
 be re-enabled from **Capabilities → Plugins**. When a plugin contributes multiple
 panes, closing one dismisses only that pane and leaves the plugin's other panes,
@@ -924,6 +930,8 @@ host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
+host.minimizePane(paneId)                  // minimize only the pane's owning zone to its rail
+host.restorePane(paneId)                   // restore, reveal, and front that pane/zone
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
                                            //   Calls made during register() are retired with the
                                            //   plugin; elsewhere prefer ctx.onEvent (always tracked)

@@ -416,6 +416,7 @@ import {
 import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle'
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
+import { handleFailedWindowLoad, loadFailureErrorCode } from './renderer-load-recovery'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import {
@@ -2002,8 +2003,27 @@ installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
 
 // A rejected loadURL leaves a blank window and, unhandled, no trace anywhere
 // the user can send us. `label` names the surface so the log says which one.
-function loadWindowUrl(win, url, label) {
-  win.loadURL(url).catch(error => rememberLog(`${label} failed to load: ${describeCrashReason(error)}`))
+// The log line is no longer the end of it: a failed load now ends in the
+// VISIBLE recovery page, so no window type can sit blank forever with the only
+// explanation in desktop.log (renderer-load-recovery.ts). The primary window
+// opts out (`recoveryOwnedByLifecycle`) because its renderer-lifecycle policy
+// owns failed-load recovery — both acting would race the bounded reload and
+// could cover a UI that healed.
+function loadWindowUrl(win, url, label, { recoveryOwnedByLifecycle = false } = {}) {
+  win.loadURL(url).catch(error => {
+    rememberLog(`${label} failed to load: ${describeCrashReason(error)}`)
+    void handleFailedWindowLoad(
+      win,
+      {
+        label,
+        url,
+        errorCode: loadFailureErrorCode(error),
+        errorDescription: `${label} failed to load.`,
+        recoveryOwnedByLifecycle
+      },
+      { log: rememberLog, showErrorPage: loadRendererLoadErrorPage }
+    )
+  })
 }
 
 function openExternalUrl(rawUrl) {
@@ -15494,7 +15514,11 @@ function createWindow() {
     loadWindowUrl(
       mainWindow,
       DEV_SERVER || pathToFileURL(rendererIndex || resolveRendererIndex()).toString(),
-      'Renderer'
+      'Renderer',
+      // The primary window's recovery is the renderer-lifecycle policy above:
+      // bounded auto-reload, then the visible error page. Handling its failed
+      // load here as well would race that reload.
+      { recoveryOwnedByLifecycle: true }
     )
   }
 

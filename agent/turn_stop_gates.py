@@ -38,7 +38,7 @@ def _verify_on_stop_nudge(agent) -> Optional[str]:
             build_verify_on_stop_nudge, verify_on_stop_enabled
         )
 
-        if verify_on_stop_enabled():
+        if verify_on_stop_enabled(platform=getattr(agent, "platform", None)):
             return build_verify_on_stop_nudge(
                 session_id=getattr(agent, "session_id", None),
                 changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),

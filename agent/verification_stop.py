@@ -47,7 +47,10 @@ def _session_is_messaging_surface() -> bool:
         return False
 
 
-def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
+def verify_on_stop_enabled(
+    config: dict[str, Any] | None = None,
+    platform: str | None = None,
+) -> bool:
     """Return whether edit -> verify-before-finish behavior is enabled.
 
     Precedence: ``HERMES_VERIFY_ON_STOP`` env var, then ``agent.verify_on_stop``
@@ -55,6 +58,15 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
     legacy surface-aware mode: ON for interactive coding surfaces and
     programmatic callers, OFF for messaging surfaces where the verification
     narrative is chat noise. Missing/unrecognized values fall back to OFF.
+
+    Subagents dispatched via ``delegate_task`` set ``platform="subagent"``.
+    Their output is consumed programmatically by the parent agent, not shown
+    to a human, and the parent is responsible for verification. Letting
+    verify-on-stop fire for a subagent silently replaces its actual findings
+    with verification output (#58490), so the ``"auto"`` default resolves OFF
+    for ``platform="subagent"``. An explicit ``HERMES_VERIFY_ON_STOP`` env
+    var or explicit ``agent.verify_on_stop`` config value still overrides — a
+    user who genuinely wants subagent verification can opt in.
     """
     env = os.environ.get("HERMES_VERIFY_ON_STOP")
     if env is not None:
@@ -72,7 +84,15 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
         return cfg_val
     token = cfg_val.strip().lower() if isinstance(cfg_val, str) else ""
     if token == "auto":
+        # Subagent sessions are consumed programmatically by the parent
+        # agent, not shown to a human. verify-on-stop would silently
+        # replace the subagent's actual findings with verification output
+        # (#58490). The "auto" default resolves OFF for subagents.
+        if str(platform or "").strip().lower() == "subagent":
+            return False
         return not _session_is_messaging_surface()
+    if str(platform or "").strip().lower() == "subagent":
+        return False
     return token in _TRUTHY_TOKENS
 
 

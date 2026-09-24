@@ -40,11 +40,12 @@ class TestBundledSkillSafety:
         skill_path = (
             Path(__file__).resolve().parents[2]
             / "skills"
-            / "research"
+            / "web"
             / "blocked-page-recovery"
             / "SKILL.md"
         )
 
+        assert skill_path.parent.is_dir()
         assert scan_for_threats(
             skill_path.read_text(encoding="utf-8"), scope="context"
         ) == []

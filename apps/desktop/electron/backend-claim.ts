@@ -238,7 +238,8 @@ export function formatBackendExitLine(
   label: string,
   code: number | null,
   signal: string | null,
-  outputTail: BackendOutputTail | null
+  outputTail: BackendOutputTail | null,
+  abruptSuffix: string = ''
 ): string {
-  return `${label} (${signal || code})${outputTail?.describe() ?? ''}`
+  return `${label} (${signal || code})${outputTail?.describe() ?? ''}${abruptSuffix}`
 }

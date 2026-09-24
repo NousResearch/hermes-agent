@@ -21887,6 +21887,19 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
         server._sessions.pop(sid, None)
 
 
+def _join_turn_thread(sess, timeout=10.0):
+    """Join the real turn ``prompt.submit`` started, so nothing it does races the
+    assertions or leaks into the next test. The submit's dispatch thread hands off to a
+    ``prompt-turn-*`` worker that replaces ``_run_thread``: follow the handle until it
+    stops changing."""
+    deadline = time.monotonic() + timeout
+    while isinstance(run_thread := sess.get("_run_thread"), threading.Thread):
+        run_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        assert not run_thread.is_alive(), "prompt.submit turn thread did not finish"
+        if sess.get("_run_thread") is run_thread:
+            return
+
+
 @pytest.mark.parametrize("turn_isolation", [False, True])
 def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
     monkeypatch, tmp_path, turn_isolation
@@ -21965,7 +21978,12 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
             str(original_row_ids[5]): None,
         }
         assert "999999" not in row_id_map
-        sess["running"] = False
+        # Wait for rewind 1's real turn thread to end (it clears ``running`` itself)
+        # instead of forcing the flag: a still-live turn 1 overlapping rewind 2 is a
+        # state production's ``running`` gate never allows, and its
+        # _adopt_out_of_band_turns then read rewind 2's user row as a foreign turn.
+        _join_turn_thread(sess)
+        assert sess["running"] is False
 
         # Rewind 2: the id the client cached BEFORE rewind 1 is still the live row
         # (no 4018 refusal, no rebind dance) — the user-facing point of #82956.
@@ -21983,6 +22001,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
             }
         )
         assert resp2.get("error") is None, resp2
+        _join_turn_thread(sess)
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
         active = db.get_messages_as_conversation(session_key)

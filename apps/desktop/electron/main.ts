@@ -13504,7 +13504,9 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
         env: desktopBackendSpawnEnv(
           {
             // Never another profile's dotenv credentials from the Desktop env (#68367).
-            ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: activeProfile }),
+            // Pass the pinned `profile` binding. `activeProfile` is a different
+            // identifier (often absent here) and throws ReferenceError on boot.
+            ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile }),
             // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
             // resolves to the SAME location our resolveHermesHome() picked. Without
             // this pin, Python falls back to ~/.hermes on every platform — fine on

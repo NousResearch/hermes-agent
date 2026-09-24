@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli import kanban_workflow
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -100,7 +101,8 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 # --- Constants ---
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+# Derived from the one workflow definition (``kanban_workflow``); a mutable copy for legacy callers.
+VALID_STATUSES = set(kanban_workflow.DEFAULT_STATUSES)
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.

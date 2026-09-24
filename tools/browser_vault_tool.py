@@ -322,9 +322,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     finally:
         answer.clear()
     filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
+    fill_next = str(filled.get("next") or "Verify the required form fields before submitting.")
     return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
                        "identifier_type": id_type, "fill": filled,
-                       "next": "Type the identifier into the username field if the form has one, then submit."},
+                       "next": "Type the identifier into the username field if the form has one. " + fill_next},
                       ensure_ascii=False)
 
 
@@ -398,7 +399,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
-    """Fill the current page's password field from a vault handle.
+    """Fill the current page's login field or matched sign-up password pair.
 
     Password-only: the identifier is agent-visible metadata (see
     browser_vault_list) and is typed by the agent via normal input tools.
@@ -562,8 +563,23 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
-                       + (" (a code will be generated automatically)." if meta.has_otp else "."))
+        signup_pair = {"new-password", "confirm-password"}.issubset({f["token"] for f in fills})
+        if signup_pair and filled >= len(fills):
+            out["next"] = (
+                "The password and its confirmation were filled. Complete and verify all other required "
+                "non-secret fields before submitting; do not submit if either password field is still empty."
+            )
+        elif signup_pair:
+            out["next"] = (
+                "The sign-up password pair was not fully filled. Do not submit; inspect the form and complete "
+                "the required non-secret fields before trying again."
+            )
+        else:
+            out["next"] = (
+                "Verify all required form fields before submitting. If the site then asks for a verification code, "
+                "call browser_vault_enter_code with this handle"
+                + (" (a code will be generated automatically)." if meta.has_otp else ".")
+            )
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
     return json.dumps(out)
@@ -621,8 +637,9 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
 BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
-        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
+        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills the "
+        "current-password field, or a matched new-password and confirmation pair in the same sign-up form "
+        "(type the identifier/username yourself first with the browser's input tool); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
@@ -645,9 +662,10 @@ BROWSER_VAULT_FILL_SCHEMA = {
 BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
     "name": "browser_vault_save_login",
     "description": (
-        "The current page is a login form and browser_vault_list has no item for its origin: ask the user, "
-        "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
-        "bound to the page origin, and fills the password immediately; you receive only the handle and the "
+        "browser_vault_list has no item for this login or sign-up origin: ask the user, through a masked "
+        "prompt in their UI, to save the new credential for this site. Hermes stores it encrypted, bound to "
+        "the page origin, and fills the password (and a matched confirmation field when present) immediately; "
+        "you receive only the handle and the "
         "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
         "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
         "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "

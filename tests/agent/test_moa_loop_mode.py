@@ -491,6 +491,22 @@ def test_reference_messages_ends_with_user_not_assistant_prefill():
     assert "q1" in joined and "a1" in joined and "q2 current" in joined
 
 
+def test_reference_messages_adds_advisory_instruction_after_a_steer_row():
+    """A persistent /steer must not become the reference model's final instruction (#121342)."""
+    from agent.moa_loop import _ADVISORY_INSTRUCTION, _reference_messages
+    from agent.prompt_builder import steer_user_row
+
+    view = _reference_messages([
+        {"role": "user", "content": "original task"},
+        {"role": "assistant", "content": "checking"},
+        {"role": "tool", "tool_call_id": "1", "content": "result"},
+        steer_user_row("focus on the failed check"),
+    ])
+
+    assert view[-2]["content"].startswith("[OUT-OF-BAND USER MESSAGE")
+    assert view[-1] == {"role": "user", "content": _ADVISORY_INSTRUCTION}
+
+
 
 
 

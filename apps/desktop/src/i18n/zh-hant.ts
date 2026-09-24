@@ -1871,6 +1871,11 @@ export const zhHant = defineLocale({
     disableAll: '全部停用',
     disableUnused: '停用未使用',
     bulkUpdated: count => `已為新工作階段更新 ${count} 項。`,
+    categoryEnableAll: (name, count) => `啟用全部 ${name} 技能（${count}）`,
+    categoryDisableAll: (name, count) => `停用全部 ${name} 技能（${count}）`,
+    groupEnableAll: (name, count) => `啟用全部 ${name} 工具集（${count}）`,
+    groupDisableAll: (name, count) => `停用全部 ${name} 工具集（${count}）`,
+    toolsetGroupName: key => ({ web: '網頁與搜尋', system: '系統與檔案', media: '媒體與語音', knowledge: '知識與智慧', integrations: '整合', plugins: '外掛', other: '其他' })[key] ?? key,
     bulkNoChange: '沒有需要變更的內容。',
     usageCount: count => `已使用 ${count} 次`,
     provenance: {

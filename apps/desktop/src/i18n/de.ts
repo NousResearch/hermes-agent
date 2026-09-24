@@ -2738,6 +2738,11 @@ export const deOverrides = {
     disableAll: 'Alle deaktivieren',
     disableUnused: 'Unbenutzte deaktivieren',
     bulkUpdated: count => `${count} ${count === 1 ? 'Element' : 'Elemente'} für neue Sessions aktualisiert.`,
+    categoryEnableAll: (name, count) => `Alle ${name}-Fähigkeiten aktivieren (${count})`,
+    categoryDisableAll: (name, count) => `Alle ${name}-Fähigkeiten deaktivieren (${count})`,
+    groupEnableAll: (name, count) => `Alle ${name}-Toolsets aktivieren (${count})`,
+    groupDisableAll: (name, count) => `Alle ${name}-Toolsets deaktivieren (${count})`,
+    toolsetGroupName: key => ({ web: 'Web & Suche', system: 'System & Dateien', media: 'Medien & Stimme', knowledge: 'Wissen & Agenten', integrations: 'Integrationen', plugins: 'Plugins', other: 'Andere' })[key] ?? key,
     bulkNoChange: 'Nichts zu ändern.',
     usageCount: count => `${count}× verwendet`,
     provenance: {

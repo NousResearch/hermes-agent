@@ -4,6 +4,7 @@ home/profile) that tell whether the gateway daemon is running."""
 import asyncio
 import contextlib
 import copy
+import errno
 import hashlib
 import json
 import logging
@@ -803,19 +804,28 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
 
 
 def _try_acquire_file_lock(handle) -> bool:
-    try:
-        if _IS_WINDOWS:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write("\n")
-                handle.flush()
-            handle.seek(_WINDOWS_LOCK_OFFSET)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except (BlockingIOError, OSError):
-        return False
+    if _IS_WINDOWS:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write("\n")
+            handle.flush()
+        handle.seek(_WINDOWS_LOCK_OFFSET)
+    while True:
+        try:
+            if _IS_WINDOWS:
+                # ``LK_NBLCK`` reports an occupied byte range as EACCES on Windows.
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                continue
+            if isinstance(exc, BlockingIOError) or exc.errno in (
+                errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK
+            ):
+                return False
+            raise
 
 
 def _pid_exists(pid: int) -> bool:
@@ -937,7 +947,13 @@ def acquire_gateway_runtime_lock() -> bool:
             handle = open(path, "a+", encoding="utf-8")
         except OSError:
             return False
-    if not _try_acquire_file_lock(handle):
+    try:
+        acquired = _try_acquire_file_lock(handle)
+    except OSError:
+        with contextlib.suppress(OSError):
+            handle.close()
+        raise
+    if not acquired:
         handle.close()
         return False
     handle.seek(0)

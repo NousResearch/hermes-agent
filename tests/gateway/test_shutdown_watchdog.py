@@ -39,6 +39,26 @@ def test_resolve_shutdown_watchdog_delay_adds_grace():
     assert resolve_shutdown_watchdog_delay(10, grace_s=5) == 15.0
 
 
+def test_stale_tick_sweep_keeps_socket_for_live_gateway(tmp_path, monkeypatch):
+    """A sibling socket belongs to a live gateway when the safe PID probe says so."""
+    own_path = tmp_path / "gateway.loop-tick.101.sock"
+    live_socket = tmp_path / "gateway.loop-tick.202.sock"
+    live_socket.touch()
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid == 202)
+
+    raw_kill_calls = []
+
+    def raw_kill(*args):
+        raw_kill_calls.append(args)
+
+    monkeypatch.setattr(shutdown_watchdog_module.os, "kill", raw_kill)
+
+    shutdown_watchdog_module._sweep_stale_tick_sockets(own_path)
+
+    assert live_socket.exists()
+    assert raw_kill_calls == []
+
+
 def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     done = threading.Event()
     fired = threading.Event()

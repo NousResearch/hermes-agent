@@ -629,7 +629,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             try:
                 len_fn = self.adapter.message_len_fn_for_chat(self.chat_id)
             except Exception:
-                len_fn = len
+                len_fn = getattr(self.adapter, "message_len_fn", None) or len
         return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
 
     async def _start_transports(self) -> None:

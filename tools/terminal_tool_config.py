@@ -95,6 +95,32 @@ def _get_plugin_env_provider(env_type: str):
     return _plugin_registry_lookup(env_type, "get_provider", None)
 
 
+def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
+    """Cwd to send to an SSH backend.
+
+    ``~`` and ``~/...`` stay literal so the remote shell expands them to the
+    SSH user's home. The Hermes process's subprocess home (``/opt/data/home``
+    in the official Docker image) is a directory on the machine running
+    Hermes. Using it as the remote working directory makes ``cd`` exit 126
+    and anchors relative writes on a path that does not exist on the target.
+    Other backends are unchanged.
+    """
+    if not isinstance(cwd, str) or (env_type or "").strip().lower() != "ssh":
+        return cwd
+    text = cwd.strip()
+    if not text or text == "~" or text.startswith("~/"):
+        return text or "~"
+    try:
+        from hermes_constants import get_subprocess_home
+
+        home = get_subprocess_home()
+    except Exception:
+        home = None
+    if home and os.path.normpath(text) == os.path.normpath(home):
+        return "~"
+    return text
+
+
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """True if *cwd* is a host or relative path that can't be a container
     workdir: ``docker run -w`` needs an absolute in-sandbox path, otherwise the

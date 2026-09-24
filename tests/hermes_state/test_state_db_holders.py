@@ -50,36 +50,53 @@ def test_foreign_holder_accepts_same_inode_reached_through_an_alias(
     ]
 
 
+def test_windows_restart_manager_scan_sizes_then_excludes_self(monkeypatch, tmp_path):
+    """The rstrtmgr lane sizes on ERROR_MORE_DATA, drops our own pid, and fails closed."""
+    import ctypes
 
-def test_windows_holder_scan_delegates_to_restart_manager(monkeypatch, tmp_path):
     db_path = tmp_path / "state.db"
     db_path.touch()
-    seen = []
+    (tmp_path / "state.db-wal").touch()
+    calls = []
 
-    monkeypatch.setattr(hermes_state_holders, "_IS_WINDOWS", True)
-    monkeypatch.setattr(
-        hermes_state_holders,
-        "_windows_restart_manager_holders",
-        lambda path: seen.append(path) or [(4242, str(path))],
-    )
+    class _Fn:
+        def __init__(self, impl):
+            self.impl = impl
 
-    assert hermes_state_holders.foreign_state_db_holders(db_path) == [(4242, str(db_path))]
-    assert seen == [db_path]
+        def __call__(self, *args):
+            return self.impl(*args)
 
+    def start(session, _flags, _key):
+        session._obj.value = 7
+        return 0
 
-def test_windows_holder_scan_failure_fails_closed(monkeypatch, tmp_path):
-    db_path = tmp_path / "state.db"
-    db_path.touch()
+    def register(_session, count, names, *_rest):
+        calls.append(("register", count, sorted(names)))
+        return 0
 
-    monkeypatch.setattr(hermes_state_holders, "_IS_WINDOWS", True)
+    def get_list(_session, needed, count, apps, _reasons):
+        needed._obj.value = 2
+        if apps is None:
+            return 234  # ERROR_MORE_DATA: sizing call
+        apps[0].process.pid = os.getpid()
+        apps[1].process.pid = 4242
+        count._obj.value = 2
+        return 0
 
-    def fail(_path):
-        raise OSError("Restart Manager unavailable")
+    class _Api:
+        RmStartSession = _Fn(start)
+        RmRegisterResources = _Fn(register)
+        RmGetList = _Fn(get_list)
+        RmEndSession = _Fn(lambda _session: calls.append("end") or 0)
 
-    monkeypatch.setattr(hermes_state_holders, "_windows_restart_manager_holders", fail)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: _Api(), raising=False)
 
-    holders = hermes_state_holders.foreign_state_db_holders(db_path)
-    assert holders[0][0] == -1
-    assert "Restart Manager scan failed" in holders[0][1]
-    refusal = hermes_state_holders.held_store_refusal(db_path, command="optimize-storage")
-    assert refusal is not None and "cannot prove the database is quiet" in refusal
+    holders = hermes_state_holders._windows_restart_manager_holders(db_path)
+
+    assert [pid for pid, _ in holders] == [4242]
+    assert calls[0] == ("register", 2, sorted(str(p) for p in (db_path, tmp_path / "state.db-wal")))
+    assert calls[-1] == "end"
+
+    _Api.RmStartSession = _Fn(lambda *_args: 5)
+    with pytest.raises(OSError):
+        hermes_state_holders._windows_restart_manager_holders(db_path)

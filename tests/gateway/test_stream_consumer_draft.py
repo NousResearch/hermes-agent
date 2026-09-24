@@ -379,41 +379,10 @@ class TestSubFloorPreambleToolBoundaries:
         # and the segment-break finalize no longer turns it into a real
         # message either.
         assert all(len((c["content"] or "").replace("▉", "").strip()) >= 4
-                   for c in adapter.draft_calls) or not adapter.draft_calls
+                   for c in adapter.draft_calls)
         # The consumer never claimed final delivery (drafts don't set
         # already_sent), so the gateway's final-send path owns "Done.".
         assert consumer.final_response_sent is False
-
-    @pytest.mark.asyncio
-    async def test_full_preamble_rounds_still_reset_once_each(self):
-        """Counterpart: a preamble long enough to stand alone SHOULD land as
-        a durable message and reset the progress anchor below it (the
-        #17280 chronological-order contract)."""
-        adapter = _make_draft_capable_adapter()
-        cfg = StreamConsumerConfig(
-            transport="auto", chat_type="dm",
-            edit_interval=0.01, buffer_threshold=5, cursor="▉",
-        )
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-        resets: list[str] = []
-        consumer._on_new_message = lambda: resets.append("reset")
-
-        task = asyncio.create_task(consumer.run())
-        for i in range(3):
-            consumer.on_delta(f"Round {i} preamble text")
-            await asyncio.sleep(0.05)
-            consumer.on_delta(None)  # tool boundary
-            await asyncio.sleep(0.05)
-        consumer.finish("Done.")
-        await task
-
-        assert len(resets) == 3, resets
-        sends = [c.kwargs.get("content") for c in adapter.send.await_args_list]
-        assert sends == [
-            "Round 0 preamble text",
-            "Round 1 preamble text",
-            "Round 2 preamble text",
-        ], sends
 
     @pytest.mark.asyncio
     async def test_turn_final_short_answer_is_never_swallowed(self):

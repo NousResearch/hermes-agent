@@ -820,82 +820,86 @@ class TestDeliverCrossPlatformThreadId:
 
 
 class TestCrossPlatformDeliveryMirror:
-    """A delivered response is mirrored into the TARGET chat's session so a follow-up reply there has
-    context (the text otherwise only lives in the ephemeral webhook:<route>:<id> session)."""
+    """An opted-in route's delivered response is appended to the TARGET chat's session (real state.db),
+    so a follow-up reply there has context; without the opt-in the target transcript is untouched."""
 
-    def _setup(self, send_result=None):
-        adapter = _make_adapter()
-        mock_target = AsyncMock()
-        mock_target.send = AsyncMock(return_value=send_result or SendResult(success=True))
-        mock_runner = MagicMock()
-        mock_runner.adapters = {Platform("telegram"): mock_target}
-        mock_runner.config.get_home_channel.return_value = None
-        adapter.gateway_runner = mock_runner
-        return adapter, mock_target
+    _CHAT = "5135545282"
+
+    @staticmethod
+    def _seed_dm(home, sid, chat):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=home / "state.db")
+        db.create_session(sid, source="telegram")
+        db._conn.execute("UPDATE sessions SET session_key=?, chat_id=?, user_id=? WHERE id=?",
+                         (f"agent:main:telegram:dm:{chat}", chat, chat, sid))
+        db._conn.commit()
+        db.close()
+
+    @staticmethod
+    def _transcript(home, sid):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=home / "state.db")
+        rows = db._conn.execute("SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,)).fetchall()
+        db.close()
+        return [(r[0], r[1]) for r in rows]
+
+    @pytest.fixture
+    def homes(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import hermes_state
+        from hermes_cli.profiles import get_profile_dir
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        # The hermetic conftest pins DEFAULT_DB_PATH when hermes_state is already imported; un-pin it so
+        # state.db resolves from the active (profile-scoped) home at call time, as in production.
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+        work_home = get_profile_dir("work")
+        work_home.mkdir(parents=True)
+        # A DM chat_id is the user's id on every bot, so both profiles hold a session for it.
+        self._seed_dm(default_home, "dm-default", self._CHAT)
+        self._seed_dm(work_home, "dm-work", self._CHAT)
+        return default_home, work_home
+
+    @staticmethod
+    def _attach_target(adapter):
+        target = AsyncMock()
+        target.send = AsyncMock(return_value=SendResult(success=True))
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._authorization_adapter = lambda platform, profile=None: target
+        return adapter
 
     @pytest.mark.asyncio
-    async def test_successful_delivery_is_mirrored_as_labelled_user_turn(self):
-        adapter, _ = self._setup()
-        delivery = {"route": "ambush-nfl", "deliver_extra": {"chat_id": "5135545282", "thread_id": "7"}}
-        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror:
-            result = await adapter._deliver_cross_platform("telegram", "Henderson OUT Wednesday", delivery)
+    async def test_opted_in_delivery_mirrors_into_the_routed_profiles_chat_session(self, homes):
+        default_home, work_home = homes
+        adapter = self._attach_target(_make_adapter())
+        delivery = {"deliver": "telegram", "route": "ambush-nfl", "profile": "work", "mirror": True,
+                    "deliver_extra": {"chat_id": self._CHAT}}
+        result = await adapter._deliver_cross_platform("telegram", "Henderson OUT Wednesday", delivery)
         assert result.success is True
-        mirror.assert_called_once_with(
-            "telegram", "5135545282", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday",
-            source_label="webhook", thread_id="7", role="user")
+        assert self._transcript(work_home, "dm-work") == [
+            ("user", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday")]
+        assert self._transcript(default_home, "dm-default") == []
 
     @pytest.mark.asyncio
-    async def test_home_channel_fallback_is_mirrored_to_that_chat(self):
-        adapter, _ = self._setup()
-        adapter.gateway_runner.config.get_home_channel.return_value = MagicMock(chat_id="home-1")
-        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror:
-            await adapter._deliver_cross_platform("telegram", "hi", {"route": "r", "deliver_extra": {}})
-        assert mirror.call_args.args[:2] == ("telegram", "home-1")
-
-    @pytest.mark.asyncio
-    async def test_failed_delivery_is_not_mirrored(self):
-        adapter, _ = self._setup(SendResult(success=False, error="boom"))
-        with patch("gateway.mirror.mirror_to_session") as mirror:
-            result = await adapter._deliver_cross_platform(
-                "telegram", "hi", {"route": "r", "deliver_extra": {"chat_id": "1"}})
-        assert result.success is False
-        mirror.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_route_can_opt_out(self):
-        adapter, _ = self._setup()
-        with patch("gateway.mirror.mirror_to_session") as mirror:
-            await adapter._deliver_cross_platform(
-                "telegram", "hi", {"route": "r", "mirror": False, "deliver_extra": {"chat_id": "1"}})
-        mirror.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_mirror_failure_never_fails_the_delivery(self):
-        adapter, mock_target = self._setup()
-        with patch("gateway.mirror.mirror_to_session", side_effect=RuntimeError("db locked")):
-            result = await adapter._deliver_cross_platform(
-                "telegram", "hi", {"route": "r", "deliver_extra": {"chat_id": "1"}})
-        assert result.success is True
-        mock_target.send.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_delivery_info_records_route_and_mirror_flag(self):
-        """The route name and opt-out reach send() through delivery_info for both agent-run and
-        deliver_only routes."""
-        routes = {
-            "agent": {"secret": _INSECURE_NO_AUTH, "prompt": "p"},
-            "quiet": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "mirror_to_session": False},
-        }
+    async def test_route_without_opt_in_never_touches_the_target_transcript(self, homes):
+        default_home, _ = homes
+        routes = {"plain": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "deliver": "telegram",
+                            "deliver_extra": {"chat_id": self._CHAT}},
+                  "yaml-str": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "deliver": "telegram",
+                               "deliver_extra": {"chat_id": self._CHAT}, "mirror_to_session": "false"}}
         adapter = _make_adapter(routes=routes)
         adapter.handle_message = AsyncMock()
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            r1 = await cli.post("/webhooks/agent", json={"a": 1}, headers={"X-Request-ID": "d1"})
-            r2 = await cli.post("/webhooks/quiet", json={"a": 1}, headers={"X-Request-ID": "d2"})
-        assert r1.status == 202 and r2.status == 202
-        assert adapter._delivery_info["webhook:agent:d1"]["route"] == "agent"
-        assert adapter._delivery_info["webhook:agent:d1"]["mirror"] is True
-        assert adapter._delivery_info["webhook:quiet:d2"]["mirror"] is False
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            for route in routes:
+                resp = await cli.post(f"/webhooks/{route}", json={"a": 1}, headers={"X-Request-ID": route})
+                assert resp.status == 202
+        self._attach_target(adapter)
+        for route in routes:
+            delivery = adapter._delivery_info[f"webhook:{route}:{route}"]
+            assert (await adapter._deliver_cross_platform("telegram", "hi", delivery)).success is True
+        assert self._transcript(default_home, "dm-default") == []
 
 
 class TestInsecureNoAuthSafetyRail:

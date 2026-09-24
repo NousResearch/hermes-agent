@@ -4,7 +4,7 @@ or any gateway platform). Routes live under platforms.webhook.extra.routes: even
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (fire an existing cron
 job per event; the rendered prompt is transient per-run context; exclusive with deliver_only), mirror_to_session
-(default on: a delivered response is also written into the target chat's transcript so follow-ups there have
+(opt-in: a delivered response is also written into the target chat's transcript so follow-ups there have
 context). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
 replay protection; body-only V1 is deprecated but accepted with a warning."""
@@ -485,7 +485,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
                     "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
                     "route": route_name,
-                    "mirror": route_config.get("mirror_to_session", True) is not False}
+                    "mirror": route_config.get("mirror_to_session") is True}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
@@ -656,7 +656,7 @@ class WebhookAdapter(BasePlatformAdapter):
             "deliver": route_config.get("deliver", "log"), "profile": profile,
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
             "route": route_name,
-            "mirror": route_config.get("mirror_to_session", True) is not False}
+            "mirror": route_config.get("mirror_to_session") is True}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -899,9 +899,13 @@ class WebhookAdapter(BasePlatformAdapter):
         agent has no idea it sent anything. Same path and USER-role convention as cron briefs
         (``cron.scheduler_delivery._maybe_mirror_cron_delivery``, #2221): the text is not the target
         session's agent speaking, and a labelled user turn merges safely on strict-alternation providers.
-        Route opt-out: ``mirror_to_session: false``. Never raises — a delivered message must not be
-        reported failed because the mirror broke."""
-        if not delivery.get("mirror", True):
+        Opt-in per route (``mirror_to_session: true``), default off like cron's ``mirror_delivery``: the text
+        lands with user authority in a chat the route author may not own, and on ``deliver_only`` routes it is
+        the raw rendered payload. Called inside the routed profile's scope so the lookup hits THAT profile's
+        state.db — a DM chat_id is the user's id on every bot, so an unscoped mirror lands in another
+        profile's DM with the same person. Never raises — a delivered message must not be reported failed
+        because the mirror broke."""
+        if delivery.get("mirror") is not True:
             return
         route = delivery.get("route") or "webhook"
         try:

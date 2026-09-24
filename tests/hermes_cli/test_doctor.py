@@ -61,6 +61,34 @@ class TestProviderEnvDetection:
         assert not _has_provider_env_config(content)
 
 
+@pytest.mark.parametrize("status", [{"logged_in": True}, {"logged_in": False}, {}])
+def test_env_file_accepts_authenticated_nous_without_api_keys(tmp_path, monkeypatch, capsys, status):
+    from hermes_cli import auth
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", tmp_path)
+    monkeypatch.setattr(auth, "get_nous_auth_status_local", lambda: status)
+    (tmp_path / ".env").write_text("# OAuth-only install\n", encoding="utf-8")
+
+    finding = doctor_config._check_env_file(False)
+
+    missing_auth = not status.get("logged_in")
+    assert ("Run 'hermes setup' to configure API keys" in finding.issues) == missing_auth
+    assert ("No API key found" in capsys.readouterr().out) == missing_auth
+
+
+def test_env_file_accepts_keyless_custom_endpoint_without_oauth(tmp_path, monkeypatch, capsys):
+    from hermes_cli import auth
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", tmp_path)
+    monkeypatch.setattr(auth, "get_nous_auth_status_local", lambda: pytest.fail("Endpoint needs no OAuth check"))
+    (tmp_path / ".env").write_text("OPENAI_BASE_URL=http://localhost:1234/v1\n", encoding="utf-8")
+
+    finding = doctor_config._check_env_file(False)
+
+    assert not finding.issues
+    assert "API key or custom endpoint configured" in capsys.readouterr().out
+
+
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
         unavailable = [

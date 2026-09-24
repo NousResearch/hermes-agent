@@ -141,7 +141,14 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
             content = env_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = env_path.read_text(encoding="latin-1")
-        if not check_bool(_has_provider_env_config(content), "API key or custom endpoint configured", f"No API key found in {_DHH}/.env"):
+        from hermes_cli.auth import get_nous_auth_status_local
+        if _has_provider_env_config(content):
+            check_ok("API key or custom endpoint configured")
+        elif get_nous_auth_status_local().get("logged_in"):
+            # OAuth credentials live outside .env; diagnostics must not refresh them.
+            check_ok("Nous Portal OAuth configured")
+        else:
+            check_warn(f"No API key found in {_DHH}/.env")
             f.issues.append("Run 'hermes setup' to configure API keys")
     elif (PROJECT_ROOT / '.env').exists():  # project root as fallback
         check_ok(".env file exists (in project directory)")

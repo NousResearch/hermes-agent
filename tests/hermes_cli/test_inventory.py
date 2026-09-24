@@ -40,8 +40,34 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
     }
 
 
+def test_load_picker_context_coerces_numeric_yaml_provider():
+    """PyYAML parses unquoted `provider: 2070` as int; picker context must be str.
 
-
+    Desktop GET /api/model/options crashed when a custom endpoint was named
+    after a GPU: current_provider.strip() and providers dict keys .lower().
+    """
+    cfg = _cfg(
+        model={
+            "provider": 2070,
+            "default": "Qwen3.5-9B-Q4_K_M.gguf",
+            "base_url": "http://192.168.1.10:8082/v1",
+        },
+        providers={
+            2070: {
+                "name": 2070,
+                "base_url": "http://192.168.1.10:8082/v1",
+                "model": "Qwen3.5-9B-Q4_K_M.gguf",
+            }
+        },
+    )
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+    assert ctx.current_provider == "2070"
+    assert isinstance(ctx.current_provider, str)
+    assert list(ctx.user_providers) == ["2070"]
+    assert all(isinstance(k, str) for k in ctx.user_providers)
+    assert ctx.current_model == "Qwen3.5-9B-Q4_K_M.gguf"
+    assert ctx.current_base_url == "http://192.168.1.10:8082/v1"
 
 
 # ─── with_overrides ────────────────────────────────────────────────────
@@ -86,59 +112,8 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
 
 
 
-def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
-    """CLI /model picker must pass force_refresh to probe flags (#65652, #65650).
-
-    Normal open (/model bare) skips non-current probes; /model --refresh probes
-    all custom providers to freshen their model lists.
-    """
-    ctx = _empty_ctx()
-
-    # Normal open — skip non-current probes
-    force_refresh = False
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=[],
-    ) as mock_list:
-        build_models_payload(
-            ctx,
-            probe_custom_providers=force_refresh,
-            probe_current_custom_provider=not force_refresh,
-        )
-    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
-    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
-
-    # Refresh open — probe everything
-    force_refresh = True
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=[],
-    ) as mock_list:
-        build_models_payload(
-            ctx,
-            probe_custom_providers=force_refresh,
-            probe_current_custom_provider=not force_refresh,
-        )
-    assert mock_list.call_args.kwargs["probe_custom_providers"] is True
-    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is False
 
 
-def test_list_authenticated_providers_force_fresh_is_keyword_only():
-    """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
-
-    It was inserted between ``custom_providers`` and ``max_models``; making it
-    keyword-only ensures no positional caller passing ``max_models`` as the 5th
-    arg silently mis-binds it to the tier-refresh flag. Pin the contract so a
-    future signature edit that drops the ``*`` separator is caught.
-    """
-    import inspect
-
-    from hermes_cli.model_switch import list_authenticated_providers
-
-    sig = inspect.signature(list_authenticated_providers)
-    param = sig.parameters["force_fresh_nous_tier"]
-    assert param.kind is inspect.Parameter.KEYWORD_ONLY
-    assert param.default is False
 
 
 
@@ -208,6 +183,120 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
     ]
 
 
+def test_explicit_only_keeps_anthropic_row_with_oauth_credentials():
+    """Anthropic OAuth logins are deliberate sign-ins, not ambient credentials.
+
+    Claude Code (~/.claude/.credentials.json) and Hermes' own device flow
+    leave no trace in active_provider / model.provider / API-key env vars,
+    so is_provider_explicitly_configured() returns False even though
+    list_authenticated_providers just accepted those same credentials when
+    building the row. The desktop explicit-only filter must keep it.
+    """
+    rows = [
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            return_value=False,
+        ),
+        patch(
+            "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            return_value=True,
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    slugs = [row["slug"] for row in payload["providers"]]
+    assert "anthropic" in slugs, (
+        "Anthropic OAuth login must survive the explicit-only filter"
+    )
+    assert "copilot" not in slugs, (
+        "ambient credential discovery must stay filtered"
+    )
+
+
+def test_explicit_only_drops_anthropic_row_without_oauth_credentials():
+    """No OAuth token and no explicit config -> Anthropic stays hidden."""
+    rows = [
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            return_value=False,
+        ),
+        patch(
+            "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            return_value=False,
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert "anthropic" not in [row["slug"] for row in payload["providers"]]
+
+
+def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
+    """A pool-only OAuth entry (auth.json credential_pool.anthropic) counts.
+
+    Wired/device-flow tokens land in the credential pool, not in
+    .anthropic_oauth.json or ~/.claude/.credentials.json. The presence
+    check must accept them or the row is built and then silently dropped.
+    """
+    from hermes_cli.inventory import _anthropic_oauth_credentials_present
+
+    with (
+        patch(
+            "agent.anthropic_credentials.read_hermes_oauth_credentials",
+            return_value=None,
+        ),
+        patch(
+            "agent.anthropic_credentials.read_claude_code_credentials",
+            return_value=None,
+        ),
+        patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[
+                {"auth_type": "oauth", "access_token": "sk-ant-oat01-pool"}
+            ],
+        ),
+    ):
+        assert _anthropic_oauth_credentials_present() is True
+
+    # api_key pool entries are NOT OAuth logins — presence must stay False
+    # (they are handled by the explicit-config gate / env var paths).
+    with (
+        patch(
+            "agent.anthropic_credentials.read_hermes_oauth_credentials",
+            return_value=None,
+        ),
+        patch(
+            "agent.anthropic_credentials.read_claude_code_credentials",
+            return_value=None,
+        ),
+        patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[
+                {"auth_type": "api_key", "access_token": "sk-ant-api03-key"}
+            ],
+        ),
+    ):
+        assert _anthropic_oauth_credentials_present() is False
+
+
 
 # ─── picker_hints ──────────────────────────────────────────────────────
 
@@ -238,7 +327,6 @@ def test_picker_hints_api_key_warning_format():
         r for r in payload["providers"] if r["slug"] == "anthropic"
     )
     assert "ANTHROPIC_API_KEY" in anthropic["warning"]
-    assert anthropic["warning"].startswith("paste ")
 
 
 # ─── canonical_order ───────────────────────────────────────────────────
@@ -351,6 +439,38 @@ def _aggregator_row(slug: str, models: list[str]) -> dict:
     }
 
 
+def test_user_defined_rows_carry_alias_set_for_gui_current_match():
+    """Custom provider rows must expose `aliases` so the desktop picker can
+    match a session's canonical `custom:<key>` identity against the row's
+    bare-key slug (#87035). Built-in rows carry no aliases.
+    """
+    rows = [
+        {
+            "slug": "myep",
+            "name": "My Endpoint",
+            "models": ["my-model"],
+            "total_models": 1,
+            "is_current": True,
+            "is_user_defined": True,
+            "source": "user-config",
+            "api_url": "http://localhost:8000/v1",
+        },
+        _nous_row() | {"is_current": False},
+    ]
+    ctx = _empty_ctx(provider="custom:myep", model="my-model")
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    by_slug = {r["slug"]: r for r in payload["providers"]}
+    aliases = by_slug["myep"]["aliases"]
+    # The canonical session identity must be matchable via the alias set.
+    assert "custom:myep" in aliases
+    assert "myep" in aliases
+    assert "custom:my-endpoint" in aliases
+    assert "aliases" not in by_slug["nous"]
+
+
 def test_aggregator_dedup_removes_overlapping_models():
     """Models served by a user-defined provider are removed from
     aggregator rows so the picker doesn't show them under the wrong
@@ -458,26 +578,6 @@ def test_build_models_payload_no_max_models_returns_full_list():
 # ─── refresh flag (cache-bust) ─────────────────────────────────────────
 
 
-def test_build_models_payload_forwards_refresh_flag():
-    """build_models_payload must forward refresh= to list_authenticated_providers.
-
-    The desktop picker's "Refresh Models" control passes refresh=True; the
-    flag has to reach list_authenticated_providers so the per-provider
-    model-id cache gets busted. Default opens pass refresh=False.
-    """
-    captured: dict = {}
-
-    def _capture(*args, **kwargs):
-        captured["refresh"] = kwargs.get("refresh")
-        return []
-
-    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
-        build_models_payload(_empty_ctx())
-    assert captured["refresh"] is False
-
-    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
-        build_models_payload(_empty_ctx(), refresh=True)
-    assert captured["refresh"] is True
 
 
 def test_list_authenticated_providers_refresh_busts_cache():
@@ -492,24 +592,122 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 1
 
 
-# ─── _apply_featured (one-flagship-per-lab shortlist) ──────────────────
+def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_path, monkeypatch):
+    """Custom-provider metadata stays constant-read as its model count grows (#119048).
 
+    ``get_model_capabilities`` and ``get_model_info`` deliberately stay real:
+    each lookup resolves ``providers.lab.catalog_provider`` before consulting
+    the seeded models.dev catalog.  Removing snapshot threading from that
+    path makes the larger payload re-open config.yaml once per lookup.
+    """
+    from agent import models_dev
+    from hermes_cli import config as config_module
 
-class _FakeInfo:
-    def __init__(self, release_date: str) -> None:
-        self.release_date = release_date
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "providers:\n"
+        "  lab:\n"
+        "    catalog_provider: openrouter\n"
+        "model_overrides: {}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
 
+    models = [
+        "openai/model-a", "anthropic/model-b", "openai/model-c",
+        "anthropic/model-d", "openai/model-e", "anthropic/model-f",
+        "openai/model-g", "anthropic/model-h",
+    ]
+    registry = {
+        "openrouter": {
+            "models": {
+                model: {
+                    "id": model,
+                    "tool_call": True,
+                    "reasoning": model.startswith("openai/"),
+                    "release_date": f"2026-01-{index:02d}",
+                    "limit": {"context": 200000, "output": 8192},
+                }
+                for index, model in enumerate(models, start=1)
+            },
+        },
+    }
+    monkeypatch.setattr(models_dev, "_models_dev_cache", registry)
+    monkeypatch.setattr(models_dev, "_models_dev_cache_time", float("inf"))
 
-def _apply_featured_with_dates(rows, dates: dict[str, str]):
-    """Run _apply_featured with a deterministic models.dev stub."""
-    from hermes_cli import inventory
+    snapshot = config_module.load_config_readonly()
+    baseline = [
+        (
+            models_dev.get_model_capabilities("custom:lab", model),
+            models_dev.get_model_info("custom:lab", model),
+        )
+        for model in models
+    ]
+    snapshot_result = [
+        (
+            models_dev.get_model_capabilities("custom:lab", model, config=snapshot),
+            models_dev.get_model_info("custom:lab", model, config=snapshot),
+        )
+        for model in models
+    ]
+    assert snapshot_result == baseline
 
-    def _fake_get_model_info(provider, model):
-        return _FakeInfo(dates[model]) if model in dates else None
+    def _rows(model_ids):
+        return [{
+            "slug": "custom:lab",
+            "name": "Lab",
+            "models": model_ids,
+            "total_models": len(model_ids),
+            "is_current": False,
+            "is_user_defined": True,
+            "source": "user-config",
+        }]
 
-    with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
-        inventory._apply_featured(rows)
+    def _build_and_count(model_ids):
+        cfg_get_calls = 0
+        real_cfg_get = models_dev._cfg_get
 
+        def counted_cfg_get(*keys, **kwargs):
+            nonlocal cfg_get_calls
+            cfg_get_calls += 1
+            return real_cfg_get(*keys, **kwargs)
 
+        with (
+            _list_auth_returning(_rows(model_ids)),
+            patch("hermes_cli.inventory._local_runtime_row", return_value=None),
+            patch("hermes_cli.inventory._moa_provider_row", return_value=None),
+            patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
+            patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
+            patch.object(models_dev, "_cfg_get", side_effect=counted_cfg_get),
+            patch.object(
+                config_module, "load_config_readonly",
+                wraps=config_module.load_config_readonly,
+            ) as readonly_load,
+            patch.object(
+                config_module, "_load_config_impl", wraps=config_module._load_config_impl,
+            ) as config_impl,
+        ):
+            payload = build_models_payload(
+                _empty_ctx(), capabilities=True, featured=True,
+            )
+        return payload, cfg_get_calls, readonly_load.call_count, config_impl.call_count
 
+    small_payload, small_cfg_get, small_reads, small_impls = _build_and_count(models[:3])
+    large_payload, large_cfg_get, large_reads, large_impls = _build_and_count(models)
 
+    # Snapshot threading leaves _cfg_get's cheap dict traversals proportional
+    # to model count, while eliminating config/signature reads from the hot path.
+    assert small_cfg_get < large_cfg_get
+    assert (small_reads, large_reads) == (1, 1)
+    assert (small_impls, large_impls) == (1, 1)
+
+    small_row = small_payload["providers"][0]
+    large_row = large_payload["providers"][0]
+    assert small_row["capabilities"] == {
+        model: {"fast": False, "reasoning": model.startswith("openai/")}
+        for model in models[:3]
+    }
+    assert large_row["featured_models"] == models

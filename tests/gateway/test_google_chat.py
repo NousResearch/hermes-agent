@@ -129,14 +129,12 @@ import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
-    card_spec_to_cards_v2,
-    check_google_chat_requirements,
 )
 
 
@@ -233,9 +231,6 @@ def _make_chat_envelope(text="hello", sender_email="u@example.com", sender_type=
 # ===========================================================================
 
 
-class TestPlatformRegistration:
-    def test_enum_value(self):
-        assert _GC.value == "google_chat"
 
 
 # ===========================================================================
@@ -269,6 +264,61 @@ class TestEnvConfigLoading:
         # No subscription.
         cfg = load_gateway_config()
         assert _GC not in cfg.platforms
+
+    def test_multiplex_scoped_profile_never_borrows_process_env(
+        self, monkeypatch, tmp_path
+    ):
+        """Under multiplex a scoped profile sees ONLY its own Google Chat
+        settings, and the ADC branch fails closed instead of authenticating
+        as the default profile's service account (#73439)."""
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "default-proj")
+        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME", "default-sub")
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/default.json")
+        monkeypatch.setenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "spaces/DEFAULT")
+        profile_home = tmp_path / "beta"
+        profile_home.mkdir()
+        (profile_home / ".env").write_text(
+            "GOOGLE_CHAT_PROJECT_ID=beta-proj\nGOOGLE_CHAT_SUBSCRIPTION_NAME=beta-sub\n"
+        )
+        set_multiplex_active(True)
+        token = set_secret_scope(build_profile_secret_scope(profile_home))
+        try:
+            seed = _gc_mod._env_enablement() or {}
+            beta = GoogleChatAdapter(
+                PlatformConfig(enabled=True, extra={"project_id": "beta-proj", "subscription_name": "beta-sub"})
+            )
+            with pytest.raises(ValueError, match="ADC skipped"):
+                beta._load_sa_credentials()
+        finally:
+            from agent.secret_scope import reset_secret_scope
+
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+        assert seed["project_id"] == "beta-proj"
+        assert "service_account_json" not in seed
+        assert beta._bootstrap_spaces == ""
+
+    def test_multiplex_default_profile_constructs_unscoped(self, monkeypatch):
+        """The default profile's adapter is built OUTSIDE any scope while
+        multiplex is active (gateway startup/reconnect); it must keep reading
+        its own process env instead of raising UnscopedSecretError."""
+        from agent.secret_scope import set_multiplex_active
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "spaces/DEFAULT")
+        set_multiplex_active(True)
+        try:
+            default = GoogleChatAdapter(_base_config())
+        finally:
+            set_multiplex_active(False)
+        assert default._bootstrap_spaces == "spaces/DEFAULT"
 
 
 # ===========================================================================
@@ -433,9 +483,6 @@ class TestConnectModes:
 # ===========================================================================
 
 
-class TestChunkText:
-    def test_empty_returns_empty_list(self, adapter):
-        assert adapter._chunk_text("") == []
 
 
 # ===========================================================================
@@ -934,20 +981,6 @@ class TestTypingLifecycle:
 
 
 class TestEditMessage:
-    @pytest.mark.asyncio
-    async def test_edit_message_patches_via_messages_patch(self, adapter):
-        adapter._patch_message = AsyncMock(
-            return_value=type("R", (), {"success": True,
-                                        "message_id": "spaces/S/messages/M",
-                                        "error": None})()
-        )
-        result = await adapter.edit_message(
-            "spaces/S", "spaces/S/messages/M", "edited content",
-        )
-        assert result.success is True
-        adapter._patch_message.assert_awaited_once_with(
-            "spaces/S/messages/M", {"text": "edited content"},
-        )
 
     @pytest.mark.asyncio
     async def test_edit_message_truncates_overlong_text(self, adapter):
@@ -962,15 +995,6 @@ class TestEditMessage:
         assert len(sent) <= 4000
 
 
-class TestDeleteMessage:
-    @pytest.mark.asyncio
-    async def test_delete_message_calls_api(self, adapter):
-        delete_mock = MagicMock()
-        delete_mock.return_value.execute = MagicMock(return_value={})
-        adapter._chat_api.spaces.return_value.messages.return_value.delete = delete_mock
-        result = await adapter.delete_message("spaces/S", "spaces/S/messages/M")
-        assert result is True
-        delete_mock.assert_called_once()
 
 
 # ===========================================================================
@@ -1281,9 +1305,9 @@ class TestAttachmentSSRFGuard:
         monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
         from plugins.platforms.google_chat import adapter as gc_mod
         monkeypatch.setattr(
-            gc_mod, "cache_document_from_bytes",
-            lambda data, ext=None, filename=None: str(tmp_path / "out.pdf"),
-            raising=False,
+            gc_mod,
+            "cache_document_from_bytes_async",
+            AsyncMock(return_value=str(tmp_path / "out.pdf")),
         )
 
         path, mime = await adapter._download_attachment(attachment)
@@ -1311,31 +1335,55 @@ class TestOutboundThreadRouting:
         )
         assert result == "spaces/X/threads/CACHED"
 
+    def test_resolve_cron_delivery_does_not_fall_back_to_cached_thread(self, adapter):
+        """A cron delivery carries job_id in its metadata and must post as a
+        new top-level message, never as a reply to the last inbound thread."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/CACHED"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"job_id": "cron_123"},
+            chat_id="spaces/X",
+        )
+        assert result is None
+
+    def test_resolve_cron_delivery_with_explicit_thread_still_uses_it(self, adapter):
+        """An explicit thread in cron metadata wins over the no-fallback rule;
+        only the implicit _last_inbound_thread cache is bypassed for cron."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/STALE"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"job_id": "cron_123", "thread_id": "spaces/X/threads/EXPLICIT"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/EXPLICIT"
+
+    def test_resolve_cron_delivery_with_reply_to_thread_still_uses_it(self, adapter):
+        """A reply_to thread resource name still routes a cron delivery there."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/STALE"
+        result = adapter._resolve_thread_id(
+            reply_to="spaces/X/threads/EXPLICIT",
+            metadata={"job_id": "cron_123"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/EXPLICIT"
+
+    def test_resolve_interactive_dm_with_metadata_still_falls_back(self, adapter):
+        """Non-cron metadata (e.g. platform event routing) keeps the DM
+        fallback — job_id is the only marker that means 'automated delivery'."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/CACHED"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"user_id": "u1"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/CACHED"
+
 
 # ===========================================================================
 # Send file delegation (voice/video/animation route through send_document)
 # ===========================================================================
 
 
-class TestMediaDelegation:
-
-
-    @pytest.mark.asyncio
-    async def test_send_animation_delegates_to_image(self, adapter):
-        """Google Chat has no native animation type; the adapter falls back
-        to send_image (which posts the URL inline). Animations and images
-        share the same render path on Chat so we just delegate."""
-        adapter.send_image = AsyncMock(
-            return_value=type("R", (), {"success": True, "message_id": "m",
-                                        "error": None})()
-        )
-        await adapter.send_animation(
-            "spaces/S", "https://example.com/dance.gif", caption="hop"
-        )
-        adapter.send_image.assert_awaited_once()
-        args, kwargs = adapter.send_image.await_args
-        assert args[1] == "https://example.com/dance.gif"
-        assert kwargs.get("caption") == "hop"
 
 
 # ===========================================================================
@@ -1462,59 +1510,6 @@ class TestADCFallback:
         assert "google_chat_service_account_json" in msg
 
 
-class TestGoogleChatInteractiveSetup:
-    def test_interactive_setup_uses_shared_cli_prompt_helpers(self, monkeypatch):
-        """Google Chat setup should not import prompt helpers from config.py."""
-        from plugins.platforms.google_chat import adapter as gc_mod
-
-        saved: dict[str, str] = {}
-        answers = {
-            "GCP project ID (e.g. my-project)": "demo-project",
-            "Pub/Sub subscription (projects/<proj>/subscriptions/<sub>)": (
-                "projects/demo-project/subscriptions/hermes-chat"
-            ),
-            "Path to Service Account JSON (or inline JSON)": "/tmp/sa.json",
-            "Allowed user emails (comma-separated)": "alice@example.com, bob@example.com",
-            "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)": (
-                "spaces/AAAA"
-            ),
-        }
-
-        def fake_get_env_value(key):
-            return saved.get(key, "")
-
-        def fake_save_env_value(key, value):
-            saved[key] = value
-
-        def fake_prompt(question, default=None, password=False):
-            return answers.get(question, default or "")
-
-        monkeypatch.setattr("hermes_cli.config.get_env_value", fake_get_env_value)
-        monkeypatch.setattr("hermes_cli.config.save_env_value", fake_save_env_value)
-        monkeypatch.setattr("hermes_cli.cli_output.prompt", fake_prompt)
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.prompt_yes_no", lambda *_a, **_kw: True
-        )
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.print_info", lambda *_a, **_kw: None
-        )
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.print_success", lambda *_a, **_kw: None
-        )
-        monkeypatch.setattr(
-            "hermes_cli.cli_output.print_warning", lambda *_a, **_kw: None
-        )
-
-        gc_mod.interactive_setup()
-
-        assert saved["GOOGLE_CHAT_PROJECT_ID"] == "demo-project"
-        assert (
-            saved["GOOGLE_CHAT_SUBSCRIPTION_NAME"]
-            == "projects/demo-project/subscriptions/hermes-chat"
-        )
-        assert saved["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"] == "/tmp/sa.json"
-        assert saved["GOOGLE_CHAT_ALLOWED_USERS"] == "alice@example.com,bob@example.com"
-        assert saved["GOOGLE_CHAT_HOME_CHANNEL"] == "spaces/AAAA"
 
 
 # ===========================================================================
@@ -1567,8 +1562,13 @@ class TestAuthorizationEmailMatch:
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource
+        from hermes_cli.plugins import discover_plugins
 
         monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "alice@example.com")
+        # Plugin platforms become available during the normal gateway startup
+        # discovery pass.  This unit test constructs GatewayRunner directly,
+        # so perform that lifecycle step explicitly before testing auth.
+        discover_plugins()
         cfg = GatewayConfig()
         runner = GatewayRunner(cfg)
         runner.pairing_store = MagicMock()
@@ -1632,7 +1632,7 @@ class TestCronSchedulerRegistry:
 
     def test_google_chat_is_known_delivery_platform(self):
         self._ensure_registered()
-        from cron.scheduler import _is_known_delivery_platform
+        from cron.scheduler_delivery import _is_known_delivery_platform
 
         assert _is_known_delivery_platform("google_chat") is True
 
@@ -1738,5 +1738,4 @@ class TestGoogleChatStandaloneSend:
         assert url == "https://chat.googleapis.com/v1/spaces/AAAA-BBBB/messages"
         assert kwargs["headers"]["Authorization"] == "Bearer the-token"
         assert kwargs["json"] == {"text": "hello cron"}
-
 

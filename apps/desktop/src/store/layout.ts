@@ -2,12 +2,20 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  restoreHiddenTreeSideTabs,
+  restoreMinimizedTreeSide,
+  setTreeSideCollapsed,
+  type TreeSide
+} from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
+import { connectionScopedAtom } from '@/lib/connection-scoped'
+import { LAYOUT_KEYS } from '@/lib/layout-persistence'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
+import { modeBound, modeLayout } from '@/store/interface-mode'
 
-import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
+import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride } from './panes'
 import { $showAllProfiles, setShowAllProfiles } from './profile'
 import type { PullRequestBucket } from './pull-requests'
 import type { SessionStatusBucket } from './session-dot-state'
@@ -35,8 +43,11 @@ const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
 const SIDEBAR_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping'
 const SIDEBAR_ALL_PROFILES_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping.allProfiles'
+const SIDEBAR_ALL_PROFILES_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.sidebarAgentsGrouped.allProfiles'
 const SIDEBAR_SORT_KEY_STORAGE_KEY = 'hermes.desktop.sidebarSortKey'
 const SIDEBAR_ROW_META_STORAGE_KEY = 'hermes.desktop.sidebarRowMeta'
+const SIDEBAR_CARD_ROWS_STORAGE_KEY = 'hermes.desktop.sidebarCardRows'
+const SIDEBAR_SHOW_ALL_SESSIONS_STORAGE_KEY = 'hermes.desktop.sidebarShowAllSessions'
 const SIDEBAR_STATUS_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarStatusFilter'
 const SIDEBAR_SHOW_ARCHIVED_STORAGE_KEY = 'hermes.desktop.sidebarShowArchived'
 const SIDEBAR_PROJECT_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarProjectFilter'
@@ -49,7 +60,6 @@ const SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY = 'hermes.desktop.workspaceCollaps
 const SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY = 'hermes.desktop.workspaceNodeOpen'
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktrees'
-const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
@@ -70,9 +80,16 @@ export const $sidebarOpen: ReadableAtom<boolean> = computed(
   states => states[CHAT_SIDEBAR_PANE_ID]?.open ?? true
 )
 
-export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
+// The file tree's own toggle (⌘J), which doubles as the RIGHT side's collapse.
+// Simple mode rests it closed without touching the pane record; ⌘J still opens
+// it for the session.
+const $fileBrowserOpenPref: ReadableAtom<boolean> = computed(
   $paneStates,
   states => states[FILE_BROWSER_PANE_ID]?.open ?? false
+)
+
+export const $fileBrowserOpen = modeBound('fileBrowserOpen', $fileBrowserOpenPref, open =>
+  setPaneOpen(FILE_BROWSER_PANE_ID, open)
 )
 
 // Persisted so a relaunch reopens the same rail tab. Null when the rail has no
@@ -88,13 +105,29 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
   return typeof override === 'number' ? override : SIDEBAR_DEFAULT_WIDTH
 })
 
-export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
-export const $sidebarSessionOrderIds = persistentAtom(
+// Pins and the manual session order are CONNECTION-scoped, not global: they
+// are lists of session ids owned by one gateway's state.db, and multiple
+// windows in this app can be connected to different gateways while sharing
+// one localStorage area. A global key here is how one gateway's pins bleed
+// into another window's sidebar (#77318). The local connection keeps the
+// bare legacy key; remote connections get their own namespaced keys.
+//
+// Pins omit the profile from that key: `sessions.pinned` is gateway-wide,
+// and a per-profile localStorage copy is how an unpin in profile A comes
+// back when the window rescopes to B (stale ids flush as pinned=true).
+export const $pinnedSessionIds = connectionScopedAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray, {
+  includeProfile: false
+})
+export const $sidebarSessionOrderIds = connectionScopedAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],
   Codecs.stringArray
 )
-export const $sidebarSessionOrderManual = persistentAtom(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false, Codecs.bool)
+export const $sidebarSessionOrderManual = connectionScopedAtom(
+  SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY,
+  false,
+  Codecs.bool
+)
 export const $sidebarWorkspaceOrderIds = persistentAtom(
   SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY,
   [] as string[],
@@ -187,6 +220,9 @@ export const $dismissedWorktreeIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
+// Only successful git removals may reappear on discovery. Explicit hides,
+// including legacy dismissals without provenance, remain hidden.
+export const $removedWorktreeIds = persistentAtom('hermes.desktop.removedWorktrees', [] as string[], Codecs.stringArray)
 export const $sidebarPinsOpen = atom(true)
 export const $sidebarRecentsOpen = atom(true)
 // Cron-job sessions live in their own section below recents, collapsed by
@@ -201,18 +237,41 @@ export const $sidebarMessagingOpenIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
-export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+// The Project-grouping flag, per scope like the grouping atoms below it: one
+// global bool here meant picking Project inside a workspace also flipped the
+// all-profiles view into the project tree (and leaving it there wiped the
+// workspace's choice) — the "sidebar forgets my grouping every time I switch
+// workspaces" bug. The flat key keeps its historical name so an existing
+// choice survives the update.
+const $sidebarFlatAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+
+const $sidebarAllProfilesAgentsGrouped = persistentAtom(
+  SIDEBAR_ALL_PROFILES_AGENTS_GROUPED_STORAGE_KEY,
+  false,
+  Codecs.bool
+)
+
+/** Whether the CURRENT scope shows the project tree (reads the scope's own
+ *  flag, so each workspace and the all-profiles view remember it separately). */
+export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
+  [$showAllProfiles, $sidebarFlatAgentsGrouped, $sidebarAllProfilesAgentsGrouped],
+  (showAll, flat, allProfiles) => (showAll ? allProfiles : flat)
+)
 
 /** How the recents list is divided. `date` is the sidebar's long-standing
  *  default (Today / Yesterday / Last week dividers). `profile` only means
  *  anything while the sidebar is showing every profile at once. */
-export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
+export const SIDEBAR_GROUPING_ORDER = ['date', 'project', 'status', 'profile'] as const
+/** Derived from the order so a new grouping cannot exist without a slot in the
+ *  filter menu and the `view.cycleSidebarGrouping` keybind, which both walk it. */
+export type SidebarGrouping = (typeof SIDEBAR_GROUPING_ORDER)[number]
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
 export type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
-/** Optional per-row metadata the user can switch on. */
-export type SidebarRowMeta = 'cost' | 'pr' | 'profile' | 'tokens' | 'updated'
+/** Optional per-row metadata the user can switch on. `preview` is card-only:
+ *  the one-line row has nowhere to put a second line. */
+export type SidebarRowMeta = 'cost' | 'pr' | 'preview' | 'profile' | 'tokens' | 'updated'
 
 function oneOf<T extends string>(values: readonly T[], fallback: T): Codec<T> {
   return {
@@ -228,7 +287,7 @@ function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
   }
 }
 
-const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'profile', 'tokens', 'updated']
+const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
 const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
 const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
 export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
@@ -258,7 +317,7 @@ const $sidebarAllProfilesGrouping = persistentAtom<SidebarGrouping>(
 // they used to inline the same literals in three places.
 const SIDEBAR_DEFAULT_GROUPING: SidebarGrouping = 'date'
 const SIDEBAR_DEFAULT_ORDERING: SidebarOrdering = 'updated'
-const SIDEBAR_DEFAULT_ROW_META: SidebarRowMeta[] = ['updated']
+const SIDEBAR_DEFAULT_ROW_META: SidebarRowMeta[] = ['preview', 'updated']
 
 const $sidebarSortKey = persistentAtom<SidebarSortKey>(
   SIDEBAR_SORT_KEY_STORAGE_KEY,
@@ -266,11 +325,32 @@ const $sidebarSortKey = persistentAtom<SidebarSortKey>(
   oneOf(SIDEBAR_SORT_KEYS, 'updated')
 )
 
-export const $sidebarRowMeta = persistentAtom<SidebarRowMeta[]>(
+// Simple mode rests the rows on what was said and when, without touching
+// this preference.
+const $sidebarRowMetaPref = persistentAtom<SidebarRowMeta[]>(
   SIDEBAR_ROW_META_STORAGE_KEY,
   SIDEBAR_DEFAULT_ROW_META,
   listOf(ROW_META)
 )
+
+export const $sidebarRowMeta = modeBound('sidebarRowMeta', $sidebarRowMetaPref, meta => $sidebarRowMetaPref.set(meta))
+
+/** Inbox style: render the flat list's session rows as three-line cards
+ *  (project · age / title / model · size) instead of the one-line row. A
+ *  RENDER variant, deliberately not a grouping — it composes with whichever
+ *  grouping is active. Off by default; dense tree surfaces never use it. */
+export const $sidebarCardRows = persistentAtom(SIDEBAR_CARD_ROWS_STORAGE_KEY, false, Codecs.bool)
+
+/** Project overview: two complete recency groups instead of three preview rows. */
+export const $sidebarShowAllSessions = persistentAtom(SIDEBAR_SHOW_ALL_SESSIONS_STORAGE_KEY, false, Codecs.bool)
+
+export function setSidebarShowAllSessions(on: boolean) {
+  $sidebarShowAllSessions.set(on)
+}
+
+export function setSidebarCardRows(on: boolean) {
+  $sidebarCardRows.set(on)
+}
 
 /** Order-insensitive: the menu appends in click order, so ['tokens','updated']
  *  and ['updated','tokens'] are the same view. */
@@ -335,19 +415,40 @@ export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
  *  offering. Broader than `$sidebarFiltersActive`, which only knows about what
  *  hides rows, not about how they're grouped, sorted or labelled. */
 export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
-  [$sidebarGrouping, $sidebarOrdering, $sidebarRowMeta, $sidebarFiltersActive],
-  (grouping, ordering, rowMeta, filtersActive) =>
+  [
+    $sidebarGrouping,
+    $sidebarOrdering,
+    $sidebarRowMeta,
+    $sidebarCardRows,
+    $sidebarShowAllSessions,
+    $sidebarFiltersActive
+  ],
+  (grouping, ordering, rowMeta, cardRows, showAllSessions, filtersActive) =>
     grouping !== SIDEBAR_DEFAULT_GROUPING ||
     ordering !== SIDEBAR_DEFAULT_ORDERING ||
     !sameRowMeta(rowMeta, SIDEBAR_DEFAULT_ROW_META) ||
+    cardRows ||
+    showAllSessions ||
     filtersActive
 )
 
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
-export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
+export const $panesFlipped = modeLayout.atom(LAYOUT_KEYS.flipped, () => false, Codecs.bool)
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
+
+// Live date/status divider ids (`list-group:yesterday`, …) currently in the
+// recents list. Not persisted — the open/closed choice lives on
+// `$sidebarWorkspaceNodeOpen`; this just names what's on screen so "Collapse
+// all" can fold every labelled bucket, including ones never toggled.
+export const $sidebarListGroupIds = atom<string[]>([])
+
+// Date/status dividers share `$sidebarWorkspaceNodeOpen` under this prefix so
+// they don't collide with repo paths.
+export function listGroupNodeId(key: string): string {
+  return `list-group:${key}`
+}
 
 // Resolve a node's open state against its default (absent = follow default).
 export function workspaceNodeOpen(id: string, defaultOpen = true): boolean {
@@ -405,8 +506,9 @@ export function filterVisibleProjects<T extends { id: string; isAuto?: boolean }
   return projects.filter(project => !(project.isAuto && dismissed.has(project.id)))
 }
 
-// Hide a worktree row after it's been removed via git.
-export function dismissWorktree(id: string): void {
+export function dismissWorktree(id: string, { removed = false }: { removed?: boolean } = {}): void {
+  const removedIds = $removedWorktreeIds.get().filter(worktreeId => worktreeId !== id)
+  $removedWorktreeIds.set(removed ? [...removedIds, id] : removedIds)
   const current = $dismissedWorktreeIds.get()
 
   if (!current.includes(id)) {
@@ -417,6 +519,7 @@ export function dismissWorktree(id: string): void {
 // A hidden worktree becomes visible again as soon as the user explicitly starts
 // or opens work there (for example, selecting an already-checked-out branch).
 export function restoreWorktree(id: string): void {
+  $removedWorktreeIds.set($removedWorktreeIds.get().filter(worktreeId => worktreeId !== id))
   const current = $dismissedWorktreeIds.get()
 
   if (current.includes(id)) {
@@ -444,14 +547,29 @@ function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolea
   return true
 }
 
+// An edge belongs to the pane that sits on it: the flip (⌘\ / a mirrored
+// layout) puts the sessions sidebar on the right, and ⌘B keeps meaning the
+// sidebar, ⌘J the file tree — never "whatever is on the left".
+export const sidebarSide = (): TreeSide => ($panesFlipped.get() ? 'right' : 'left')
+export const fileBrowserSide = (): TreeSide => ($panesFlipped.get() ? 'left' : 'right')
+
 export function setSidebarOpen(open: boolean) {
   setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
+  setTreeSideCollapsed(sidebarSide(), !open)
+
+  if (open) {
+    restoreMinimizedTreeSide(sidebarSide())
+    restoreHiddenTreeSideTabs(sidebarSide())
+  }
+
   revealNarrowPane(CHAT_SIDEBAR_PANE_ID, open ? 'open' : 'close')
 }
 
 export function toggleSidebarOpen() {
   if (!revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
-    togglePane(CHAT_SIDEBAR_PANE_ID)
+    const open = restoreMinimizedTreeSide(sidebarSide()) || !$sidebarOpen.get()
+    setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
+    setTreeSideCollapsed(sidebarSide(), !open)
   }
 }
 
@@ -460,23 +578,20 @@ export function toggleFileBrowserOpen() {
     return
   }
 
-  // Ask the TREE, not the pane's boolean. `$fileBrowserOpen` stays true while
-  // the tree pane sits behind a sibling tab in the shared right column (the
-  // preview rail, the diff) or inside a minimized zone, so ⌘J spent its press
-  // re-asserting a value it already held and read as a dead key. Only fold the
-  // side when the tree is genuinely the thing on screen; otherwise bring it
-  // forward through the reveal path, which fronts and un-minimizes.
-  if (!isPaneVisible(FILES_PANE_ID) && $fileBrowserOpen.get()) {
-    revealTreePane(FILES_PANE_ID)
-
-    return
-  }
-
-  togglePane(FILE_BROWSER_PANE_ID)
+  const open = restoreMinimizedTreeSide(fileBrowserSide()) || !$fileBrowserOpen.get()
+  $fileBrowserOpen.set(open)
+  setTreeSideCollapsed(fileBrowserSide(), !open)
 }
 
 export function setFileBrowserOpen(open: boolean) {
-  setPaneOpen(FILE_BROWSER_PANE_ID, open)
+  $fileBrowserOpen.set(open)
+  setTreeSideCollapsed(fileBrowserSide(), !open)
+
+  if (open) {
+    restoreMinimizedTreeSide(fileBrowserSide())
+    restoreHiddenTreeSideTabs(fileBrowserSide())
+  }
+
   revealNarrowPane(FILE_BROWSER_PANE_ID, open ? 'open' : 'close')
 }
 
@@ -531,23 +646,26 @@ export function toggleSidebarMessagingOpen(sourceId: string) {
 }
 
 export function setSidebarAgentsGrouped(grouped: boolean) {
-  $sidebarAgentsGrouped.set(grouped)
+  // Write the flag the current scope reads — see $sidebarAgentsGrouped.
+  ;($showAllProfiles.get() ? $sidebarAllProfilesAgentsGrouped : $sidebarFlatAgentsGrouped).set(grouped)
 }
 
 export function setSidebarGrouping(grouping: SidebarGrouping) {
-  setSidebarAgentsGrouped(grouping === 'project')
+  // Grouping by owner is a request to see every owner, so it turns the
+  // all-profiles view on rather than drawing one group around one profile —
+  // and every write that follows must target that scope, not the one we were
+  // in when the click landed. (The flat scope's atom can't hold 'profile'.)
+  if (grouping === 'profile') {
+    setShowAllProfiles(true)
+    $sidebarAllProfilesAgentsGrouped.set(false)
+    $sidebarAllProfilesGrouping.set(grouping)
 
-  if (grouping === 'project') {
     return
   }
 
-  // Grouping by owner is a request to see every owner, so it turns the
-  // all-profiles view on rather than drawing one group around one profile.
-  // (The flat scope's atom can't hold 'profile' at all.)
-  if (grouping === 'profile') {
-    setShowAllProfiles(true)
-    $sidebarAllProfilesGrouping.set(grouping)
+  setSidebarAgentsGrouped(grouping === 'project')
 
+  if (grouping === 'project') {
     return
   }
 
@@ -558,6 +676,12 @@ export function setSidebarGrouping(grouping: SidebarGrouping) {
   }
 
   $sidebarFlatGrouping.set(grouping)
+}
+
+export function cycleSidebarGrouping() {
+  const currentIndex = SIDEBAR_GROUPING_ORDER.indexOf($sidebarGrouping.get())
+
+  setSidebarGrouping(SIDEBAR_GROUPING_ORDER[(currentIndex + 1) % SIDEBAR_GROUPING_ORDER.length])
 }
 
 export function setSidebarOrdering(ordering: SidebarOrdering) {
@@ -616,12 +740,17 @@ function clearSidebarFilters() {
  *  goes through its setter so a hand-dragged sequence is dropped along with it. */
 export function resetSidebarView() {
   setSidebarGrouping(SIDEBAR_DEFAULT_GROUPING)
-  // Both scopes, not just the one on screen: each keeps its own grouping, so a
-  // reset that left the other customized would hand it back on the next flip.
+  // Both scopes, not just the one on screen: each keeps its own grouping (and
+  // its own Project flag), so a reset that left the other customized would
+  // hand it back on the next flip.
   $sidebarFlatGrouping.set(SIDEBAR_DEFAULT_GROUPING)
   $sidebarAllProfilesGrouping.set(SIDEBAR_DEFAULT_GROUPING)
+  $sidebarFlatAgentsGrouped.set(false)
+  $sidebarAllProfilesAgentsGrouped.set(false)
   setSidebarOrdering(SIDEBAR_DEFAULT_ORDERING)
   $sidebarRowMeta.set(SIDEBAR_DEFAULT_ROW_META)
+  $sidebarCardRows.set(false)
+  $sidebarShowAllSessions.set(false)
   clearSidebarFilters()
 }
 

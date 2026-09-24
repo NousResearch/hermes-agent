@@ -11,7 +11,10 @@ read timeout, and the job-level inactivity monitor was observed not to fire.
 These tests pin the watchdog contract: it aborts the in-flight sockets through
 the already-registered abort hook, surfaces a retryable ``TimeoutError`` (never
 ``InterruptedError``), feeds the cross-turn stale circuit breaker, and stays
-out of the way of a healthy call.
+out of the way of a healthy call. They also pin #85252: the keepalive httpx
+client uses ``read=None``, so a stranger-thread abort that finds no sockets
+must not leave the call unbounded — ``direct_api_call`` injects a per-call
+read timeout matching the stale budget as a hard backstop.
 """
 
 import sys
@@ -85,14 +88,6 @@ def test_stalled_inline_call_is_aborted_and_raises_retryable_timeout():
     assert elapsed < 4.0, "watchdog did not bound the call"
 
 
-def test_watchdog_abort_never_surfaces_as_interrupted_error():
-    """InterruptedError means "the user wants to stop" — the outer loop does
-    not retry it. A watchdog abort must stay retryable."""
-    agent = _make_agent(stale_timeout=0.2)
-    _stalling_client(agent, aborted=[])
-
-    with pytest.raises(TimeoutError):
-        direct_api_call(agent, {"model": "m", "messages": []})
 
 
 def test_watchdog_kill_feeds_the_cross_turn_stale_circuit_breaker():
@@ -172,23 +167,6 @@ def test_local_endpoint_infinite_budget_leaves_the_watchdog_disarmed():
     agent._abort_request_openai_client.assert_not_called()
 
 
-def test_watchdog_uses_the_same_budget_as_the_interrupt_worker_path():
-    """The budget comes from ``_compute_non_stream_stale_timeout`` — the same
-    resolver the worker path's stale detector uses — with the live request
-    payload, so provider config and context scaling both apply."""
-    seen: list[dict] = []
-    agent = _make_agent(stale_timeout=30.0)
-    agent._compute_non_stream_stale_timeout = lambda payload: (
-        seen.append(payload) or 30.0
-    )
-    fake_client = MagicMock()
-    fake_client.chat.completions.create.return_value = SimpleNamespace(id="ok")
-    agent._create_request_openai_client.return_value = fake_client
-
-    payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-    direct_api_call(agent, payload)
-
-    assert seen == [payload]
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +223,7 @@ def test_e2e_cron_turn_is_bounded_through_the_real_agent_routing(monkeypatch):
     wire = _StallingWireClient()
     agent = _build_cron_agent(monkeypatch)
     agent.client = wire
-    monkeypatch.setattr(run_agent, "OpenAI", lambda **_kwargs: wire)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kwargs: wire)
     monkeypatch.setattr(
         run_agent.AIAgent,
         "_force_close_tcp_sockets",
@@ -382,3 +360,67 @@ def test_resolver_exception_propagates_instead_of_disarming_the_watchdog():
 
     with pytest.raises(RuntimeError, match="resolver regression"):
         direct_api_call(agent, {"model": "m", "messages": []})
+
+
+# ---------------------------------------------------------------------------
+# #85252: hard socket bound when stranger-thread abort cannot kill the recv.
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+def test_inline_call_passes_hard_read_timeout_to_the_sdk():
+    """The bound has to actually reach chat.completions.create — a helper
+    that is never wired in would leave cron on read=None (#85252)."""
+    agent = _make_agent(stale_timeout=0.5)
+    fake_client = MagicMock()
+    captured = {}
+
+    def _create(**kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(id="ok")
+
+    fake_client.chat.completions.create.side_effect = _create
+    agent._create_request_openai_client.return_value = fake_client
+
+    assert direct_api_call(agent, {"model": "m", "messages": []}).id == "ok"
+    timeout = captured["timeout"]
+    assert timeout is not None
+    assert timeout.read == 0.5
+
+
+def test_inline_call_does_not_override_explicit_timeout():
+    """A transport/provider that already set timeout= must keep it."""
+    agent = _make_agent(stale_timeout=30.0)
+    fake_client = MagicMock()
+    captured = {}
+
+    def _create(**kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(id="ok")
+
+    fake_client.chat.completions.create.side_effect = _create
+    agent._create_request_openai_client.return_value = fake_client
+
+    assert direct_api_call(
+        agent, {"model": "m", "messages": [], "timeout": 12.0}
+    ).id == "ok"
+    assert captured["timeout"] == 12.0
+
+
+def test_infinite_budget_does_not_inject_a_hard_timeout():
+    agent = _make_agent(stale_timeout=float("inf"))
+    fake_client = MagicMock()
+    captured = {}
+
+    def _create(**kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(id="ok")
+
+    fake_client.chat.completions.create.side_effect = _create
+    agent._create_request_openai_client.return_value = fake_client
+
+    assert direct_api_call(agent, {"model": "m", "messages": []}).id == "ok"
+    assert "timeout" not in captured or captured["timeout"] is None

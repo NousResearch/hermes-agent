@@ -10,10 +10,12 @@ Contract under test (``security.redact_secrets``, on by default; website/docs/us
 * every log file (agent.log, errors.log, gateway.log) goes through ``RedactingFormatter``;
 * ``hermes sessions export --redact`` masks message content AND tool-call arguments.
 
-Raw BY DESIGN (not asserted, see NOT COVERED in the suite notes): a tool argument and the user's own prompt
-stay as executed in state.db, in the default (non ``--redact``) export and in the provider replay of the
-conversation. Every scenario first proves the secret really travelled (the tool echoed it into a workspace
-file, curl hit the endpoint with it, the log recorded the turn) before asserting absence.
+NOT COVERED (raw by design, so not asserted): a tool argument and the user's own prompt stay exactly as
+executed in state.db, in the default (non ``--redact``) export and in the provider replay of the
+conversation. ``--redact`` is the opt-in export mode for them (acfefa4fdac). Terminal stdout of
+``chat -q`` is also not scanned: it is the user's own screen. Every scenario first proves the secret
+really travelled (the tool echoed it into a workspace file, curl hit the endpoint with it, the log recorded
+the turn) before asserting absence.
 """
 
 from __future__ import annotations

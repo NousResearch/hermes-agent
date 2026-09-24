@@ -35,11 +35,11 @@ def _validate_profile_configs() -> list[tuple[str, list]]:
     from hermes_cli.config import validate_config_structure
     from hermes_cli.profiles import get_profile_dir, list_profile_names
 
-    candidates = [
-        (name, get_profile_dir(name))
-        for name in list_profile_names()
-        if (get_profile_dir(name) / "config.yaml").is_file()
-    ]
+    candidates: list[tuple[str, Path]] = []
+    for name in list_profile_names():
+        home = get_profile_dir(name)
+        if (home / "config.yaml").is_file():
+            candidates.append((name, home))
 
     results: list[tuple[str, list]] = []
     for name, home in candidates:

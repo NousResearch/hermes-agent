@@ -231,6 +231,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
         "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
         "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
         "credential_pool": getattr(agent, "_credential_pool", None),
+        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
         "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
@@ -251,7 +252,9 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
         )
         return {
             "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
-            **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
+            **{key: rp.get(key) for key in (
+                "api_key", "base_url", "api_mode", "credential_pool", "command", "capabilities"
+            )},
             "request_overrides": dict(rp.get("request_overrides") or {}),
             "args": list(rp.get("args") or []), "routed": True,
         }
@@ -925,6 +928,7 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         "platform": agent.platform, "provider": rt.get("provider") or agent.provider,
         "api_mode": rt.get("api_mode"), "base_url": rt.get("base_url") or None,
         "api_key": rt.get("api_key") or None, "credential_pool": rt.get("credential_pool"),
+        "capabilities": rt.get("capabilities") or {},
         "request_overrides": rt.get("request_overrides") or {}, "parent_session_id": agent.session_id,
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
         "disabled_toolsets": getattr(agent, "disabled_toolsets", None), "skip_memory": True,

@@ -524,6 +524,12 @@ def _extract_url_query_params(url: str):
     return url, None
 
 
+def _client_route_url(client: Any, base_url: Any) -> str:
+    """``auxiliary_oauth.client_route_url``: *base_url* plus the query the SDK split off."""
+    from agent.auxiliary_oauth import client_route_url
+    return client_route_url(client, base_url)
+
+
 # Warn only once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
@@ -1816,6 +1822,7 @@ class AnthropicAuxiliaryClient:
 
     def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
+        self.capabilities = {"anthropic_oauth_proxy": is_oauth}
         self.chat = _ChatShim(_AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, base_url=base_url))
         self.api_key = api_key
         self.base_url = base_url
@@ -1905,7 +1912,8 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
 
 
 def _maybe_wrap_anthropic(
-    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None
+    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None,
+    *, force_oauth: bool = False,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic Messages.
 
@@ -1935,7 +1943,8 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        client_kwargs = {"force_oauth": True} if force_oauth else {}
+        real_client = build_anthropic_client(api_key, base_url, **client_kwargs)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -1947,7 +1956,7 @@ def _maybe_wrap_anthropic(
         "(model=%s, base_url=%s, api_mode=%s)",
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
-    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=False)
+    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=force_oauth)
 
 
 def _read_nous_auth() -> Optional[dict]:
@@ -2713,7 +2722,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    cache_scope: str = "", capabilities: Optional[Dict[str, bool]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2735,6 +2744,10 @@ def set_runtime_main(
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
+        "capabilities": {
+            key: enabled for key, enabled in (capabilities or {}).items()
+            if isinstance(key, str) and isinstance(enabled, bool)
+        },
     }
     # Publish authoritative context before updating the locked mirrors.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
@@ -3046,7 +3059,7 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
 _MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
-    "requested_provider", "session_id", "cache_scope",
+    "requested_provider", "capabilities", "session_id", "cache_scope",
 )
 
 
@@ -3066,7 +3079,14 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
-        if field == "api_key" and callable(value) and not isinstance(value, str):
+        if field == "capabilities":
+            capabilities = {
+                key: enabled for key, enabled in (value.items() if isinstance(value, dict) else ())
+                if isinstance(key, str) and isinstance(enabled, bool)
+            }
+            if capabilities:
+                normalized[field] = capabilities
+        elif field == "api_key" and callable(value) and not isinstance(value, str):
             normalized[field] = value
         elif isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
@@ -3739,14 +3759,17 @@ def _prepare_same_provider_retry(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
+        route_url=_client_route_url(retry_client, retry_base) if retry_base else resolved_base_url,
     )
     # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
     if extra_headers:
         # Copilot's ``x-initiator: user``) across the rebuilt-client retry — dropping them here would let a
         # recovery retry silently lose capability gating (#60293).
         # Preserve per-request attribution headers across the rebuilt-client retry — see the sync variant
-        # above (#60293).
-        retry_kwargs["extra_headers"] = dict(extra_headers)
+        # above (#60293). Merged, not assigned: _build_call_kwargs already put the conversation's
+        # affinity headers there, and overwriting would drop them on exactly the calls that pass
+        # attribution headers.
+        retry_kwargs["extra_headers"] = {**(retry_kwargs.get("extra_headers") or {}), **extra_headers}
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return retry_client, retry_kwargs
@@ -3919,10 +3942,14 @@ class _FallbackDestination(NamedTuple):
     base_url: str
     api_mode: Optional[str]
     model: Optional[str]
+    # base_url plus the query the SDK split off (``_client_route_url``): the OAuth-proxy decision
+    # compares the whole route, tenant query included.
+    route_url: Optional[str] = None
 
 
 def _complete_fallback_destination(
-    provider: str, base_url: str, api_mode: Optional[str], model: Optional[str]
+    provider: str, base_url: str, api_mode: Optional[str], model: Optional[str],
+    route_url: Optional[str] = None,
 ) -> _FallbackDestination:
     if not api_mode:
         if _endpoint_speaks_anthropic_messages(base_url):
@@ -3934,7 +3961,7 @@ def _complete_fallback_destination(
                     requested=provider, explicit_base_url=base_url or None, target_model=model or ""
                 )
                 api_mode = str(runtime.get("api_mode") or "").strip() or None
-    return _FallbackDestination(provider, base_url, api_mode, model)
+    return _FallbackDestination(provider, base_url, api_mode, model, route_url or base_url)
 
 
 def _fallback_destination_from_entry(
@@ -3944,7 +3971,8 @@ def _fallback_destination_from_entry(
     base_url = str(entry.get("base_url") or getattr(fb_client, "base_url", "") or "").strip()
     api_mode = str(entry.get("api_mode") or entry.get("transport") or "").strip() or None
     model = fb_model or str(entry.get("model") or "").strip() or None
-    return _complete_fallback_destination(provider, base_url, api_mode, model)
+    route_url = str(entry.get("base_url") or "").strip() or _client_route_url(fb_client, base_url)
+    return _complete_fallback_destination(provider, base_url, api_mode, model, route_url)
 
 
 def _fallback_destination(
@@ -3957,8 +3985,9 @@ def _fallback_destination(
     entry = _fallback_chain_entry(task, fb_label)
     if entry is not None:
         return _fallback_destination_from_entry(entry, fb_client, fb_model)
+    base_url = str(getattr(fb_client, "base_url", "") or "")
     return _complete_fallback_destination(
-        _fallback_provider_from_label(fb_label), str(getattr(fb_client, "base_url", "") or ""), None, fb_model,
+        _fallback_provider_from_label(fb_label), base_url, None, fb_model, _client_route_url(fb_client, base_url),
     )
 
 
@@ -3994,7 +4023,8 @@ def _fallback_request_kwargs(
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
-        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task,
+        route_url=destination.route_url)
     return fb_kwargs
 
 
@@ -4025,9 +4055,10 @@ def _plan_fallback_candidate(
     )
 
     def _rebuild(provider: str, client: Any, model: Optional[str]) -> Tuple[_FallbackDestination, Dict[str, Any]]:
+        retry_base = destination.base_url or str(getattr(client, "base_url", "") or "")
         retry_destination = _FallbackDestination(
-            provider, destination.base_url or str(getattr(client, "base_url", "") or ""),
-            destination.api_mode, model or destination.model,
+            provider, retry_base, destination.api_mode, model or destination.model,
+            destination.route_url or _client_route_url(client, retry_base),
         )
         return retry_destination, _fallback_request_kwargs(retry_destination, **common)
 
@@ -4532,6 +4563,7 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
 
 def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Optional[Tuple[Any, str, str]]:
     """Step 1: route aux onto the main provider + main model; None if unusable."""
     if not (main_provider and main_model and main_provider not in {"auto", ""}):
@@ -4571,6 +4603,7 @@ def _try_main_provider_route(
     client, resolved = resolve_provider_client(
         resolved_provider, main_model, explicit_base_url=explicit_base_url,
         explicit_api_key=explicit_api_key, api_mode=runtime_api_mode or None,
+        main_runtime=main_runtime,
     )
     if client is None:
         return None
@@ -4630,7 +4663,9 @@ def _resolve_auto_route(
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
-    routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
+    routed = _try_main_provider_route(
+        main_provider, main_model, base_url, api_key, api_mode, main_runtime=runtime
+    )
     if routed is not None:
         return routed
     if task:
@@ -4837,6 +4872,11 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[Dict[str, Any]]
     is_vision: bool
     task: Optional[str]
+    # The identity whose config entry won resolution, when that is not ``provider``: a saved
+    # ``custom:claude`` is selected by its raw name, while ``provider`` is the alias-normalized
+    # built-in (``anthropic``). The wire policy is that entry's declaration, so it is read under
+    # this name up to the final client construction. Set only by the named-custom branch.
+    owner: Optional[str] = None
 
 
 _ResolveResult = Tuple[Optional[Any], Optional[str]]
@@ -4912,7 +4952,13 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    force_oauth = bool(runtime_oauth_proxy(
+        req.main_runtime, req.owner or req.provider, base_url_str, final_model_str))
+    return _maybe_wrap_anthropic(
+        client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+        force_oauth=force_oauth,
+    )
 
 
 def _profile_declared_messages_wire(provider: str) -> Optional[str]:
@@ -5087,7 +5133,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # wrapping decisions only need base_url + api_mode.
             _raw_ckey = getattr(client, "api_key", "")
             _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
-            client = _wrap_transport(req, client, final_model, str(getattr(client, "base_url", "") or ""), _ckey)
+            client = _wrap_transport(req, client, final_model, _client_route_url(client, getattr(client, "base_url", "")), _ckey)
             return _route_client(req, client, final_model)
     logger.warning("resolve_provider_client: custom/main requested but no endpoint credentials found")
     return None, None
@@ -5118,10 +5164,13 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     custom_entry = None
     if req.original_provider and req.original_provider != provider:
         custom_entry = _get_named_custom_provider(req.original_provider)
+        if custom_entry:
+            req = req._replace(owner=req.original_provider)
     if custom_entry is None:
         custom_entry = _get_named_custom_provider(provider)
     if not custom_entry:
         return None
+    owner = req.owner or provider
     # A per-task/explicit base_url or api_key composes OVER the named entry's defaults: the entry supplies
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
@@ -5162,10 +5211,15 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # the Anthropic SDK sees the original (un-rewritten) URL.
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
+        # Model-qualified: two models on this one relay may declare different values, and this
+        # decides Bearer vs x-api-key plus the Claude Code transforms on the actual request.
+        from agent.auxiliary_oauth import runtime_oauth_proxy
+        force_oauth = bool(runtime_oauth_proxy(req.main_runtime, owner, custom_base, final_model))
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
-            real_client = build_anthropic_client(custom_key, custom_base)
+            client_kwargs = {"force_oauth": True} if force_oauth else {}
+            real_client = build_anthropic_client(custom_key, custom_base, **client_kwargs)
             if entry_headers:
                 # Same entry headers as the two OpenAI-wire arms; ``with_options`` merges onto the
                 # beta/credential-Omit headers the builder installed (#109595).
@@ -5175,8 +5229,12 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
                            "is not installed — falling back to OpenAI-wire.", provider)
             return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key, entry_headers), final_model)
         return _route_client(
-            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base,
-                                          is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), final_model)
+            req, AnthropicAuxiliaryClient(
+                real_client, final_model, custom_key, custom_base,
+                is_oauth=anthropic_route_is_oauth(
+                    custom_base, custom_key, provider=owner, oauth_proxy=force_oauth,
+                ),
+            ), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
@@ -5731,6 +5789,8 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
         return _CallableCacheDiscriminator(value)
     if field == "api_key" and isinstance(value, str) and value:
         return ("api-key-digest", hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest())
+    if field == "capabilities" and isinstance(value, dict):
+        return tuple(sorted(value.items()))
     return value
 
 
@@ -5741,8 +5801,12 @@ def _client_cache_key(
     task: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
-    # `auto` resolves through the main runtime and task-specific policy, so both join the key.
-    runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    # Every route may inherit the matching main runtime's OAuth policy. Include
+    # identity as well as capabilities so a cached explicit route cannot cross sessions.
+    runtime_key = tuple(
+        _runtime_cache_discriminator(f, runtime.get(f, ""))
+        for f in (*_MAIN_RUNTIME_FIELDS, "requested_provider", "capabilities")
+    )
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
@@ -6101,13 +6165,21 @@ def _resolve_task_provider_model(
         base_url = cfg_base_url
         if not api_key:
             api_key = cfg_api_key
+    from agent.auxiliary_oauth import named_route_identity
     if base_url:
-        kept = provider if _preserve_provider_with_base_url(provider) else "custom"
+        if _preserve_provider_with_base_url(provider):
+            kept = provider
+        else:
+            kept = named_route_identity(provider, base_url) or "custom"
         return kept, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if cfg_base_url and cfg_api_key:
-        kept = cfg_provider if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES else "custom"
+        # A credential in the task block does not make a named provider's own endpoint anonymous.
+        if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES:
+            kept = cfg_provider
+        else:
+            kept = named_route_identity(cfg_provider, cfg_base_url) or "custom"
         return kept, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env
@@ -6604,9 +6676,12 @@ def _build_call_kwargs(
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
-    no_progress_timeout: Optional[float] = None,
+    no_progress_timeout: Optional[float] = None, route_url: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments.
+    ``route_url`` is *base_url* with the query the SDK split into ``default_query``
+    (``_client_route_url``); only the OAuth-proxy decision reads it, since the tenant choice is part
+    of that route's identity. Everything else keys on the clean *base_url*.
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
     ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
     when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
@@ -6667,10 +6742,17 @@ def _build_call_kwargs(
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
-    # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
-    # turn so compression/title/vision calls stay on the conversation's warm backend.
+    # Conversation affinity (OpenCode relay, opt-in custom-provider header, OAuth-proxy relay) —
+    # same key as the main turn so compression/title/vision calls stay on the conversation's warm
+    # backend, and so an OAuth relay recognises them as that conversation instead of pinning a
+    # second account. The proxy header is scoped by runtime_oauth_proxy: same provider, endpoint
+    # and model, so a model declaring itself off this relay's OAuth policy sends no such header.
+    from agent.auxiliary_oauth import affinity_capabilities
     from agent.opencode_affinity import merge_session_affinity_headers
-    return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    aux_capabilities = affinity_capabilities(_normalize_main_runtime(None), provider, route_url or base_url, model)
+    return merge_session_affinity_headers(
+        kwargs, provider, base_url, _runtime_main_value("session_id") or None, aux_capabilities,
+    )
 
 
 def _validate_llm_response(
@@ -7328,9 +7410,12 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
-        no_progress_timeout=no_progress_timeout)
+        no_progress_timeout=no_progress_timeout,
+        route_url=_client_route_url(client, base_info) if base_info else resolved_base_url)
     if extra_headers:
-        kwargs["extra_headers"] = dict(extra_headers)
+        # Merged, not assigned: _build_call_kwargs already put the conversation's affinity
+        # headers there (OpenCode / OAuth-proxy session id); a caller-supplied header wins.
+        kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), **extra_headers}
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(request_provider, client_base):

@@ -1057,6 +1057,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
             api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),
+            capabilities=rp.get("capabilities"),
             request_overrides=request_overrides, **agent_kwargs,
             # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches
             # the review fork and the transport applies its default effort (a 400 on non-reasoning models).

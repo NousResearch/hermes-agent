@@ -42,6 +42,17 @@ def load_config():
     return _config_mod.load_config()
 
 
+def load_config_readonly():
+    """``load_config()`` without the deepcopy, for per-call read-only lookups. Routed through
+    ``load_config`` whenever either seam is patched, so a test's config reaches every reader."""
+    patched = any(
+        getattr(fn, "__module__", None) != module or getattr(fn, "__name__", None) != "load_config"
+        for fn, module in ((globals().get("load_config"), __name__),
+                           (getattr(_config_mod, "load_config", None), _config_mod.__name__))
+    )
+    return load_config() if patched else _config_mod.load_config_readonly()
+
+
 def get_compatible_custom_providers(config=None):
     return _config_mod.get_compatible_custom_providers(config)
 

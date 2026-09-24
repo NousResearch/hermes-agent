@@ -758,13 +758,19 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     agent.api_key = effective_key
     agent._anthropic_api_key = effective_key
     # OAuth only for native Anthropic routes (the anthropic provider, or a custom provider whose host
-    # is exactly api.anthropic.com, incl. a key_cmd callable token — #114967). Third-party
-    # providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must never
-    # trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
-    # cause 401/403 on their endpoints. See #1739.
+    # is exactly api.anthropic.com, incl. a key_cmd callable token — #114967) and for a relay that
+    # declares capabilities.anthropic_oauth_proxy. Third-party providers (MiniMax, Kimi, GLM,
+    # LiteLLM proxies) that accept the Anthropic protocol must never trip OAuth code paths — doing
+    # so injects Claude-Code identity headers and system prompts that cause 401/403. See #1739.
     from agent.anthropic_credentials import anthropic_route_is_oauth
-    agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+    agent._is_anthropic_oauth = anthropic_route_is_oauth(
+        base_url, effective_key, provider=agent.provider,
+        oauth_proxy=bool(getattr(agent, "capabilities", None) and agent.capabilities.get("anthropic_oauth_proxy", False)),
+    )
+    agent._anthropic_client = build_anthropic_client(
+        effective_key, base_url, timeout=_provider_timeout,
+        force_oauth=agent._is_anthropic_oauth,
+    )
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
         _print_key_banner(effective_key, "token")
@@ -881,7 +887,12 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             from agent.moa_loop import bind_moa_runtime
             bind_moa_runtime(agent, _fb["model"])
             return None
-        agent.provider = _fb["provider"]
+        # Same identity fields as a runtime fallback (try_activate_fallback): requested_provider
+        # and capabilities belong to the entry now serving, not to the one that failed —
+        # otherwise its declaration (and a child pin that reads it) outlives the switch.
+        agent.provider = agent.requested_provider = _fb["provider"]
+        from agent.auxiliary_oauth import routed_client_capabilities
+        agent.capabilities = routed_client_capabilities(_fb_client, _fb["provider"], _fb_model or _fb["model"])
         agent.model = _fb_model or _fb["model"]
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
@@ -1050,6 +1061,11 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
     )
     if headers:
         kwargs["default_headers"] = dict(headers)
+    # The SDK splits a query-bearing base URL into a clean ``base_url`` plus ``_custom_query``;
+    # dropping it here sends the session to the endpoint without its tenant query.
+    query = getattr(client, "_custom_query", None)
+    if isinstance(query, dict) and query:
+        kwargs["default_query"] = dict(query)
     return kwargs
 
 
@@ -2259,6 +2275,7 @@ def _snapshot_primary_runtime(agent):
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

@@ -10,6 +10,10 @@ Two sources, one merge point:
   self-hosted Claude/OpenAI gateways) otherwise classify an agent-loop request whose last message is
   a ``tool_result`` as a new conversation and replay the whole history upstream (#86241, #104449).
 
+* ``x-claude-code-session-id`` — an Anthropic OAuth relay (``capabilities.anthropic_oauth_proxy``)
+  fronting several subscriptions tells conversations apart by this header alone; without it every
+  session lands on whichever account the relay is currently using (``agent/claude_code_session.py``).
+
 The value only has to be opaque and consistent per conversation, so it is derived the same way as
 the other affinity hints Hermes already sends (OpenRouter's sticky ``session_id``, xAI's
 ``x-grok-conv-id``): the host-declared routing scope first (a host that names its own conversation,
@@ -133,14 +137,18 @@ def merge_session_affinity_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    capabilities: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Merge the affinity header(s) into ``kwargs["extra_headers"]`` (in place).
 
     Existing per-request headers win, so a caller-pinned value is preserved.
     Targets with neither source configured are left untouched.
     """
+    from agent.claude_code_session import claude_code_session_headers
+
     headers = opencode_session_headers(provider, base_url, session_id)
     headers.update(custom_provider_session_affinity_headers(base_url, session_id))
+    headers.update(claude_code_session_headers(capabilities, session_id))
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}

@@ -67,7 +67,9 @@ def _is_oauth_token(key: str) -> bool:
     return key.startswith(("sk-ant-", "eyJ", "cc-"))
 
 
-def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:
+def anthropic_route_is_oauth(
+    base_url: Any, credential: Any, *, provider: Optional[str] = None, oauth_proxy: bool = False,
+) -> bool:
     """Claude Code OAuth identity for one Anthropic Messages route (#114967).
 
     The route qualifies when it is the ``anthropic`` provider itself or its host is exactly
@@ -77,17 +79,25 @@ def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Option
     is a static string or a ``key_cmd``/per-request callable token source; a callable is
     materialized once for the shape test (``CommandTokenSource`` caches, so this never double-mints)
     and a mint failure classifies as non-OAuth — the wire client surfaces the real error.
+
+    ``oauth_proxy`` is the route's resolved ``capabilities.anthropic_oauth_proxy``: a relay that
+    fronts an Anthropic subscription over OAuth and speaks native Anthropic payloads. It carries
+    the identity at its own third-party host, and its credential is the relay's own key rather
+    than an Anthropic token, so the OAuth shape test does not apply — only its presence does.
+    Config is the only source: an OAuth-shaped key at an unflagged third-party URL stays non-OAuth.
     """
     text = str(base_url or "").strip()
     native_host = not text or (urlparse(text).hostname or "").lower().rstrip(".") == "api.anthropic.com"
-    if not (native_host or (provider or "").strip().lower() == "anthropic"):
+    if not (oauth_proxy or native_host or (provider or "").strip().lower() == "anthropic"):
         return False
     if callable(credential) and not isinstance(credential, str):
         try:
             credential = credential()
         except Exception:  # noqa: BLE001 — classification must never raise
             return False
-    return isinstance(credential, str) and _is_oauth_token(credential)
+    if not isinstance(credential, str) or not credential:
+        return False
+    return True if oauth_proxy else _is_oauth_token(credential)
 
 
 class CredentialPersistError(RuntimeError):

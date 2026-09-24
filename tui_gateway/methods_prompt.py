@@ -1039,7 +1039,7 @@ def _(rid, params: dict) -> dict:
     snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
     main_runtime = {
         k: getattr(agent, k, None)
-        for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
+        for k in ("model", "provider", "base_url", "api_key", "api_mode", "capabilities", "session_id")}
 
     def body():
         from agent.side_question import answer_side_question

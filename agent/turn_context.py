@@ -36,6 +36,18 @@ def _str_attr(agent: Any, name: str) -> str:
     return getattr(agent, name, "") or ""
 
 
+def live_route_base_url(agent: Any) -> str:
+    """The agent's ``base_url`` with the query its OpenAI client carries as ``default_query``.
+
+    ``agent.base_url`` is the SDK-clean half of a query-bearing endpoint (``…/t`` for
+    ``…/t?team=a``). Auxiliary routing rebuilds clients from the published runtime and decides
+    endpoint authority on it, so the tenant query must travel with it."""
+    from hermes_cli.route_identity import url_with_query
+    client_kwargs = getattr(agent, "_client_kwargs", None)
+    query = client_kwargs.get("default_query") if isinstance(client_kwargs, dict) else None
+    return url_with_query(_str_attr(agent, "base_url"), query)
+
+
 def _preflight_request_tokens(
     agent: Any, messages: List[Dict[str, Any]], system_prompt: str
 ) -> int:
@@ -199,8 +211,10 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         # ``session_id`` rides along so the background titler's OpenCode request carries the
         # same ``x-opencode-session`` affinity as the turn it belongs to (#112717).
         main_runtime = {
-            k: getattr(agent, k, None)
-            for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")
+            k: getattr(agent, k, None) for k in (
+                "model", "provider", "requested_provider", "base_url", "api_key", "api_mode",
+                "capabilities", "session_id",
+            )
         }
         # See #19027.
         upgrade = maybe_auto_title(
@@ -502,8 +516,10 @@ def _publish_runtime_main(agent: Any) -> None:
         set_runtime_main(
             _str_attr(agent, "provider"), _str_attr(agent, "model"),
             **{k: _str_attr(agent, k) for k in (
-                "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
+                "requested_provider", "api_key", "api_mode", "auth_mode", "session_id"
             )},
+            base_url=live_route_base_url(agent),
+            capabilities=dict(getattr(agent, "capabilities", {}) or {}),
             cache_scope=_cache_scope,
         )
 

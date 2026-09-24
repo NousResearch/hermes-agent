@@ -506,6 +506,7 @@ class SessionManager:
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
+                "capabilities": runtime.get("capabilities"),
             })
         except Exception as exc:
             resolve_error = exc

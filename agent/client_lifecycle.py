@@ -64,6 +64,24 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def anthropic_oauth_flag(token: Any, capabilities: Any, provider: Any, base_url: Any) -> bool:
+    """Whether a route explicitly carries native Anthropic OAuth semantics.
+
+    Takes the route as four values rather than an agent: ``_swap_fallback_clients``
+    is a module function that any holder object can be passed to (probes, tests,
+    the Bedrock swap path), so reaching back for an AIAgent method would make it
+    fail on every caller that is not a full agent.
+    """
+    from agent.anthropic_credentials import _is_oauth_token
+    if not isinstance(token, str) or not token:
+        return False
+    if isinstance(capabilities, dict) and capabilities.get("anthropic_oauth_proxy", False):
+        return True
+    from agent.anthropic_endpoints import _is_third_party_anthropic_endpoint
+    return (provider == "anthropic" and _is_oauth_token(token)
+            and not _is_third_party_anthropic_endpoint(base_url))
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -82,8 +100,13 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
-        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
-        agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(
+            fb_base_url, effective_key, provider=fb_provider,
+            oauth_proxy=bool(getattr(agent, "capabilities", {}).get("anthropic_oauth_proxy", False)),
+        )
+        agent._anthropic_client = build_anthropic_client(
+            effective_key, fb_base_url, timeout=timeout, force_oauth=agent._is_anthropic_oauth,
+        )
         agent.client, agent._client_kwargs = None, {}
         return
     agent.api_key = credential
@@ -94,6 +117,11 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     agent._client_kwargs = {"api_key": credential, "base_url": fb_base_url}
     if fb_headers:
         agent._client_kwargs["default_headers"] = dict(fb_headers)
+    # Same for the query a query-bearing base URL was split into (SDK: _custom_query): without it
+    # every rebuild — and every child built from _client_kwargs — calls the tenant-less URL.
+    fb_query = getattr(fb_client, "_custom_query", None)
+    if isinstance(fb_query, dict) and fb_query:
+        agent._client_kwargs["default_query"] = dict(fb_query)
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
         # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
@@ -479,29 +507,40 @@ class ClientLifecycleMixin:
         self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
-        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
+        """Cache key over fields that force a fresh Anthropic client."""
         if getattr(self, "provider", None) == "bedrock":
             return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            bool(getattr(self, "_is_anthropic_oauth", False)),
         )
 
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
         from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
+        return build_anthropic_client(
+            token, base_url, timeout=get_provider_request_timeout(self.provider, self.model),
+            force_oauth=self._anthropic_oauth_flag(token),
+        )
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
-        """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
+        """OAuth flag for native Anthropic routes and for a relay declaring
+        ``capabilities.anthropic_oauth_proxy``; other third-party Anthropic-protocol endpoints must
+        not trip OAuth paths."""
         from agent.anthropic_credentials import anthropic_route_is_oauth
-        return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
+        return anthropic_route_is_oauth(
+            getattr(self, "_anthropic_base_url", None), token, provider=self.provider,
+            oauth_proxy=bool(getattr(self, "capabilities", {}).get("anthropic_oauth_proxy", False)),
+        )
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1])
-        return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
+        return build_anthropic_client(
+            key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4], force_oauth=key[5]
+        )
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
         """Build (or reuse) a request-local Anthropic client for one in-flight call.
@@ -885,7 +924,12 @@ class ClientLifecycleMixin:
         official_host = not anthropic_base_url or any(
             base_url_host_matches(anthropic_base_url, host) for host in ("anthropic.com", "claude.com"))
         current_key = str(self._anthropic_api_key or "")
-        if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
+        # ``_is_anthropic_oauth`` proves an Anthropic credential only when the key shape set it: a
+        # relay declaring ``capabilities.anthropic_oauth_proxy`` is OAuth with its OWN key, which a
+        # refresh must never swap for the vendor token.
+        vendor_oauth = getattr(self, "_is_anthropic_oauth", False) and not (
+            getattr(self, "capabilities", None) or {}).get("anthropic_oauth_proxy", False)
+        if not official_host and not (current_key.startswith("sk-ant-") or vendor_oauth):
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
@@ -975,10 +1019,28 @@ class ClientLifecycleMixin:
             self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
             return True
+        # The OpenAI SDK appends paths to base_url verbatim, so a query-bearing pool URL (…/t?team=a)
+        # must be split like agent_init's _explicit_client_kwargs, or requests go to …/t?team=a
+        # with no /chat/completions.
+        # Only an entry that brings its OWN URL decides the query. A URL-less entry (Azure Foundry's
+        # env-seeded key, whose URL lives in model.base_url) falls back to self.base_url, which is
+        # already query-less — the live default_query (api-version, tenant) must stay.
+        from agent.auxiliary_client import _extract_url_query_params
+        entry_has_url = bool(getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None))
+        old_route = (normalize_route_base_url(self.base_url), self._client_kwargs.get("default_query") or None)
+        stripped_base, entry_query = _extract_url_query_params(stripped_base) if isinstance(stripped_base, str) else (stripped_base, None)
         self.api_key, self.base_url = runtime_key, stripped_base
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        if entry_query:
+            self._client_kwargs["default_query"] = entry_query
+        elif entry_has_url:
+            self._client_kwargs.pop("default_query", None)
+        # Compare split forms: the stored base_url is query-less, so comparing it with the raw pool
+        # URL would call every rotation onto a query-bearing entry a route change (and drop the
+        # user's default_headers each time).
+        route_changed = old_route != (normalize_route_base_url(self.base_url), self._client_kwargs.get("default_query") or None)
         self._reapply_route_client_config(route_changed=route_changed)
         self._replace_primary_openai_client(reason="credential_rotation")
         return True

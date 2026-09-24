@@ -449,50 +449,51 @@ class CLIModelSwitchMixin:
                 self.base_url = stored_base_url
             if stored_api_mode:
                 self.api_mode = stored_api_mode
-        if managed and not (getattr(self, "_explicit_base_url", None) and not provider_changed):
-            # The supervisor owns the live port: last boot's loopback URL (an ephemeral fallback when
-            # 18434 was busy) must not pin the resume onto a dead endpoint. A launch-time --base-url
-            # for this same provider is user intent and keeps winning.
-            self._explicit_api_key = None
-            self._explicit_base_url = None
+        # Capabilities are model-specific even when the provider stays the same, so the resumed route
+        # is re-resolved. A managed (llama.cpp) resume must not pin the resolution to the stored
+        # loopback URL: the supervisor owns the live port, and last boot's URL (an ephemeral fallback
+        # when 18434 was busy) may be dead. A launch-time --base-url for this same provider is user
+        # intent: it keeps winning, and re-resolution is skipped entirely so nothing can re-point the
+        # session at the local supervisor — that route stays exactly as the user launched it.
+        managed_pinned_by_user = managed and bool(getattr(self, "_explicit_base_url", None)) and not provider_changed
+        managed_repin = managed and not managed_pinned_by_user
+        resolved = {}
+        if not managed_pinned_by_user:
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
-                if resolved.get("api_key"):
-                    self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
-                if resolved.get("base_url"):
-                    self.base_url = resolved["base_url"]
-                if not stored_api_mode and resolved.get("api_mode"):
-                    self.api_mode = resolved["api_mode"]
+                resolved = resolve_runtime_provider(
+                    requested=self.provider, target_model=stored_model,
+                    explicit_base_url=None if managed_repin else (stored_base_url or None),
+                )
             except Exception:
-                if stored_base_url:
+                if managed_repin and stored_base_url:
                     self.base_url = stored_base_url
-                logger.debug(
-                    "Credential re-resolution for resumed session provider "
-                    "%s failed; keeping ambient credentials",
-                    stored_provider, exc_info=True)
+                logger.debug("Runtime re-resolution for resumed session failed", exc_info=True)
+        restored_capabilities = dict(resolved.get("capabilities") or {})
+        self._provider_capabilities = restored_capabilities
+        if managed_repin:
+            self._explicit_api_key = None
+            self._explicit_base_url = None
+            if resolved.get("api_key"):
+                self.api_key = resolved["api_key"]
+                self._credential_pool = resolved.get("credential_pool")
+            if resolved.get("base_url"):
+                self.base_url = resolved["base_url"]
+            if not stored_api_mode and resolved.get("api_mode"):
+                self.api_mode = resolved["api_mode"]
         elif provider_changed:
             # Launch-time explicit overrides belong to the AMBIENT provider and would poison
             # _ensure_runtime_credentials for the restored one. api_key is never persisted to
             # the session DB — runtime provider resolution owns credentials.
             self._explicit_api_key = None
             self._explicit_base_url = stored_base_url
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
-                if resolved.get("api_key"):
-                    self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
-                if not stored_base_url and resolved.get("base_url"):
-                    self.base_url = resolved["base_url"]
-                if not stored_api_mode and resolved.get("api_mode"):
-                    self.api_mode = resolved["api_mode"]
-            except Exception:
-                logger.debug(
-                    "Credential re-resolution for resumed session provider "
-                    "%s failed; keeping ambient credentials",
-                    stored_provider, exc_info=True)
+            if resolved.get("api_key"):
+                self.api_key = resolved["api_key"]
+                self._credential_pool = resolved.get("credential_pool")
+            if not stored_base_url and resolved.get("base_url"):
+                self.base_url = resolved["base_url"]
+            if not stored_api_mode and resolved.get("api_mode"):
+                self.api_mode = resolved["api_mode"]
         _resolve_cli_reasoning(self)
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
         # self.model / self.provider / self.reasoning_config.
@@ -500,7 +501,8 @@ class CLIModelSwitchMixin:
             try:
                 self.agent.switch_model(
                     new_model=self.model, new_provider=self.provider, api_key=self.api_key or "",
-                    base_url=self.base_url or "", api_mode=self.api_mode or "")
+                    base_url=self.base_url or "", api_mode=self.api_mode or "",
+                    capabilities=restored_capabilities)
             except Exception:
                 logger.debug("In-place agent model swap on resume failed", exc_info=True)
         msg = f"Model restored from session: {stored_model}"

@@ -1542,6 +1542,19 @@ def _env_key_auto_detected(
     return None
 
 
+def known_provider_id(requested: Optional[str]) -> Optional[str]:
+    """The canonical id when *requested* names a built-in/plugin provider (aliases applied), else None.
+
+    The non-raising half of :func:`resolve_provider` for an explicit name: route-identity checks run
+    on every auxiliary call and must not pay for the unknown-provider hint (a full config validation).
+    """
+    normalized = (requested or "").strip().lower()
+    normalized = _plugin_aliases().get(normalized, normalized)
+    if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
+        return normalized
+    return None
+
+
 def resolve_provider(
     requested: Optional[str] = None,
     *,
@@ -1564,10 +1577,10 @@ def resolve_provider(
     provider configured) See #29285.
     """
     normalized = (requested or "auto").strip().lower()
+    known = known_provider_id(normalized) if normalized != "auto" else None
+    if known is not None:
+        return known
     normalized = _plugin_aliases().get(normalized, normalized)
-
-    if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
-        return normalized
     if normalized != "auto":
         hint = _get_config_hint_for_unknown_provider(normalized)
         tail = (f"\n\n{hint}" if hint else " Check 'hermes model' for available providers, "

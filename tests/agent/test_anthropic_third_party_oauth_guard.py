@@ -1,7 +1,7 @@
 """Tests for ``_is_anthropic_oauth`` guard against third-party Anthropic-compatible providers.
 
-The invariant: ``self._is_anthropic_oauth`` must only ever be True when
-``self.provider == 'anthropic'`` (native Anthropic).  Third-party providers
+The invariant: without an explicit ``anthropic_oauth_proxy`` capability,
+OAuth semantics are reserved for native Anthropic endpoints. Third-party providers
 that speak the Anthropic protocol (MiniMax, Zhipu GLM, Alibaba DashScope,
 Kimi, LiteLLM proxies, etc.) must never trip OAuth code paths — doing so
 injects Claude-Code identity headers and system prompts that cause
@@ -125,6 +125,27 @@ class TestOAuthFlagOnRefresh:
 
         assert result is True
         assert agent._anthropic_api_key == new
+
+    def test_declared_oauth_proxy_relay_keeps_its_own_key(self, agent):
+        """``capabilities.anthropic_oauth_proxy`` sets ``_is_anthropic_oauth`` with the relay's OWN key.
+        That flag is not proof the endpoint holds an Anthropic credential, so a refresh must not swap
+        the relay key for ANTHROPIC_API_KEY / the stored OAuth token (#17829 through the proxy door)."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.capabilities = {"anthropic_oauth_proxy": True}
+        agent._anthropic_api_key = "opaque-relay-key"
+        agent._anthropic_base_url = "https://relay.example.com"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=_OAUTH_LIKE_TOKEN),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is False
+        assert agent._anthropic_api_key == "opaque-relay-key"
 
 
 

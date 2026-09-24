@@ -1002,6 +1002,7 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     agent.api_key = rt["api_key"]
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
     agent.request_overrides = dict(rt.get("request_overrides") or {})
+    agent.capabilities = dict(rt.get("capabilities") or {})
     agent._client_kwargs = dict(rt["client_kwargs"])
 
 
@@ -1013,6 +1014,7 @@ def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
     agent._anthropic_client = build_anthropic_client(
         rt["anthropic_api_key"], rt["anthropic_base_url"],
         timeout=get_provider_request_timeout(agent.provider, agent.model),
+        force_oauth=bool(rt["is_anthropic_oauth"]),
     )
     agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
     agent.client = None
@@ -1972,7 +1974,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
-    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
+    "_config_context_length", "_reasoning_echo_flag", "capabilities", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
 )
 _MISSING = object()
@@ -2074,11 +2076,15 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
                 )
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(
+            agent._anthropic_base_url, effective_key, provider=new_provider,
+            oauth_proxy=bool(getattr(agent, "capabilities", {}).get("anthropic_oauth_proxy", False)),
+        )
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
+            force_oauth=agent._is_anthropic_oauth,
         )
-        agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
         agent.client = None
         agent._client_kwargs = {}
         return
@@ -2247,6 +2253,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         # PRE-switch overrides from the stale init snapshot.
         # See #75091.
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(cc, "model", agent.model),
         "compressor_base_url": getattr(cc, "base_url", agent.base_url),
@@ -2327,6 +2334,7 @@ def switch_model(
     )
     snapshot = _snapshot_switch_state(agent)
     try:
+        agent.capabilities = destination_capabilities
         _swap_switch_runtime(
             agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm
         )

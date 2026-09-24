@@ -584,6 +584,7 @@ def _run_agent(
             session_db=session_db,
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
+            capabilities=runtime.get("capabilities"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,

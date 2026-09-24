@@ -1194,6 +1194,7 @@ class _Switch:
     base_url: str = ""
     api_mode: str = ""
     validation_headers: dict = field(default_factory=dict)
+    runtime_capabilities: dict = field(default_factory=dict)
     suppress_ollama_headers: bool = False
     validation: dict = field(default_factory=dict)
 
@@ -1215,6 +1216,10 @@ class _Switch:
         rt = resolve_runtime_provider(target_model=self.new_model, **kwargs)
         self.api_key, self.base_url = rt.get("api_key", ""), rt.get("base_url", "")
         self.api_mode = rt.get("api_mode", "")
+        self.runtime_capabilities = {
+            key: value for key, value in (rt.get("capabilities") or {}).items()
+            if isinstance(key, str) and isinstance(value, bool)
+        }
         self.validation_headers = rt.get("extra_headers") or self.validation_headers
 
 
@@ -1709,6 +1714,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     runtime_capabilities = resolve_native_compaction_capabilities(
         model=st.new_model, base_url=st.base_url, provider=st.target_provider,
         is_codex_backend=st.target_provider.strip().lower() == "openai-codex")
+    runtime_capabilities.update(st.runtime_capabilities)
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]

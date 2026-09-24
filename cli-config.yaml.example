@@ -4,6 +4,11 @@
 # This file configures CLI behavior; only documented secret environment
 # variables in .env take precedence over their corresponding settings.
 
+# Optional early release of local Ollama VRAM after a minute without active turns
+# and sustained memory pressure. No pressure polling or unload requests when off.
+local_runtime:
+  ollama_idle_release: false
+
 # =============================================================================
 # Database Configuration
 # =============================================================================

@@ -196,6 +196,38 @@ Or set it globally in Ollama's environment:
 Environment="OLLAMA_KEEP_ALIVE=24h"
 ```
 
+### Release Idle VRAM Under Pressure
+
+To let other applications reclaim memory before Ollama's keep-alive timer expires,
+enable this in the profile that uses your local Ollama model:
+
+```yaml
+local_runtime:
+  ollama_idle_release: true
+```
+
+The default is `false`: no pressure polling or unload requests run. This setting
+is independent of the managed llama.cpp runtime's `local_runtime.enabled` setting.
+After your next turn, the enabled policy checks every 15 seconds. It requests an
+unload only after all tracked turns have been idle for at least 60 seconds and
+memory headroom has stayed below 5% for two consecutive checks. Whole turns remain
+active during generation and tool execution. Activity records are shared by the
+profiles and processes using the same Hermes root, including profiles whose release
+setting is off; a new turn waits while an idle unload request is being handled.
+
+This is best-effort. NVIDIA readings require `nvidia-smi`; with multiple cards,
+every card must be under pressure because the policy cannot reliably map Ollama's
+model to a particular card. Apple Silicon uses available shared physical memory.
+Other hardware, unavailable readings, remote endpoints, and models without a
+resident VRAM allocation are skipped. Only the configured model at a loopback
+Ollama endpoint is eligible. Separate Hermes installations and other applications
+sharing that endpoint do not participate in Hermes's turn tracking.
+
+Successful release is logged as expected memory management. The next request
+loads the model normally and may take longer; model selection and normal
+keep-alive settings are unchanged. Set the option back to `false` to stop the
+policy on its next check. Existing Ollama timeouts still apply independently.
+
 ### Use GPU Offloading (If Available)
 
 If you have an NVIDIA GPU, Ollama automatically offloads layers to it. Check with:

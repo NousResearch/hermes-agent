@@ -319,6 +319,7 @@ def build_prompt_cache_plan(
         planned_tools[-1]["cache_control"] = dict(marker)
     transaction_budget = 3 - system_markers if system_markers < 2 else 2
     for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-transaction_budget:]:
+        messages[endpoint] = copy.deepcopy(messages[endpoint])
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
 
     return PromptCachePlan(messages=messages, tools=planned_tools)

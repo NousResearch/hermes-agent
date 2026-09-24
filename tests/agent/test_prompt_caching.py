@@ -95,20 +95,43 @@ def test_native_tool_cache_preserves_two_transaction_endpoints_with_context_pref
     """Two system tiers leave room for both completed-turn endpoints, not a tools marker."""
     from agent.system_prompt import _SystemCachePrefix
 
+    history = _tool_heavy_native_history()
+    history[0]["content"] = "stable prefix\n\ncontext head\n\nvolatile suffix"
+    prefix = _SystemCachePrefix("stable prefix\n\ncontext head", "stable prefix")
     plan = build_prompt_cache_plan(
-        _tool_heavy_native_history(),
+        history,
         _tool_heavy_native_tools(),
         native_anthropic=True,
-        static_system_prefix=_SystemCachePrefix("stable prefix\nvolatile suffix", "stable prefix"),
+        static_system_prefix=prefix,
         direct_native_tool_cache=True,
     )
 
     system_parts = plan.messages[0]["content"]
-    assert [part["text"] for part in system_parts] == ["stable prefix", "\nvolatile suffix"]
-    assert all(part.get("cache_control") == MARKER for part in system_parts)
+    assert [part["text"] for part in system_parts] == [
+        "stable prefix", "\n\ncontext head", "\n\nvolatile suffix",
+    ]
+    assert [("cache_control" in part) for part in system_parts] == [True, True, False]
     assert "cache_control" not in plan.tools[-1]
     assert len(_native_marker_indexes(plan.messages) - {0}) == 2
     assert _count_cache_markers(plan.messages, plan.tools) == 4
+
+    replanned = build_prompt_cache_plan(
+        history + [
+            {"role": "user", "content": "third request"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "third", "function": {"name": "tool_02", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "third", "content": "third result"},
+        ],
+        _tool_heavy_native_tools(),
+        native_anthropic=True,
+        static_system_prefix=prefix,
+        direct_native_tool_cache=True,
+    )
+    assert (_native_marker_indexes(plan.messages) - {0}) & (
+        _native_marker_indexes(replanned.messages) - {0}
+    )
+    assert _count_cache_markers(replanned.messages, replanned.tools) == 4
 
 
 def test_native_three_part_system_split_survives_deepcopy_and_redecoration():

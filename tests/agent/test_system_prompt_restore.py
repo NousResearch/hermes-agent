@@ -462,7 +462,7 @@ class TestStaticPrefixReconstructionOnRestore:
 
     def test_restore_falls_back_to_stable_boundary_when_context_changes(self):
         """A changed context bundle keeps the safe stable-only cache marker."""
-        from agent.system_prompt import _ContextTier, reconstruct_static_prefix
+        from agent.system_prompt import reconstruct_static_prefix
         from unittest.mock import patch as _patch
 
         stable = "STATIC IDENTITY AND GUIDANCE"
@@ -475,7 +475,8 @@ class TestStaticPrefixReconstructionOnRestore:
             "agent.system_prompt.build_system_prompt_parts",
             return_value={
                 "stable": stable,
-                "context": _ContextTier("new project context", "new project context"),
+                "context": "new project context",
+                "context_cacheable": "new project context",
                 "volatile": "",
             },
         ):

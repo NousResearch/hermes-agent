@@ -244,10 +244,12 @@ def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(cwd))
         agent = _make_agent(platform="cli")
         parts = build_system_prompt_parts(agent)
-        full = "\n\n".join(parts.values())
+        full = "\n\n".join(
+            part for part in (parts["stable"], parts["context"], parts["volatile"]) if part
+        )
         assert full.index("Shared project instructions.") < full.index("Current working directory:")
         assert str(cwd) not in parts["stable"]
-        assert full == "\n\n".join(build_system_prompt_parts(agent).values())
+        assert full == build_system_prompt(agent)
         prompts.append(full)
     common = os.path.commonprefix(prompts)
     assert "Shared project instructions." in common
@@ -269,7 +271,9 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
         _memory_store=SimpleNamespace(format_for_system_prompt=lambda _: decoy),
     )
     parts = build_system_prompt_parts(agent)
-    full = "\n\n".join(parts.values())
+    full = "\n\n".join(
+        part for part in (parts["stable"], parts["context"], parts["volatile"]) if part
+    )
     assert _stored_prompt_matches_runtime(agent, full)
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     assert not _stored_prompt_matches_runtime(agent, full)

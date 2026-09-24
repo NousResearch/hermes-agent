@@ -34,28 +34,60 @@ _SYSTEM_PROMPT = (
 _VERDICTS = {"APPROVE": "approve", "DENY": "deny"}
 
 
-def _strip_line_comment(line: str) -> str:
-    """Strip a comment only at an unquoted shell word boundary.
+def _next_comment(text: str, start: int = 0) -> int | None:
+    """Offset of the next comment at an unquoted shell word boundary, or None.
 
     An in-word hash (``echo a#; next``) is data, so stripping there would hide
     executable operations from the reviewer. Quoted/escaped blanks and operators
     are part of the word too; looking only at the previous character is unsafe.
+    Quote state carries across lines, so a ``#`` inside a multi-line string stays
+    data. *start* must sit outside any quote (the end of a previous comment does).
     """
     word_start = True
-    for kind, i, _, quote in _scan_shell(line, subst="uq", brace=True):
+    for kind, i, _, quote in _scan_shell(text, start, subst="uq", brace=True):
         unquoted = kind == "char" and quote is None
-        if unquoted and line[i] == "#" and word_start:
-            return line[:i].rstrip()
-        word_start = unquoted and line[i] in " \t\n;&|()<>"
-    return line
+        if unquoted and text[i] == "#" and word_start:
+            return i
+        word_start = unquoted and text[i] in " \t\n;&|()<>"
+    return None
+
+
+def _comment_spans(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of every comment, each running to (not including) its newline."""
+    spans: list[tuple[int, int]] = []
+    start = _next_comment(text)
+    while start is not None:
+        end = text.find("\n", start)
+        end = len(text) if end < 0 else end
+        spans.append((start, end))
+        start = _next_comment(text, end) if end < len(text) else None
+    return spans
+
+
+def _has_heredoc(text: str, comments: list[tuple[int, int]]) -> bool:
+    """Whether an unquoted ``<<``/``<<-`` operator (not a ``<<<`` here-string) appears outside comments."""
+    for kind, i, _, quote in _scan_shell(text, subst="uq", brace=True):
+        if (kind == "char" and quote is None and text.startswith("<<", i)
+                and not text.startswith("<<<", i) and not (i and text[i - 1] == "<")
+                and not any(start <= i < end for start, end in comments)):
+            return True
+    return False
+
+
+def _strip_line_comment(line: str) -> str:
+    """Strip a comment only at an unquoted shell word boundary (single-line form)."""
+    start = _next_comment(line)
+    return line if start is None else line[:start].rstrip()
 
 
 def _strip_shell_comments(command: str) -> str:
-    """Strip per-line shell comments before LLM assessment.
+    """Strip shell comments before LLM assessment.
 
     This is a word/quote-aware heuristic, not a full shell or heredoc parser.
-    Preserve commands containing process-substitution markers verbatim: the
-    shared scanner cannot establish word boundaries for these constructs.
+    Quote state carries across lines. Commands containing process-substitution
+    markers or a heredoc are preserved verbatim: the shared scanner cannot
+    establish word boundaries for the former, and a heredoc body is data
+    (``execute_code`` wraps its Python script as one).
     """
     # Even quoted/escaped markers take this conservative path. Trying to classify
     # them here could miss nested or multiline substitutions and hide executable
@@ -63,12 +95,23 @@ def _strip_shell_comments(command: str) -> str:
     if "<(" in command or ">(" in command:
         return command
 
-    cleaned: list[str] = []
-    for line in command.split("\n"):
-        stripped = _strip_line_comment(line)
-        if stripped or not cleaned:
-            cleaned.append(stripped)
-    return "\n".join(cleaned).rstrip()
+    spans = _comment_spans(command)
+    if not spans:
+        return command.rstrip()
+    if _has_heredoc(command, spans):
+        return command
+
+    kept: list[str] = []
+    pos = 0
+    for start, end in spans:
+        kept.append(command[pos:start].rstrip(" \t"))
+        pos = end
+        # A line that held only the comment is dropped with its newline.
+        so_far = "".join(kept)
+        if pos < len(command) and (not so_far or so_far.endswith("\n")):
+            pos += 1
+    kept.append(command[pos:])
+    return "".join(kept).rstrip()
 
 
 def _get_smart_policy() -> str:

@@ -1539,13 +1539,13 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
             marked = obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars) and obj.endswith("⟫")
             if len(obj) <= head_chars or marked:
                 return obj
-            marker = elide_text(obj, head_chars)[head_chars:]
+            shrunken = elide_text(obj, head_chars)
             # Only replace when it reclaims bytes: for a leaf just over the cap the marker is
             # longer than what it replaces.
-            if head_chars + len(marker) >= len(obj):
+            if len(shrunken) >= len(obj):
                 return obj
             changed = True
-            return elide_text(obj, head_chars)
+            return shrunken
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -1734,7 +1734,6 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-
     parsed = _json_dict(content)
     response = parsed.get("user_response")
     # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``

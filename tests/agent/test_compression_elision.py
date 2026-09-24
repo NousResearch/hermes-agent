@@ -1,7 +1,8 @@
 """Regression for #121548: model-visible elisions are counted, not bare copyable prose."""
 
 import json
-from unittest.mock import patch, SimpleNamespace
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _COMPRESSION_MARKER_RE, elide_text
 from agent.context_compressor import (

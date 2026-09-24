@@ -136,7 +136,8 @@ class TestSummarizeToolResultClarify:
         # re-summarize the preserved answer away (idempotency below).
         assert len(summary) == _PRUNE_MIN_CHARS - 1
         assert summary.startswith('[clarify] user responded: "AAA')
-        assert summary.endswith("...[truncated]")
+        assert summary.endswith("Do not copy.⟫")
+        assert _COMPRESSION_MARKER_PREFIX in summary
         assert (
             _summarize_tool_result("clarify", "{}", summary)
             == "[clarify] asked user a question"

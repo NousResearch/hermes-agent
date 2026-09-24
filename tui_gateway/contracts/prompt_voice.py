@@ -30,6 +30,13 @@ class PromptSubmitParams(SessionParams):
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
     text: JsonValue = ""
+    # Client-assigned id for this user turn. The busy/queue path dedupes retries on it
+    # (a reconnect resend of the same turn re-binds the queued source instead of starting
+    # a second turn) and re-homes a queued source to the live transport (#63298).
+    message_id: str | None = None
+    # Client clock at submit time (unix seconds, float ok). The busy/queue path stores it on the
+    # queued prompt so a reconnect-resend is recognised as the same turn, not a new one (#63298).
+    submitted_at: float | None = None
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
@@ -56,6 +63,9 @@ class PromptSubmitStatus(WireEnum):
     queued = "queued"
     steered = "steered"
     redirected = "redirected"
+    # Same message_id as the inflight/queued turn — the resubmit re-bound the existing
+    # turn's source transport instead of starting a second turn (#63298).
+    duplicate = "duplicate"
 
 
 class PromptSubmitResult(Result):

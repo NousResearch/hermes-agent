@@ -46,7 +46,8 @@ def mirror_to_session(
     ``role="user"``: ``mirror`` metadata is dropped at the SQLite boundary, so an
     assistant-role mirror replays as a real turn and yields assistant→assistant
     pairs that break strict-alternation providers, while a user-role mirror
-    collapses safely via the consecutive-user merge.
+    remains a distinct canonical row and merges only on the per-request API copy
+    for strict providers.
     Returns True if mirrored, False if no matching session or error. Never raises.
 
     ``role`` defaults to ``"assistant"`` — correct for the interactive ``send_message`` mirror, where the

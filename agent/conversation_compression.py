@@ -2412,7 +2412,7 @@ def _insert_real_user_anchor(messages: list, anchor: dict) -> CompressedUserTurn
             return _place(index)
     # Every assistant is user-preceded (or there are none). Appending is safe whenever the transcript does not already
     # end with a user turn. Never merge into a summary either: its prefix must stay at message start for summary
-    # detection; repair_message_sequence merges adjacent user turns summary-first.
+    # detection, and any later user-turn merge (wire-copy alternation repair) joins adjacent users summary-first.
     if (
         not messages
         or _role(messages[-1]) != "user"

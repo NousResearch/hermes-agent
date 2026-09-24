@@ -488,7 +488,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    submitted_at=None, message_id=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -519,7 +520,8 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        submitted_at=submitted_at, message_id=message_id)
 
 
 _TRUNCATION_PARAMS = (
@@ -527,13 +529,18 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    submitted_at=None, message_id=None):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
     with _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        # Close the post-busy-check window: another submit holding the same explicit id may
+        # have claimed an in-flight/queued/history slot since it was probed above.
+        if message_id is not None and _has_prompt_message_id(session, message_id):
+            return _ok(rid, {"status": "duplicate"}), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
@@ -553,7 +560,8 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text, display_kind=display_kind)
+        _start_inflight_turn(session, text, display_kind=display_kind,
+                             submitted_at=submitted_at, message_id=message_id)
     return None, fields
 
 
@@ -592,6 +600,16 @@ def _(rid, params: dict) -> dict:
     if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
         return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
     turn_author = raw_author.author if raw_author is not None else None
+    # Stable client-supplied source identity of THIS submission event. JSON-RPC
+    # request ids are transport-local sequence numbers that may repeat after
+    # reconnect; only an explicit id belongs in canonical history / SessionDB.
+    raw_submitted_at = params.get("submitted_at")
+    try:
+        submitted_at = float(raw_submitted_at) if raw_submitted_at is not None else None
+    except (TypeError, ValueError):
+        submitted_at = None
+    raw_message_id = params.get("message_id")
+    message_id = (str(raw_message_id).strip() if raw_message_id is not None else None) or None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -635,6 +653,15 @@ def _(rid, params: dict) -> dict:
     # prompt in a queue whose drain already ran.
     while True:
         with session["history_lock"]:
+            # A reconnect retry must not leave its queue entry pinned to the
+            # disconnected websocket: re-home a matching queued source to this
+            # live transport atomically with the submit.
+            if t is not None and message_id is not None:
+                _rebind_queued_source_transports(session, t, message_id=message_id)
+            # The client retries the SAME submission id after a timeout/resume:
+            # acknowledge the already-owned id instead of accepting a second turn.
+            if message_id is not None and _has_prompt_message_id(session, message_id):
+                return _ok(rid, {"status": "duplicate"})
             if not session.get("running"):
                 break
             if internal_hosted_submit:
@@ -649,7 +676,8 @@ def _(rid, params: dict) -> dict:
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            submitted_at=submitted_at, message_id=message_id)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -657,7 +685,8 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+        submitted_at=submitted_at, message_id=message_id)
     if err is not None:
         return err
     if turn_isolation:
@@ -665,7 +694,8 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            submitted_at=submitted_at, message_id=message_id)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -692,7 +722,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            submitted_at, message_id),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

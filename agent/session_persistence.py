@@ -216,7 +216,11 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         "_compressed_summary": bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)),
         "timestamp": timestamp, "api_content": api_content,
         "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
-        "platform_message_id": msg.get("platform_message_id"),  # load-bearing for restart drain-window recovery dedup
+        # Load-bearing for restart drain-window recovery dedup; queued prompts stamp their
+        # source identity on the canonical row as ``_source_message_id`` (or ``message_id``).
+        "platform_message_id": (
+            msg.get("platform_message_id") or msg.get("message_id") or msg.get("_source_message_id")
+        ),
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]

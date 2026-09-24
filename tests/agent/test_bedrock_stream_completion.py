@@ -80,8 +80,10 @@ def test_bedrock_wire_requires_message_stop(terminal):
             assert result.choices[0].message.content == "partial answer"
             assert result.choices[0].finish_reason == "stop"
         else:
+            from agent.errors import EmptyStreamError
+
             with pytest.raises(
-                RuntimeError, match="(?i)(incomplete|messageStop|truncat)"
+                EmptyStreamError, match="(?i)(incomplete|messageStop|truncat)"
             ):
                 normalize_converse_stream_events(response)
     finally:

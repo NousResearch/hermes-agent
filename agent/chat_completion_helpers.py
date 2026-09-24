@@ -2474,6 +2474,16 @@ def _stream_codex_passthrough(agent, api_kwargs: dict, on_first_delta):
         agent._codex_on_first_delta = None
 
 
+def _finalize_bedrock_relay_events(events):
+    """Relay finalizer for Bedrock: a stream without messageStop has no complete
+    response to record, so return None and let the live consumer raise (#109988)."""
+    from agent.bedrock_adapter import stream_converse_with_callbacks
+    try:
+        return stream_converse_with_callbacks({"stream": list(events)})
+    except EmptyStreamError:
+        return None
+
+
 class _BedrockStream:
     """Bedrock Converse streaming: boto3 ``converse_stream()`` on a worker thread
     with real-time delta callbacks, polled by an interrupt / stale-event watchdog
@@ -2556,7 +2566,7 @@ class _BedrockStream:
 
             stream = relay_llm.stream(dict(self.api_kwargs), self._open_stream,
                 **_relay_stream_identity(agent, "bedrock"),
-                finalizer=lambda: stream_converse_with_callbacks({"stream": list(intercepted_events)}),
+                finalizer=lambda: _finalize_bedrock_relay_events(intercepted_events),
                 on_stream_created=_stream_created, on_chunk=intercepted_events.append,
                 chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),

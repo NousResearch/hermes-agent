@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from agent.errors import EmptyStreamError
+
 logger = logging.getLogger(__name__)
 
 # boto3 is not in the [all] extras; lazy_deps installs it on demand.
@@ -995,7 +997,7 @@ def stream_converse_with_callbacks(
             meta_usage = event["metadata"].get("usage", {})
             usage_data = {key: meta_usage.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")}
     if stop_reason is None and not interrupted:
-        raise RuntimeError("Bedrock Converse stream ended before messageStop; response is incomplete")
+        raise EmptyStreamError("Bedrock Converse stream ended before messageStop; response is incomplete")
     flush_text()
     return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason or "end_turn", "")
 

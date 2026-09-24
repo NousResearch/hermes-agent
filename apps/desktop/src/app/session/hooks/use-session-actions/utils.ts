@@ -1165,9 +1165,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // row instead: same live id (deltas keep landing), fuller text, committed
   // structure carried over. Only when the dump extends the tail text — a
   // diverged tail is a different reply and both rows survive.
-  const committedPartial = liveAssistantOfCurrentTurn && !isLiveTailRow(liveAssistantOfCurrentTurn)
-    ? liveAssistantOfCurrentTurn
-    : null
+  const committedPartial =
+    liveAssistantOfCurrentTurn && !isLiveTailRow(liveAssistantOfCurrentTurn) ? liveAssistantOfCurrentTurn : null
 
   const committedPartialAt = committedPartial ? messages.lastIndexOf(committedPartial) : -1
 
@@ -1181,9 +1180,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     committedPartialAt >= 0 &&
     inflightUserAlreadyPersisted &&
     !correctionOffsetsUsable &&
-    (typeof turnStartedAt !== 'number' ||
-      typeof committedAt !== 'number' ||
-      committedAt >= turnStartedAt) &&
+    (typeof turnStartedAt !== 'number' || typeof committedAt !== 'number' || committedAt >= turnStartedAt) &&
     (committedPartialText.trim() === inflightAssistant.trim() ||
       isStrictAnswerTextExtension(inflightAssistant, committedPartialText))
   )

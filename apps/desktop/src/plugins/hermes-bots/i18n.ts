@@ -382,6 +382,8 @@ type BotsMessages = {
     portalUnsupported: string
     portalUnavailable: string
     unavailableTitle: string
+    cloudUnavailableTitle: string
+    cloudUnavailableBody: string
     autoOpenMenu: string
     autoOpenOnToast: (name: string) => string
     autoOpenOffToast: (name: string) => string
@@ -810,6 +812,9 @@ const en: BotsMessages = {
     portalUnsupported: 'Not available on this host',
     portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
     unavailableTitle: 'Screen needs a newer Hermes',
+    cloudUnavailableTitle: 'Screen is not available in Hermes Cloud yet',
+    cloudUnavailableBody:
+      'This managed Cloud backend is up to date. Screen will be available when Hermes Cloud supports it.',
     autoOpenMenu: 'Open Screen when the bot uses it',
     autoOpenOnToast: name => `${name}’s Screen opens when it starts using its desktop`,
     autoOpenOffToast: name => `${name}’s Screen stays closed until you open it`,
@@ -1238,6 +1243,9 @@ const ja: BotsMessages = {
     portalUnsupported: 'このホストでは利用できません',
     portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
     unavailableTitle: 'Screen には新しい Hermes が必要です',
+    cloudUnavailableTitle: 'Screen はまだ Hermes Cloud では利用できません',
+    cloudUnavailableBody:
+      'この管理対象 Cloud バックエンドは最新です。Hermes Cloud が対応すると Screen を利用できます。',
     autoOpenMenu: 'ボットが画面を使い始めたら Screen を開く',
     autoOpenOnToast: name => `${name} がデスクトップを使い始めると Screen が開きます`,
     autoOpenOffToast: name => `${name} の Screen は手動で開くまで閉じたままです`,
@@ -1651,6 +1659,8 @@ const zh: BotsMessages = {
     portalUnsupported: '此主机不可用',
     portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
     unavailableTitle: '屏幕需要更新版的 Hermes',
+    cloudUnavailableTitle: 'Hermes Cloud 暂不支持屏幕',
+    cloudUnavailableBody: '此托管 Cloud 后端已是最新版本。Hermes Cloud 支持后即可使用屏幕。',
     autoOpenMenu: '机器人使用屏幕时自动打开',
     autoOpenOnToast: name => `${name} 开始使用桌面时会自动打开屏幕`,
     autoOpenOffToast: name => `${name} 的屏幕将保持关闭，直到你手动打开`,
@@ -2064,6 +2074,8 @@ const zhHant: BotsMessages = {
     portalUnsupported: '此主機不可用',
     portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
     unavailableTitle: '螢幕需要較新版的 Hermes',
+    cloudUnavailableTitle: 'Hermes Cloud 尚未提供螢幕功能',
+    cloudUnavailableBody: '此受管 Cloud 後端已是最新版本。Hermes Cloud 支援後即可使用螢幕。',
     autoOpenMenu: '機器人使用螢幕時自動開啟',
     autoOpenOnToast: name => `${name} 開始使用桌面時會自動開啟螢幕`,
     autoOpenOffToast: name => `${name} 的螢幕將保持關閉，直到你手動開啟`,

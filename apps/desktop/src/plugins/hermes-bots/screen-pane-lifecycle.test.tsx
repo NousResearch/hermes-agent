@@ -30,7 +30,12 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: () => null,
     GlyphSpinner: () => null,
     Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
-    EmptyState: () => null,
+    EmptyState: ({ description, title }: { description: string; title: string }) => (
+      <div>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+    ),
     useValue: useStore,
     host: {
       onEvent: onGatewayEvent,
@@ -59,7 +64,12 @@ vi.mock('./i18n', () => ({
       handBack: 'Hand back',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
-      streamLost: 'Stream lost'
+      streamLost: 'Stream lost',
+      unavailableTitle: 'Screen needs a newer Hermes',
+      portalUnavailable: 'Update the bot Hermes to use Screen',
+      cloudUnavailableTitle: 'Screen is not available in Hermes Cloud yet',
+      cloudUnavailableBody:
+        'This managed Cloud backend is up to date. Screen will be available when Hermes Cloud supports it.'
     }
   })
 }))
@@ -105,6 +115,12 @@ import { BotScreenPane } from './screen-pane'
 import { $screenState } from './screen-state'
 
 const bot: RosterRow = { name: 'default' }
+const cloudBot: RosterRow = {
+  name: 'cloud-default',
+  connectionKind: 'cloud',
+  sourceScoped: true,
+  connectionId: 'cloud-a'
+}
 
 const status: DisplayStatus = {
   profile: 'default',
@@ -166,6 +182,33 @@ beforeEach(() => {
 })
 
 afterEach(() => vi.unstubAllGlobals())
+
+it('keeps the update guidance for a self-managed backend without display methods', async () => {
+  vi.mocked(displayRequest).mockRejectedValueOnce(
+    Object.assign(new Error('Method not found: display.status'), { code: -32601 })
+  )
+
+  const view = render(<BotScreenPane bot={bot} />)
+
+  await waitFor(() => expect(view.getByText('Screen needs a newer Hermes')).toBeTruthy())
+  expect(view.getByText('Update the bot Hermes to use Screen')).toBeTruthy()
+  view.unmount()
+})
+
+it('does not direct an up-to-date managed Cloud backend to update when display methods are unavailable', async () => {
+  vi.mocked(displayRequest).mockRejectedValueOnce(
+    Object.assign(new Error('Method not found: display.status'), { code: -32601 })
+  )
+
+  const view = render(<BotScreenPane bot={cloudBot} />)
+
+  await waitFor(() => expect(view.getByText('Screen is not available in Hermes Cloud yet')).toBeTruthy())
+  expect(
+    view.getByText('This managed Cloud backend is up to date. Screen will be available when Hermes Cloud supports it.')
+  ).toBeTruthy()
+  expect(view.queryByText('Screen needs a newer Hermes')).toBeNull()
+  view.unmount()
+})
 
 it('sends an intentional close before noVNC can send its statusless close on pane unmount', async () => {
   const view = render(<BotScreenPane bot={bot} />)

@@ -364,6 +364,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   )
 
   if (state?.unavailable) {
+    if (bot.connectionKind === 'cloud') {
+      return <EmptyState description={t.screen.cloudUnavailableBody} title={t.screen.cloudUnavailableTitle} />
+    }
+
     return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
   }
 

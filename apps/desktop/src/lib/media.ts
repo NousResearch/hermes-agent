@@ -143,9 +143,19 @@ export function mediaImageKey(path: string, connection: HermesConnection | null,
       connection?.connectionId ||
       desktopFsCacheKey(connection && { ...connection, profile: owner?.profile ?? connection.profile }),
     owner?.profile ?? connection?.profile ?? '',
-    filePathFromMediaPath(path),
+    mediaSourceIdentity(path),
     revision
   ])
+}
+
+// Inline sources are the bytes themselves (often megabytes) and this key is
+// rebuilt every render. Length plus head (format header, usually the size)
+// and tail keeps it small and cacheable; a collision can only borrow another
+// image's frame shape, never its pixels.
+function mediaSourceIdentity(path: string): string {
+  return /^data:/i.test(path) && path.length > 512
+    ? `data#${path.length}:${path.slice(0, 160)}:${path.slice(-96)}`
+    : filePathFromMediaPath(path)
 }
 
 export function validImageDimensions(width: unknown, height: unknown): MediaImageDimensions | undefined {

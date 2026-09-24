@@ -108,6 +108,19 @@ it('keeps the pending generated-image frame when its result arrives', async () =
   expect(frame(mounted.container).style.cssText).toBe(pendingStyle)
 })
 
+it('keys inline data sources by a bounded digest so they are remembered', async () => {
+  const big = (fill: string) => `data:image/png;base64,${fill.repeat(200_000)}`
+  const first = render(<MarkdownImage alt="inline" src={big('A')} />)
+  expect(first.container.querySelector('img')).not.toBeNull()
+  const img = first.container.querySelector('img')!
+  Object.defineProperties(img, { naturalWidth: { value: 900 }, naturalHeight: { value: 600 } })
+  fireEvent.load(img)
+  first.unmount()
+
+  expect(parseFloat(frame(render(<MarkdownImage alt="inline" src={big('A')} />).container).style.aspectRatio)).toBe(1.5)
+  expect(parseFloat(frame(render(<MarkdownImage alt="inline" src={big('B')} />).container).style.aspectRatio)).not.toBe(1.5)
+})
+
 it.each(['markdown', 'generated'])('%s dimensions follow owner and source, not stale reads or hints', async kind => {
   const path = `${paths.second}?${kind}`
 

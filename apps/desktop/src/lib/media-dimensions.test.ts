@@ -43,3 +43,12 @@ it('shares proven path aliases only within an owner and bounds regenerated metad
   forgetMediaImageDimensions(key)
   expect(getMediaImageDimensions(key)).toBeUndefined()
 })
+
+it('keeps multi-megabyte inline sources to a small, distinct key', () => {
+  const a = { connectionId: 'a', profile: 'work', mode: 'local' } as HermesConnection
+  const inline = (tail: string) => `data:image/png;base64,${'A'.repeat(4_000_000)}${tail}`
+
+  expect(mediaImageKey(inline('x'), a).length).toBeLessThan(1024)
+  expect(mediaImageKey(inline('x'), a)).toBe(mediaImageKey(inline('x'), a))
+  expect(mediaImageKey(inline('x'), a)).not.toBe(mediaImageKey(inline('y'), a))
+})

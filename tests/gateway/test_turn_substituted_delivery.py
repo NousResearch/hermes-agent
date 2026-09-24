@@ -64,3 +64,26 @@ async def test_generic_delivery_keeps_substituted_text_and_has_no_attachments(te
     assert not adapter._wants_auto_tts(event, 'test', asyncio.Event(), text, [])
     for name in ('extract_media', 'extract_images', 'extract_local_files'):
         setattr(adapter, name, Mock(side_effect=AssertionError('substituted entered media/format route')))
+
+
+@pytest.mark.asyncio
+async def test_weixin_send_skips_media_pipeline_for_substituted_text():
+    """The platform send path must honour the generic substituted metadata too: a MEDIA-looking
+    literal (and any URL) is delivered verbatim, never rewritten into an attachment."""
+    from gateway.platforms.weixin import WeixinAdapter
+    from gateway.config import PlatformConfig
+
+    adapter = WeixinAdapter(PlatformConfig(enabled=True, token='test-token',
+                                           extra={'account_id': 'test-account'}))
+    adapter._send_session = SimpleNamespace()
+    adapter._token = 'test-token'
+    adapter._token_store = SimpleNamespace(get=lambda *a: 'test-context')
+    sent: list[str] = []
+    adapter._send_text_chunk = AsyncMock(side_effect=lambda **kw: sent.append(kw['chunk']))
+    for name in ('extract_media', 'extract_images', 'extract_local_files', 'format_message'):
+        setattr(adapter, name, Mock(side_effect=AssertionError('substituted entered media/format route')))
+
+    literal = 'MEDIA:/tmp/not-an-attachment.png https://example.com/  exact  '
+    result = await adapter.send('chat', literal, metadata={'_substituted': True})
+    assert result.success
+    assert ''.join(sent) == literal

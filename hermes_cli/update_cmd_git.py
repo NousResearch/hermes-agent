@@ -6,6 +6,7 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
+import shlex
 from contextlib import suppress
 import subprocess
 import sys
@@ -21,6 +22,46 @@ _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
 _GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 _BAR = "=" * 68
 _UPSTREAM_ADD_CMD = "git remote add upstream https://github.com/NousResearch/hermes-agent.git"
+
+
+def _update_index_lock_path(project_root: Path) -> Path | None:
+    """Return the checkout's index lock path, including linked worktrees."""
+    git_marker = project_root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "index.lock"
+    if not git_marker.is_file():
+        return None
+    try:
+        marker = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not marker.lower().startswith(prefix):
+        return None
+    git_dir = Path(marker[len(prefix):].strip())
+    if not git_dir.is_absolute():
+        git_dir = (project_root / git_dir).resolve()
+    return git_dir / "index.lock"
+
+
+def _abort_if_update_index_locked(project_root: Path) -> None:
+    """Refuse to update while Git's index lock exists; never delete it."""
+    from hermes_cli.update_cmd import _m
+
+    lock_path = _update_index_lock_path(project_root)
+    if lock_path is None or not lock_path.exists():
+        return
+    if _m()._is_windows():
+        quoted_path = str(lock_path).replace("'", "''")
+        recovery = f"Remove-Item -LiteralPath '{quoted_path}'"
+    else:
+        recovery = f"rm -f -- {shlex.quote(str(lock_path))}"
+    print(f"✗ Git index lock exists: {lock_path}")
+    print("  Another Git operation may still be using this repository.")
+    print("  Close or wait for it to finish, then retry `hermes update`.")
+    print("  If no Git operation is running, remove the orphaned lock:")
+    print(f"    {recovery}")
+    sys.exit(2)
 
 
 def _git_ok(git_cmd, args, cwd, **kw) -> bool:

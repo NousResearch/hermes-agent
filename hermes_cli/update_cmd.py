@@ -91,7 +91,8 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _web_build_toolchain_ready, _web_toolchain_roots)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
-    _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
+    _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _abort_if_update_index_locked,
+    _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
@@ -522,6 +523,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print(refusal.message)
         record_refusal_receipt(refusal)
         sys.exit(2)
+
+    # The check path also sweeps stale Git locks. An index lock has no reliable
+    # ownership signal, so refuse before that sweep or the fetch can touch it.
+    _abort_if_update_index_locked(_m().PROJECT_ROOT)
 
     git_dir = _m().PROJECT_ROOT / ".git"
     if not git_dir.exists():
@@ -1596,6 +1601,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
+
+    # index.lock has no reliable ownership metadata. Refuse before backup or
+    # checkout mutation rather than guessing from its age and racing Git.
+    _abort_if_update_index_locked(_m().PROJECT_ROOT)
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
     # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its

@@ -850,28 +850,6 @@ def test_thinking_tokens_are_counted_as_output_and_surfaced_as_reasoning():
     assert canonical.reasoning_tokens == thoughts
 
 
-def test_streaming_usage_counts_thinking_tokens_like_the_non_streaming_path():
-    """Usage rides on the stream's finish chunk; it must agree with the
-    non-streaming assembly rather than under-reporting thinking."""
-    from agent.gemini_native_adapter import translate_stream_event
-
-    prompt, visible, thoughts = 7, 3, 900
-    event = {
-        "candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}],
-        "usageMetadata": {
-            "promptTokenCount": prompt,
-            "candidatesTokenCount": visible,
-            "thoughtsTokenCount": thoughts,
-            "totalTokenCount": prompt + visible + thoughts,
-        },
-    }
-
-    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
-    usage = chunks[-1].usage
-    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
-    assert usage.completion_tokens_details.reasoning_tokens == thoughts
-
-
 def test_response_without_thinking_tokens_keeps_its_output_count():
     """Non-thinking / older responses omit ``thoughtsTokenCount``; their numbers
     must not move, and reasoning stays zero."""

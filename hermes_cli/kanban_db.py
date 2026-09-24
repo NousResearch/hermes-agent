@@ -2225,6 +2225,7 @@ def _claim_and_open_run(
            SET status        = 'running',
                claim_lock    = ?,
                claim_expires = ?,
+               last_heartbeat_at = NULL,
                started_at    = COALESCE(started_at, ?)
          WHERE id = ?
            AND status = '{source_status}'

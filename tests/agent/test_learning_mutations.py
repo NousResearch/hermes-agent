@@ -258,3 +258,28 @@ def test_an_id_from_an_older_graph_still_resolves_by_position(home):
     assert lm.edit_node("memory:memory:1", "beta rewritten")["ok"]
 
     assert _memory_entries(home) == ["alpha note\nline two", "beta rewritten"]
+
+
+def test_a_profile_card_resolves_through_its_fingerprinted_id(home):
+    """USER.md cards sit after the MEMORY.md ones in the id's global index."""
+    from agent.learning_graph import build_learning_graph
+
+    profile = next(n for n in build_learning_graph()["nodes"] if n.get("memorySource") == "profile")
+
+    assert lm.edit_node(profile["id"], "rewritten profile")["ok"]
+
+    assert (home / "memories" / "USER.md").read_text(encoding="utf-8").strip() == "rewritten profile"
+
+
+def test_a_memory_longer_than_the_rendered_card_still_matches(home):
+    """The card renders a truncated body; the fingerprint must digest the WHOLE entry or a long
+    memory never matches itself."""
+    from agent.learning_graph import build_learning_graph
+
+    long_entry = "long memory " + ("x" * 2000)
+    _write_memory_file(home, long_entry, "beta note")
+    node = [n for n in build_learning_graph()["nodes"] if n["kind"] == "memory"][0]
+
+    assert lm.node_detail(node["id"])["content"] == long_entry
+    assert lm.edit_node(node["id"], "trimmed")["ok"]
+    assert _memory_entries(home) == ["trimmed", "beta note"]

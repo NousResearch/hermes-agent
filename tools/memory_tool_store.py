@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message
+from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger("tools.memory_tool")
 
@@ -27,6 +28,27 @@ def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
     memory enters the system prompt, so a poisoned entry persists across sessions."""
     return _first_threat_message(content, scope="strict")
+
+
+def _sanitize_prompt_entry(entry: str, filename: str, *, warn: bool = True) -> str:
+    """Return the prompt-safe view of one native-memory entry."""
+    findings = (
+        scan_for_threats(entry, scope="strict")
+        if entry and not entry.startswith("[BLOCKED:")
+        else None
+    )
+    if not findings:
+        return entry
+    if warn:
+        logger.warning(
+            "Memory entry from %s blocked before prompt delivery: %s",
+            filename,
+            ", ".join(findings),
+        )
+    return (
+        f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
+        "Removed from system prompt; use memory(action=remove) to delete the original.]"
+    )
 
 
 def _error(message: str, **extra) -> Dict[str, Any]:
@@ -103,6 +125,7 @@ class MemoryStore:
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._last_delivered_prompt_view: Dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
@@ -135,17 +158,6 @@ class MemoryStore:
         Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
         live lists keep the raw text so the user can see and remove poisoned entries
         (dropping them silently would hide the attack)."""
-        from tools.threat_patterns import scan_for_threats
-
-        def _sanitize(entry, filename):
-            # Strict scope, same as writes; empty / already-blocked entries pass through.
-            findings = scan_for_threats(entry, scope="strict") if entry and not entry.startswith("[BLOCKED:") else None
-            if not findings:
-                return entry
-            logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
-            return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
-                    f"Removed from system prompt; use memory(action=remove) to delete the original.]")
-
         for target in ("memory", "user"):
             path = self._path_for(target)
             from hermes_constants import mkdir_under_hermes_home
@@ -161,7 +173,67 @@ class MemoryStore:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
-            self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
+            block = self._render_block(
+                target, [_sanitize_prompt_entry(e, path.name) for e in entries]
+            )
+            self._system_prompt_snapshot[target] = block
+            self._last_delivered_prompt_view[target] = block
+
+    def consume_freshness_context(self) -> str:
+        """Return changed native memory as one-shot current-turn context.
+
+        The load-time system-prompt snapshot remains untouched so the provider's
+        cached prefix stays byte-stable.  Disk changes instead ride the next genuine
+        user message, whose ``api_content`` sidecar is persisted for later replay.
+        """
+        changed_blocks = []
+        for target in ("memory", "user"):
+            if not self.target_enabled(target):
+                continue
+            path = self._path_for(target)
+            raw, read_ok = self._read_raw_checked(path)
+            if not read_ok:
+                logger.warning(
+                    "Could not refresh %s for the current turn; keeping the last delivered view.",
+                    path.name,
+                )
+                continue
+            entries = list(dict.fromkeys(self._parse_entries(raw)))
+            sanitized_entries = [
+                _sanitize_prompt_entry(e, path.name, warn=False) for e in entries
+            ]
+            block = self._render_block(target, sanitized_entries)
+            if block == self._last_delivered_prompt_view[target]:
+                continue
+            # Log blocked content only when a changed view is actually delivered;
+            # unchanged poisoned files otherwise produced a warning every turn.
+            for entry in entries:
+                _sanitize_prompt_entry(entry, path.name)
+            self._last_delivered_prompt_view[target] = block
+            changed_blocks.append(
+                self._bounded_freshness_block(target, path.name, block)
+                if block
+                else f"{path.name} is now empty."
+            )
+
+        if not changed_blocks:
+            return ""
+        return (
+            "[Native memory refreshed]\n"
+            "For each file shown, the sanitized state below supersedes that file's "
+            "earlier memory block in this conversation.\n\n"
+            + "\n\n".join(changed_blocks)
+        )
+
+    def _bounded_freshness_block(self, target: str, filename: str, block: str) -> str:
+        """Bound an externally oversized file before it enters turn context."""
+        max_chars = self._char_limit(target) + 256
+        if len(block) <= max_chars:
+            return block
+        return (
+            block[:max_chars].rstrip()
+            + f"\n[TRUNCATED: {filename} exceeds its configured character limit.]"
+        )
 
     @staticmethod
     @contextmanager

@@ -146,6 +146,20 @@ def consume_surface_switch_note(agent: Any) -> str:
     return _pop_turn_note(agent, "_surface_switch_note")
 
 
+def consume_native_memory_freshness_context(agent: Any) -> str:
+    """Read changed native memory for this turn without rebuilding the system prompt."""
+    store = getattr(agent, "_memory_store", None)
+    consume = getattr(store, "consume_freshness_context", None)
+    if not callable(consume):
+        return ""
+    try:
+        note = consume()
+        return note if isinstance(note, str) else ""
+    except Exception as exc:
+        logger.warning("Native memory freshness check failed: %s", exc)
+        return ""
+
+
 def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bool:
     """Append must-deliver notes as a durable text part on a multimodal (list) user
     message (the sidecar path returns ``None`` for non-string content)."""
@@ -803,11 +817,12 @@ def _merge_gateway_notes(
     agent: Any, messages: List[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
     """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
-    ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
-    surface-switch correction. Multimodal (list) content can't take the string sidecar —
-    append a durable text part instead."""
+    ephemeral system prompt stays byte-stable: changed native memory, the gateway's
+    staged notes, then the surface-switch correction. Multimodal (list) content can't
+    take the string sidecar — append a durable text part instead."""
     _turn_notes = "\n\n".join(
-        part for part in (consume_gateway_turn_context_notes(agent),
+        part for part in (consume_native_memory_freshness_context(agent),
+                          consume_gateway_turn_context_notes(agent),
                           consume_surface_switch_note(agent)) if part
     )
     if not _turn_notes:

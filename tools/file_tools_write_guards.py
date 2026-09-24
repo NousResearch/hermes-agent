@@ -202,11 +202,23 @@ def _protected_instruction_config() -> tuple[bool, list[str]]:
     return enabled, [str(p) for p in extra if p]
 
 
-def _protected_instruction_reason(filepath: str, task_id: str = "default",
-                                  *, enabled: bool | None = None,
-                                  extra_patterns: list[str] | None = None) -> str | None:
-    """Return a short label when ``filepath`` targets a protected instruction file, else ``None``.
-    Matches BOTH the normalized input and its realpath so no symlink direction escapes.
+def _protected_target_label(path: str) -> str:
+    """Shorten a matched target path for approval display (``~/`` prefix)."""
+    home = os.path.expanduser("~")
+    if home and home != "/" and (
+            path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home):]
+    return path
+
+
+def _protected_instruction_match(filepath: str, task_id: str = "default",
+                                 *, enabled: bool | None = None,
+                                 extra_patterns: list[str] | None = None) -> tuple[str, str] | None:
+    """Return ``(resolved_target, label)`` when ``filepath`` targets a protected
+    instruction file, else ``None``. ``resolved_target`` is the realpath of the
+    requested path — the dedup key that counts a symlink alias and its canonical
+    file as ONE target — while ``label`` keeps enough display context to identify
+    the requested alias.
 
     Matching runs on BOTH the normalized input path and its realpath so neither a symlink pointing AT a
     protected file (#41351) nor a protected name that is itself a symlink escapes the gate. ``..`` traversal
@@ -237,14 +249,29 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         base_lower = base.lower()
         if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
                 fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
-            return base
+            return resolved, _protected_target_label(candidate)
         # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
         if len(parts) >= 2 and parts[-2] == ".hermes":
-            return candidate
+            return resolved, _protected_target_label(candidate)
     return None
+
+
+def _protected_instruction_reason(filepath: str, task_id: str = "default",
+                                  *, enabled: bool | None = None,
+                                  extra_patterns: list[str] | None = None) -> str | None:
+    """Return a distinguishing label when ``filepath`` targets a protected
+    instruction file, else ``None``. The label carries the matched path (not
+    just the basename) so that a multi-file patch touching several protected
+    files with the same basename (e.g. one SOUL.md per profile) lists every
+    distinct target in the approval card instead of collapsing to one name
+    (#100361). Symlink-aware dedup/counting lives in
+    ``_protected_instruction_match``.
+    """
+    match = _protected_instruction_match(filepath, task_id, enabled=enabled, extra_patterns=extra_patterns)
+    return match[1] if match else None
 
 
 _APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavailable."
@@ -260,7 +287,8 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     """
     targets = ", ".join(dict.fromkeys(reasons))
     description = (
-        f"Write to protected agent-instruction file(s): {targets}. "
+        f"Write to {len(set(reasons))} protected agent-instruction "
+        f"file(s): {targets}. "
         "These files steer future agent behavior; approval is always "
         "required (not bypassed by auto-approve).")
     display = f"<write to {targets}>"
@@ -328,15 +356,19 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 
 def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
     """Gate a write/patch touching protected instruction files. ONE protected file gates
-    the ENTIRE multi-file patch (one prompt, all-or-nothing)."""
+    the ENTIRE multi-file patch (one prompt, all-or-nothing). Targets dedup by
+    realpath, so a symlink alias and its canonical file count as ONE target."""
     enabled, extra = _protected_instruction_config()
     if not enabled:
         return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
-                           for p in paths) if r]
-    if not reasons:
+    targets: dict[str, str] = {}
+    for p in paths:
+        match = _protected_instruction_match(p, task_id, enabled=enabled, extra_patterns=extra)
+        if match is not None and match[0] not in targets:
+            targets[match[0]] = match[1]
+    if not targets:
         return None
-    return _request_protected_instruction_approval(reasons, task_id)
+    return _request_protected_instruction_approval(list(targets.values()), task_id)
 
 
 def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:

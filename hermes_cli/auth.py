@@ -1969,7 +1969,14 @@ def _provider_env_base_url(pconfig: ProviderConfig) -> str:
             configured_url = str(model.get("base_url") or "").strip()
             if configured_url:
                 return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    if pconfig.base_url_env_var:
+        # Scope-aware, not os.getenv: under multiplex a profile's .env is never
+        # unioned into os.environ, so a bare read silently drops the override in
+        # every non-launch profile. get_secret preserves the os.environ
+        # fallthrough for single-profile contexts.
+        from agent.secret_scope import get_secret
+        return (get_secret(pconfig.base_url_env_var, "") or "").strip()
+    return ""
 
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:

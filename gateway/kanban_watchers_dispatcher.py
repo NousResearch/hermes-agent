@@ -29,6 +29,12 @@ def _kbd():
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 
+# The first few failures can be transient provider trouble, but repeatedly
+# paying the aux model for an unchanged card is not useful.  State is process
+# local on purpose: restarting the gateway permits a fresh, bounded probe.
+_AUTO_DECOMPOSE_FAILURE_LIMIT = 3
+_AUTO_DECOMPOSE_FAILURE_COOLDOWN_SECONDS = 6 * 60 * 60
+
 
 @dataclass
 class _DispatcherSettings:
@@ -133,6 +139,7 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        self._auto_decompose_failures: dict[tuple[str, str], tuple[int, float]] = {}
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -265,6 +272,8 @@ class _KanbanDispatcher:
                     for tid in triage_ids:
                         if attempted >= auto_decompose_per_tick:
                             break
+                        if not self._auto_decompose_allowed(slug, tid):
+                            continue
                         attempted += 1
                         successes += self._decompose_one(_decomp, slug, tid)
                 finally:
@@ -274,23 +283,59 @@ class _KanbanDispatcher:
                         os.environ["HERMES_KANBAN_BOARD"] = prev_env
         return successes
 
-    @staticmethod
-    def _decompose_one(_decomp: Any, slug: str, tid: str) -> int:
+    def _auto_decompose_allowed(self, slug: str, tid: str) -> bool:
+        """Whether this card can make another paid attempt this tick."""
+        key = (slug, tid)
+        failure = self._auto_decompose_failures.get(key)
+        if failure is None:
+            return True
+        failures, retry_at = failure
+        now = time.monotonic()
+        if retry_at and retry_at > now:
+            logger.debug(
+                "kanban auto-decompose [%s]: %s suppressed after %d failures; retry in %.0fs",
+                slug, tid, failures, retry_at - now,
+            )
+            return False
+        if retry_at:
+            # A new cooldown window gets a bounded fresh probe budget.
+            self._auto_decompose_failures.pop(key, None)
+        return True
+
+    def _decompose_one(self, _decomp: Any, slug: str, tid: str) -> int:
         """Decompose one triage task; returns 1 on success, 0 otherwise."""
+        key = (slug, tid)
         try:
             outcome = _decomp.decompose_task(tid, author="auto-decomposer")
         except Exception:
             logger.exception("kanban auto-decompose: decompose_task crashed on %s", tid)
+            self._record_auto_decompose_failure(key)
             return 0
         if not outcome.ok:
             # Common no-op reasons (no aux client) must not spam logs every tick.
             logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
+            self._record_auto_decompose_failure(key)
             return 0
+        self._auto_decompose_failures.pop(key, None)
         if outcome.fanout and outcome.child_ids:
             logger.info("kanban auto-decompose [%s]: %s → %d children", slug, tid, len(outcome.child_ids))
         else:
             logger.info("kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid)
         return 1
+
+    def _record_auto_decompose_failure(self, key: tuple[str, str]) -> None:
+        """Increment a card's failure streak and open its cooldown at the cap."""
+        failures, _retry_at = self._auto_decompose_failures.get(key, (0, 0.0))
+        failures += 1
+        retry_at = 0.0
+        if failures >= _AUTO_DECOMPOSE_FAILURE_LIMIT:
+            retry_at = time.monotonic() + _AUTO_DECOMPOSE_FAILURE_COOLDOWN_SECONDS
+            logger.warning(
+                "kanban auto-decompose [%s]: %s failed %d consecutive times; "
+                "suppressing retries for %ds",
+                key[0], key[1], failures, _AUTO_DECOMPOSE_FAILURE_COOLDOWN_SECONDS,
+            )
+        self._auto_decompose_failures[key] = (failures, retry_at)
 
 
 @contextlib.contextmanager

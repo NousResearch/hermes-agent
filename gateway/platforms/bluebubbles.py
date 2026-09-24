@@ -300,8 +300,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # — keep it out of aiohttp access logs.
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
         from gateway.platforms.shared_ingress import bind_listener
-        self._runner = await bind_listener(
-            self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
+        try:
+            self._runner = await bind_listener(
+                self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._cleanup_local_resources())
+            raise
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                self._outbound_only = True
+                self._mark_connected()
+                return True
+            logger.error("[bluebubbles] webhook listener failed: %s", exc)
+            await self._cleanup_local_resources()
+            return False
+
         # Inbound delivery is not healthy until BlueBubbles accepts the
         # registration. Registration/migration is cancellation-safe and server
         # ownership is reconciled before local resources are released.
@@ -1060,6 +1073,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             or ""
         )
+
+        chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
+        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        if is_group and self.require_mention and not self._message_matches_mention_patterns(text):
+            self._finish_inbound_claim(message_id, claim, accepted=True)
+            return _ok()
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []

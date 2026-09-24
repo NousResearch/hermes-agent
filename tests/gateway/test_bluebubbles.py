@@ -184,7 +184,7 @@ class TestBlueBubblesConnectionLifecycle:
         client = AsyncMock()
         runner = AsyncMock()
         site = AsyncMock()
-        site.start.side_effect = OSError("address already in use")
+        site.start.side_effect = OSError(13, "permission denied")
         monkeypatch.setattr(
             "gateway.platforms.bluebubbles.httpx.AsyncClient",
             lambda **kwargs: client,

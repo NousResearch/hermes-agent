@@ -244,9 +244,6 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_blo
             bridged[key] = transform(platform_cfg[key]) if transform else platform_cfg[key]
     if plat == Platform.BLUEBUBBLES and "typing_indicators" in platform_cfg:
         bridged["typing_indicator"] = platform_cfg["typing_indicators"]
-    for key in _PORT_BRIDGE_KEYS.get(plat, ()):
-        if key in platform_cfg and key not in platform_cfg.get("extra", {}):
-            bridged[key] = platform_cfg[key]
     return bridged
 
 

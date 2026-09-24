@@ -32,6 +32,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A freshly launched local Chromium can accept its CDP endpoint before its
+# WebSocket listener is ready.  Give that short cold-start race a small,
+# bounded window, distinct from the reconnect budget below: a supervisor that
+# never attached must still report its start failure to the caller.
+MAX_INITIAL_CONNECT_ATTEMPTS = 3
+
 # Browserbase can transiently drop a CDP socket while a short-lived client
 # reconnects.  A locally owned browser endpoint, however, is gone for good
 # once its process exits; leave enough room for the former without leaking a
@@ -369,8 +375,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
-        A failure before the first successful attach is fatal for ``start()``."""
-        reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
+        A bounded initial dial window handles local browser cold starts; an endpoint that
+        never attaches remains fatal for ``start()``.  Once attached, reconnects use their
+        separate budget."""
+        initial_connect_attempts, reconnect_failures, last_success_at, backoff = 0, 0, 0.0, 0.5
         import websockets  # deferred: only supervisors that connect pay the import
         from agent.proxy_bypass import loopback_connect_kwargs
         connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
@@ -378,8 +386,17 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             try:
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
             except Exception as e:
-                if self._fail_start(e):
-                    return
+                if not self._ready_event.is_set():
+                    initial_connect_attempts += 1
+                    if initial_connect_attempts >= MAX_INITIAL_CONNECT_ATTEMPTS:
+                        self._fail_start(e)
+                        return
+                    logger.warning("CDP supervisor %s: initial connect failed (attempt %s/%s): %s",
+                                   self.task_id, initial_connect_attempts, MAX_INITIAL_CONNECT_ATTEMPTS,
+                                   _redact_cdp_error_text(e))
+                    await asyncio.sleep(min(backoff, 10.0))
+                    backoff = min(backoff * 2, 10.0)
+                    continue
                 reconnect_failures += 1
                 if self._reconnect_budget_spent(reconnect_failures, e):
                     return

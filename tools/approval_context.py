@@ -107,6 +107,11 @@ def get_current_session_key(default: str = "default") -> str:
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
+def get_current_session_id() -> str:
+    """Return the durable SessionDB id currently associated with an approval, if any."""
+    return _approval_session_id.get() or ""
+
+
 def _session_env(name: str) -> str:
     """Session-scoped env value, contextvar-first so one cron/-q job cannot taint
     unrelated gateway/API/TUI turns in the same process; process env is the

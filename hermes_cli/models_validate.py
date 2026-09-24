@@ -121,9 +121,141 @@ def _validate_moa(req: _Request) -> dict[str, Any]:
 
 
 def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
-    if any(ch.isspace() for ch in req.requested):
+    # Cloud catalogs never contain spaces. Self-hosted servers and a user-configured
+    # base_url do (VLLM "My Custom Model", a local router's "Go reasoning"). The
+    # step stays here — later branches must not see a cloud id the catalog cannot serve.
+    if any(ch.isspace() for ch in req.requested) and not _whitespace_allowed(req):
         return _reject("Model names cannot contain spaces.")
     return None
+
+
+_SELF_HOSTED_PROVIDERS = frozenset({
+    "lmstudio", "ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp",
+})
+
+
+def _provider_token(provider: Optional[str]) -> str:
+    return str(provider or "").strip().lower()
+
+
+def _is_self_hosted_provider(provider: Optional[str]) -> bool:
+    """Local servers and the custom endpoint bucket, including aliases that normalize to it."""
+    raw = _provider_token(provider)
+    if not raw:
+        return False
+    if raw == "custom" or raw.startswith("custom:"):
+        return True
+    from hermes_cli import models as _m
+
+    normalized = _m.normalize_provider(raw)
+    if normalized == "custom" or normalized.startswith("custom:"):
+        return True
+    return raw in _SELF_HOSTED_PROVIDERS or normalized in _SELF_HOSTED_PROVIDERS
+
+
+def _non_public_host(host: str) -> bool:
+    """Loopback, LAN, and single-label hosts are a user's endpoint, never a vendor catalog."""
+    host = (host or "").lower().rstrip(".")
+    if not host or host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".localhost"):
+        return bool(host)
+    if host.endswith((".local", ".lan", ".internal", ".home", ".localdomain")):
+        return True
+    if "." not in host:
+        return True
+    parts = host.split(".")
+    if len(parts) == 4 and all(part.isdigit() for part in parts):
+        octets = [int(part) for part in parts]
+        if octets[0] in {10, 127} or (octets[0] == 192 and octets[1] == 168):
+            return True
+        if octets[0] == 172 and 16 <= octets[1] <= 31:
+            return True
+    return False
+
+
+def _stock_host(provider: str) -> str:
+    """Vendor host for *provider*, offline. Empty when this install cannot name one.
+
+    ``get_provider`` can answer with a different id (``openai`` → the OpenRouter
+    overlay when models.dev is cold). A foreign row is not this provider's stock
+    endpoint — using it would exempt the real cloud host.
+    """
+    from hermes_cli.providers import get_provider
+    from utils import base_url_hostname
+
+    token = _provider_token(provider)
+    if not token:
+        return ""
+    try:
+        pdef = get_provider(token, allow_network=False)
+    except Exception:
+        return ""
+    if pdef is None or _provider_token(pdef.id) != token:
+        return ""
+    return base_url_hostname(pdef.base_url or "")
+
+
+def provider_allows_model_whitespace(provider: Optional[str], base_url: Optional[str] = None) -> bool:
+    """True when a spaced id is a real selection, not a cloud-catalog typo.
+
+    Self-hosted providers always qualify. A base_url qualifies when the user
+    configured it: a non-public host, or a public host that is not this
+    provider's own stock endpoint. A public host with no stock to compare
+    against stays rejected, so a cloud URL cannot slip through a cold catalog.
+    """
+    if _is_self_hosted_provider(provider):
+        return True
+    url = str(base_url or "").strip()
+    if not url:
+        return False
+    from utils import base_url_hostname
+
+    host = base_url_hostname(url)
+    if not host:
+        return False
+    if _non_public_host(host):
+        return True
+    raw = _provider_token(provider)
+    from hermes_cli import models as _m
+
+    normalized = _m.normalize_provider(raw) if raw else ""
+    stock = _stock_host(normalized or raw)
+    return bool(stock) and host != stock
+
+
+def _whitespace_allowed(req: _Request) -> bool:
+    # The openrouter→custom rewrite lives on ``normalized``; aliases live on the raw value.
+    if _is_self_hosted_provider(req.normalized) or _is_self_hosted_provider(req.provider):
+        return True
+    return provider_allows_model_whitespace(req.provider or req.normalized, req.base_url)
+
+
+def offered_model_ids(models, provider: Optional[str], base_url: Optional[str] = None) -> list:
+    """Ids a picker may show. Drops whitespace the validator will refuse; keeps the rest."""
+    ids = list(models or [])
+    if provider_allows_model_whitespace(provider, base_url):
+        return ids
+    return [model_id for model_id in ids if not (isinstance(model_id, str) and any(ch.isspace() for ch in model_id))]
+
+
+def drop_unofferable_model_ids(rows: list) -> None:
+    """In-place: picker rows must not offer an id ``validate_requested_model`` will refuse for whitespace."""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        provider = row.get("slug")
+        base_url = row.get("api_url") or row.get("base_url")
+        models = row.get("models")
+        if isinstance(models, list):
+            filtered = offered_model_ids(models, provider, base_url)
+            removed = len(models) - len(filtered)
+            if removed:
+                row["models"] = filtered
+                total = row.get("total_models")
+                if isinstance(total, int):
+                    row["total_models"] = max(0, total - removed)
+        featured = row.get("featured_models")
+        if isinstance(featured, list):
+            row["featured_models"] = offered_model_ids(featured, provider, base_url)
 
 
 def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
@@ -617,7 +749,8 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
-# BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
+# BEHAVIOR: moa → whitespace (skipped only for self-hosted providers and a user-configured
+# base_url) → OpenRouter preset parse → LM Studio → Ollama native → custom →
 # codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
 # Anthropic Messages → external process → live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (

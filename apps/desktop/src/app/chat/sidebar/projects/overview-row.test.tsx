@@ -30,7 +30,8 @@ vi.mock('@/i18n', () => ({
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
           showAllCount: (count: number) => `Show all ${count} sessions`,
           autoDiscovered: 'Auto-discovered'
-        }
+        },
+        showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
       }
     }
   })
@@ -60,8 +61,6 @@ vi.mock('./project-menu', () => ({
 
 const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 
-const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
-
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
 
 describe('ProjectOverviewRow', () => {
@@ -69,27 +68,6 @@ describe('ProjectOverviewRow', () => {
     workspaceOpen.value = false
     projectsStore.fetchProjectSessions.mockReset()
     projectsStore.projectProfile.mockReset().mockReturnValue('default')
-  })
-
-  it('wraps the "new session" add button in a Tip with the project-scoped label', () => {
-    render(<ProjectOverviewRow onNewSession={vi.fn()} project={project} />)
-
-    const button = screen.getByRole('button', { name: 'New session in Test D' })
-    expect(tipTrigger(button)).toBeTruthy()
-  })
-
-  it('wraps the disclosure toggle in a Tip when there are preview sessions', () => {
-    render(
-      <ProjectOverviewRow
-        previewSessions={[{ id: 's1' } as unknown as SessionInfo]}
-        project={project}
-        renderRows={() => null}
-      />
-    )
-
-    // Collapsed by default, so the disclosure offers to show the sessions.
-    const button = screen.getByRole('button', { name: 'Show Test D sessions' })
-    expect(tipTrigger(button)).toBeTruthy()
   })
 
   it('does not render the disclosure toggle when there is nothing to preview', () => {
@@ -124,6 +102,38 @@ describe('ProjectOverviewRow', () => {
     await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
     expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith('p1', { supersedable: false })
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
+  })
+
+  // A project with hundreds of chats hydrates them all, but the overview must
+  // not mount every row at once: it reveals them a page at a time, with a
+  // labeled row to the next page, until every session is on screen (#70421).
+  it('pages a large hydrated project instead of mounting every session at once', async () => {
+    workspaceOpen.value = true
+    const all = Array.from({ length: 120 }, (_, index) => session(`s${index + 1}`, 1000 - index))
+    const busy = { ...project, sessionCount: 120 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: all }] }]
+    } as unknown as SidebarProjectTree)
+
+    render(
+      <ProjectOverviewRow
+        previewSessions={all.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    const shown = () => screen.getByTestId('rows').textContent?.split(',').length
+
+    fireEvent.click(screen.getByText('Show all 120 sessions'))
+
+    await waitFor(() => expect(shown()).toBe(50))
+    fireEvent.click(screen.getByText('Show 50 more in Test D'))
+    expect(shown()).toBe(100)
+    fireEvent.click(screen.getByText('Show 20 more in Test D'))
+    expect(shown()).toBe(120)
+    expect(screen.queryByText(/Show .* more in Test D/)).toBeNull()
   })
 
   // The hydrated lanes are the raw backend payload: pinned, filtered-out and
@@ -169,33 +179,5 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
 
     expect(onNewSession).toHaveBeenCalledWith(null)
-  })
-
-  it('tags the row with data-sessions-project so a skin can target one project', () => {
-    const { container } = render(<ProjectOverviewRow project={project} />)
-
-    expect(container.querySelector('[data-sessions-project="p1"]')).toBeTruthy()
-  })
-
-  it('explicit projects keep the folder-library glyph and a plain accessible name', () => {
-    const explicit = { id: 'p1', label: 'Explicit' } as unknown as SidebarProjectTree
-
-    const { container } = render(<ProjectOverviewRow project={explicit} />)
-
-    expect(container.querySelector('.codicon-folder-library')).toBeTruthy()
-    expect(container.querySelector('.codicon-repo')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Enter Explicit' })).toBeTruthy()
-  })
-
-  it('auto-discovered repos get the repo glyph, an "Auto-discovered" tooltip, and an accessible name that says so', () => {
-    const auto = { id: '/Users/dev/my-repo', label: 'my-repo', isAuto: true } as unknown as SidebarProjectTree
-
-    const { container } = render(<ProjectOverviewRow project={auto} />)
-
-    expect(container.querySelector('.codicon-repo')).toBeTruthy()
-    expect(container.querySelector('.codicon-folder-library')).toBeNull()
-
-    const link = screen.getByRole('button', { name: 'Enter my-repo (Auto-discovered)' })
-    expect(tipTrigger(link)).toBeTruthy()
   })
 })

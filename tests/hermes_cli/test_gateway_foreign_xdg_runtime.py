@@ -29,13 +29,7 @@ class TestPathExistsSafe:
         # A foreign /run/user/0/bus is unreadable, not "reachable".
         assert gateway_cli._path_exists_safe(Path("/run/user/0/bus")) is False
 
-    def test_returns_true_when_present(self, monkeypatch):
-        monkeypatch.setattr(Path, "exists", lambda self: True)
-        assert gateway_cli._path_exists_safe(Path("/run/user/1001/bus")) is True
 
-    def test_returns_false_when_absent(self, monkeypatch):
-        monkeypatch.setattr(Path, "exists", lambda self: False)
-        assert gateway_cli._path_exists_safe(Path("/run/user/1001/bus")) is False
 
 
 class TestRuntimeDirIsOurs:

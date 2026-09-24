@@ -101,31 +101,32 @@ def test_docker_config_migrate_skips_below_floor_config_untouched(tmp_path: Path
     assert not list(tmp_path.glob("*.bak-*"))
 
 
-def test_docker_config_migrate_skips_unversioned_config_untouched(tmp_path: Path) -> None:
-    """Unversioned configs coerce to version 0 — below the floor, so refused."""
+def test_docker_config_migrate_stamps_unversioned_config(tmp_path: Path) -> None:
+    """A config with no _config_version (a template-seeded volume) is not below the floor, as in
+    migrate_config(): it is stamped and keeps its values."""
     config_path = tmp_path / "config.yaml"
-    original = yaml.safe_dump({"model": {"default": "m", "provider": "openrouter"}})
+    model = {"default": "m", "provider": "openrouter"}
+    config_path.write_text(yaml.safe_dump({"model": model}), encoding="utf-8")
+
+    proc = _run_migration(tmp_path)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "can no longer be auto-migrated" not in proc.stderr
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+    assert raw["model"] == model
+
+
+@pytest.mark.parametrize("original", ["model: [unterminated\n", "- a\n- b\n"])
+def test_docker_config_migrate_does_not_rewrite_invalid_yaml(tmp_path: Path, original: str) -> None:
+    config_path = tmp_path / "config.yaml"
     config_path.write_text(original, encoding="utf-8")
 
     proc = _run_migration(tmp_path)
 
     assert proc.returncode == 0, proc.stderr
     assert "Migrating config schema" not in proc.stdout
-    assert "can no longer be auto-migrated" in proc.stderr
-    assert config_path.read_text(encoding="utf-8") == original
-    assert not list(tmp_path.glob("*.bak-*"))
-
-
-def test_docker_config_migrate_does_not_rewrite_invalid_yaml(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.yaml"
-    original = "model: [unterminated\n"
-    config_path.write_text(original, encoding="utf-8")
-
-    proc = _run_migration(tmp_path)
-
-    assert proc.returncode == 0, proc.stderr
-    assert "Migrating config schema" not in proc.stdout
-    assert "hermes config:" in proc.stderr
+    assert "leaving config.yaml untouched" in proc.stderr
     assert config_path.read_text(encoding="utf-8") == original
     assert not list(tmp_path.glob("*.bak-*"))
 
@@ -154,7 +155,9 @@ def test_docker_config_migrate_restores_backups_after_failed_migration(
     config_path.write_text(original_config, encoding="utf-8")
     env_path.write_text(original_env, encoding="utf-8")
 
-    monkeypatch.setattr(module, "check_config_version", lambda: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(
+        module, "_read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (12, DEFAULT_CONFIG["_config_version"]))
     monkeypatch.setattr(module, "get_config_path", lambda: config_path)
     monkeypatch.setattr(module, "get_env_path", lambda: env_path)
 
@@ -185,8 +188,10 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
     config_path.write_text(original_config, encoding="utf-8")
     env_path.write_text(original_env, encoding="utf-8")
 
-    calls = iter([(12, DEFAULT_CONFIG["_config_version"]), (12, DEFAULT_CONFIG["_config_version"])])
-    monkeypatch.setattr(module, "check_config_version", lambda: next(calls))
+    monkeypatch.setattr(
+        module, "_read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "check_config_version", lambda: (12, DEFAULT_CONFIG["_config_version"]))
     monkeypatch.setattr(module, "get_config_path", lambda: config_path)
     monkeypatch.setattr(module, "get_env_path", lambda: env_path)
 

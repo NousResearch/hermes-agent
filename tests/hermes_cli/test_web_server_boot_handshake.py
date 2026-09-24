@@ -19,6 +19,8 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 import hermes_cli.web_server as web_server_mod
 import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 

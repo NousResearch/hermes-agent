@@ -291,6 +291,17 @@ class CodexAppServerSession:
                 )
             logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         self._thread_id = thread_id
+        # Wait for the thread-scoped MCP catalog before the first turn. Without this
+        # barrier app-server can snapshot an empty tool surface even though the same
+        # server appears moments later in mcpServerStatus/list.
+        try:
+            self._client.request(
+                "mcpServerStatus/list",
+                {"detail": "toolsAndAuthOnly", "threadId": thread_id},
+                timeout=45,
+            )
+        except (CodexAppServerError, TimeoutError):
+            logger.warning("codex app-server MCP catalog sync failed; continuing without guaranteed MCP tools", exc_info=True)
         return thread_id
 
     def _resume_thread(self, wanted: str, params: dict[str, Any]) -> str:

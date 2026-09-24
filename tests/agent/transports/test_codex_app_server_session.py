@@ -175,9 +175,13 @@ class TestLifecycle:
         tid_a = s.ensure_started()
         tid_b = s.ensure_started()
         assert tid_a == tid_b == "thread-fake-001"
-        # thread/start should be called exactly once
+        # Thread creation and the MCP readiness barrier should each run once.
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
+        sync_calls = [(m, p) for (m, p) in client.requests if m == "mcpServerStatus/list"]
+        assert sync_calls == [("mcpServerStatus/list", {
+            "detail": "toolsAndAuthOnly", "threadId": "thread-fake-001",
+        })]
 
     def test_thread_start_carries_hermes_prompt_and_disables_codex_personality(self):
         """thread/start carries cwd, Hermes' composed prompt as developerInstructions and
@@ -239,8 +243,9 @@ class TestLifecycle:
             {"thread": {"id": params["threadId"]}} if method == "thread/resume" else {"thread": {"id": "fresh-1"}})
         s = make_session(client, resume_thread_id="stored-1", developer_instructions="SOUL")
         assert s.ensure_started() == s.ensure_started() == "stored-1"
-        assert [m for m, _ in client.requests] == ["thread/resume"]
+        assert [m for m, _ in client.requests] == ["thread/resume", "mcpServerStatus/list"]
         assert client.requests[0][1] == {"threadId": "stored-1", "cwd": "/tmp", "personality": "none", "developerInstructions": "SOUL"}
+        assert client.requests[1][1]["threadId"] == "stored-1"
 
         def refuse(method, params):
             if method == "thread/resume":
@@ -253,7 +258,7 @@ class TestLifecycle:
             s.ensure_started()
         assert exc_info.value.thread_id == "gone-1"
         assert s.ensure_started() == "fresh-2"
-        assert [m for m, _ in client.requests] == ["thread/resume", "thread/start"]
+        assert [m for m, _ in client.requests] == ["thread/resume", "thread/start", "mcpServerStatus/list"]
 
     def test_close_idempotent(self):
         client = FakeClient()

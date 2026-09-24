@@ -28,7 +28,6 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import Gap, expect_gaps
 
 from . import _helpers as H
 
@@ -100,16 +99,7 @@ def _await_cron(tenants: dict[str, H.Tenant], fires: int) -> None:
            f"cron fire #{fires} in every profile")
 
 
-# Live gaps, applied only while their probe reproduces them (see _pending_fixes).
-GAPS = (
-    # A race in this cell (which session first imports gateway.run), red in ~6 of 7 runs: not strict.
-    Gap(120307, "#120307: gateway.run's import-time config bridge writes a secondary session's .env / "
-                "terminal.* into the process env", raises=H.TenantLeak, strict=False),
-)
-
-
 def test_desktop_backend_never_crosses_tenants(fleet, request: pytest.FixtureRequest) -> None:
-    expect_gaps(request, *GAPS)
     root, tenants, backends = fleet
 
     # Phase 1: one backend, three profile sessions, interleaved turns, one cron fire per profile.

@@ -661,8 +661,8 @@ def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
     final = _update(leg)
     # Merge-order safe (see _pending_fixes.known_failure): only the import-time death excuses torn-tree.
     gate = known_failure(
-        r"(?s)^final `hermes update` failed:.*cannot import name",
-        "#120339 (open fix PR): a fast-forward killed half-way leaves a prefix of the changed files at HEAD while "
+        r"(?s)^final `hermes update` failed:.*(cannot import name|No module named)",
+        "#120339 (merged; passes once N-1 is a release carrying it): a fast-forward killed half-way leaves a prefix of the changed files at HEAD while "
         "HEAD still names N-1; every entry point, including `hermes update`, then dies at import (cannot import "
         "name ... from 'utils'), so nothing can heal the install without manual git") if torn else contextlib.nullcontext()
     with gate:

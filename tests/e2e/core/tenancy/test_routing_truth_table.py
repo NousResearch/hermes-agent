@@ -32,7 +32,6 @@ from urllib.parse import urlparse
 
 import pytest
 
-from tests.e2e.core._pending_fixes import Gap, expect_gaps
 from tests.fakes.fake_llm_provider import MODEL_ID, Error, ToolCall
 
 from ._routing_helpers import (
@@ -300,11 +299,6 @@ def cli_outcomes(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         return {cid: fut for cid, fut in futures.items()}
 
 
-# Live gaps, applied only while their probe reproduces them (see _pending_fixes).
-GAP_120295 = Gap(120295, "#120295: `/model <id> --provider X` adopts another provider's alias (endpoint + key) "
-                         "for the same model id", raises=RoutingLeak)
-
-
 @pytest.mark.parametrize("case", [pytest.param(c, id=c.id) for c in CASES])
 def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any]) -> None:
     fleet, outcomes = cli_outcomes[case.id].result(timeout=900)
@@ -347,8 +341,7 @@ class Switch:
 def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     """One live session walks the switch matrix; after every switch the next turn lands on
     exactly the selected host with exactly its key, and nothing reaches any other host.
-    Leg 5 is #120295's cell; leg 6 pins the #120299 fix."""
-    expect_gaps(request, GAP_120295)
+    Leg 5 pins the #120295 fix; leg 6 pins the #120299 fix."""
     fleet = Fleet(ROLES).start()
     trap = EgressTrap()
     home = tmp_path / "home"

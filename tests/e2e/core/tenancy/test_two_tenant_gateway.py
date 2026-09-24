@@ -36,7 +36,6 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import Gap, expect_gaps
 
 from . import _helpers as H
 
@@ -153,14 +152,7 @@ def _await_cron(tenants: dict[str, H.Tenant], at_least: int) -> None:
            f"cron fire #{at_least} in every profile")
 
 
-# Applied only while the probe reproduces it (see _pending_fixes).
-GAP_120307 = Gap(120307, "#120307: session-less work (cron) for a routed profile keys the shared 'default' "
-                         "terminal env, so alpha/beta cron tool calls inherit default's .env, cwd and shell state",
-                 raises=H.TenantLeak)
-
-
 def test_multiplexed_gateway_never_crosses_tenants(fleet, request: pytest.FixtureRequest) -> None:
-    expect_gaps(request, GAP_120307)
     root, tenants, gw = fleet
     home = root / "home"
 

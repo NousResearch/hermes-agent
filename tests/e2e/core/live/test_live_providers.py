@@ -131,12 +131,12 @@ def _host_ok(host: str, allowed: tuple[str, ...]) -> bool:
 # /models ------------------------------------------------------------------------
 
 
-# Merge-order safe (see _pending_fixes.known_failure): only an EMPTY live listing excuses the cell,
-# so the cell simply passes once the fix lands.
+# Merge-order safe (see _pending_fixes.known_failure): only an empty listing WITH a 401 from the
+# models endpoint excuses the cell (an outage or a 5xx still fails it); it passes once the fix lands.
 _KNOWN_LISTING_BUGS = {
     # Native /v1beta/models rejects a Bearer AI-Studio key (401), so the live fetcher returns nothing
     # and the picker silently falls back to the curated list.
-    "gemini": (r"^gemini: live /models returned nothing",
+    "gemini": (r"^gemini: live /models returned nothing \(.*/models -> 401",
                "#62259 Gemini live model discovery sends Bearer auth (fix PRs #62267/#116509)"),
 }
 

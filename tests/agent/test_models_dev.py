@@ -134,6 +134,30 @@ class TestLookupModelsDevContext:
         mock_fetch.return_value = SAMPLE_REGISTRY
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
 
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_kimi_coding_plan_renamed_provider(self, mock_fetch):
+        """models.dev renamed the provider "kimi-for-coding" -> "kimi-code-plan-global" (and the
+        CN variant -> "kimi-code-plan-cn"); kimi-* context must resolve under the new ids, not
+        fall back to the generic default. Model ids (kimi-for-coding) are unchanged."""
+        mock_fetch.return_value = {
+            "kimi-code-plan-global": {
+                "id": "kimi-code-plan-global",
+                "models": {
+                    "kimi-for-coding": {"id": "kimi-for-coding",
+                                        "limit": {"context": 1048576, "output": 32768}},
+                },
+            },
+            "kimi-code-plan-cn": {
+                "id": "kimi-code-plan-cn",
+                "models": {
+                    "kimi-for-coding": {"id": "kimi-for-coding",
+                                        "limit": {"context": 1048576, "output": 32768}},
+                },
+            },
+        }
+        for provider in ("kimi", "kimi-coding", "moonshot", "kimi-coding-cn"):
+            assert lookup_models_dev_context(provider, "kimi-for-coding") == 1048576
+
 
 
 

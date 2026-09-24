@@ -440,7 +440,8 @@ def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str,
 
 def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef]:
     """Exact Hermes registry ids win over LOSSY alias collapsing (kimi-coding-cn must stay distinct
-    from kimi-coding instead of collapsing through the shared models.dev alias "kimi-for-coding").
+    from kimi-coding; both were once the single models.dev alias "kimi-for-coding", now split into
+    kimi-code-plan-global / kimi-code-plan-cn).
     A collapse is lossy only when MULTIPLE registry providers normalize to the same canonical name;
     single-entry rewrites ("copilot" -> "github-copilot") are correct routing and keep resolving
     through the built-in chain so overlay transports apply."""

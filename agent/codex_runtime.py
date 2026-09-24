@@ -1113,8 +1113,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
         writer_token["raw_stream"] = _raw_stream
-        logger.debug("Codex stream opened at %.3f (attempt=%s/%s, model=%s)",
-            time.time(), attempt + 1, max_stream_retries + 1, model)
+        # No time.time() here: the first-event stamp below is the attempt's timeline anchor.
+        logger.debug("Codex stream opened (attempt=%s/%s, model=%s)",
+            attempt + 1, max_stream_retries + 1, model)
 
     def _drain_for_finalizer(event_stream: Any) -> None:
         # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error

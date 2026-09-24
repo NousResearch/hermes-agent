@@ -95,6 +95,15 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     throw new Error('getUserMedia unavailable for client wake capture')
   }
 
+  // Electron's macOS permission prompt must run before the renderer opens the
+  // stream. Without this preflight, remote client capture can stay armed on
+  // the gateway while the desktop never obtains microphone samples.
+  const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
+
+  if (permitted === false) {
+    throw new Error('Microphone access denied for client wake capture')
+  }
+
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,

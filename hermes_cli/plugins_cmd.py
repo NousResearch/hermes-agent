@@ -983,20 +983,39 @@ def cmd_install(
     _install_python_dependencies(target, console, skip=no_deps)
     _display_after_install(target, identifier)
 
-    if enable is None:
-        enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
-    if enable:
-        _set_plugin_enabled(installed_name, enable=True)
-        console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
-    else:
+    is_memory = installed_manifest.get("category") == "memory" or (
+        entry is not None and entry.category == "memory"
+    )
+    if is_memory:
+        # Memory setup owns provider selection; a generic allow-list entry cannot activate it.
+        enable = False
         console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+            "[dim]Memory provider installed. Run `hermes memory setup` to select and configure it. "
+            "Activation uses memory.provider, not plugins.enabled; "
+            "the current memory provider selection is unchanged.[/dim]"
+        )
+    else:
+        if enable is None:
+            enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
+        if enable:
+            _set_plugin_enabled(installed_name, enable=True)
+            console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
+        else:
+            console.print(
+                f"[dim]Plugin installed but not enabled. "
+                f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
 
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
-        _run_capability_consent(console, installed_name, declared_caps, context="install")
+        if is_memory:
+            _run_capability_consent(
+                console, installed_name, declared_caps, context="install",
+                activation_note="Capability consent does not select memory.provider; "
+                "run `hermes memory setup` to activate this provider.",
+            )
+        else:
+            _run_capability_consent(console, installed_name, declared_caps, context="install")
     if enable:
         # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
@@ -1405,7 +1424,8 @@ def _declared_capabilities_for_key(key: str) -> list:
     return _declared_capabilities_from_manifest(_read_manifest(Path(entry[4])), entry[0])
 
 
-def _run_capability_consent(console, plugin_id: str, declared: list, *, context: str = "install") -> bool:
+def _run_capability_consent(console, plugin_id: str, declared: list, *, context: str = "install",
+                            activation_note: str = "") -> bool:
     """Show the capability consent screen and record the decision; True when granted.
 
     On consent the pending capabilities are granted under
@@ -1414,6 +1434,8 @@ def _run_capability_consent(console, plugin_id: str, declared: list, *, context:
     degrade via ``ctx.has_capability()``. Consent + audit, NOT a sandbox.
     """
     from hermes_cli.plugin_capabilities import CAPABILITY_REGISTRY, pending_capabilities, record_consent
+    if activation_note:
+        console.print(f"  [dim]{activation_note}[/dim]")
     pending = pending_capabilities(plugin_id, declared)
     if not pending:
         # Refresh the consent hash so a later declaration change is detected.
@@ -1446,10 +1468,16 @@ def _run_capability_consent(console, plugin_id: str, declared: list, *, context:
             f"([dim]plugins.entries.{plugin_id}.granted_capabilities[/dim])")
         return True
 
-    console.print(
-        f"  [dim]Declined. {plugin_id} stays enabled with these capabilities "
-        "off; it should degrade gracefully (ctx.has_capability()). Re-run "
-        f"`hermes plugins enable {plugin_id}` to grant later.[/dim]")
+    if activation_note:
+        console.print(
+            f"  [dim]Declined. {plugin_id}'s capabilities remain off; "
+            "provider selection is unchanged. Re-run "
+            f"`hermes plugins enable {plugin_id}` to grant capabilities only.[/dim]")
+    else:
+        console.print(
+            f"  [dim]Declined. {plugin_id} stays enabled with these capabilities "
+            "off; it should degrade gracefully (ctx.has_capability()). Re-run "
+            f"`hermes plugins enable {plugin_id}` to grant later.[/dim]")
     return False
 
 

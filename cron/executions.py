@@ -235,7 +235,9 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]
     return record
 
 
-def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
+def adopt_claimed_execution(
+    execution_id: str, *, exclusive_job: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
     The dispatching gateway creates the row before spawning a restart-safe
@@ -246,13 +248,24 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     process_started_at = _process_start_time(pid)
     now = _hermes_now().isoformat()
     with _transaction() as conn:
+        exclusive_clause = ""
+        parameters: tuple[Any, ...] = (
+            _PROCESS_ID, pid, process_started_at, now, execution_id,
+        )
+        if exclusive_job:
+            exclusive_clause = (
+                " AND NOT EXISTS (SELECT 1 FROM executions active "
+                "WHERE active.job_id=(SELECT job_id FROM executions WHERE id=?) "
+                "AND active.id<>? AND active.status='running')"
+            )
+            parameters += (execution_id, execution_id)
         cur = conn.execute(
             """UPDATE executions
                SET process_id=?, pid=?, process_started_at=?,
                    status='running', started_at=?, handoff_pending=0,
                    handoff_started_at=NULL
-               WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (_PROCESS_ID, pid, process_started_at, now, execution_id),
+               WHERE id=? AND status='claimed' AND handoff_pending=1""" + exclusive_clause,
+            parameters,
         )
         if cur.rowcount != 1:
             return None
@@ -261,17 +274,34 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     return record
 
 
-def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
-    """Transition one claimed attempt to running exactly once."""
+def mark_execution_running(
+    execution_id: str, *, exclusive_job: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Transition one claimed attempt to running exactly once.
+
+    ``exclusive_job`` is the existing execution claim's per-job exclusion
+    variant: only one running attempt for that job may enter the side-effect
+    path. It is used by persistent cron goal sessions, whose state cannot be
+    safely advanced by overlapping fires.
+    """
     now = _hermes_now().isoformat()
     with _transaction() as conn:
+        exclusive_clause = ""
+        parameters: tuple[Any, ...] = (now, execution_id, _PROCESS_ID, os.getpid())
+        if exclusive_job:
+            exclusive_clause = (
+                " AND NOT EXISTS (SELECT 1 FROM executions active "
+                "WHERE active.job_id=(SELECT job_id FROM executions WHERE id=?) "
+                "AND active.id<>? AND active.status='running')"
+            )
+            parameters += (execution_id, execution_id)
         cur = conn.execute(
             """UPDATE executions
                SET status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
+               handoff_started_at=NULL
                WHERE id=? AND status='claimed' AND handoff_pending=0
-                 AND process_id=? AND pid=?""",
-            (now, execution_id, _PROCESS_ID, os.getpid()),
+                 AND process_id=? AND pid=?""" + exclusive_clause,
+            parameters,
         )
         if cur.rowcount != 1:
             return None

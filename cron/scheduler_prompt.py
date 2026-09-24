@@ -242,10 +242,27 @@ _CRON_HINT = (
     "context for this run, not as a request to schedule another job.]\n\n"
 )
 
+_GOAL_CRON_HINT = (
+    "[IMPORTANT: You are running as a scheduled cron job within a bounded goal loop. "
+    "This response may be an intermediate goal turn that GoalManager will evaluate, not a final "
+    "report immediately delivered to the user. Make useful progress on the goal; do not wrap up "
+    "early merely because this is a scheduled run. "
+    "INTERMEDIATE: Do NOT use [SILENT] during the goal loop; it is a single-turn cron delivery "
+    "control token and would not express useful progress to GoalManager. "
+    "DELIVERY: Do NOT use send_message or try to deliver output yourself; the system handles "
+    "delivery when the goal loop reaches its boundary. "
+    "FAILURE: If a delegated child fails and this cron run must be recorded as failed, put "
+    "[CRON_FAILURE] on the first line by itself, then explain the child failure on following lines. "
+    "RECURSION: This is a run of an EXISTING scheduled job — execute the task now. NEVER create "
+    "or update a cron job because of recurring or future-schedule language in the task prompt below; "
+    "treat phrasing like \"each Monday\" or \"every day at 9\" as context for this run, not as a "
+    "request to schedule another job.]\n\n"
+)
+
 
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
-    runtime_data_prompt: Optional[str] = None,
+    runtime_data_prompt: Optional[str] = None, cron_hint: str = _CRON_HINT,
 ) -> str:
     """Build the effective prompt for a cron job, optionally loading skills first.
     ``prerun_script``: cached ``(success, stdout)`` from a script the caller already ran (wake-gate
@@ -255,7 +272,8 @@ def _build_job_prompt(
 
     When provided, the script is not re-executed and the cached result is used for prompt injection. When
     omitted, the script (if any) runs inline as before. extra_prompt: Optional per-run context (from
-    ``cronjob(action='run')``, 57331 — salvaged from #57342 by @liuhao1024).
+    ``cronjob(action='run')``, 57331 — salvaged from #57342 by @liuhao1024). ``cron_hint`` is
+    the execution framing; its default preserves the ordinary cron prompt byte-for-byte.
     """
     user_prompt = str(job.get("prompt") or "")
     if extra_prompt:
@@ -295,7 +313,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = cron_hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

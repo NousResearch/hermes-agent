@@ -17,6 +17,16 @@ try:
 except ModuleNotFoundError:
     pass
 
+# A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
+# fails at the next import, whichever it is — put the old tree back before importing anything else
+# from the checkout, then rerun the command (this module may itself be one of the new files).
+# ``_early_recovery`` is stdlib-only and imported unguarded on purpose: same package
+# dir, so if IT can't import nothing in hermes_cli can.
+from hermes_cli import _early_recovery as _early_recovery_mod
+
+if _early_recovery_mod.restore_interrupted_pull():
+    _early_recovery_mod.relaunch_after_restore()
+
 # Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
 # imports — it shells out ``cmd /c ver`` and flashes a console when this
 # process is windowless (pythonw gateway, kanban workers). No-op on POSIX.
@@ -44,13 +54,9 @@ _startup_fast.normalize_hermes_home_env()
 # the hermes_cli.config/env_loader imports further down would then crash before
 # main() reaches _recover_from_interrupted_install(). ``_early_recovery`` is
 # stdlib-only (safe on a corrupted venv) and repairs just enough to finish this
-# import; the marker lifecycle stays with the full recovery path. Its own
-# import is unguarded on purpose: same package dir, so if IT can't import
-# nothing in hermes_cli can.
+# import; the marker lifecycle stays with the full recovery path.
 # It is also the canonical home of the probe/repair tables reused by the full recovery path below. See
 # #57828.
-from hermes_cli import _early_recovery as _early_recovery_mod
-
 try:
     _early_recovery_mod.recover_if_needed()
 except Exception:
@@ -1925,7 +1931,7 @@ cmd_doctor = _forward_command("cmd_doctor", "hermes_cli.doctor", "run_doctor", f
 cmd_dump = _forward_command("cmd_dump", "hermes_cli.dump", "run_dump", doc='Dump setup summary for support/debugging.')
 cmd_debug = _forward_command("cmd_debug", "hermes_cli.debug", "run_debug", doc='Debug tools (share report, etc.).')
 cmd_skin = _forward_command("cmd_skin", "hermes_cli.skin_cmd", "skin_command", doc='Skin management (list / use / set).')
-cmd_import = _forward_command("cmd_import", "hermes_cli.backup", "run_import", doc='Restore a Hermes backup from a zip file.')
+cmd_import = _forward_command("cmd_import", "hermes_cli.backup", "run_import", forward_return=True, doc='Restore a Hermes backup from a zip file.')
 cmd_dashboard_register = _forward_command("cmd_dashboard_register", "hermes_cli.dashboard_register", "cmd_dashboard_register", doc='Register a self-hosted dashboard OAuth client with Nous Portal.')
 cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_enroll", "cmd_gateway_enroll", doc='Enroll a self-hosted gateway with a relay connector.')
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')

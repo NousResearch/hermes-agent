@@ -13,9 +13,20 @@ call is mocked — we never actually shell out during unit tests.
 from __future__ import annotations
 
 
+import os
+
 import pytest
 
 import tools.lazy_deps as ld
+
+# Read while pytest imports this module, i.e. at collection, before any fixture runs.
+_KILL_SWITCH_AT_COLLECTION = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS")
+
+
+def test_lazy_installs_are_disabled_during_collection():
+    """Modules can call ensure() at import time (agent/bedrock_adapter.py does), so the
+    kill-switch must already be set when test modules are collected, not only per test."""
+    assert _KILL_SWITCH_AT_COLLECTION == "1"
 
 
 # ---------------------------------------------------------------------------

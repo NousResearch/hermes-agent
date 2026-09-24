@@ -139,6 +139,15 @@ def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = Tru
         _release_profile_runtime_scope_tokens(scopes)
 
 
+def _session_default_model(session: dict) -> str:
+    """The configured default model of the session's OWN profile. Bare ``_resolve_model()`` reads the
+    LAUNCH profile's config, so a secondary session's reply or first state.db row carried the launch
+    profile's model id."""
+    with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
+                                        hydrate_secrets=False):
+        return _resolve_model()
+
+
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:
     """Replace one completed failed build generation and start its retry."""
     if failed_ready is None:

@@ -822,3 +822,115 @@ class TestProfileCatalogAuthoritative:
                 "other-vendor/model-a", "relay-owned-catalog", api_key="k")
         assert result["accepted"] is True
         assert result["recognized"] is True
+
+
+# -- validate — whitespace in self-hosted / user-configured ids --------------
+
+def _spaces_message(result) -> bool:
+    return "spaces" in (result.get("message") or "")
+
+
+class TestModelIdWhitespace:
+    """Cloud catalogs reject whitespace. Self-hosted providers and a user-configured
+    base_url may serve ids that contain it. The picker must not offer an id this
+    validator will refuse."""
+
+    def test_cloud_providers_reject_whitespace(self):
+        for provider, model in (
+            ("anthropic", "claude opus"),
+            ("openrouter", "anthropic/claude opus"),
+            ("openai", "gpt 5.4"),
+        ):
+            result = _validate(model, provider=provider)
+            assert result["accepted"] is False
+            assert result["persist"] is False
+            assert result["message"] == "Model names cannot contain spaces."
+
+    def test_cloud_stock_base_url_still_rejects_whitespace(self):
+        for provider, base_url in (
+            ("anthropic", "https://api.anthropic.com"),
+            ("openai", "https://api.openai.com/v1"),
+            ("openrouter", "https://openrouter.ai/api/v1"),
+        ):
+            result = _validate("claude opus", provider=provider, base_url=base_url)
+            assert result["accepted"] is False, provider
+            assert _spaces_message(result), provider
+
+    def test_custom_provider_accepts_listed_id_with_spaces(self):
+        result = _validate(
+            "My Custom Model", provider="custom", api_models=["My Custom Model"],
+            base_url="http://127.0.0.1:8000/v1")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["persist"] is True
+
+    def test_named_custom_endpoint_accepts_listed_id_with_spaces(self):
+        result = _validate(
+            "Go reasoning", provider="custom:omniroute", api_models=["Go reasoning"],
+            base_url="http://127.0.0.1:20128/v1")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_self_hosted_aliases_accept_listed_ids_with_whitespace(self):
+        for provider in ("vllm", "ollama", "llamacpp", "local", "lmstudio"):
+            model = "Meta Llama 3.1 8B"
+            if provider == "lmstudio":
+                with patch("hermes_cli.models_local.probe_lmstudio_models", return_value=[model]):
+                    result = validate_requested_model(model, provider)
+            else:
+                result = _validate(
+                    model, provider=provider, api_models=[model],
+                    base_url="http://127.0.0.1:8000/v1")
+            assert result["accepted"] is True, provider
+            assert not _spaces_message(result), provider
+
+    def test_user_configured_base_url_accepts_listed_id_with_spaces(self):
+        """A router with its own slug is not ``custom``; the base_url is the exemption."""
+        result = _validate(
+            "Go reasoning", provider="omniroute", api_models=["Go reasoning"],
+            base_url="http://127.0.0.1:20128/v1", api_key="sk-test")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert not _spaces_message(result)
+
+    def test_tab_in_cloud_id_is_still_rejected(self):
+        result = _validate("claude\topus", provider="anthropic")
+        assert result["accepted"] is False
+        assert result["message"] == "Model names cannot contain spaces."
+
+
+def test_picker_payload_omits_ids_the_validator_rejects_for_whitespace():
+    """Desktop model.options is this payload. A cloud row must not offer a spaced id;
+    a self-hosted row and a user-configured base_url row must keep theirs."""
+    from hermes_cli.inventory import ConfigContext, build_models_payload
+
+    rows = [
+        {
+            "slug": "anthropic", "name": "Anthropic", "is_current": False,
+            "is_user_defined": False, "models": ["claude-opus-4.6", "claude opus"],
+            "total_models": 2, "source": "curated",
+        },
+        {
+            "slug": "omniroute", "name": "OmniRoute", "is_current": False,
+            "is_user_defined": True, "models": ["Go reasoning", "plain-id"],
+            "total_models": 2, "source": "user-config",
+            "api_url": "http://127.0.0.1:20128/v1",
+        },
+        {
+            "slug": "lmstudio", "name": "LM Studio", "is_current": False,
+            "is_user_defined": False, "models": ["Meta Llama 3.1 8B"],
+            "total_models": 1, "source": "local",
+        },
+    ]
+    ctx = ConfigContext(
+        current_provider="anthropic", current_model="claude-opus-4.6",
+        current_base_url="", user_providers={}, custom_providers=[])
+    with patch("hermes_cli.model_switch.list_authenticated_providers", return_value=rows), \
+         patch("hermes_cli.inventory._local_runtime_row", return_value=None), \
+         patch("hermes_cli.inventory._moa_provider_row", return_value=None):
+        payload = build_models_payload(ctx)
+    by_slug = {row["slug"]: row["models"] for row in payload["providers"]}
+    assert "claude opus" not in by_slug["anthropic"]
+    assert "claude-opus-4.6" in by_slug["anthropic"]
+    assert "Go reasoning" in by_slug["omniroute"]
+    assert "Meta Llama 3.1 8B" in by_slug["lmstudio"]

@@ -563,13 +563,14 @@ class CLIStreamMixin:
         Most sync slash commands reserve the composer (their completion changes session state);
         manual compression is safe to draft through (queued input runs against compacted history).
         """
+        from cli import _cprint
         previous_blocks_input = getattr(self, "_command_blocks_input", False)
         self._command_running = True
         self._command_blocks_input = blocks_input
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            print(f"⏳ {status}")
+            _cprint(f"⏳ {status}")
             yield
         finally:
             self._command_running = False

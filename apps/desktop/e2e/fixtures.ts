@@ -70,6 +70,16 @@ function isCredentialEnvVar(name: string): boolean {
   return CREDENTIAL_SUFFIXES.some((suffix) => name.endsWith(suffix))
 }
 
+// Runtime state of whatever Hermes launched this run. A spec driven from inside
+// an agent's terminal inherits HERMES_YOLO_MODE, HERMES_INTERACTIVE,
+// HERMES_SESSION_ID…, and the sandboxed backend then skips approvals or binds
+// the caller's session — the approval spec failed locally on the leaked yolo
+// flag while CI (which never has these) stayed green. The fixtures set every
+// HERMES_* the app needs themselves; only the harness's own knobs pass.
+function isInheritedHermesRuntimeVar(name: string): boolean {
+  return name.startsWith('HERMES_') && !name.startsWith('HERMES_DESKTOP_') && !name.startsWith('HERMES_E2E_')
+}
+
 function stripCredentials(env: Record<string, string | undefined>): Record<string, string> {
   const clean: Record<string, string> = {}
 
@@ -78,7 +88,7 @@ function stripCredentials(env: Record<string, string | undefined>): Record<strin
       continue
     }
 
-    if (isCredentialEnvVar(key)) {
+    if (isCredentialEnvVar(key) || isInheritedHermesRuntimeVar(key)) {
       continue
     }
 

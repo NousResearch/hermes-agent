@@ -31,11 +31,14 @@ def server():
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
     #
-    # Import server_requests (pure stdlib) BEFORE the window: the patch drops every module first imported
-    # inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
+    # Import server_requests (pure stdlib) and transport BEFORE the window: the patch drops every module first
+    # imported inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
     # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
-    # unbound copy whose default sinks drop frames and treat every client as answerable.
+    # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
+    # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
+    # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
     import tui_gateway.server_requests  # noqa: F401
+    import tui_gateway.transport  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -1162,8 +1165,10 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
 # ── Config I/O ───────────────────────────────────────────────────────
 
 
-def test_config_roundtrip(server, tmp_path):
-    server._hermes_home = tmp_path
+def test_config_roundtrip(server, tmp_path, monkeypatch):
+    # monkeypatch, not assignment: a bare ``server._hermes_home = tmp_path`` outlives this test and every
+    # later ``_load_cfg()`` in the process reads this file's ``model: test/model`` shorthand.
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
 
@@ -1520,6 +1525,34 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     assert decision["choice"] is None and decision["cancelled"]
     assert peer.frames == []
     assert "ws-old-approval" not in approval_mod._gateway_queues
+
+
+def test_approval_that_ends_before_its_settle_hook_attaches_is_still_withdrawn(server):
+    """The client can answer (``approval.respond`` RPC, or another surface) between the frame going out and
+    the settle hook attaching; ``register_gateway_settle`` then reports the entry gone. The sent request must
+    still be withdrawn, or every later ``session.resume`` replays a prompt nobody is waiting on."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-raced", peer)
+    token = bind_transport(peer)
+    try:
+        server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    try:
+        # No queue entry carries this request id: the wait already ended when the hook tries to attach.
+        server._emit_approval_request("ws-raced", {"command": "rm -rf build", "description": "",
+                                                   "request_id": "appr-already-resolved"})
+        assert len(peer.frames) == 2, f"the sent approval was never withdrawn: {peer.frames}"
+        sent, cancel = peer.frames
+        assert sent["method"] == "approval"
+        assert cancel["params"]["type"] == "request.cancel"
+        assert cancel["params"]["payload"]["id"] == sent["id"]
+        assert server_requests.open_requests("ws-raced") == []
+    finally:
+        server.unregister_live_transport(peer)
 
 
 def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, monkeypatch):

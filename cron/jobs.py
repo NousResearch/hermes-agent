@@ -2378,6 +2378,7 @@ def mark_job_run(
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
     quota_hold_seconds: Optional[float] = None,
+    recover_consumed_fire: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2393,8 +2394,10 @@ def mark_job_run(
     (Cowork-style; see cron/unreachable_retry.py).
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
-    ``retry after <N>s``). Recurring jobs are parked at their first occurrence after the window
-    instead of re-firing into it on every tick (cron/quota_hold.py, #89376).
+    ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
+    it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
+    consumed fire when the provider reopens; manual runs retain the natural schedule
+    (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2416,7 +2419,7 @@ def mark_job_run(
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
         if not success and quota_hold_seconds and not is_terminal_job(job):
-            quota_hold.plan_hold(job, quota_hold_seconds)
+            quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
         else:
             quota_hold.clear_state(job)
         save_jobs(jobs)
@@ -2985,13 +2988,20 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     """Stale-schedule guard for a due cron instant; True when re-anchored without firing.
 
     A direct edit of schedule.expr leaves next_run_at on the old lattice, so re-anchor first (from
-    the current expr, so this converges). An offset-representation migration also moves a legacy
-    instant off the lattice, and re-anchoring THAT swallowed a due occurrence — so classify, and
-    let
-    the migration case fall through to fire ONCE (at-most-once holds: nothing re-reads the legacy
-    instant after advance/mark_job_run rewrites it)."""
+    the current expr, so this converges). Some instants are off the lattice on purpose and
+    authorize one fire instead: an offset-representation migration that would otherwise swallow
+    a never-fired occurrence, and the failure-path planners' parked instants (a quota recovery
+    before a sparse cron's next natural occurrence, an unreachable-model retry rung). All fall
+    through to fire ONCE (at-most-once holds: completion rewrites the instant)."""
     stale_class = _classify_stale_cron_next_run(d.schedule, d.raw_next_run_dt, d.next_run_dt)
     if stale_class == STALE_CRON_EXPR_EDIT:
+        from cron.quota_hold import is_recovery_fire
+        from cron.unreachable_retry import is_retry_fire
+        if is_recovery_fire(d.job, d.next_run) or is_retry_fire(d.job, d.next_run):
+            logger.info(
+                "cron.off_lattice_fire job='%s' id=%s expr=%r at=%s",
+                d.label, d.job.get("id"), d.schedule.get("expr"), d.next_run)
+            return False
         new_next = d.recompute_next()
         logger.info(
             "Job '%s' next_run_at %s does not match its current "

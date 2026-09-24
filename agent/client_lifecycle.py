@@ -872,11 +872,20 @@ class ClientLifecycleMixin:
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
         # and Azure use static keys — a refresh would pick up the ~/.claude OAuth token and break auth.
+        anthropic_base_url = getattr(self, "_anthropic_base_url", "") or ""
         if (
             self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key")
-            or self.provider != "anthropic"
-            or base_url_host_matches(getattr(self, "_anthropic_base_url", "") or "", "azure.com")
+            or self.provider != "anthropic" or base_url_host_matches(anthropic_base_url, "azure.com")
         ):
+            return False
+        # Off the official hosts (a /anthropic proxy the resolver accepts, or a URL-bearing alias,
+        # #28660) rotate only a credential the endpoint already holds: swapping a custom key for
+        # ANTHROPIC_API_KEY / the OAuth token would leak it (#17829). Hostname match, not substring,
+        # so ``proxy.example/anthropic.com`` stays foreign.
+        official_host = not anthropic_base_url or any(
+            base_url_host_matches(anthropic_base_url, host) for host in ("anthropic.com", "claude.com"))
+        current_key = str(self._anthropic_api_key or "")
+        if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token

@@ -684,15 +684,17 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     assert exc_info.value.relogin_required is True
 
 
-def test_refresh_token_exchange_503_is_retryable_not_relogin():
-    """A Nous deployment outage must not be treated as a dead OAuth grant (#120976)."""
+@pytest.mark.parametrize("status_code", [500, 502, 503, 504, 599])
+def test_refresh_token_exchange_5xx_is_retryable_without_parsing_error_body(status_code):
+    """A Portal 5xx is transient even when its body is not OAuth JSON (#120976)."""
     from hermes_cli.auth import _refresh_access_token
 
     class _FakeResponse:
-        status_code = 503
+        def __init__(self):
+            self.status_code = status_code
 
         def json(self):
-            return {"error": "deployment_unavailable", "error_description": "The deployment is currently unavailable"}
+            raise AssertionError("5xx refresh handling must not parse response.json()")
 
     class _FakeClient:
         def post(self, *args, **kwargs):
@@ -709,6 +711,33 @@ def test_refresh_token_exchange_503_is_retryable_not_relogin():
     assert exc_info.value.code == "temporarily_unavailable"
     assert exc_info.value.relogin_required is False
     assert exc_info.value.retryable is True
+
+
+@pytest.mark.parametrize("code", ["invalid_grant", "invalid_token", "refresh_token_reused"])
+def test_refresh_token_exchange_terminal_oauth_errors_still_require_relogin(code):
+    """Non-5xx OAuth grant failures retain their terminal handling."""
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {"error": code, "error_description": "credential is no longer valid"}
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="refresh-no-longer-valid",
+        )
+
+    assert exc_info.value.code == code
+    assert exc_info.value.relogin_required is True
 
 
 def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):
@@ -732,7 +761,7 @@ def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypa
         status_code = 503
 
         def json(self):
-            return {"error": "deployment_unavailable"}
+            return {}
 
     class _FakeClient:
         def __enter__(self):
@@ -749,13 +778,13 @@ def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypa
     with pytest.raises(AuthError) as exc_info:
         auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
 
-    assert exc_info.value.code == "temporarily_unavailable"
-    assert exc_info.value.relogin_required is False
-    assert exc_info.value.retryable is True
     state = auth_mod.get_provider_auth_state("nous")
     assert state["access_token"] == access_token
     assert state["refresh_token"] == refresh_token
     assert "last_auth_error" not in state
+    assert exc_info.value.code == "temporarily_unavailable"
+    assert exc_info.value.relogin_required is False
+    assert exc_info.value.retryable is True
 
 
 def test_refresh_token_exchange_sends_refresh_token_header():
@@ -1039,4 +1068,3 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
-

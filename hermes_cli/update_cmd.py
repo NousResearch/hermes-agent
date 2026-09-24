@@ -47,8 +47,9 @@ from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _apply_pending_fleet_restart_catchup, _clear_fleet_restart_pending_marker,
     _current_checkout_sha, _defer_fleet_restart_after_update, _drain_or_signal_gateway_for_update, _fleet_probe_expected_runtimes,
     _fleet_restart_pending_marker_path, _for_each_systemd_gateway_unit,
+    _fresh_pid_wait_seconds,
     _gateway_recovery_partition, _gateway_service_matches_profile, _pending_fleet_restart_needed,
-    _receipt_looks_unfinished, _receipt_reports_stale_runtime, _resolve_manage_cmd,
+    _receipt_looks_unfinished, _receipt_reports_stale_runtime, _release_restart_lease, _resolve_manage_cmd,
     _restart_gateway_fleet_after_update, _restart_launchd_gateway_after_update,
     _restart_macos_launchd_gateways, _restart_phase_failure_is_incomplete,
     _restart_systemd_gateway_units, _restart_systemd_gateway_units_best_effort,
@@ -1590,6 +1591,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if getattr(args, "post_swap", None):
         # Second half of a run whose pre-pull interpreter stopped at the code swap.
         _run_post_swap_phase(args, gateway_mode)
+        return
+
+    if getattr(args, "run_restart_catch_up", False):
+        # S8 entry point. An armed obligation must be self-firing (design §3.3 #5): this is what a
+        # launchd one-shot / watchdog hook / cron calls. It never touches the checkout and exits 0
+        # when nothing is due, so it is safe to fire on every tick.
+        from hermes_cli.update_restart_orchestrator import run_due_catch_up
+
+        print(run_due_catch_up())
         return
 
     print("☤ Updating Hermes Agent...")

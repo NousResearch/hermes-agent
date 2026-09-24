@@ -73,7 +73,8 @@ class UpdateReceipt:
         self, *, restarted_services: list | None = None, relaunched_profiles: list | None = None,
         externally_supervised_profiles: list | None = None, killed_pids: list | None = None,
         failed_units: list | None = None, incomplete: bool = False, phase_error: str = "",
-        fresh_recovery: dict[str, Any] | None = None,
+        fresh_recovery: dict[str, Any] | None = None, lease_deferred: str = "",
+        lease_key: str = "", restart_noop: str = "",
     ) -> None:
         result: dict[str, Any] = {
             "restarted_services": list(restarted_services or []),
@@ -83,6 +84,12 @@ class UpdateReceipt:
             "failed_units": [str(u) for u in (failed_units or [])],
             "incomplete": bool(incomplete),
             "phase_error": phase_error,
+            # Orchestration facts (S0): a run that stood down for another actor's lease, and a run
+            # whose (sha, runtime-identity) predicate already held, are different from a run that
+            # restarted nothing because there was nothing to restart.
+            "lease_deferred": str(lease_deferred or ""),
+            "lease_key": str(lease_key or ""),
+            "restart_noop": str(restart_noop or ""),
         }
         if fresh_recovery is not None:
             # Conservative outcome vocabulary: "verified" is the only bucket allowed to claim
@@ -109,6 +116,31 @@ class UpdateReceipt:
             )
             result["fresh_recovery"] = persisted
         self.data["gateway_restart"] = result
+
+    def gateway_restart_verdict(
+        self, *, verdict: str, incomplete: bool, expected_sha: str = "",
+        failing_states: list | None = None, matrix_rows: int = 0,
+    ) -> None:
+        """Record THE restart verdict into the existing ``gateway_restart`` block, in place.
+
+        The restart phase writes its own bookkeeping before the fleet is read back, so it can only
+        say "no failed units" — which is how receipt B ended up carrying ``incomplete=false`` beside
+        a ``stale`` fleet row, and every reader that trusted the flag believed a broken restart
+        succeeded. This is a targeted merge (not a re-record): ``failed_units``, ``phase_error`` and
+        ``fresh_recovery`` from the restart phase survive, and the verdict the fleet matrix actually
+        produced lands in the same block under one field.
+        """
+        block = self.data.get("gateway_restart")
+        if not isinstance(block, dict):
+            block = {}
+        block.update({
+            "verdict": str(verdict or ""),
+            "incomplete": bool(incomplete),
+            "verdict_expected_sha": str(expected_sha or ""),
+            "verdict_failing_states": [str(state) for state in (failing_states or [])],
+            "verdict_matrix_rows": int(matrix_rows or 0),
+        })
+        self.data["gateway_restart"] = block
 
     def finalize(self, outcome: str) -> None:
         self.data["outcome"] = outcome
@@ -178,6 +210,16 @@ def record_skip(name: str, reason: str) -> None:
 def record_gateway_restart(**kwargs: Any) -> None:
     """Record the gateway restart phase outcome (see UpdateReceipt)."""
     _record("gateway_restart_result", "gateway restart result", **kwargs)
+
+
+def record_gateway_restart_verdict(**kwargs: Any) -> None:
+    """Stamp THE post-restart verdict into the existing block, in place (see UpdateReceipt).
+
+    Separate from :func:`record_gateway_restart` on purpose: the phase-level record is written
+    before the fleet is read back, so a re-record would replace it (and drop a ``phase_error`` or
+    ``fresh_recovery`` already recorded). This merges only the verdict fields.
+    """
+    _record("gateway_restart_verdict", "gateway restart verdict", **kwargs)
 
 
 def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:

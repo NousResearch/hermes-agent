@@ -81,6 +81,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "Pair with a separate restart step (e.g. a cron that runs 10-15 min later).",
     )
     update_parser.add_argument(
+        "--run-restart-catch-up", action="store_true", default=False,
+        help="S8 catch-up: attempt the post-update gateway restart the interrupted update left "
+            "armed, bounded to +2/+10/+30 min, then escalate. Exits 0 immediately when nothing is "
+            "due and never touches the checkout — safe for a launchd one-shot, watchdog hook or "
+            "cron to fire on every tick.")
+    update_parser.add_argument(
         "--post-swap", default=None, metavar="FILE", help=argparse.SUPPRESS,
         # Internal: the pre-pull interpreter re-executes itself here after the code swap so the
         # rest of the update runs on the pulled code (hermes_cli/update_handoff.py).

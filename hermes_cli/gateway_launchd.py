@@ -722,7 +722,19 @@ def launchd_stop():
 
 
 def _launchd_kickstart(label: str, domain: str) -> None:
-    """``launchctl kickstart -k domain/label``; raises so callers own per-label failure accounting."""
+    """``launchctl kickstart -k domain/label``; raises so callers own per-label failure accounting.
+
+    Host restart lease (G1, ``t_559d31fb``): every IN-CODE kickstart runs inside a leased actor —
+    the update's restart phase (`update_cmd_fleet` acquires the lease first) or ``hermes gateway
+    restart`` (`gateway._cmd_restart`, which now holds the lease across this call) — so no lease is
+    taken here; taking one in this mechanism would make the holder queue on itself.
+
+    The RAW ``launchctl kickstart -k gui/<uid>/<label>`` an operator types in a shell is classified
+    ``exempt`` in ``update_restart_orchestrator.RESTART_ACTORS``: no Hermes code runs in it, so it
+    can neither be leased nor arbitrated. What recovers such a host is the armed obligation and its
+    bounded catch-up (S8) — and the live ``host-restart-lease.json`` still names whoever else was
+    mid-restart, which is why the recovery hints this module prints are not the only record.
+    """
     subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=True, timeout=90, **_gw()._CAPTURE_TEXT)
 
 

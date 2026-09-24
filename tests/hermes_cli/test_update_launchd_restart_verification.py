@@ -288,7 +288,12 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert LABEL in capsys.readouterr().out
         # One pre-restart snapshot, then the bounded poll for a different pid.
         assert len(listings) > 1
-        assert sum(clock.slept) <= gateway_cli.LAUNCHD_SUPERVISION_VERIFY_TIMEOUT
+        # The bound is the plist-derived fresh-pid window (`ThrottleInterval + 15 s`, §3.2), not the
+        # historic fixed 20 s: 20 s sat UNDER this host's 30 s respawn floor, so a 32 s successor was
+        # recorded as a failed restart (G2). The window is read, not restated, so this stays a
+        # contract rather than a snapshot.
+        from hermes_cli import update_restart_orchestrator as restart_orch
+        assert sum(clock.slept) <= restart_orch.restart_budgets().fresh_pid_s
 
     def test_verification_budget_clears_the_respawn_throttle(self):
         """A budget under launchd's ~10s respawn throttle would false-alarm.

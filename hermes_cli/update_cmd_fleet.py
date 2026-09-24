@@ -490,7 +490,16 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
 
 
 def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
-    """Print the specific interrupted-update fleet-restart warning."""
+    """Print the specific interrupted-update fleet-restart warning.
+
+    Suppressed while an update holds the restart lease: the gateway booting inside a legitimate
+    restart prints it too, which is why it fired three times on 2026-09-23 — all three on a happy
+    path. The real stale case holds no lease and prints unchanged.
+    """
+    from hermes_cli import update_restart_orchestrator as restart_orch
+    if restart_orch.restart_in_progress():
+        logger.info("restart in progress (lease held) — suppressing the pending fleet-restart warning")
+        return
     stream = sys.stderr if startup else sys.stdout
     print("⚠ A previous `hermes update` pulled new code but did not restart running gateways.", file=stream)
     print("  Gateways may still be serving pre-update modules (mixed sys.modules).", file=stream)
@@ -1061,7 +1070,10 @@ def _restart_launchd_gateway_after_update(
     # domain locate fails on macOS-26 per-user domains.
     # launchd_restart() returning is only "restart REQUESTED" — the self-restart branch hands work to the
     # running gateway, a plist reload to a detached helper; both asynchronous. See #88848.
-    if wait_for_launchd_gateway_supervision(label=current_label, old_pid=old_pid):
+    # The window is derived from the live plist (`ThrottleInterval + 15 s`, ≥45 s): the fixed 20 s
+    # was under this host's 30 s respawn floor, so a 32 s successor read as a failed restart (G2).
+    if wait_for_launchd_gateway_supervision(
+            label=current_label, old_pid=old_pid, timeout=_fresh_pid_wait_seconds()):
         return [current_label], []
     print(
         f"  ✗ {current_label} restarted but launchd is not supervising a new process for it.\n"
@@ -1102,6 +1114,9 @@ def _restart_macos_launchd_gateways(
     restarted_services.extend(_restarted)
     failed_or_stale_units.extend(_failed)
     current_label = get_launchd_label()
+    # Every fresh-pid wait in this loop is the plist-derived window (G2): a KeepAlive respawn after a
+    # graceful exit is throttled by the SAME `ThrottleInterval`, so 10 s/15 s under-waited here too.
+    fresh_pid_wait = _fresh_pid_wait_seconds()
 
     derived_labels = launchd_gateway_labels_for_install()
     # Units labelled before the profile-name suffix scheme (ai.hermes.gateway-<hash>) are invisible
@@ -1135,7 +1150,7 @@ def _restart_macos_launchd_gateways(
                 graceful_ok = _graceful_restart_via_sigusr1(
                     old_pid, drain_timeout=drain_budget,
                     on_progress=drain_progress_reporter(_gateway_home_for_pid(old_pid), budget_s=drain_budget))
-            if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
+            if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=fresh_pid_wait, domain=domain):
                 # KeepAlive already respawned it on new code — a kickstart would kill it.
                 restarted_services.append(label)
                 continue
@@ -1149,7 +1164,7 @@ def _restart_macos_launchd_gateways(
                     f"    Recover manually: launchctl kickstart -k {domain}/{label}"
                 )
                 continue
-            if _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=15.0, domain=domain):
+            if _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=fresh_pid_wait, domain=domain):
                 restarted_services.append(label)
             else:
                 failed_or_stale_units.append(label)
@@ -1302,8 +1317,25 @@ def _drain_or_signal_gateway_for_update(
         return accepted
     if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
+        from hermes_cli import update_restart_orchestrator as restart_orch
+        actor = restart_orch.current_requestor(trigger=f"update-wedged:{label}").describe()
+        # Arbitration record only — `_escalate_wedged_gateway` owns the bounded SIGTERM→SIGKILL;
+        # what was missing is the durable line naming WHO escalated and WHY (G9).
+        restart_orch.restart_signal_gate(pid, "SIGTERM", actor=actor)
+        print(f"  ⚠ {label}: escalating to SIGTERM/SIGKILL (wedged loop) — actor {actor}")
         _escalate_wedged_gateway(pid)
         return True
+    # The drain is the ONE signal path (S3): the requesting actor is recorded on the lease, the
+    # deadline it opens is durable, and a second actor's SIGTERM inside that deadline is refused
+    # and named instead of amputating the drain (G1 — today's SIGTERM 19:28:46 / SIGUSR1 19:28:53).
+    from hermes_cli import update_restart_orchestrator as restart_orch
+    actor = restart_orch.current_requestor(trigger=f"update-drain:{label}").describe()
+    gate = restart_orch.restart_signal_gate(pid, "SIGUSR1", actor=actor)
+    if not gate.sent:
+        print(f"  ⚠ {label}: restart signal refused ({gate.reason})")
+        return False
+    restart_orch.mark_drain_started(
+        pid, deadline_ts=_time.time() + max(float(drain_budget), 0.0), actor=actor, label=label)
     print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
     return _graceful_restart_via_sigusr1(
@@ -1584,6 +1616,10 @@ class _GatewayRestartOutcome:
     #: (``_drain_or_signal_gateway_for_update`` branch 1): they restart only after this process
     #: exits, so the fleet matrix renders them as pending instead of STALE (#119597).
     self_restart_pending_pids: set = field(default_factory=set)
+    #: The restart phase stood down because another live actor holds the host restart lease (§3.1
+    #: S0): no signal was sent, no kickstart fired, and this run must not judge the fleet or
+    #: discharge the obligation — the holder owns both.
+    deferred_to_lease: bool = False
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1603,6 +1639,17 @@ class _GatewayRestartOutcome:
                 killed_pids=sorted(self.killed_pids), failed_units=self.failed_or_stale_units,
                 incomplete=self.incomplete, **extra,
             )
+
+    def record_verdict(self, verdict) -> None:
+        """Stamp the fleet matrix's verdict into the receipt's restart block, in place (G3).
+
+        ``incomplete`` is taken from this outcome — the run's single flag — while the verdict
+        string/failing states come from the matrix predicate, so the receipt can no longer say
+        ``incomplete=false`` beside a ``stale`` row.
+        """
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_gateway_restart_verdict
+            record_gateway_restart_verdict(**{**verdict.as_receipt_fields(), "incomplete": self.incomplete})
 
 
 def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None:
@@ -1649,8 +1696,22 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         # full-budget wait reads as a hung update.
         if not _drain_or_signal_gateway_for_update(
                 pid, _drain_budget, proc.profile, self_restart_pending=out.self_restart_pending_pids):
-            with suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, _signal.SIGTERM)
+            # Post-grace escalation, arbitrated (G1): a SIGTERM sent while ANOTHER actor's drain
+            # deadline is still open is refused and named instead of shortening that drain.
+            from hermes_cli import update_restart_orchestrator as restart_orch
+            actor = restart_orch.current_requestor(trigger=f"update-sigterm:{proc.profile}").describe()
+            escalation = restart_orch.escalate_to_sigterm(
+                pid, actor=actor, reason="drain-window-expired")
+            if not escalation.sent and escalation.reason == "drain-deadline-not-reached":
+                print(
+                    f"  ⚠ {proc.profile}: SIGTERM refused — another actor is still draining "
+                    f"PID {pid} (deadline not reached)"
+                )
+            elif escalation.reason.startswith("send-failed"):
+                # The orchestrator could not send (exotic OSError): keep the raw kill as the last
+                # resort instead of leaving a stale gateway running.
+                with suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, _signal.SIGTERM)
         # Wait ≤5s for exit: Telegram keeps the old getUpdates session ~30s; a new gateway
         # inside that window gets a 409 (_handle_polling_conflict retries, but a brief
         # wait avoids it on fast machines).
@@ -1788,12 +1849,38 @@ def _recover_after_restart_phase_abort(
 
 
 def _gateway_drain_budget() -> float:
-    """Seconds a drain-first (SIGUSR1) restart may wait for a gateway to exit; 45s floor."""
+    """Seconds a drain-first (SIGUSR1) restart may wait for a gateway to exit.
+
+    The configured budget (``restart_after_turn`` + drain, 45 s floor) is capped by the LIVE launchd
+    ``ExitTimeOut``: launchd escalates to SIGKILL at that value, so waiting past it is a stall rather
+    than a budget — on this host 1815 s of CLI patience buys 55 s of supervisor patience (G6 in
+    ``build/gateway_restart/POST-UPDATE-GATEWAY-RESTART-DESIGN.md``). Both numbers are logged so the
+    two can never disagree silently.
+    """
+    configured = 45.0
     try:
         from hermes_cli.gateway import _get_restart_exit_wait_budget
-        return max(float(_get_restart_exit_wait_budget()), 45.0)
+        configured = max(float(_get_restart_exit_wait_budget()), 45.0)
     except Exception:
-        return 45.0
+        configured = 45.0
+    from hermes_cli import update_restart_orchestrator as restart_orch
+    budgets = restart_orch.restart_budgets(configured_drain_s=configured)
+    logger.info(
+        "Gateway drain budget %.0fs (configured %.0fs; launchd ExitTimeOut=%s ThrottleInterval=%s)",
+        budgets.drain_s, configured, budgets.exit_timeout_s, budgets.throttle_interval_s,
+    )
+    return budgets.drain_s
+
+
+def _fresh_pid_wait_seconds() -> float:
+    """Wait for a fresh supervised pid, derived from the live plist (G2).
+
+    ``ThrottleInterval + 15 s`` (≥45 s) instead of the fixed 15 s/20 s windows that were shorter
+    than this host's 30 s respawn floor: on 2026-09-23 the successor booted 32 s after a planned
+    exit and a SUCCESSFUL restart was recorded as ``stale``/``partial``.
+    """
+    from hermes_cli import update_restart_orchestrator as restart_orch
+    return restart_orch.restart_budgets().fresh_pid_s
 
 
 def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
@@ -1811,6 +1898,8 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         incomplete=False, phase_errors=[], pre_restart_gateway_pids=[], restarted_services=[], failed_or_stale_units=[],
         relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
     )
+    _lease = None
+    _lease_sha = ""
     # Scope-qualified twin (``user/hermes-serve`` vs ``system/hermes-serve`` are different
     # processes; abort recovery needs WHICH settled). Bare names stay in
     # ``restarted_services`` for the fleet probe, receipt and summary.
@@ -1834,6 +1923,47 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
             _get_service_pids,
             _wait_for_gateway_exit,
         )
+        # --- S0: take the host restart lease BEFORE the first destructive step ------------------
+        # One host, one multiplexing gateway, N independent actors (an update run, a kickstart, a
+        # dashboard relaunch, a second profile's update). Two of them acting at once is the bug that
+        # amputated an in-flight cron job on 2026-09-23: their signals landed 7 s apart and the
+        # earliest one won the semantics. The lease makes the second actor wait, then defer.
+        from hermes_cli import update_restart_orchestrator as restart_orch
+        _restart_sha = _restart_identity_sha()
+        _runtime_ids = [
+            f"{getattr(runtime, 'kind', 'runtime')}:{getattr(runtime, 'profile', '')}"
+            for runtime in (getattr(_pre_update_plan, "runtimes", ()) or ())
+        ]
+        _lease = restart_orch.acquire_restart_lease(
+            sha=_restart_sha,
+            runtime_ids=_runtime_ids,
+            trigger="hermes update",
+            checkout_sha=_current_checkout_sha(),
+        )
+        if not _lease.acquired:
+            out.deferred_to_lease = True
+            if _lease.state == "stale-request":
+                print(
+                    "  → A newer `hermes update` already owns this host's fleet — "
+                    "not restarting the gateways for an older revision."
+                )
+            else:
+                print(f"  → Gateway restart already in progress on this host ({_lease.describe()}) — deferring.")
+            out.record_receipt(lease_deferred=_lease.state, lease_key=_lease.key)
+            return out
+        _lease_sha = _restart_sha
+        logger.info("Restart orchestration lease: %s", _lease.describe())
+
+        # Idempotency #1 (§3.3, G8): the same ``(sha, runtime-identity)`` whose predicate already
+        # holds is a logged no-op — no signal, no kickstart — and the obligation is discharged by
+        # the normal verification that follows. Without this, a re-run of an update whose restart
+        # already happened re-kills the one shared multiplexer.
+        if _live_fleet_current_rows() is not None:
+            print("  ✓ Every running gateway already serves the pulled code — no restart actions taken.")
+            out.record_receipt(restart_noop="predicate-satisfied", expected_sha=_restart_sha)
+            logger.info("restart_noop key=%s reason=predicate-satisfied", _lease.key)
+            _release_restart_lease(_lease, sha=_lease_sha, verdict="current")
+            return out
         # Drain budget covers ``restart_after_turn_timeout`` and stop()'s
         # ``restart_drain_timeout`` so a gateway waiting on a turn isn't hard-killed;
         # units without SIGUSR1 wiring just time out into ``systemctl restart``.
@@ -1870,12 +2000,35 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         _force_kill_stuck_gateways(out.killed_pids)
 
     except Exception as e:
-        _recover_after_restart_phase_abort(
-            e, _pre_update_plan, out, gateway_mode=gateway_mode, restarted_scoped_units=restarted_scoped_units
-        )
+        try:
+            _recover_after_restart_phase_abort(
+                e, _pre_update_plan, out, gateway_mode=gateway_mode, restarted_scoped_units=restarted_scoped_units
+            )
+        finally:
+            # The phase is over either way: release the lease so the next actor (and the catch-up)
+            # is not blocked by a holder that is no longer restarting anything.
+            _release_restart_lease(_lease, sha=_lease_sha)
+            _lease = None
 
+    _release_restart_lease(_lease, sha=_lease_sha, verdict="incomplete" if out.incomplete else "current")
     out.restarted_scoped_units = set(restarted_scoped_units)
     return out
+
+
+def _release_restart_lease(lease, *, sha: str = "", verdict: str = "") -> None:
+    """Drop this run's restart lease, recording the action first (idempotency evidence, G8).
+
+    Key-guarded, so a run that deferred to another actor's lease (``acquired=False``) can never
+    release the holder's. Best-effort: never raises, never aborts an update.
+    """
+    if lease is None or not getattr(lease, "acquired", False):
+        return
+    with suppress(Exception):
+        from hermes_cli import update_restart_orchestrator as restart_orch
+        if verdict:
+            restart_orch.record_restart_action(
+                key=lease.key, sha=sha, runtime_ids=(), verdict=verdict)
+        restart_orch.release_restart_lease(key=lease.key)
 
 
 def _print_legacy_units_warning() -> None:
@@ -1975,6 +2128,21 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup, _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
     )
+    if getattr(restart, "deferred_to_lease", False):
+        # §3.1 S0: another live actor holds this host's restart lease. This run sent no signal and
+        # touched no unit, so it has no verdict to publish and no obligation to discharge — judging
+        # a fleet mid-restart would only print a transient ``stale`` the holder is about to fix, and
+        # the survivor sweep could signal a gateway the holder is already restarting. Exit 0; the
+        # holder owns the verdict AND the obligation (which stays armed if the holder fails).
+        restart.incomplete = False
+        print(
+            "  → Gateway restart already in progress on this host — this run defers to the actor "
+            "holding the lease (no signals sent, obligation left armed)."
+        )
+        with _best_effort('Update receipt finalize failed: %s'):
+            from hermes_cli.update_receipt import finalize_update_receipt
+            finalize_update_receipt("success", fleet=[])
+        return
     with _best_effort('Legacy unit check during update failed: %s'):
         _print_legacy_units_warning()
 
@@ -2007,6 +2175,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # instead of assuming the restart phase worked.
     # Phase 1 (#91277): post-update fleet version verification.
     _fleet_snapshot: list = []
+    _verdict = None
     with _best_effort('Fleet version verification failed: %s'):
         from hermes_cli.update_receipt import print_fleet_version_matrix
         # Cross-platform "rows expected" signal: (restarted_services or killed_pids)
@@ -2021,7 +2190,9 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
-        if print_fleet_version_matrix(_fleet_snapshot):
+        from hermes_cli import update_restart_orchestrator as restart_orch
+        _matrix_incomplete = print_fleet_version_matrix(_fleet_snapshot)
+        if _matrix_incomplete:
             restart.incomplete = True
             # A proven-stale survivor must not keep running (its ticker yields every tick and
             # nothing else restarts it, #117275): hand it to the drain-first restart path.
@@ -2041,6 +2212,16 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 " gateway runtimes were expected — verification incomplete."
             )
             restart.incomplete = True
+        # Re-record the restart outcome with the FINAL verdict: the phase-level record was written
+        # before the fleet was read back, so it could only ever say "no failed units". ONE verdict,
+        # one field, computed from the predicate the matrix just printed (G3 — receipt B carried
+        # ``incomplete=false`` beside a ``stale`` row, and every reader that trusted the flag
+        # believed a broken restart succeeded).
+        _verdict = restart_orch.fleet_verdict(
+            _fleet_snapshot, _restart_identity_sha(),
+            rows_expected=_fleet_rows_expected, matrix_incomplete=restart.incomplete,
+        )
+        restart.record_verdict(_verdict)
 
     # Every runtime the PLAN saw must appear in restart bookkeeping; an
     # unaccounted one is a silent miss and escalates like a STALE/DOWN row.
@@ -2090,6 +2271,14 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     if restart.incomplete:
         # Code updated but a gateway may still run stale modules: fail so automation
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
+        # S7/S8: keep the obligation armed, name the failure once, and arm the bounded self-firing
+        # catch-up (G4) — the old shape left an armed obligation nothing would ever discharge.
+        with _best_effort('Restart failure escalation failed: %s'):
+            from hermes_cli import update_restart_orchestrator as restart_orch
+            _failed_sha = _restart_identity_sha()
+            _reason = ",".join(_verdict.failing) if _verdict else "restart-incomplete"
+            restart_orch.schedule_catch_up(sha=_failed_sha)
+            restart_orch.escalate_restart_failure(sha=_failed_sha, reason=_reason or "restart-incomplete")
         sys.exit(1)
     _clear_fleet_restart_pending_marker()
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing

@@ -11,7 +11,21 @@ from tools import write_approval as wa
 
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    state = f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    if subsystem != wa.MEMORY:
+        return state
+    if on:
+        return (
+            f"{state}\n"
+            "Every memory write — attended or background, any action — is staged for "
+            "approval (/memory pending)."
+        )
+    return (
+        f"{state}\n"
+        "Attended memory writes (incl. /refine) apply immediately. Background review "
+        "adds apply automatically; replace/remove — or a whole batch containing either — "
+        "are always staged for approval (/memory pending), independent of this setting."
+    )
 
 
 def _fmt_pending_list(subsystem: str) -> str:

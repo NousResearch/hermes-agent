@@ -915,3 +915,15 @@ class TestProfileCatalogAuthoritative:
                 "other-vendor/model-a", "relay-owned-catalog", api_key="k")
         assert result["accepted"] is True
         assert result["recognized"] is True
+
+    @pytest.mark.parametrize("models, recognized", [(["relay-model"], True), (None, False)])
+    def test_override_uses_relay_not_profile_catalog(self, relay_profile, models, recognized):
+        base_url = "http://127.0.0.1:9001/relay/v1"
+        with patch("hermes_cli.models.provider_model_ids") as vendor_catalog, \
+             patch("hermes_cli.models.fetch_api_models", return_value=models) as relay_catalog:
+            result = validate_requested_model(
+                "relay-model", relay_profile.name, api_key="relay-key", base_url=base_url)
+        assert result["accepted"] is True
+        assert result["recognized"] is recognized
+        relay_catalog.assert_called_once_with("relay-key", base_url)
+        vendor_catalog.assert_not_called()

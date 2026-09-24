@@ -172,9 +172,22 @@ def _quote_bash_path(path: str) -> str:
 
 
 def _cwd_usable(path: str) -> bool:
-    """True when *path* is a directory this process can actually chdir into
-    (``isdir`` alone passes ``/root`` for a non-root user; ``Popen(cwd=)`` then dies)."""
+    """True when *path* is a directory this process can enter.
+
+    ``os.path.isdir`` alone is not enough: stat() on ``/root`` succeeds for a
+    non-root user, but ``subprocess.Popen(cwd=...)`` then dies with EACCES.
+    """
     return os.path.isdir(path) and os.access(path, os.X_OK)
+
+
+def _cwd_fallback_usable(path: str) -> bool:
+    """True when *path* is suitable as a writable ancestor fallback.
+
+    An explicitly configured read-only directory is still a valid CWD for
+    read-only commands; only directories selected while climbing away from a
+    missing or unenterable CWD need write permission for project-local state.
+    """
+    return _cwd_usable(path) and os.access(path, os.W_OK)
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -201,7 +214,7 @@ def _resolve_safe_cwd(cwd: str) -> str:
             "(#65583).",
             cwd, getattr(os, "getuid", lambda: "?")())
     parent = os.path.dirname(cwd) if cwd else ""
-    while parent and not _cwd_usable(parent):
+    while parent and not _cwd_fallback_usable(parent):
         next_parent = os.path.dirname(parent)
         if next_parent == parent:
             return tempfile.gettempdir()  # filesystem root itself is unusable
@@ -913,6 +926,10 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
+    def _resolve_execution_cwd(self, cwd: str) -> str:
+        """Resolve the CWD before the shell wrapper and Popen see it."""
+        return _resolve_safe_cwd(cwd)
+
     def _recover_cwd(self) -> None:
         """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible
         (e.g. a command ``rm -rf``'d its own cwd) — otherwise Popen raises before bash
@@ -928,7 +945,7 @@ class LocalEnvironment(BaseEnvironment):
             return
         if safe_cwd != _msys_to_windows_path(self.cwd):
             logger.warning(
-                "LocalEnvironment cwd %r is missing on disk; "
+                "LocalEnvironment cwd %r is missing or unusable; "
                 "falling back to %r so terminal commands keep working.",
                 self.cwd, safe_cwd)
         self.cwd = safe_cwd

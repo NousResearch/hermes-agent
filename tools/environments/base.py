@@ -342,13 +342,22 @@ class BaseEnvironment(ABC):
             snap_tmp_template=self._quote_shell_path(self._snapshot_path + _SNAP_TMP_SUFFIX),
             cwd_marker=self._cwd_marker)
 
+    def _resolve_execution_cwd(self, cwd: str) -> str:
+        """Resolve a CWD before it is embedded in a shell wrapper.
+
+        Backends that need recovery can override this hook; other backends
+        preserve their existing CWD handling.
+        """
+        return cwd
+
     def init_session(self):
         """Capture the login shell environment into the snapshot file (once, after construction).
         On success ``_snapshot_ready`` is set so commands source the snapshot instead of running
         under ``bash -l``. On failure, fall back to ``bash -l`` per command — unless a non-login
         probe shows login bash itself is dead, in which case prefer ``bash -c``."""
+        bootstrap_cwd = self._resolve_execution_cwd(self.cwd)
         bootstrap = _snapshot_bootstrap_script(
-            excluded_names=self._snapshot_excluded_passthrough_names(), **self._snapshot_script_kwargs(self.cwd))
+            excluded_names=self._snapshot_excluded_passthrough_names(), **self._snapshot_script_kwargs(bootstrap_cwd))
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
@@ -597,7 +606,7 @@ class BaseEnvironment(ABC):
             from tools.terminal_tool_sudo import _rewrite_compound_background
             exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
-        effective_cwd = cwd or self.cwd
+        effective_cwd = self._resolve_execution_cwd(cwd or self.cwd)
 
         # Merge sudo stdin with caller stdin.
         effective_stdin = sudo_stdin + (stdin_data or "") if sudo_stdin is not None else stdin_data

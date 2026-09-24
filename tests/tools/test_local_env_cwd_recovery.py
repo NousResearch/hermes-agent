@@ -27,13 +27,13 @@ class TestResolveSafeCwd:
         assert _resolve_safe_cwd(path) == path
 
 
-    def test_returns_root_when_only_root_exists(self, monkeypatch):
-        """If every ancestor except the filesystem root is gone, the root
-        itself is still a valid recovery target — don't skip it just because
-        ``os.path.dirname('/') == '/'`` is the loop's exit condition."""
+    def test_skips_non_writable_root_when_only_ancestor_exists(self, monkeypatch):
+        """If every ancestor except the non-writable filesystem root is gone,
+        use the writable temp directory rather than returning ``/``."""
+        expected = tempfile.gettempdir()
         sep = os.path.sep
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
-        assert _resolve_safe_cwd("/no/such/deep/dir") == sep
+        assert _resolve_safe_cwd("/no/such/deep/dir") == expected
 
 
 def _make_fake_popen(captured: dict, fds: list):
@@ -107,7 +107,7 @@ class TestRunBashCwdRecovery:
         assert env.cwd == str(tmp_path)
 
         # The warning surfaces the wedge so it isn't silently masked.
-        assert any("missing on disk" in rec.message for rec in caplog.records)
+        assert any("missing or unusable" in rec.message for rec in caplog.records)
 
     def test_no_warning_when_cwd_still_exists(self, tmp_path, caplog):
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):

@@ -292,7 +292,7 @@ export function useComposerVoice({
     []
   )
 
-  // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
+  // The `composer.voice` hotkey toggles the conversation. Starting
   // with STT unconfigured lets the conversation surface its own "configure
   // speech-to-text" notice rather than silently no-opping.
   const toggleVoiceConversation = useCallback(() => {

@@ -31,7 +31,7 @@ import {
 } from '@/store/find-in-page'
 import { toggleHud } from '@/store/hud'
 import { toggleSimpleMode } from '@/store/interface-mode'
-import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
+import { $capture, $comboIndex, captureStep, endCapture, setBinding } from '@/store/keybinds'
 import {
   cycleSidebarGrouping,
   requestSessionSearchFocus,
@@ -380,27 +380,26 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      // Capture mode: the next real key becomes the binding. Swallow everything
-      // so e.g. ⌘K rebinds instead of opening the palette.
+      // Capture mode: the next real key becomes the binding. Backspace/Delete
+      // clears it (empty combos) so a shipped chord like the sidebar's mod+b
+      // can be unbound. Escape cancels. Swallow everything so e.g. ⌘K rebinds
+      // instead of opening the palette.
       const capturing = $capture.get()
 
       if (capturing) {
         event.preventDefault()
         event.stopPropagation()
 
-        if (event.key === 'Escape') {
-          endCapture()
+        const step = captureStep(event.key, comboFromEvent(event))
 
+        if (step.type === 'wait') {
           return
         }
 
-        const combo = comboFromEvent(event)
-
-        if (!combo) {
-          return
+        if (step.type === 'set') {
+          setBinding(capturing, step.combos)
         }
 
-        setBinding(capturing, [combo])
         endCapture()
 
         return

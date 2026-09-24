@@ -277,6 +277,58 @@ class TestGitWorktreeFilesNeverCleaned:
         assert not scratch.exists()
         assert result["deleted"] == 1
 
+    def test_tracked_file_in_hermes_home_checkout_is_never_disposable(self, _isolate_env):
+        """HERMES_HOME itself is a git checkout: a file git TRACKS is Git-owned, so a
+        ``test_*``/``tmp_*`` name must not classify it as disposable.
+
+        Observed live: ``~/.hermes`` is the userfiles repo, so ``~/.hermes/scripts/`` sits
+        inside a worktree but is not *below* HERMES_HOME — the parent-chain probe found no
+        ``.git`` and the bundled disk-cleanup plugin deleted two committed regression tests
+        (``scripts/test_analyze_upstream_opportunities.py``,
+        ``scripts/test_customization_protocol_v2.py``), committing the deletion."""
+        import subprocess
+
+        dg = _load_lib()
+        subprocess.run(["git", "init", "-q", str(_isolate_env)], check=True)
+        (dg.get_hermes_home() / "scripts").mkdir()
+        tracked = _isolate_env / "scripts" / "test_committed.py"
+        tracked.write_text("x")
+        scratch = _isolate_env / "test_untracked.py"
+        scratch.write_text("x")
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "scripts/test_committed.py"],
+                       check=True)
+
+        assert dg._inside_git_worktree(tracked) is True
+        assert dg._inside_git_worktree(scratch) is False
+        assert dg.guess_category(tracked) is None
+        assert dg.guess_category(scratch) == "test"
+
+        # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted.
+        dg.save_tracked([{"path": str(tracked), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert tracked.exists(), "a git-tracked test file must never be auto-deleted"
+        assert result["deleted"] == 0
+
+    def test_untracked_scratch_beside_tracked_files_is_still_cleaned(self, _isolate_env):
+        """Control for the checkout case: the guard protects what git TRACKS, not the whole
+        home. An untracked ``test_*`` scratch file in the same repo is still disposable, so
+        the fix must not disable cleanup for every file under a git-backed HERMES_HOME."""
+        import subprocess
+
+        dg = _load_lib()
+        subprocess.run(["git", "init", "-q", str(_isolate_env)], check=True)
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+
+        assert dg._inside_git_worktree(scratch) is False
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert not scratch.exists()
+        assert result["deleted"] == 1
+
 
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""

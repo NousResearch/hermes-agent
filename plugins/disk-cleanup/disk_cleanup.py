@@ -340,18 +340,68 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
-def _inside_git_worktree(path: Path) -> bool:
-    """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
-    normal checkout, a pointer FILE in a linked worktree) exists anywhere on the directory chain.
-    Files there are Git-owned — a ``test_*`` file in a worktree is typically a committed
-    regression test, not session scratch (#115295).
+@functools.lru_cache(maxsize=1)
+def _git_tracked_index(home: str) -> frozenset:
+    """The set of repo-relative paths ``git ls-files`` reports for *home*, cached per process.
 
-    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for in-home paths: a home kept
-    in a dotfiles repo (``~/.git``) would otherwise make every scratch file look Git-owned."""
-    parents = list(path.resolve().parents)
+    One subprocess for the whole home instead of one per candidate file: ``guess_category``
+    runs on every post-tool-call, and this install's userfiles repo tracks thousands of paths.
+    Returns an empty set when git is unavailable or the call fails — the caller then treats
+    nothing as tracked, i.e. the pre-existing behaviour.
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["git", "-C", home, "ls-files", "-z"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    if r.returncode != 0:
+        return frozenset()
+    return frozenset(p for p in r.stdout.split("\0") if p)
+
+
+def _git_tracks(home: Path, rel: str) -> bool:
+    """True when ``git`` tracks *rel* (repo-relative, ``/``-separated) inside *home*."""
+    try:
+        return rel.replace("\\", "/") in _git_tracked_index(str(home))
+    except Exception:  # pragma: no cover — never let a cleanup guard break the agent loop
+        return False
+
+
+def _inside_git_worktree(path: Path) -> bool:
+    """True if *path* is Git-owned: a ``.git`` entry (a directory in a normal checkout, a
+    pointer FILE in a linked worktree) exists on the directory chain, or — when
+    ``HERMES_HOME`` is itself a checkout — git actually TRACKS the file.
+
+    Files whose repo tracks them are Git-owned — a ``test_*`` file in a worktree is typically
+    a committed regression test, not session scratch (#115295).
+
+    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for the parent-chain probe: a
+    home kept in a dotfiles repo (``~/.git``) would otherwise make every scratch file look
+    Git-owned.
+
+    The parent-chain probe alone misses the case where ``HERMES_HOME`` IS a git checkout (this
+    install: ``~/.hermes`` is the userfiles repo). There every in-home file sits inside a
+    worktree, yet only the TRACKED ones are Git-owned — a scratch file merely living beside
+    them is not, and treating the whole home as protected would disable cleanup entirely. Ask
+    git about the individual path instead.
+    """
+    home = get_hermes_home()
+    resolved = path.resolve()
+    parents = list(resolved.parents)
+    below = parents
     with contextlib.suppress(ValueError):
-        parents = parents[: parents.index(get_hermes_home())]
-    return any((parent / ".git").exists() for parent in parents)
+        below = parents[: parents.index(home)]
+    if any((parent / ".git").exists() for parent in below):
+        return True
+    if not (home / ".git").exists():
+        return False
+    with contextlib.suppress(ValueError):
+        return _git_tracks(home, str(resolved.relative_to(home)))
+    return False
 
 
 def guess_category(path: Path) -> Optional[str]:

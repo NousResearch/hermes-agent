@@ -81,6 +81,12 @@ def test_persistent_block_ends_at_deadline_without_oversleeping(monkeypatch):
     sleeps = _fake_clock(monkeypatch)
 
     with pytest.raises(TimeoutError, match="device code expired"):
-        _poll(lambda: _non_json(429, headers={"retry-after": "3600"}), expires_in=300)
+        # 290 is not a multiple of the 60s backoff cap, so only the deadline clamp keeps the
+        # last sleep from overshooting the device-code expiry.
+        _poll(lambda: _non_json(429, headers={"retry-after": "3600"}), expires_in=290)
 
-    assert sum(sleeps) <= 300
+    assert sum(sleeps) <= 290
+
+    # A 403 without x-vercel-mitigated is a real rejection, not edge mitigation: fail fast.
+    with pytest.raises(httpx.HTTPStatusError):
+        _poll(_post_returning(_non_json(403)))

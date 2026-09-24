@@ -748,58 +748,21 @@ def test_refresh_token_exchange_error_classification(
         assert exc_info.value.retry_after == 30.0
 
 
-@pytest.mark.parametrize("status_code", [403, 429])
-def test_runtime_refresh_edge_block_preserves_nous_oauth_credentials(
-    tmp_path, monkeypatch, status_code
+@pytest.mark.parametrize(
+    ("status_code", "headers", "json_body", "expected_code"),
+    [
+        (503, {}, {}, "temporarily_unavailable"),
+        (403, {"x-vercel-mitigated": "deny"}, None, "upstream_blocked"),
+        (429, {"x-vercel-mitigated": "challenge"}, None, "upstream_blocked"),
+    ],
+    ids=["portal-503", "edge-deny-403", "edge-challenge-429"],
+)
+def test_runtime_refresh_503_preserves_nous_oauth_credentials(
+    tmp_path, monkeypatch, status_code, headers, json_body, expected_code
 ):
-    """A Vercel Security Checkpoint deny/challenge on the token endpoint must not quarantine the
-    still-valid refresh token or tell the user to re-login (#120602)."""
-    import hermes_cli.auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
-
-    hermes_home = tmp_path / "hermes"
-    access_token = _invoke_jwt(seconds=3600)
-    refresh_token = "refresh-still-valid"
-    _setup_nous_auth(
-        hermes_home, access_token=access_token, refresh_token=refresh_token,
-        expires_at=_future_iso(3600), expires_in=3600)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    class _FakeResponse:
-        headers = {"x-vercel-mitigated": "deny" if status_code == 403 else "challenge"}
-
-        def __init__(self):
-            self.status_code = status_code
-
-        def json(self):
-            raise ValueError("Forbidden is not JSON")
-
-    class _FakeClient:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def post(self, *args, **kwargs):
-            return _FakeResponse()
-
-    monkeypatch.setattr(auth_nous, "_nous_http_client", lambda *args: _FakeClient())
-
-    with pytest.raises(AuthError) as exc_info:
-        auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
-
-    state = auth_mod.get_provider_auth_state("nous")
-    assert state["access_token"] == access_token
-    assert state["refresh_token"] == refresh_token
-    assert "last_auth_error" not in state
-    assert exc_info.value.code == "upstream_blocked"
-    assert exc_info.value.relogin_required is False
-    assert exc_info.value.retryable is True
-
-
-def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):
-    """The real runtime resolver must not quarantine credentials during a Portal outage (#120976)."""
+    """The real runtime resolver must not quarantine a still-valid refresh token or demand a
+    re-login during a Portal outage (#120976) or a Vercel Security Checkpoint deny/challenge on
+    the token endpoint (#120602)."""
     import hermes_cli.auth as auth_mod
     import hermes_cli.auth_nous as auth_nous
 
@@ -816,10 +779,14 @@ def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypa
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     class _FakeResponse:
-        status_code = 503
+        def __init__(self):
+            self.status_code = status_code
+            self.headers = headers
 
         def json(self):
-            return {}
+            if json_body is None:
+                raise ValueError("edge block page is not JSON")
+            return json_body
 
     class _FakeClient:
         def __enter__(self):
@@ -840,7 +807,7 @@ def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypa
     assert state["access_token"] == access_token
     assert state["refresh_token"] == refresh_token
     assert "last_auth_error" not in state
-    assert exc_info.value.code == "temporarily_unavailable"
+    assert exc_info.value.code == expected_code
     assert exc_info.value.relogin_required is False
     assert exc_info.value.retryable is True
 

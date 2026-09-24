@@ -9,11 +9,13 @@ itself via normal input tools).
 
 Scoring:
 - exact autocomplete-token match ................ 100
-- type=password (not new/confirm/create/repeat) .. 90
+- type=password .................................. 90
 - type=email / type=tel .......................... 85
 - label/name regex heuristics .................. 70-75
-Hard exclusions: autocomplete ``new-password`` / ``one-time-code``, and
-label/name text matching ``(new|confirm|create|repeat)\\s*password``.
+``new-password`` and confirmation controls are classified separately. A
+saved password is filled into them only as an exact pair in the same form;
+this supports sign-up forms without spraying a secret into unrelated fields.
+``one-time-code`` remains excluded.
 """
 
 from __future__ import annotations
@@ -47,9 +49,10 @@ _CHECKOUT_HEURISTICS = (
     (re.compile(r"\b(?:country)\b"), "country-name"),
 )
 
-_EXCLUDED_AUTOCOMPLETE = {"new-password", "one-time-code"}
+_EXCLUDED_AUTOCOMPLETE = {"one-time-code"}
 
-_RE_EXCLUDED_PASSWORD = re.compile(r"\b(?:new|confirm|create|repeat)\s*password\b")
+_RE_NEW_PASSWORD = re.compile(r"\b(?:new|create)\s*password\b")
+_RE_CONFIRM_PASSWORD = re.compile(r"\b(?:confirm|repeat)\s*password\b")
 _RE_EMAIL = re.compile(r"\b(?:e[\s-]?mail|email address)\b")
 _RE_TEL = re.compile(r"\b(?:phone|telephone|mobile)\b")
 _RE_USERNAME = re.compile(
@@ -104,15 +107,20 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
     if any(t in _EXCLUDED_AUTOCOMPLETE for t in autocomplete_tokens):
         return None
 
+    searchable = _normalize_text(
+        " ".join(part for part in (control.name, control.label) if part)
+    )
+    if _RE_CONFIRM_PASSWORD.search(searchable):
+        return ClassifiedLoginControl(control, 100, "confirm-password")
+    if "new-password" in autocomplete_tokens:
+        return ClassifiedLoginControl(control, 100, "new-password")
+
     for token in LOGIN_AUTOFILL_TOKENS:
         if token in autocomplete_tokens:
             return ClassifiedLoginControl(control, 100, token)
 
-    searchable = _normalize_text(
-        " ".join(part for part in (control.name, control.label) if part)
-    )
-    if _RE_EXCLUDED_PASSWORD.search(searchable):
-        return None
+    if _RE_NEW_PASSWORD.search(searchable):
+        return ClassifiedLoginControl(control, 90, "new-password")
     if control.type == "password":
         return ClassifiedLoginControl(control, 90, "current-password")
     if control.type == "email":
@@ -156,26 +164,37 @@ def select_password_fill(
     classified: List[ClassifiedLoginControl],
     password: str,
 ) -> List[Dict[str, Any]]:
-    """Select the single best current-password control to fill.
+    """Select a login password control or a matching sign-up password pair.
 
     The vault fill path is password-only: the identifier is agent-visible
-    metadata and is typed by the agent via normal input tools. This picks
-    the highest-scoring ``current-password`` control (ties broken by DOM
-    order) and returns ``[{"index": int, "token": "current-password",
-    "value": password}]`` or ``[]`` when no password field exists.
+    metadata and is typed by the agent via normal input tools. A
+    current-password field takes precedence and is selected by score then DOM
+    order. On a sign-up form, a new-password field is filled only with a
+    confirmation field in the same identified form; a lone new or confirm
+    field is never selected.
     """
     passwords = [c for c in classified if c.token == "current-password"]
-    if not passwords or not password:
+    if passwords and password:
+        best_password = sorted(
+            passwords, key=lambda c: (-c.score, c.control.index)
+        )[0]
+        return [{"index": best_password.control.index, "token": "current-password", "value": password}]
+
+    signup_new = [c for c in classified if c.token == "new-password"]
+    signup_confirm = [c for c in classified if c.token == "confirm-password"]
+    pairs = [
+        (new, confirm) for new in signup_new for confirm in signup_confirm
+        if new.control.form_index is not None and new.control.form_index == confirm.control.form_index
+    ]
+    if not pairs or not password:
         return []
-    best_password = sorted(
-        passwords, key=lambda c: (-c.score, c.control.index)
+    new, confirm = sorted(
+        pairs,
+        key=lambda pair: (-pair[0].score, pair[0].control.index, -pair[1].score, pair[1].control.index),
     )[0]
     return [
-        {
-            "index": best_password.control.index,
-            "token": "current-password",
-            "value": password,
-        }
+        {"index": new.control.index, "token": "new-password", "value": password},
+        {"index": confirm.control.index, "token": "confirm-password", "value": password},
     ]
 
 
@@ -289,7 +308,7 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     evaluated script, immediately before any write. If the page navigated between inspection and fill
     (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
     proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
-    THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
+    THIS inspection; every password fill additionally requires ``type=password``; ``<select>``
     controls (country, state, expiry month) match an option by value or visible text. No marker is
     left on filled controls so later model-driven DOM reads cannot address them deterministically.
     """
@@ -311,7 +330,7 @@ _FILL_JS_TEMPLATE = """(() => {
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
     const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
-    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+    if (!el || (f.token.endsWith("password") && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
         const want = norm(f.value);

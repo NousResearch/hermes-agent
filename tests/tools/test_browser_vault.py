@@ -172,17 +172,24 @@ class TestClassifier:
             res = classify_login_control(_ctrl(autocomplete=token))
             assert res is not None and res.token == token
 
-    def test_new_password_autocomplete_excluded(self):
-        assert classify_login_control(
-            _ctrl(autocomplete="new-password", type="password")
-        ) is None
+    def test_new_password_autocomplete_is_a_signup_target(self):
+        result = classify_login_control(_ctrl(autocomplete="new-password", type="password"))
+        assert result is not None and result.token == "new-password"
+
+    def test_confirm_label_overrides_shared_new_password_autocomplete(self):
+        result = classify_login_control(
+            _ctrl(autocomplete="new-password", type="password", label="Confirm password")
+        )
+        assert result is not None and result.token == "confirm-password"
 
     def test_one_time_code_excluded(self):
         assert classify_login_control(_ctrl(autocomplete="one-time-code")) is None
 
-    def test_label_new_password_excluded(self):
-        for label in ("New password", "Confirm Password", "create-password", "Repeat  password"):
-            assert classify_login_control(_ctrl(type="password", label=label)) is None, label
+    def test_signup_password_labels_are_classified_separately(self):
+        for label, token in (("New password", "new-password"), ("Confirm Password", "confirm-password"),
+                             ("create-password", "new-password"), ("Repeat  password", "confirm-password")):
+            result = classify_login_control(_ctrl(type="password", label=label))
+            assert result is not None and result.token == token, label
 
     def test_password_type_maps_current_password(self):
         res = classify_login_control(_ctrl(type="password"))
@@ -214,7 +221,28 @@ class TestClassifier:
         user = ClassifiedLoginControl(_ctrl(index=0, autocomplete="username"), 100, "username")
         assert select_password_fill([user], "p") == []
 
-    def test_select_password_fill_single_field_only(self):
+    def test_select_password_fill_fills_matching_signup_password_pair_only(self):
+        new_password = ClassifiedLoginControl(
+            _ctrl(index=1, form_index=4, autocomplete="new-password", type="password"),
+            100, "new-password",
+        )
+        confirmation = ClassifiedLoginControl(
+            _ctrl(index=2, form_index=4, label="Confirm password", type="password"),
+            100, "confirm-password",
+        )
+        unrelated_confirmation = ClassifiedLoginControl(
+            _ctrl(index=9, form_index=5, label="Confirm password", type="password"),
+            100, "confirm-password",
+        )
+
+        fills = select_password_fill([new_password, confirmation, unrelated_confirmation], "p")
+
+        assert [(f["index"], f["token"]) for f in fills] == [
+            (1, "new-password"),
+            (2, "confirm-password"),
+        ]
+
+    def test_select_password_fill_single_current_password_field_only(self):
         pw1 = ClassifiedLoginControl(_ctrl(index=1, type="password"), 90, "current-password")
         pw2 = ClassifiedLoginControl(_ctrl(index=2, type="password"), 90, "current-password")
         fills = select_password_fill([pw1, pw2], "p")
@@ -234,7 +262,7 @@ class TestClassifier:
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
-        assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
+        assert 'f.token.endsWith("password") && el.type !== "password"' in js  # a password fill never lands in a text box
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
@@ -426,6 +454,59 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" in secret_exprs[0]
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
+
+    def test_signup_fill_targets_only_a_matched_password_confirmation_pair(self, store):
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
+            {"autocomplete": "new-password", "formIndex": 0, "index": 1, "label": "Password", "name": "password", "type": "password"},
+            {"autocomplete": "new-password", "formIndex": 0, "index": 2, "label": "Confirm password", "name": "confirm", "type": "password"},
+            {"autocomplete": "", "formIndex": 1, "index": 3, "label": "Confirm password", "name": "other", "type": "password"},
+        ]
+        secret_exprs = []
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/signup"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 2})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+
+        assert out["filled_fields"] == 2
+        assert "confirmation were filled" in out["next"]
+        assert '"index": 1' in secret_exprs[0] and '"index": 2' in secret_exprs[0]
+        assert '"index": 3' not in secret_exprs[0]
+        assert "s3cret-pw" not in json.dumps(out)
+
+    def test_signup_fill_does_not_suggest_submit_when_pair_is_partial(self, store):
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"autocomplete": "new-password", "formIndex": 0, "index": 0, "label": "Password", "name": "password", "type": "password"},
+            {"autocomplete": "", "formIndex": 0, "index": 1, "label": "Confirm password", "name": "confirm", "type": "password"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/signup"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", return_value={"success": True, "result": json.dumps({"filled": 1})}):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+
+        assert "Do not submit" in out["next"]
 
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,

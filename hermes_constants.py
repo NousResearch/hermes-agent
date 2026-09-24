@@ -486,6 +486,37 @@ def _version_probe_ok(path: str) -> bool:
 
 
 _HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+
+
+def _parse_node_version(version: str) -> tuple[int, int, int]:
+    """Parse ``node --version`` output into ``(major, minor, patch)``.
+
+    Tolerates the ``v`` prefix, a prerelease suffix and short forms (``22`` -> ``(22, 0, 0)``).
+    Raises ``ValueError`` on anything else, which callers already map to "broken, not outdated".
+    """
+    core = version.strip().lstrip("v").split("-", 1)[0].split("+", 1)[0]
+    parts = [int(p) for p in core.split(".")[:3]]
+    if not parts:
+        raise ValueError(f"unparseable node version: {version!r}")
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0], parts[1], parts[2]
+
+
+def _target_node_min() -> tuple[int, int, int]:
+    """Full version floor a managed tree must clear, mirroring ``engines.node`` in package.json.
+
+    A malformed override degrades to ``(<target major>, 0, 0)`` rather than raising at import —
+    this module is imported from 30+ sites at load time.
+    """
+    raw = os.environ.get("HERMES_NODE_TARGET_MIN_VERSION", "22.22.0")
+    try:
+        return _parse_node_version(raw)
+    except ValueError:
+        return (_HERMES_NODE_TARGET_MAJOR, 0, 0)
+
+
+_HERMES_NODE_TARGET_MIN = _target_node_min()
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
@@ -770,21 +801,28 @@ def heal_hermes_managed_node() -> bool:
 
 
 def _managed_node_tree_outdated(home: Path | None = None) -> bool:
-    """True when the managed node runs but is below the target major (heals like a broken tree)."""
+    """True when the managed node runs but is below the target floor (heals like a broken tree).
+
+    The comparison is against the FULL floor (``_HERMES_NODE_TARGET_MIN``), not just the major:
+    ``engines.node`` is ``^22.22.0 || …`` and ``.npmrc`` sets ``engine-strict=true``, so a managed
+    22.14.0 tree is judged current by a major-only check while every ``npm ci`` rejects it with
+    EBADENGINE — the self-heal never fires and the update is wedged.
+    """
     for candidate in _iter_managed_node_candidates(_candidate_node_command_names("node"), home):
         result = _run_version_probe([str(candidate), "--version"])
         if result is None:
             return False  # broken, not outdated — the runnable probe handles it
         try:
-            version = result.stdout.decode().strip().lstrip("v")
-            major = int(version.split(".")[0])
-        except (ValueError, IndexError):
+            stdout = result.stdout
+            version = (stdout.decode() if isinstance(stdout, bytes) else str(stdout)).strip().lstrip("v")
+            parsed = _parse_node_version(version)
+        except (ValueError, IndexError, AttributeError):
             return False
         # A pre-release is outdated whatever its major: nodejs.org publishes headers only for
         # final releases, so node-gyp cannot build node-pty. Mirrors node_satisfies_build() in install.sh.
         if "-" in version:
             return True
-        return major < _HERMES_NODE_TARGET_MAJOR
+        return parsed[0] < _HERMES_NODE_TARGET_MAJOR or parsed < _HERMES_NODE_TARGET_MIN
     return False
 
 

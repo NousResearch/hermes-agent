@@ -277,7 +277,9 @@ class TestNodeToolRunnable:
 
         def _heal():
             heal_called["value"] = True
-            old_node.write_text(f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n")
+            floor = hermes_constants._HERMES_NODE_TARGET_MIN
+            old_node.write_text(
+                f"#!/bin/sh\necho 'v{floor[0]}.{floor[1]}.{floor[2]}'\nexit 0\n")
             old_node.chmod(0o755)
             return True
 
@@ -305,13 +307,18 @@ class TestNodeToolRunnable:
         assert hermes_constants.find_hermes_node_executable("node") == str(old_node)
 
     def test_target_major_managed_node_does_not_heal(self, tmp_path, monkeypatch):
-        """A tree already at the target major never triggers the heal."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        """A tree that already satisfies the full floor never triggers the heal.
+
+        Stubbed at the floor itself, not ``<major>.5.1``: ``engines.node`` is a full
+        floor (``^22.22.0``), so a 22.5.1 tree IS stale and must heal (see
+        tests/test_managed_node_floor_staleness.py).
+        """
+        floor = hermes_constants._HERMES_NODE_TARGET_MIN
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / "node" / "bin"
         managed_bin.mkdir(parents=True)
         node = self._stub(
-            managed_bin, "node", f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n"
+            managed_bin, "node", f"#!/bin/sh\necho 'v{floor[0]}.{floor[1]}.{floor[2]}'\nexit 0\n"
         )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))

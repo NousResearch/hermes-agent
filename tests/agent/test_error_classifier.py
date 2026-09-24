@@ -84,6 +84,21 @@ class TestExtractStatusCode:
         outer.__cause__ = inner
         assert _extract_status_code(outer) == 401
 
+    def test_from_numeric_sse_error_body_when_status_attr_is_missing(self):
+        error = MockAPIError(
+            "provider stream failed",
+            body={"error": {"code": 403, "message": "upstream account is banned"}},
+        )
+        assert _extract_status_code(error) == 403
+
+    def test_native_status_wins_over_numeric_sse_error_body(self):
+        error = MockAPIError(
+            "gateway failed",
+            status_code=502,
+            body={"error": {"code": 403, "message": "upstream account is banned"}},
+        )
+        assert _extract_status_code(error) == 502
+
 
 
 
@@ -169,6 +184,17 @@ class TestClassifyApiError:
         e = MockAPIError("Forbidden", status_code=403)
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.auth
+        assert result.should_fallback is True
+
+    def test_statusless_sse_body_403_is_classified_as_auth(self):
+        error = MockAPIError(
+            "provider stream failed",
+            body={"error": {"code": 403, "message": "upstream account is banned"}},
+        )
+        result = classify_api_error(error, provider="custom")
+        assert result.status_code == 403
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
         assert result.should_fallback is True
 
     def test_403_upstream_unavailable_code_is_transient_not_auth(self):

@@ -910,11 +910,11 @@ class _ApprovalVerdict:
 
 
 _GUARD_PATH_CANDIDATE_RE = re.compile(
-    r'(?<![\\w.~-])(?P<path>(?:/|\\.\\.?/)[^\\s;&|<>()"\\'\x60]+)'
+    r"""(?<![\w.~-])(?P<path>(?:/|\.\.?/)[^\s;&|<>()"'\x60]+)"""
 )
 _DISK_MUTATION_HINT_RE = re.compile(
-    r'(?:\\b(?:wipefs|blkdiscard|sgdisk|shred|dd|mkfs(?:\\.[a-z0-9]+)?|mke2fs|mkswap|'
-    r'newfs(?:_[a-z0-9]+)?|diskutil|cp|mv|install|tee)\\b|>{1,2})',
+    r'(?:\b(?:wipefs|blkdiscard|sgdisk|shred|dd|mkfs(?:\.[a-z0-9]+)?|mke2fs|mkswap|'
+    r'newfs(?:_[a-z0-9]+)?|diskutil|cp|mv|install|tee)\b|>{1,2})',
     re.IGNORECASE,
 )
 _MAX_GUARD_PATH_RESOLUTIONS = 16

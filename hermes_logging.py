@@ -7,6 +7,7 @@ with ``RedactingFormatter`` so secrets never reach disk.
 """
 
 import atexit
+import contextlib
 import copy
 import io
 import logging
@@ -48,6 +49,11 @@ _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
 
 
+# The stdout stream _line_buffer_piped_stdout() already reconfigured: setup_logging runs on every
+# AIAgent build (per message in the gateway), so later calls skip the flush + reconfigure.
+_line_buffered_stdout = None
+
+
 def _line_buffer_piped_stdout() -> None:
     """Best-effort line buffering for a piped stdout (#92281).
 
@@ -57,19 +63,26 @@ def _line_buffer_piped_stdout() -> None:
     the work is actually progressing (only stderr, which we already give
     ``line_buffering=True`` in ``_safe_stderr()``, shows up on time).
     Reconfigure the interpreter's own stdout for line buffering when it is
-    piped; interactive TTY stdout is already line-buffered, and the ACP
-    entry point keeps stdout as a protocol channel it manages itself and
-    never calls ``setup_logging``.
+    piped; interactive TTY stdout is already line-buffered. ACP reaches this
+    too (its AIAgent calls ``setup_logging``) with stdout as its protocol
+    channel — harmless, since line buffering only adds flushes at newlines.
     """
-    try:
-        stream = sys.stdout
-        if stream is None or stream.isatty():
-            return
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
+    global _line_buffered_stdout
+    stream = sys.stdout
+    if stream is None or stream is _line_buffered_stdout:
+        return
+    if getattr(stream, "line_buffering", False) is True:
+        _line_buffered_stdout = stream
+        return
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    # A closed/detached stream raises ValueError / io.UnsupportedOperation (an OSError);
+    # buffering is observability, not correctness — never crash setup_logging over it.
+    with contextlib.suppress(OSError, ValueError):
+        if not stream.isatty():
             reconfigure(line_buffering=True)
-    except Exception:
-        pass  # buffering is observability, not correctness — never crash
+            _line_buffered_stdout = stream
 
 
 def _safe_stderr():  # type: ignore[return]
@@ -246,7 +259,7 @@ def setup_logging(
     # Stdout is block-buffered when piped (no TTY); line-buffer it so a
     # headless supervisor's log stream tracks the agent loop incrementally
     # (#92281). Runs before the initialized check so every entry mode that
-    # reaches this function gets it, idempotent by construction.
+    # reaches this function gets it; a no-op once this stdout is line-buffered.
     _line_buffer_piped_stdout()
 
     # A second Hermes home in a process that already logs for another one — a dashboard or

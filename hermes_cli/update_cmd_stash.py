@@ -75,7 +75,11 @@ def _print_first_line(text: str) -> None:
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     from hermes_cli.update_cmd import _git_run
-    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
+    # Tracked changes only: untracked paths cannot conflict with a
+    # fast-forward, so they never need to leave the tree. Stashing them
+    # with --include-untracked silently removed in-tree extensions and
+    # left nothing to restore them (#120179).
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--untracked-files=no"], cwd, check=True)
     if not status.stdout.strip():
         return None
     # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with
@@ -98,7 +102,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
     prev_stash = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd).stdout.strip()
-    push = _git_run(git_cmd, ["stash", "push", "--include-untracked", "-m", stash_name], cwd)
+    push = _git_run(git_cmd, ["stash", "push", "-m", stash_name], cwd)
     _print_nonempty(push.stdout)
     stash_probe = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd)
     stash_ref = stash_probe.stdout.strip()

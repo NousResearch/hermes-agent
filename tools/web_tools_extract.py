@@ -9,6 +9,7 @@ one-shot keyless rescue. Logs under the origin (tools.web_tools) logger.
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
@@ -23,6 +24,31 @@ _EXTRACT_BACKENDS_HINT = "firecrawl, tavily, keenable, exa, or parallel."
 _INVALID_ITEM_ERROR = (
     "Invalid URL item at index {}: expected a URL string or an object with a string 'url' or 'href' field"
 )
+_CLOUDFLARE_INTERSTITIAL_ERROR = "Cloudflare challenge page prevented content extraction"
+
+
+def _is_cloudflare_interstitial(result: dict) -> bool:
+    """Recognize Cloudflare's empty ``Just a moment...`` markdown response.
+
+    Some extract backends parse the challenge title but reduce its body to a
+    Markdown heading marker. Requiring both signals avoids rejecting a real page
+    which merely happens to use the same phrase in its title.
+    """
+    title = result.get("title")
+    content = result.get("raw_content") or result.get("content")
+    if not isinstance(title, str) or not isinstance(content, str):
+        return False
+    normalized_title = re.sub(r"\s+", " ", title).strip().casefold().rstrip(".")
+    return normalized_title == "just a moment" and not content.strip(" \t\r\n#")
+
+
+def _mark_cloudflare_interstitials(results: List[dict]) -> None:
+    """Turn successful-looking Cloudflare challenge pages into per-URL failures."""
+    for result in results:
+        if isinstance(result, dict) and not result.get("error") and _is_cloudflare_interstitial(result):
+            result["content"] = ""
+            result["raw_content"] = ""
+            result["error"] = _CLOUDFLARE_INTERSTITIAL_ERROR
 
 
 def _web_extract_url(value: Any) -> Optional[str]:
@@ -177,6 +203,7 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+    _mark_cloudflare_interstitials(results)
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 

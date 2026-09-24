@@ -258,6 +258,10 @@ class ComputeHost:
                 hermes_undo.on_user_message_appended(session["session_key"])
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
+            if isinstance(frame.get("submit_user_row"), dict):
+                # Parent-side busy admission persisted this row before the FIFO wait.  Its turn
+                # still runs in this child, so retain the marker for _invoke_agent to adopt.
+                session["_submit_user_row"] = frame["submit_user_row"]
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
                 display_metadata=(frame.get("display_metadata")

@@ -22,8 +22,8 @@ from hermes_cli.auth_codex import _pool_entries
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError, DEFAULT_NOUS_CLIENT_ID,
     DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE, DEFAULT_NOUS_WELCOME_URL,
-    DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
-    NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
+    NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE, NOUS_DEVICE_CODE_SOURCE,
+    NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     _nous_err, httpx)
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
@@ -1359,12 +1359,12 @@ def _nous_device_code_login(
         if on_verification is not None:
             with suppress(Exception):
                 on_verification(verification_url, user_code)
-        effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
+        effective_interval = max(1, interval)
         print(f"Waiting for approval (polling every {effective_interval}s)...")
         token_data = _poll_for_token(
             client=client, portal_base_url=portal_base_url, client_id=client_id,
             device_code=str(device_data["device_code"]), expires_in=expires_in,
-            poll_interval=interval)
+            poll_interval=effective_interval)
     now = datetime.now(timezone.utc)
     token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     resolved_inference_url = (

@@ -521,14 +521,20 @@ controls write (so a plugin action and a hand click can never disagree):
 
 ```ts
 host.sessions.pin(storedSessionId: string, pinned?: boolean, index?: number): void
-host.sessions.reorder(storedSessionIds: string[]): void   // [] = clear manual order → default sort
+host.sessions.reorder(storedSessionIds: string[]): void   // Recents; [] = clear manual order → default sort
+host.sessions.reorderPinned(storedSessionIds: string[]): void  // Pinned section; omitted pins keep their slot
 host.sessions.setColor(storedSessionId: string, color: string | null): void
 ```
 
 Ids are STORED session ids: a live id is resolved to its durable lineage root,
 so pins and colours survive compression's id rotation — and the row-decoration
 slots hand your render that same durable id (`_lineage_root_id ?? id`), never
-the live one. `pin(id, true, index)` slots the pin at that position in the
+the live one. Resolution goes through the rows this window has loaded; an id
+that matches no loaded row is written as given, so pass the slot's durable id
+(not a live id you remembered) for a session that may have scrolled out of the
+list. `reorder` accepts the same ids and maps each to its row's live id
+internally — the Recents order store is keyed by the live id, like the drag
+path. `pin(id, true, index)` slots the pin at that position in the
 Pinned list (a drop target between two pins); without `index` it appends, like
 the row's ⇧-click.
 
@@ -551,7 +557,8 @@ Migration for the held catalog plugins:
   (`render: ({ sessionId }) => …` under `SESSION_ROW_AREAS.leading` gives you
   the durable id per row), then `host.sessions.pin(sessionId, true, dropIndex)`
   for a drop into the Pinned section, `host.sessions.pin(sessionId, false)` for
-  a drop back into Recents, and `host.sessions.reorder([])` for its
+  a drop back into Recents, `host.sessions.reorderPinned(ids)` for a drag
+  within the Pinned section, and `host.sessions.reorder([])` for its
   "reset manual order" path.
 - **better-session-appearance** — replace the `localStorage`
   `hermes.desktop.sessionColors` write and the fiber-harvested `onChange` with
@@ -692,7 +699,8 @@ host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinned=true); index = slot in Pinned;
                                            //   same store the row's ⇧-click / drop writes
-host.sessions.reorder(ids)                 // replace the manual session order (what a drag persists); [] resets
+host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
+host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
 ```
 
@@ -1195,8 +1203,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
-| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS` |
+| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |

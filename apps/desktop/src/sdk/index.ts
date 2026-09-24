@@ -60,12 +60,6 @@ import {
   retireLocalProfileGateways,
   type SpawnPriority
 } from '@/store/gateway'
-import {
-  pinSession,
-  setSidebarSessionOrderIds,
-  setSidebarSessionOrderManual,
-  unpinSession
-} from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -96,11 +90,9 @@ import {
   rememberedSessionProfile,
   requestSessionResume,
   sessionMatchesStoredId,
-  sessionPinId,
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
-import { setSessionColorOverride } from '@/store/session-color'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
@@ -116,6 +108,7 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { composerHost } from './composer'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
@@ -655,17 +648,6 @@ async function awaitProfileActivation(
   // by mutation: removing it changed no test outcome.
 }
 
-/** Pins and colours are keyed by the DURABLE (lineage-root) id so they survive
- *  compression's session-id rotation; a row's live id resolves through
- *  `$sessions` (the app's own lineage matcher), and an id that resolves to
- *  nothing is passed through as-is (the stores tolerate ids for rows this
- *  window hasn't loaded). */
-function durableSessionPinId(storedSessionId: string): string {
-  const session = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
-
-  return session ? sessionPinId(session) : storedSessionId
-}
-
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -937,46 +919,8 @@ export const host = {
   ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
 
-  /** Session-list mutations a plugin may perform on the user's behalf. Every
-   *  method writes the SAME stores the app's own controls write, so a plugin
-   *  action and a hand click can never disagree — the sidebar and the tab
-   *  strip re-render from those stores immediately. Ids are stored (durable)
-   *  session ids as a sidebar row carries them (`session.id`); a live id is
-   *  resolved to its durable lineage root before writing. */
-  sessions: {
-    /** Pin or unpin a session — the row's ⇧-click / context-menu action. A
-     *  pinned session moves into the Pinned section on the next render.
-     *  `index` slots the pin at that position in the Pinned list (a drop
-     *  target between two pins); omitted = append, like the ⇧-click. */
-    pin: (storedSessionId: string, pinned = true, index?: number): void => {
-      const id = durableSessionPinId(storedSessionId)
-
-      if (pinned) {
-        pinSession(id, index)
-      } else {
-        unpinSession(id)
-      }
-    },
-
-    /** Replace the manual session order with `ids` (what a drag persists).
-     *  Ids the window hasn't loaded reconcile on the next render, exactly
-     *  like the app's own reorder. An EMPTY list clears the manual order and
-     *  returns Recents to the default sort — the sidebar's own reconcile
-     *  effect reaches that state one render after a drag empties the list;
-     *  the verb states it directly so a plugin reset never depends on a
-     *  mounted effect. */
-    reorder: (ids: string[]): void => {
-      setSidebarSessionOrderManual(ids.length > 0)
-      setSidebarSessionOrderIds(ids)
-    },
-
-    /** Set a session's colour override (or clear it with `null`) — the same
-     *  per-session colour the app's own picker writes, so a plugin swatch and
-     *  a hand-picked colour are one value. */
-    setColor: (storedSessionId: string, color: null | string): void => {
-      setSessionColorOverride(durableSessionPinId(storedSessionId), color)
-    }
-  },
+  /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
+  sessions: sessionsHost,
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —

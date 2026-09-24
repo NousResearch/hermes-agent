@@ -402,19 +402,41 @@ describe('host.sessions session-list mutations', () => {
     expect($pinnedSessionIds.get()).toEqual(['root-9'])
   })
 
-  it('reorder persists the manual order the drag path writes', async () => {
+  it('reorder persists the manual order the drag path writes, in the LIVE id space', async () => {
     const { $sidebarSessionOrderIds, $sidebarSessionOrderManual } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    // `c` was compressed: the row slot hands a plugin its durable root `c`,
+    // but the order store (and the sidebar's reconcile effect) key rows by
+    // the live id `c-tip`. Feeding the durable id back verbatim would drop
+    // the row from the order and flip the manual flag off on the next render.
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'c', id: 'c-tip' }), makeSessionInfo({ id: 'a' })])
 
     host.sessions.reorder(['c', 'a', 'b'])
 
     expect($sidebarSessionOrderManual.get()).toBe(true)
-    expect($sidebarSessionOrderIds.get()).toEqual(['c', 'a', 'b'])
+    expect($sidebarSessionOrderIds.get()).toEqual(['c-tip', 'a', 'b'])
 
     // Empty list = clear the manual order, back to the default sort.
     host.sessions.reorder([])
 
     expect($sidebarSessionOrderManual.get()).toBe(false)
     expect($sidebarSessionOrderIds.get()).toEqual([])
+  })
+
+  it('reorderPinned permutes the Pinned section through the same setter the drag uses', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'p1', id: 'p1-tip' })])
+    $pinnedSessionIds.set(['p1', 'p2', 'unloaded'])
+
+    // Durable ids (the slot's) and live ids both resolve; an unmentioned pin keeps its slot.
+    host.sessions.reorderPinned(['p2', 'p1-tip'])
+
+    expect($pinnedSessionIds.get()).toEqual(['p2', 'p1', 'unloaded'])
   })
 
   it('setColor writes the durable-keyed colour override and clears with null', async () => {

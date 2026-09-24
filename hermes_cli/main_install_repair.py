@@ -241,8 +241,22 @@ def _recover_core_update_marker_locked() -> None:
     Narrow lazy-refresh import probes are not proof that a generic interrupted core
     install finished — a missing dep outside that probe set would look healthy and
     clear the breadcrumb too early.
+
+    Shares the early pass's attempt budget (the marker's JSON body). Past it, this path
+    used to reinstall on EVERY boot from a process that already maps native venv
+    extensions — the reinstall loop of #81594; now it prints the manual recovery instead.
     """
     from hermes_cli.main import PROJECT_ROOT
+    marker = _update_marker_path()
+    attempts = _early_recovery_mod._read_marker_attempts(marker)
+    max_attempts = _early_recovery_mod._CORE_INSTALL_MAX_ATTEMPTS
+    if attempts >= max_attempts:
+        print(
+            f"✗ Finishing an interrupted `hermes update` failed {attempts} times; automatic "
+            "retries are paused so Hermes stops reinstalling on every launch.")
+        for line in _manual_core_recovery_lines(PROJECT_ROOT, marker, windows=_is_windows()):
+            print(line)
+        return
     print(
         "⚠ A previous `hermes update` was interrupted mid-install — "
         "finishing dependency installation now...")
@@ -259,9 +273,8 @@ def _recover_core_update_marker_locked() -> None:
             "then quarantined full reinstall (core marker stays until that "
             "succeeds)...")
         _repair_venv_via_import_probes(install_prefix, env=install_env)
+    from hermes_cli import _install_repair as _ir
     try:
-        from hermes_cli import _install_repair as _ir
-
         # ensure_uv bootstraps uv itself when missing (the early pass's stdlib-only lookup
         # cannot), so a venv whose uv vanished mid-update still heals.
         from hermes_cli.managed_uv import ensure_uv
@@ -272,23 +285,39 @@ def _recover_core_update_marker_locked() -> None:
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")
     except Exception as exc:
-        # Leave the marker so the next launch retries; give the exact manual command.
+        # Leave the marker so the next launch retries (within the shared budget); give the
+        # exact manual command.
+        attempts = _ir.bump_marker_attempts(marker)
         logger.debug("Interrupted-install recovery failed: %s", exc)
-        print("✗ Could not auto-recover the interrupted install.")
-        manual = (
-            "  Hermes is still running from the launcher that needs "
-            "replacing. Close other Hermes windows, restart from a "
-            "different terminal, then run:",
-            f'    cd /d "{PROJECT_ROOT}"',
-            f'    "{sys.executable}" -m pip install -e ".[all]"',
-        ) if self_locked else (
-            "  Recover manually with:",
-            f"    cd {PROJECT_ROOT}",
-            f"    {sys.executable} -m ensurepip --upgrade",
-            f"    {sys.executable} -m pip install -e '.[all]'",
-        )
-        for line in manual:
+        retry = ("the next launch will retry" if attempts < max_attempts
+                 else "automatic retries are now paused")
+        print(f"✗ Could not auto-recover the interrupted install "
+              f"(attempt {attempts}/{max_attempts}; {retry}).")
+        for line in _manual_core_recovery_lines(
+                PROJECT_ROOT, marker, windows=self_locked or _is_windows()):
             print(line)
+
+
+def _manual_core_recovery_lines(root: Path, marker: Path, *, windows: bool) -> tuple[str, ...]:
+    """The exact commands that finish a pending core install by hand and clear its marker.
+
+    On Windows another Hermes process (Desktop backend, gateway, a second terminal) mapping a
+    venv ``.pyd`` is what keeps the automatic install failing, so they must be closed first.
+    """
+    if windows:
+        return (
+            "  Close every Hermes window (Desktop app, gateways, other terminals), then from a "
+            "new terminal run:",
+            f'    cd /d "{root}"',
+            f'    "{sys.executable}" -m ensurepip --upgrade',
+            f'    "{sys.executable}" -m pip install -e ".[all]"',
+            f'    del "{marker}"')
+    return (
+        "  Recover manually with:",
+        f"    cd {shlex.quote(str(root))}",
+        f"    {sys.executable} -m ensurepip --upgrade",
+        f"    {sys.executable} -m pip install -e '.[all]'",
+        f"    rm -f {shlex.quote(str(marker))}")
 
 
 def _norm_exe_path(path) -> str:

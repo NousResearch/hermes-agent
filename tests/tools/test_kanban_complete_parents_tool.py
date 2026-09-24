@@ -34,6 +34,7 @@ def running_child_with_parent(monkeypatch, tmp_path):
         child_id = kb.create_task(
             conn, title="child work", assignee="test-worker", parents=[parent_id])
         assert kb.claim_task(conn, child_id) is not None
+        run_id = kb._current_run_id(conn, child_id)
         # Parent reopens mid-run: the #113373 timeline.
         with kb.write_txn(conn):
             conn.execute(
@@ -43,6 +44,7 @@ def running_child_with_parent(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", child_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return parent_id, child_id
 
 

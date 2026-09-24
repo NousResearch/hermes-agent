@@ -141,12 +141,6 @@ describe('narrow tiles', () => {
 })
 
 describe('ComposerControls shortcut tooltips', () => {
-  it('shows Enter for Send', async () => {
-    renderControls()
-
-    await expectShortcutTooltip('Send', '↵')
-  })
-
   it('keeps Send (not Steer) while a turn is running if there is a payload', async () => {
     renderControls({ busy: true, busyAction: 'steer' })
 

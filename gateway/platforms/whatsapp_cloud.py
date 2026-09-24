@@ -372,7 +372,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
         # quoted message's id, so this is how replies to our messages resolve text.
         if last_message_id:
-            rich_sent_store.record(chat_id, last_message_id, formatted)
+            await rich_sent_store.record_async(chat_id, last_message_id, formatted)
         return SendResult(success=True, message_id=last_message_id)
 
     # ------------------------------------------------------------------ typing indicator + read receipts
@@ -562,9 +562,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         result = await self._send_media(chat_id, media_kind, caption=caption, filename=filename, reply_to=reply_to, **ref)
         if result.success and result.message_id and "media_id" in ref:
             mime = mime_type or mimetypes.guess_type(source)[0] or _DEFAULT_MIME.get(media_kind, "application/octet-stream")
-            rich_sent_store.record_media(chat_id, result.message_id, [(source, mime)])
+            await rich_sent_store.record_media_async(chat_id, result.message_id, [(source, mime)])
             if caption:
-                rich_sent_store.record(chat_id, result.message_id, caption)
+                await rich_sent_store.record_async(chat_id, result.message_id, caption)
         return result
 
     # ``**kwargs`` absorbs base-class args (e.g. ``metadata``) the Cloud API has no use for.
@@ -1001,9 +1001,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Done AFTER gating so filtered messages don't leak typing/read receipts.
             bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid, INTERACTIVE_STATE_CACHE_SIZE)
             if body:
-                rich_sent_store.record(chat_id, wamid, body)
+                await rich_sent_store.record_async(chat_id, wamid, body)
             if msg_type_str in _INBOUND_MEDIA_KINDS and media_urls:
-                rich_sent_store.record_media(chat_id, wamid, list(zip(media_urls, media_types)))
+                await rich_sent_store.record_media_async(chat_id, wamid, list(zip(media_urls, media_types)))
         if reply_to_id:
             for path, mime in rich_sent_store.lookup_media(chat_id, reply_to_id):
                 if path not in media_urls:

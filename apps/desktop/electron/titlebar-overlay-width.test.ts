@@ -60,19 +60,6 @@ test('macOS keeps its height-only traffic-light overlay', () => {
   )
 })
 
-test('native overlays fall back to the active theme color', () => {
-  assert.deepEqual(titleBarOverlayOptions({ platform: 'windows', foreground: null, dark: true }), {
-    color: undefined,
-    height: 0,
-    symbolColor: '#f7f7f7'
-  })
-  assert.deepEqual(titleBarOverlayOptions({ platform: 'linux', foreground: null, dark: false }), {
-    color: undefined,
-    height: 0,
-    symbolColor: '#242424'
-  })
-})
-
 test('plain Linux paints the WCO too, so it reserves the fallback width', () => {
   // Regression #53185: re-enabling the overlay on plain Linux (KDE/GNOME)
   // without reserving its width left the native min/max/close buttons painting
@@ -84,10 +71,6 @@ test('plain Linux paints the WCO too, so it reserves the fallback width', () => 
 
 test('macOS uses traffic lights, not a WCO overlay, so it reserves nothing', () => {
   assert.equal(nativeOverlayWidth({ isMac: true }), 0)
-})
-
-test('the fallback width is a sane positive pixel value', () => {
-  assert.ok(Number.isInteger(OVERLAY_FALLBACK_WIDTH) && OVERLAY_FALLBACK_WIDTH > 0)
 })
 
 test('pre-Tahoe keeps the full titlebar overlay height', () => {

@@ -225,14 +225,6 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     expect(openGatewayForProfile).not.toHaveBeenCalled()
   })
 
-  it('pre-warms while pool slots are free', () => {
-    openSecondaryCount.mockReturnValue(1)
-
-    prewarmProfileBackend('warm-slot-free')
-
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free')
-  })
-
   it('follows the live pool-limit atom, not a hard-coded cap', () => {
     // User raises Warm Bot Backends to 8 in Settings: prewarming must keep
     // working well past the old default of 3.

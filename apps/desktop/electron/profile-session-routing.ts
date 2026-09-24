@@ -164,15 +164,63 @@ export function buildSidebarSessionSliceParams(searchParams: URLSearchParams): S
   }
 }
 
-/** Fetch the primary backend's profile-aware session slice, falling back to an empty result when unavailable. */
+interface SessionScanError {
+  profile: string
+  error: string
+}
+
+function errorsOf(data: unknown): SessionScanError[] | undefined {
+  const errors = data && typeof data === 'object' ? (data as { errors?: unknown }).errors : undefined
+
+  return Array.isArray(errors) && errors.length ? (errors as SessionScanError[]) : undefined
+}
+
+/** Fetch the primary backend's profile-aware session slice. A failed read is
+ *  still an empty page, but it carries `errors` naming the requested scope
+ *  (`all` for the unified list), like the backend's failed profile scan, so the
+ *  renderer keeps the rows it could not re-read instead of clearing them. */
 export async function fetchPrimaryProfileSessions(
   searchParams: URLSearchParams,
   fetchJsonForProfile: FetchJsonForProfile
 ): Promise<ProfileSessionsResponse> {
   try {
     return (await fetchJsonForProfile(null, `/api/profiles/sessions?${searchParams}`)) as ProfileSessionsResponse
-  } catch {
-    return { sessions: [], total: 0, profile_totals: {} }
+  } catch (error) {
+    const profile = (searchParams.get('profile') || '').trim() || 'all'
+
+    return {
+      sessions: [],
+      total: 0,
+      profile_totals: {},
+      errors: [{ profile, error: error instanceof Error ? error.message : String(error) }]
+    }
+  }
+}
+
+/** Reassemble the batched sidebar response from its three per-slice reads,
+ *  keeping each slice's `errors` so a failed scan is never read as an
+ *  authoritative empty slice. */
+export function assembleSidebarSessionSlices(recents: unknown, cron: unknown, messaging: unknown) {
+  const slice = (data: unknown) => {
+    const errors = errorsOf(data)
+
+    return { sessions: rowsOf(data), ...(errors ? { errors } : {}) }
+  }
+
+  const recentsSlice = recents as Partial<ProfileSessionsResponse> | undefined
+
+  return {
+    recents: {
+      ...slice(recents),
+      total: Number(recentsSlice?.total) || 0,
+      profile_totals: recentsSlice?.profile_totals || {}
+    },
+    cron: slice(cron),
+    messaging: {
+      ...slice(messaging),
+      total: Number((messaging as Partial<SessionListResponse> | undefined)?.total) || rowsOf(messaging).length
+    },
+    errors: []
   }
 }
 

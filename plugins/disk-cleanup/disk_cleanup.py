@@ -336,6 +336,20 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
+def _inside_git_worktree(path: Path) -> bool:
+    """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
+    normal checkout, a pointer FILE in a linked worktree) exists anywhere on the directory chain.
+    Files there are Git-owned — a ``test_*`` file in a worktree is typically a committed
+    regression test, not session scratch (#115295).
+
+    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for in-home paths: a home kept
+    in a dotfiles repo (``~/.git``) would otherwise make every scratch file look Git-owned."""
+    parents = list(path.resolve().parents)
+    with contextlib.suppress(ValueError):
+        parents = parents[: parents.index(get_hermes_home())]
+    return any((parent / ".git").exists() for parent in parents)
+
+
 def guess_category(path: Path) -> Optional[str]:
     """Category label for *path*, or None if we shouldn't track it (``post_tool_call`` hook)."""
     if not is_safe_path(path):
@@ -352,4 +366,9 @@ def guess_category(path: Path) -> Optional[str]:
         if top == "cache":
             return "temp"
     name = path.name
-    return "test" if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES) else None
+    if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES):
+        # Git-owned trees manage their own files: never classify a test_* there as disposable,
+        # so neither tracking nor quick() (which re-validates stored "test" entries through
+        # this function) touches it (#115295).
+        return None if _inside_git_worktree(path) else "test"
+    return None

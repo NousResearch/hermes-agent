@@ -12,7 +12,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
-from agent.message_sanitization import deterministic_call_id
+from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
 
@@ -93,13 +93,15 @@ _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _VIDEO_PART_TYPES = {"video", "video_url", "input_video"}
 _OUTPUT_TEXT_TYPES = {"output_text", "text"}
 _ASSISTANT_IMAGE_PLACEHOLDER = "[Assistant image omitted during replay]"
+# Inline data-URL subtypes the Responses backends accept as ``input_image``. Anything else
+# (SVG source, BMP, TIFF, ...) 400s the WHOLE request — and, once baked into history, every
+# later turn too — so it is downgraded to a text placeholder at this converging seam (#29711).
 _INCOMPLETE_STATUSES = {"queued", "in_progress", "incomplete"}
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 
 # input[].id / function names longer than this are a non-retryable 400 ("string too
 # long"). Codex message ids can run 400+ chars; Hermes ``msg_...`` ids stay under the cap.
 _MAX_RESPONSES_ITEM_ID_LENGTH = 64
-_VALID_RESPONSES_FN_NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
 # Provider-executed built-in tools: declared by ``type`` alone, run server-side,
 # reported via the ``*_call`` output items below; preflight passes them through.
@@ -163,7 +165,11 @@ def _neutralize_harmony_tokens(text: str) -> str:
     """Keep Harmony source readable without emitting reserved wire tokens."""
     if not text or "<" not in text or "|" not in text:
         return text
-    if not any(unicodedata.category(char) == "Cf" for char in text):
+    # No ASCII code point is a Unicode format control (Cf): str.isascii() is an O(1) flag
+    # check, and other text only needs each distinct non-ASCII character categorised once.
+    if text.isascii() or not any(
+        unicodedata.category(char) == "Cf" for char in set(text) if char > "\x7f"
+    ):
         return _HARMONY_CONTROL_TOKEN_RE.sub(rf"<{_FULLWIDTH_PIPE}\1{_FULLWIDTH_PIPE}>", text)
     # The backend strips Unicode format controls (e.g. U+200B) before its reserved-token
     # check, so match on the visible text and rewrite the original spans.
@@ -212,7 +218,9 @@ def _iter_content_parts(content: list) -> Iterator[tuple[str, Any]]:
 def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_url: bool) -> Optional[Dict[str, Any]]:
     """Responses image part from a chat/Responses image part (``image_url`` may be a str or
     ``{url, detail}``). Assistant → text placeholder (an assistant ``input_image`` 400s every
-    replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``."""
+    replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``; an inline
+    SVG is rasterized to PNG when a rasterizer is installed, any other unsupported inline
+    subtype (or an SVG with no rasterizer) → text placeholder."""
     if role == "assistant":
         return {"type": "output_text", "text": _ASSISTANT_IMAGE_PLACEHOLDER}
     url, detail = part.get("image_url"), part.get("detail")
@@ -220,7 +228,19 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
         url, detail = url.get("url"), url.get("detail", detail)
     if not _nonempty_str(url) and not keep_empty_url:
         return None
-    image_part: Dict[str, Any] = {"type": "input_image", "image_url": str(url or "")}
+    url = str(url or "")
+    # Lazy import: the prep module only depends on hermes_constants at import time (no cycle).
+    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
+    mime = unsupported_inline_image_media_type(url)
+    if mime == "image/svg+xml":
+        # Rasterize so the model still sees the drawing; the placeholder is the fallback only
+        # when no rasterizer (cairosvg / svglib / rsvg-convert / inkscape) is available.
+        png_url = rasterize_svg_data_url(url)
+        if png_url is not None:
+            url, mime = png_url, None
+    if mime is not None:
+        return {"type": "input_text", "text": f"[image omitted: {mime} is not a supported image format]"}
+    image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
     if _nonblank(detail):
         image_part["detail"] = detail.strip()
     return image_part
@@ -269,18 +289,6 @@ def _clamp_responses_call_id(call_id: str) -> str:
     if len(call_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
         return call_id
     return f"call_{hashlib.sha256(call_id.encode('utf-8', errors='replace')).hexdigest()[:32]}"
-
-
-def _sanitize_replayed_fn_name(name: str) -> str:
-    """Coerce a *replayed* ``function_call.name`` to ``^[a-zA-Z0-9_-]{1,64}$`` (an invalid stored
-    name 400s every later turn). Invalid runs collapse to ``_``; all-invalid → "fn". Apply ONLY to
-    replayed items, never live tool definitions (schema names must match the dispatch registry)."""
-    if not isinstance(name, str):
-        return "fn"
-    if _VALID_RESPONSES_FN_NAME_RE.fullmatch(name):
-        return name
-    coerced = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())).strip("_")
-    return coerced[:64] or "fn"
 
 
 def _canonical_call_id_from_fc(response_item_id: Any) -> Optional[str]:
@@ -503,7 +511,7 @@ def _replay_tool_call_items(
         replayed.append({
             "type": "function_call",
             "call_id": wire_ids.for_call(call_id) if wire_ids else _clamp_responses_call_id(call_id),
-            "name": _sanitize_replayed_fn_name(fn_name), "arguments": _coerce_arguments(arguments),
+            "name": coerce_tool_name(fn_name, fallback="fn"), "arguments": _coerce_arguments(arguments),
         })
     return replayed
 
@@ -751,7 +759,7 @@ def _preflight_function_call(item: Dict[str, Any], idx: int, ctx: _PreflightCtx)
     if not _nonblank(name):
         raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
     return {
-        "type": "function_call", "call_id": call_id.strip(), "name": _sanitize_replayed_fn_name(name),
+        "type": "function_call", "call_id": call_id.strip(), "name": coerce_tool_name(name, fallback="fn"),
         "arguments": ctx.sanitize_text(_coerce_arguments(item.get("arguments", "{}"))),
     }
 
@@ -899,6 +907,8 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
     ("reasoning", lambda v: isinstance(v, dict), None),
     ("include", lambda v: isinstance(v, list), None),
     ("service_tier", _nonblank, str.strip),
+    # Responses text controls (verbosity, structured-output format).
+    ("text", lambda v: isinstance(v, dict) and bool(v), None),
     ("max_output_tokens", lambda v: isinstance(v, (int, float)) and v > 0, int),
     ("timeout", lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < float("inf"), float),
     ("temperature", lambda v: isinstance(v, (int, float)), float),

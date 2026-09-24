@@ -165,7 +165,12 @@ class UpdateLock:
         release. The ancestry path covers staged updaters older than the env-var export.
         """
         existing = read_live_update(path=self.path)
-        if existing is not None:
+        # A live claim naming our own pid is a killed update's marker whose pid this retry
+        # inherited (containers restart pid numbering): no other live process has our pid, and
+        # nothing pre-writes a marker for `hermes update` (it always runs under a parent's claim).
+        # It is a new attempt, so it is claimed fresh like a dead holder's. Keeping the old
+        # started_at would let the ceiling expire mid-run and admit a second updater.
+        if existing is not None and existing.pid != os.getpid():
             if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True
             self.holder = existing

@@ -499,9 +499,17 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         # looks identical to a hang and users reboot mid-install).
         return _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
-    r1 = _install_web_deps(silent=True)
-    if r1.returncode != 0:
-        return _report_web_build_failure("npm install", r1, fatal=fatal)
+    # `hermes update` already installed this exact closure and recorded the manifests digest after
+    # success; while it still matches (node_modules + toolchain checked inside), `npm ci` here would
+    # only wipe and re-reify the identical tree. Only the root lockfile is digested, so a web/ that
+    # owns its lockfile always installs. See #43837.
+    from hermes_cli.main import PROJECT_ROOT
+    from hermes_cli.update_cmd_deps import _npm_lockfile_changed
+    from hermes_constants import get_default_hermes_root
+    if npm_cwd != PROJECT_ROOT or _npm_lockfile_changed(get_default_hermes_root()):
+        r1 = _install_web_deps(silent=True)
+        if r1.returncode != 0:
+            return _report_web_build_failure("npm install", r1, fatal=fatal)
     r2 = _build()
     if r2.returncode != 0:
         # The install can exit 0 over a half-installed tree (lockfile-hash skip,

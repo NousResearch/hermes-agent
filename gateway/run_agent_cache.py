@@ -16,7 +16,7 @@ from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.run_shutdown import _log_suppressed
-from hermes_cli.config import cfg_get
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -47,18 +47,21 @@ class GatewayAgentCacheMixin:
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
-        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. Missing keys /
-        non-dict sections yield None (still enters the signature). Includes the live tool registry
+        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``
+        is the raw file (no DEFAULT_CONFIG merge), so absent keys and non-dict sections take the
+        DEFAULT_CONFIG value — what the agent was actually built with — while an explicit ``null`` stays
+        None so opting out of a non-None default still rebuilds. Includes the live tool registry
         generation: MCP reloads mutate the registry without touching config.yaml."""
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
+            default = cfg_get(DEFAULT_CONFIG, section, key)
             section_val = cfg.get(section)
             if section == "checkpoints" and isinstance(section_val, bool):
                 # Legacy ``checkpoints: true``: a live toggle must still rebuild the cached agent.
-                out[f"{section}.{key}"] = section_val if key == "enabled" else None
+                out[f"{section}.{key}"] = section_val if key == "enabled" else default
             else:
-                out[f"{section}.{key}"] = section_val.get(key) if isinstance(section_val, dict) else None
+                out[f"{section}.{key}"] = cfg_get(cfg, section, key, default=default)
         try:
             from tools.registry import registry
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
@@ -157,10 +160,13 @@ class GatewayAgentCacheMixin:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
+        from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+        if is_foreign_provider_endpoint(provider, override.get("base_url")):
+            override["base_url"] = None  # left over from a switch that kept the previous provider's URL
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
-            # falls back to env resolution and layers model/provider.
+            # retries the resolution for that provider on each turn (default route + notice meanwhile).
             try:
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
@@ -171,6 +177,11 @@ class GatewayAgentCacheMixin:
                     # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
                     # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
+                from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+                if opencode_provider_family(provider) is not None and override.get("base_url"):
+                    # api_mode was just re-derived from the target model; a relay URL persisted by an older
+                    # build for another wire (/v1-stripped) or the other family is healed to match (#96066).
+                    override["base_url"] = normalize_opencode_base_url(provider, override.get("api_mode"), override["base_url"])
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "

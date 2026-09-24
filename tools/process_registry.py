@@ -14,6 +14,7 @@ import shlex
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -50,6 +51,9 @@ def _checkpoint_path() -> Path:
     return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
+# Tail of the output a completion notification carries. Right for a build log; a spawner whose
+# output IS the payload (a bot DM's reply) asks for more per process (completion_output_chars).
+COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
 
@@ -70,6 +74,14 @@ WATCH_STRIKE_LIMIT = 3
 # delivered this many matches over its whole life we disable it and fall back to notify_on_complete, same as
 # the strike-limit path.
 WATCH_LIFETIME_MAX_HITS = 8
+# Heartbeat: an opt-in periodic "still running, here is the output since last time" event for
+# long bounded jobs (merge trains, full test suites, deploys). Unlike watch patterns it is
+# time-driven, so it is bounded by construction (≤ 3600/HEARTBEAT_MIN_SECONDS events per hour
+# per process) and needs no strike/lifetime breaker. The floor exists so a model cannot turn
+# it into a 5-second poll; the output slice is capped like a completion notice.
+HEARTBEAT_MIN_SECONDS = 60
+HEARTBEAT_OUTPUT_CHARS = 2000
+HEARTBEAT_TICK_SECONDS = 5
 # Global circuit breaker across all sessions so concurrent siblings can't collectively
 # flood the user even when each is under its own cap.
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
@@ -478,6 +490,17 @@ def _output_tail(session: "ProcessSession", n: int) -> str:
     return strip_ansi(session.output_buffer[-n:])
 
 
+def _completion_output(session: "ProcessSession") -> dict:
+    """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
+
+    Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server
+    or one-shot session cannot receive notifications and polls instead, so the polled result must
+    carry the same whole reply and the same cut marker (#115334)."""
+    limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
+    cut = len(session.output_buffer) - limit
+    return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -495,6 +518,7 @@ class ProcessSession:
     started_at: float = 0.0                     # time.time() of spawn
     host_start_time: Optional[int] = None       # kernel start ticks (/proc/<pid>/stat f22) — PID-reuse guard
     exited: bool = False
+    exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
     termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
@@ -518,7 +542,13 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: List[str] = field(default_factory=list)
+    heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
+    total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
+    _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
+    _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
+    _heartbeat_seq: int = field(default=0, repr=False)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
     _watch_disabled: bool = field(default=False, repr=False) # permanently killed after strike limit
@@ -535,6 +565,7 @@ class ProcessSession:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
         with self._lock:
             self.output_buffer += text
+            self.total_output_chars += len(text)
             if len(self.output_buffer) > self.max_output_chars:
                 self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
@@ -557,7 +588,8 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
+    "heartbeat_seconds")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -609,6 +641,60 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # a read-only terminal tab without killing the process.
         self.on_output = None
         self.on_close = None
+        self._heartbeat_thread: Optional[threading.Thread] = None
+
+    # ── heartbeat ───────────────────────────────────────────────────────────
+    def arm_heartbeat(self, session: ProcessSession, seconds: int) -> int:
+        """Enable periodic heartbeat events for ``session``; returns the effective interval."""
+        seconds = max(int(seconds), HEARTBEAT_MIN_SECONDS)
+        session.heartbeat_seconds = seconds
+        session._heartbeat_last = time.time()
+        session._heartbeat_total_at_last = session.total_output_chars
+        self._ensure_heartbeat_thread()
+        return seconds
+
+    def _ensure_heartbeat_thread(self) -> None:
+        with self._lock:
+            if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+                return
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop, name="process-heartbeat", daemon=True)
+            self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        """One daemon thread for every heartbeat session: reader threads block on the pipe and
+        cannot keep time, and a per-process timer would leak one thread per job."""
+        while True:
+            time.sleep(HEARTBEAT_TICK_SECONDS)
+            now = time.time()
+            with self._lock:
+                due = [s for s in self._running.values()
+                       if s.heartbeat_seconds > 0 and not s.exited
+                       and now - s._heartbeat_last >= s.heartbeat_seconds]
+            for session in due:
+                self._emit_heartbeat(session, now)
+
+    def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
+        with session._lock:
+            delta = session.total_output_chars - session._heartbeat_total_at_last
+            output = session.output_buffer[-delta:] if delta > 0 else ""
+            session._heartbeat_total_at_last = session.total_output_chars
+        if len(output) > HEARTBEAT_OUTPUT_CHARS:
+            cut = len(output) - HEARTBEAT_OUTPUT_CHARS
+            output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
+        session._heartbeat_last = now
+        session._heartbeat_seq += 1
+        notification = {
+            **self._watch_event_base(session),
+            "type": "heartbeat",
+            "seq": session._heartbeat_seq,
+            "interval": session.heartbeat_seconds,
+            "elapsed": int(now - session.started_at) if session.started_at else 0,
+            "output": output,
+            "started_at": session.started_at,
+        }
+        _redact_process_result(notification)
+        self.completion_queue.put(notification)
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -936,11 +1022,79 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if grace <= 0:
             return
         _wait_for_exit(targets)
+        # A parent that ignored SIGTERM (the interactive ``bash -lic`` wrapper does) keeps
+        # running its script through both grace windows and can spawn children the first
+        # snapshot never saw. Re-snapshot while it is still alive: once it is SIGKILLed
+        # they reparent to init and nothing can find them again.
+        with suppress(gone):
+            if cls._proc_alive(parent):
+                known = {proc.pid for proc in targets}
+                targets.extend(p for p in parent.children(recursive=True) if p.pid not in known)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
                     proc.kill()  # SIGKILL on POSIX
                     logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
+
+    @staticmethod
+    def _live_descendants(pid: int) -> List[int]:
+        """PIDs of living non-zombie descendants of host PID ``pid`` (best-effort)."""
+        try:
+            import psutil
+            children = psutil.Process(pid).children(recursive=True)
+        except Exception:
+            return []
+        return [c.pid for c in children if ProcessRegistry._proc_alive(c)]
+
+    # SIGKILL / taskkill are asynchronous: the kernel needs a scheduling tick to
+    # tear the process down and the parent must reap it before poll()/isalive()
+    # stop saying "alive". Verifying survivors in that window flagged every
+    # escalated kill as incomplete.
+    _KILL_SETTLE_SECONDS = 1.0
+
+    def _post_kill_survivors(self, session: "ProcessSession") -> List[int]:
+        """Host PIDs still alive once the kill signals have had time to land (#115490).
+
+        Fail-closed: anything unverifiable counts as a survivor, so a kill
+        that leaves a live tree can never write a killed receipt. Sandbox
+        (env) sessions have no host-visible tree and are unverifiable by
+        design — they return no survivors, preserving existing behavior."""
+        deadline = time.monotonic() + self._KILL_SETTLE_SECONDS
+        while True:
+            survivors = self._probe_survivors(session)
+            if not survivors or time.monotonic() >= deadline:
+                return survivors
+            time.sleep(0.05)
+
+    def _probe_survivors(self, session: "ProcessSession") -> List[int]:
+        survivors: List[int] = []
+        proc = getattr(session, "process", None)
+        if proc is not None:
+            try:
+                root_alive = proc.poll() is None
+            except Exception:
+                root_alive = True
+            if root_alive:
+                survivors.append(getattr(proc, "pid", None) or session.pid)
+        pty = getattr(session, "_pty", None)
+        if pty is not None:
+            try:
+                pty_alive = bool(pty.isalive())
+            except Exception:
+                pty_alive = self._is_host_pid_alive(session.pid)
+            if pty_alive:
+                survivors.append(session.pid)
+        if session.pid_scope == "host" and session.pid:
+            if self._host_pid_is_ours(session.pid, session.host_start_time):
+                if session.pid not in survivors:
+                    survivors.append(session.pid)
+                survivors.extend(
+                    pid for pid in self._live_descendants(session.pid)
+                    if pid not in survivors)
+            # A dead/recycled root has no PID-scope descendants left to find:
+            # reparented orphans are outside PID scope (systemd scope stop,
+            # issued before this check, covers the cgroup case).
+        return [pid for pid in survivors if pid]
 
     # ----- Spawn -----
 
@@ -965,7 +1119,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     return temp_dir.rstrip("/") or "/"
             except Exception as exc:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
-        return "/tmp"
+        return tempfile.gettempdir()
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> List[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
@@ -1182,7 +1336,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
         poll()/wait() remains the safety net. See #68915, #8340.
         """
-        first_chunk = True
+        # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
+        # reader can wake between them; strip leading noise from every chunk until the
+        # process has produced real output, not just from the first read.
+        head_noise = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -1193,10 +1350,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # same treatment the foreground path already has in
         # ``tools/environments/base.py::_wait_for_process``. (Ported from openclaw/openclaw#112325.)
         def _append_chunk(chunk: str):
-            nonlocal first_chunk
-            if first_chunk:
+            nonlocal head_noise
+            if head_noise:
                 chunk = self._clean_shell_noise(chunk)
-                first_chunk = False
+                head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
         try:
             proc = session.process
@@ -1429,6 +1586,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             was_running = session.id in self._running
             if was_running:
+                session.exited_at = time.time()
                 # Keep the session tracked until its result is durable. A finite
                 # parent must not observe completion and exit during this write.
                 save_completed_result(session)
@@ -1455,7 +1613,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
-                "output": _output_tail(session, 2000),
+                # A consumer that relays the output (a bot DM's reply) must know it is not whole.
+                **_completion_output(session),
                 # Stable producer identity across checkpoint recovery (unlike a
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
@@ -1903,10 +2062,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     @staticmethod
     def _exit_snapshot(session: ProcessSession, status: str) -> dict:
-        """Result dict for an exited session: exit metadata + last 2000 chars of output."""
+        """Result dict for an exited session: exit metadata + the completion-sized output tail."""
         return {
             "status": status, "command": session.command,
-            **ProcessRegistry._exit_fields(session), "output": _output_tail(session, 2000)}
+            **ProcessRegistry._exit_fields(session), **_completion_output(session)}
 
     def kill_process(
         self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
@@ -1945,10 +2104,32 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # descendants reparented inside the cgroup.
             if session.systemd_unit:
                 _stop_systemd_unit(session.systemd_unit)
+            # Post-kill verification (#115490): the signals above can leave
+            # survivors (SIGTERM-ignoring daemons, scope escapees). A kill that
+            # leaves a live tree must not write a killed receipt or prune the
+            # session — the survivors would become unmanageable. Keep the
+            # session running so it stays listed and killable.
+            with session._lock:
+                signal_race_exited = session.exited
+            # A reader that finalised the session mid-signal already proved
+            # real exit; only a still-running session needs tree-death proof.
+            survivors = [] if signal_race_exited else self._post_kill_survivors(session)
+            if survivors:
+                alive = ", ".join(map(str, survivors))
+                logger.warning(
+                    "Kill incomplete for %s: %d process(es) still alive (%s) — session kept running",
+                    session.id, len(survivors), alive)
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Kill incomplete: {len(survivors)} process(es) still alive "
+                        f"({alive}); session running"),
+                    "session_id": session.id, "survivors": survivors,
+                    "process_running": True}
             # Capture output, mark consumed, THEN expose ``exited`` to watcher tasks —
             # closes the delayed-notification race without losing the transcript.
             with session._lock:
-                output = _output_tail(session, 2000)
+                output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 session.exited = True
@@ -1964,7 +2145,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             self._write_checkpoint()
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
-                "termination_source": session.termination_source, "output": output}
+                "termination_source": session.termination_source, **output}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -1997,11 +2178,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 with session._lock:
                     session.exited = True
                     session.exit_code = None
-                    output = _output_tail(session, 2000)
+                    output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 self._move_to_finished(session)
-                return {"status": "already_exited", "exit_code": session.exit_code, "output": output}
+                return {"status": "already_exited", "exit_code": session.exit_code, **output}
             self._terminate_host_pid(session.pid, session.host_start_time)
         else:
             return {
@@ -2138,6 +2319,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 entry["notify_on_complete"] = True
             if s.exited:
                 entry["exit_code"] = s.exit_code
+                entry["exited_at"] = s.exited_at
+                entry["completion_reason"] = s.completion_reason
             if s.detached:
                 entry["detached"] = True
             result.append(entry)
@@ -2316,11 +2499,22 @@ PROCESS_SCHEMA = {
 }
 
 
+def transform_process_output(output: str, *, command: str, returncode: Optional[int], task_id: str = "") -> str:
+    """``transform_terminal_output`` seam for background-process output — the poll/wait/log/kill
+    results and the completion/heartbeat/watch notifications — so a plugin that rewrites terminal
+    output sees the same command output whether it ran in the foreground or not (#70760).
+    Same helper as the foreground path; callers redact AFTER it, never before, so a replacement
+    the plugin returns is still masked. ``returncode`` is None while the process is running and
+    ``env_type`` is not recorded per process, so it is passed empty."""
+    from tools.terminal_tool_result import _apply_output_transform_hook
+    return _apply_output_transform_hook(command, output, returncode, task_id or "", "")
+
+
 def _redact_process_result(result: dict) -> dict:
-    """Redact secrets from background-process output before it reaches the model,
-    session.db and CLI, mirroring the foreground ``terminal`` redaction so the two
-    surfaces can't diverge. Respects ``security.redact_secrets``; ``redact_terminal_output``
-    picks ``code_file`` from the recorded command. The command itself is redacted too.
+    """Transform, then redact secrets from background-process output before it reaches the
+    model, session.db and CLI, mirroring the foreground ``terminal`` pipeline (hook first,
+    redaction after) so the two surfaces can't diverge. Respects ``security.redact_secrets``;
+    ``redact_terminal_output`` picks ``code_file`` from the recorded command.
 
     The command string itself is also redacted in case it carried an inline credential. See #43025.
     """
@@ -2329,8 +2523,13 @@ def _redact_process_result(result: dict) -> dict:
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
+    # The hook's task_id is the process OWNER's (poll/log/wait results carry only session_id).
+    task_id = str(result.get("task_id") or "")
+    if not task_id and (session := process_registry.get(str(result.get("session_id") or ""))) is not None:
+        task_id = str(getattr(session, "task_id", "") or "")
     for key in ("output", "output_preview"):
         if isinstance(value := result.get(key), str) and value:
+            value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
             result[key] = redact_terminal_output(value, command)
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)

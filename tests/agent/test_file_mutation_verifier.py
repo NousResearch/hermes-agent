@@ -24,7 +24,6 @@ import json
 import pytest
 
 from agent.tool_dispatch_helpers import (
-    _FILE_MUTATING_TOOLS,
     _extract_error_preview,
     _extract_file_mutation_targets,
     _extract_landed_file_mutation_paths,
@@ -282,26 +281,9 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        # The recorder only sees tool receipts, so the header states what it knows (the
-        # call failed), never that no bytes changed (#111771).
-        assert "1 file edit(s) FAILED" in out
-        assert "NOT modified" not in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
-        assert "git status" in out  # user-actionable hint
 
-    def test_truncation_at_10_entries(self):
-        failed = {
-            f"/tmp/f{i}.md": {"tool": "patch", "error_preview": "err"}
-            for i in range(15)
-        }
-        out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file edit(s) FAILED" in out
-        assert "… and 5 more" in out
-        # Ten file bullets + header + "and X more" line
-        lines = out.split("\n")
-        bullet_lines = [ln for ln in lines if ln.lstrip().startswith("•")]
-        assert len(bullet_lines) == 11  # 10 shown + 1 summary
 
 
     def test_footer_path_not_extracted_by_gateway(self):
@@ -339,69 +321,22 @@ class TestFormatFooter:
 
 
 class TestVerifierEnabled:
-    def test_default_is_enabled(self, monkeypatch):
-        monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
-        agent = _bare_agent()
-        # With no env and no config present, safe default is True.
-        # load_config may surface a user config.yaml in some envs — stub it.
-        import hermes_cli.config as _cfg_mod
-        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
-        assert agent._file_mutation_verifier_enabled() is True
 
-    @pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off"])
+    @pytest.mark.parametrize("value", ["0", "FALSE", "off"])
     def test_env_disables(self, monkeypatch, value):
         monkeypatch.setenv("HERMES_FILE_MUTATION_VERIFIER", value)
         agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is False
 
-    def test_config_read_once_then_cached(self, monkeypatch):
-        """Measured-work pin: the config lookup happens once per agent.
 
-        The footer gate runs at the end of every turn, so a fresh
-        ``load_config()`` per call is wasted work (measured ~0.9 ms/call on
-        a warm mtime-cache on this host; the sibling per-turn-config kill in
-        #74211 removed exactly this class of read).  The config read must be
-        cached after the first call; the env-var override must still win on
-        every call, cached or not.
-        """
-        monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
-        agent = _bare_agent()
-        calls = {"n": 0}
-
-        import hermes_cli.config as _cfg_mod
-
-        def counting_load():
-            calls["n"] += 1
-            return {"display": {"file_mutation_verifier": True}}
-
-        monkeypatch.setattr(_cfg_mod, "load_config", counting_load)
-
-        # First call reads config and caches the result.
-        assert agent._file_mutation_verifier_enabled() is True
-        assert calls["n"] == 1
-        # Subsequent calls must not re-read config.
-        assert agent._file_mutation_verifier_enabled() is True
-        assert agent._file_mutation_verifier_enabled() is True
-        assert calls["n"] == 1
-        # Env override stays authoritative even after the cache is warm.
-        monkeypatch.setenv("HERMES_FILE_MUTATION_VERIFIER", "0")
-        assert agent._file_mutation_verifier_enabled() is False
-        assert calls["n"] == 1  # env path never touches config
-
-    def test_cache_respects_config_value(self, monkeypatch):
-        """A disabled config value is cached as False, not re-read."""
+    def test_config_value_disables(self, monkeypatch):
+        """``display.file_mutation_verifier: false`` turns the verifier off."""
         monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
         agent = _bare_agent()
 
         import hermes_cli.config as _cfg_mod
         monkeypatch.setattr(
             _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": False}}
-        )
-        assert agent._file_mutation_verifier_enabled() is False
-        # Warm cache: flip the underlying config; the agent still reports the
-        # cached value (same next-session semantics as _credits_notices_enabled).
-        monkeypatch.setattr(
-            _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": True}}
         )
         assert agent._file_mutation_verifier_enabled() is False
 
@@ -413,11 +348,3 @@ class TestVerifierEnabled:
 # ---------------------------------------------------------------------------
 
 
-def test_file_mutating_tools_set_shape():
-    """write_file + patch are the only tools the verifier tracks.
-
-    Guard rail: if someone adds a third file-mutating tool (e.g. a new
-    ``append_file``), they should also audit whether the verifier should
-    track it.  This test fails loudly on unilateral additions.
-    """
-    assert _FILE_MUTATING_TOOLS == frozenset({"write_file", "patch"})

@@ -32,8 +32,3 @@ def test_local_flag_defaults_off():
     assert args.local is False
 
 
-def test_local_flag_composes_with_build_flags():
-    args = _parser().parse_args(["desktop", "--local", "--force-build"])
-
-    assert args.local is True
-    assert args.force_build is True

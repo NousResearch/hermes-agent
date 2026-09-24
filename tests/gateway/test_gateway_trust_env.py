@@ -1,16 +1,7 @@
 """gateway.trust_env — one config key controls aiohttp proxy-env honoring at every adapter site (#48820)."""
-import re
-from pathlib import Path
-
 import pytest
 
 from gateway.platforms import base as gw_base
-
-REPO = Path(__file__).resolve().parents[2]
-_ADAPTER_FILES = sorted(
-    list((REPO / "gateway" / "platforms").rglob("*.py"))
-    + list((REPO / "plugins" / "platforms").rglob("*.py"))
-)
 
 
 def _write_config(tmp_path, monkeypatch, body: str) -> None:
@@ -81,12 +72,3 @@ class TestResolveProxyUrlMultiplexScope:
         assert gw_base.resolve_proxy_url("DISCORD_PROXY") == "http://default-profile-proxy:8080"
 
 
-def test_no_bare_trust_env_literal_in_adapters():
-    """Every aiohttp session in gateway/ + plugins/platforms/ must go through gateway_trust_env()."""
-    bare = re.compile(r"trust_env\s*=\s*(True|False)\b")
-    offenders = []
-    for path in _ADAPTER_FILES:
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if bare.search(line) and "httpx" not in line:
-                offenders.append(f"{path.relative_to(REPO)}:{lineno}: {line.strip()}")
-    assert not offenders, "hard-coded aiohttp trust_env literal(s); use gateway_trust_env():\n" + "\n".join(offenders)

@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -104,14 +105,7 @@ function buildDesktopBackendPath({
   return appendUniquePathEntries([hermesNodeDirs, venvBin, currentPath, saneEntries], { delimiter })
 }
 
-function normalizeHermesHomeRoot(
-  hermesHome,
-  { pathModule = pathModuleForPlatform(process.platform), homedir = os.homedir() }: any = {}
-) {
-  if (!hermesHome) {
-    return hermesHome
-  }
-
+function resolveHermesHomePath(hermesHome, { pathModule, homedir = os.homedir() }: any) {
   // fish (and any shell when the value is quoted) hands a literal `~` through; path.resolve()
   // would pin it under cwd and the Python backend inherits that absolute path via HERMES_HOME.
   let raw = String(hermesHome)
@@ -120,14 +114,119 @@ function normalizeHermesHomeRoot(
     raw = pathModule.join(homedir, raw.slice(1))
   }
 
-  const resolved = pathModule.resolve(raw)
-  const parent = pathModule.dirname(resolved)
+  return pathModule.resolve(raw)
+}
 
-  if (pathModule.basename(parent).toLowerCase() === 'profiles') {
-    return pathModule.dirname(parent)
+function isProfileHome(resolved, pathModule) {
+  return pathModule.basename(pathModule.dirname(resolved)).toLowerCase() === 'profiles'
+}
+
+function normalizeHermesHomeRoot(
+  hermesHome,
+  { pathModule = pathModuleForPlatform(process.platform), homedir = os.homedir() }: any = {}
+) {
+  if (!hermesHome) {
+    return hermesHome
   }
 
-  return resolved
+  const resolved = resolveHermesHomePath(hermesHome, { pathModule, homedir })
+
+  return isProfileHome(resolved, pathModule) ? pathModule.dirname(pathModule.dirname(resolved)) : resolved
+}
+
+// OS/interpreter names a dotenv may redeclare that no child can run without.
+const PROCESS_ENV_NAMES = new Set([
+  'APPDATA',
+  'COMSPEC',
+  'HERMES_HOME',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'LOCALAPPDATA',
+  'PATH',
+  'PWD',
+  'PYTHONPATH',
+  'SHELL',
+  'SSL_CERT_FILE',
+  'SYSTEMROOT',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'TZ',
+  'USER',
+  'USERPROFILE',
+  'VIRTUAL_ENV'
+])
+
+function dotenvKeyNames(contents = '') {
+  return String(contents)
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .flatMap(line => line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.slice(1, 2) ?? [])
+}
+
+function readTextOrEmpty(fsModule, file) {
+  try {
+    return String(fsModule.readFileSync(file, 'utf8'))
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Parent env for a local `hermes serve` child of `profile` (#68367).
+ *
+ * `hermes desktop` loads its launch profile's `.env`/`.op.env` into os.environ
+ * before exec'ing Electron, so `process.env` carries that profile's platform
+ * credentials. A child for ANOTHER profile would inherit them ahead of its own
+ * dotenv (`.op.env` is even skipped once OP_SERVICE_ACCOUNT_TOKEN is set) and,
+ * e.g., connect the same Tlon ship as the default gateway. Drop every name the
+ * launch profile's dotenv declares, as `_profile_action_environment` does for
+ * dashboard actions; the child reloads its own scope. The launch profile's own
+ * backend keeps the env unchanged, and shell exports the launch dotenv never
+ * declared pass through everywhere.
+ *
+ * `profile` null/empty means no `--profile` flag: the child follows the sticky
+ * `active_profile` like a bare `hermes serve` (`_apply_profile_override`).
+ */
+function profileBackendParentEnv({
+  hermesHome,
+  profile,
+  currentEnv = process.env,
+  platform = process.platform,
+  fsModule = fs,
+  pathModule = pathModuleForPlatform(platform)
+}: any = {}) {
+  const env = { ...(currentEnv || {}) }
+
+  if (!hermesHome) {
+    return env
+  }
+
+  const fold = platform === 'win32' ? (value: string) => value.toUpperCase() : (value: string) => value
+  const inheritedHome = currentEnv?.HERMES_HOME ? resolveHermesHomePath(currentEnv.HERMES_HOME, { pathModule }) : null
+  const launchHome = inheritedHome && isProfileHome(inheritedHome, pathModule) ? inheritedHome : hermesHome
+  const name = profile || readTextOrEmpty(fsModule, pathModule.join(hermesHome, 'active_profile')).trim()
+  const targetHome = !name || name === 'default' ? hermesHome : pathModule.join(hermesHome, 'profiles', name)
+
+  if (fold(pathModule.resolve(launchHome)) === fold(pathModule.resolve(targetHome))) {
+    return env
+  }
+
+  const launchOwned = new Set(
+    ['.env', '.op.env']
+      .flatMap(file => dotenvKeyNames(readTextOrEmpty(fsModule, pathModule.join(launchHome, file))))
+      .filter(key => !PROCESS_ENV_NAMES.has(key.toUpperCase()))
+      .map(fold)
+  )
+
+  for (const key of Object.keys(env)) {
+    if (launchOwned.has(fold(key))) {
+      delete env[key]
+    }
+  }
+
+  return env
 }
 
 function buildDesktopBackendEnv({
@@ -169,5 +268,6 @@ export {
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  profileBackendParentEnv
 }

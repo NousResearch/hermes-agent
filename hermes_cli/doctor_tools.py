@@ -380,9 +380,13 @@ def _plural(n: int) -> str:
 def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues: list[str]) -> None:
     """Run one `npm audit --json` and report; any failure is silently skipped.
 
-    Workspace-scoped (`--workspace <name>`) advisories are build-time tooling (esbuild/vite), not runtime
-    code. `npm audit fix --workspace` crashes on current npm (arborist "edgesOut") and the root-level fix can
-    crash on the same tree ("isDescendantOf"), so no manual fix command is offered — they clear via a lockfile bump.
+    Every row here audits a tree whose versions come from a COMMITTED lockfile
+    (`npm ci` in `_run_npm_install_deterministic` reifies exactly that state on
+    every `hermes update`), so a local `npm audit fix` never persists — the next
+    update's deterministic install restores the pinned (vulnerable) versions and
+    the finding reappears. The durable remedy in every case is a lockfile bump
+    on main (update `package-lock.json` and ship it); the doctor therefore never
+    prescribes a local mutating fix command. See #116774.
     """
     import json
     try:
@@ -397,12 +401,15 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
         elif critical > 0 or high > 0:
-            flag = " --workspaces=false" if audit_extra == ["--workspaces=false"] else ""
-            remedy = "build-tool advisory; clears via lockfile bump" if workspace_scoped else f"run: cd {npm_dir} && npm audit fix{flag}"
+            detail = "build-time tooling" if workspace_scoped else "runtime dependency tree"
+            remedy = ("fix is an upstream lockfile bump — a local manual fix does not persist"
+                      " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
                 check_info("  ^ build-time tooling (not runtime); if manual npm remediation "
                            "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
+            else:
+                check_info(f"  ^ {detail}; report/pin the fix in package-lock.json — see #116774")
             issues.append(f"{label} has {total} npm {_plural(total)}")
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")

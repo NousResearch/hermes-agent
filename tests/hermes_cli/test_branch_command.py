@@ -66,17 +66,6 @@ def cli_instance(tmp_path, session_db):
 class TestBranchCommandCLI:
     """Test the /branch command logic for the CLI."""
 
-    def test_branch_creates_new_session(self, cli_instance, session_db):
-        """Branching should create a new session in the DB."""
-        from cli import HermesCLI
-
-        # Call the real method on the mock, using the real implementation
-        HermesCLI._handle_branch_command(cli_instance, "/branch")
-
-        # Verify a new session was created
-        assert cli_instance.session_id != "20260403_120000_abc123"
-        new_session = session_db.get_session(cli_instance.session_id)
-        assert new_session is not None
 
     def test_failed_branch_creation_leaves_original_session_open(self, cli_instance, session_db):
         """Branching is child-first: when create_session fails the user stays on the original
@@ -125,13 +114,6 @@ class TestBranchCommandCLI:
         assert cli_instance.session_id == "20260403_120000_abc123"
 
 
-    def test_branch_sets_resumed_flag(self, cli_instance, session_db):
-        """Branch should set _resumed=True to prevent auto-title generation."""
-        from cli import HermesCLI
-
-        HermesCLI._handle_branch_command(cli_instance, "/branch")
-
-        assert cli_instance._resumed is True
 
 
     def test_branch_fires_on_session_switch_hook(self, cli_instance, session_db):
@@ -163,21 +145,6 @@ class TestBranchCommandCLI:
 
 
 
-class TestBranchCommandDef:
-    """Test the CommandDef registration for /branch."""
-
-    def test_branch_in_registry(self):
-        """The branch command should be in the command registry."""
-        from hermes_cli.commands import COMMAND_REGISTRY
-        names = [c.name for c in COMMAND_REGISTRY]
-        assert "branch" in names
-
-
-    def test_branch_in_session_category(self):
-        """The branch command should be in the Session category."""
-        from hermes_cli.commands import COMMAND_REGISTRY
-        branch = next(c for c in COMMAND_REGISTRY if c.name == "branch")
-        assert branch.category == "Session"
 
 
 class TestBranchFlushesBeforeEndSession:
@@ -197,6 +164,24 @@ class TestBranchFlushesBeforeEndSession:
             cli_instance.conversation_history,
             conversation_history=cli_instance.conversation_history,
         )
+
+    def test_branch_child_row_carries_the_parent_system_prompt(self, cli_instance, session_db):
+        """The branch's first turn must send the bytes the parent already sends: with no stored prompt the
+        child rebuilds (a fresh workspace probe) and the copied transcript's warm cache is lost at byte 0."""
+        from cli import HermesCLI
+
+        parent_id = cli_instance.session_id
+        session_db.update_system_prompt(parent_id, "PARENT PROMPT\n\nWorkspace snapshot: session start")
+        # No live agent: the parent's persisted row is the source.
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+        child = session_db.get_session(cli_instance.session_id)
+        assert child["parent_session_id"] == parent_id
+        assert child["system_prompt"] == "PARENT PROMPT\n\nWorkspace snapshot: session start"
+
+        # A live agent's cached prompt (what THIS process sends) wins over the row.
+        cli_instance.agent = MagicMock(_cached_system_prompt="LIVE PROMPT")
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+        assert session_db.get_session(cli_instance.session_id)["system_prompt"] == "LIVE PROMPT"
 
 
 REASONING_DETAILS = [

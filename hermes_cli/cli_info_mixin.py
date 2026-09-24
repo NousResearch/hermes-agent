@@ -97,6 +97,8 @@ class CLIInfoMixin:
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
+        from agent.context_pin import is_context_pinned
+        ctx_pinned = is_context_pinned(ctx_len, getattr(getattr(self, "agent", None), "_config_context_length", None))
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
         if self.compact or shutil.get_terminal_size().columns < 80:
@@ -117,7 +119,7 @@ class CLIInfoMixin:
             banner_kw = dict(
                 console=self.console, model=self.model, cwd=cwd,
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider)
+                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
             if snapshot is not None:
                 self._defer_tool_warnings = True
@@ -170,7 +172,7 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
         self._show_plugin_compat_notice()
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
@@ -190,6 +192,10 @@ class CLIInfoMixin:
                 fix = f"Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve"
             elif _port == 1234:
                 fix = "LM Studio fix: Set context length in model settings → reload model"
+            elif is_local_endpoint(base_url):  # llama.cpp / vLLM / any local server — not Ollama
+                fix = (f"Fix: start your server with at least {MINIMUM_CONTEXT_LENGTH // 1000}K context "
+                       f"(llama.cpp: -c {MINIMUM_CONTEXT_LENGTH}), or set model.ollama_num_ctx in config.yaml "
+                       "to the window it really serves")
             else:
                 fix = "Fix: Set model.context_length in config.yaml, or increase your server's context setting"
             self._console_print(f"[dim]   {fix}[/]")
@@ -449,8 +455,10 @@ class CLIInfoMixin:
             return False
 
     def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True when /steer should be dispatched immediately while the agent is running."""
-        return self._busy_inline_command(text, has_images, ("steer",))
+        """Return True when /steer or /queue should be dispatched immediately while the agent is
+        running. Queued raw, ``/queue <prompt>`` only re-enqueued itself after the turn and
+        ``/queue list|rm|edit`` could not inspect the queue until it had already drained."""
+        return self._busy_inline_command(text, has_images, ("steer", "queue"))
 
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False) -> bool:
@@ -729,7 +737,9 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
+        from agent.context_pin import context_pin_suffix
+        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)"
+              f"{context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))}")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 

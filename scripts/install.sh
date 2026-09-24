@@ -610,8 +610,8 @@ install_uv() {
     # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
     # and conflates network errors with installer errors.
     local _uv_install_log _uv_installer
-    _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
-    _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+    _uv_install_log="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-install.$$.log")"
+    _uv_installer="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-installer.$$.sh")"
     if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
         log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
         log_info "curl output:"
@@ -1324,6 +1324,10 @@ check_network_prerequisites() {
 }
 
 install_system_packages() {
+    # setup_path persists this directory later, but dependency probes must also
+    # see commands that were pre-staged there during a fresh install.
+    local PATH="$(get_command_link_dir):$PATH"
+
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
@@ -1574,6 +1578,21 @@ clone_repo() {
             # fetched remote so bootstrap/install can recover.
             if ! git pull --ff-only origin "$BRANCH"; then
                 log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
+                # Park commits the reset drops behind a rescue ref, same namespace
+                # as ``hermes update`` (which also prunes these refs).
+                local dropped rescue_kind rescue_ref
+                dropped="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)"
+                if [ "${dropped:-0}" -gt 0 ]; then
+                    rescue_kind="diverged"
+                    git merge-base HEAD "origin/$BRANCH" >/dev/null 2>&1 || rescue_kind="orphan"
+                    rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short=12 HEAD)"
+                    if git update-ref "$rescue_ref" HEAD; then
+                        log_warn "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
+                        log_warn "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
+                    else
+                        log_warn "Could not back up local commits (HEAD was $(git rev-parse HEAD))"
+                    fi
+                fi
                 git reset --hard "origin/$BRANCH"
             fi
 

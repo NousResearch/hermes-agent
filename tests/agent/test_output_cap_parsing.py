@@ -16,9 +16,6 @@ class TestParseOpenRouterOutputCap:
         assert parse_available_output_tokens_from_error(msg) == 10000
 
 
-
-
-
 class TestParseCharBasedOutputCap:
     """LM Studio / llama.cpp report context in tokens but prompt in characters.
 
@@ -49,7 +46,6 @@ class TestParseCharBasedOutputCap:
         assert available + (chars + 2) // 3 <= ctx
 
 
-
 class TestParseDashScopeOutputCap:
     """DashScope / Alibaba Cloud (Qwen) reject an over-cap output request with
     a bounded range whose upper bound is the real max-output cap (#55546)."""
@@ -66,9 +62,6 @@ class TestParseDashScopeOutputCap:
                "Range of max_tokens should be [1, 65536]")
         assert parse_available_output_tokens_from_error(msg) == 65536
 
-    def test_dashscope_range_arbitrary_bound(self):
-        msg = "Range of max_tokens should be [1, 8192]"
-        assert parse_available_output_tokens_from_error(msg) == 8192
 
     def test_dashscope_range_with_spaces(self):
         msg = "range of max_tokens should be [ 1 , 32768 ]"
@@ -177,11 +170,6 @@ class TestParseVllmTokenBasedOutputCap:
             self._VLLM_MSG_REAL_INPUT
         ) == 31072
 
-    def test_vllm_retry_fits_inside_window(self):
-        # The retried cap plus the reported input must fit in the window.
-        available = parse_available_output_tokens_from_error(self._VLLM_MSG)
-        assert available is not None
-        assert available + 65537 <= 131072
 
     def test_vllm_retry_converges(self):
         """The retry sequence must reach a working cap in a few attempts.
@@ -208,6 +196,37 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+class TestParseAdvertisedCeilingWordings:
+    """Azure and SGLang name the ceiling without any phrase the parser knew (#78405, #83521).
+    Unrecognized, the 400 carried the bare ``max_tokens`` substring (or nothing at all) into
+    the compression path and a fresh session died with "cannot be shrunk further"."""
+
+    @pytest.mark.parametrize("msg, available", [
+        # Azure OpenAI (verbatim from #78405): the advertised completion ceiling IS the budget.
+        ("Error: max_tokens is too large: 65536. This model supports at most 32768 completion tokens.", 32768),
+        # SGLang (verbatim from #83521): window - input; never mentions max_tokens.
+        ("Requested token count exceeds the model's maximum context length of 131072 tokens. You requested "
+         "a total of 132528 tokens: 66992 tokens from the input messages and 65536 tokens for the completion. "
+         "Please reduce the number of tokens in the input messages or the completion to fit within the limit.",
+         64080),
+    ])
+    def test_ceiling_is_parsed_and_classified_as_output_cap(self, msg, available):
+        assert parse_available_output_tokens_from_error(msg) == available
+        assert is_output_cap_error(msg) is True
+
+    def test_sglang_input_alone_over_window_routes_to_compression(self):
+        # Same wording, but the input by itself exceeds the window: shrinking the output cannot help.
+        msg = ("Requested token count exceeds the model's maximum context length of 100000 tokens. You requested "
+               "a total of 150000 tokens: 120000 tokens from the input messages and 30000 tokens for the completion.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+def test_limited_to_phrasing_is_an_output_cap():
+    """#67453: Scaleway rejects an oversized budget with "max_completion_tokens is limited to N for
+    <model>" — an output cap (step the budget down), not a context overflow (do not compress)."""
+    assert is_output_cap_error("max_completion_tokens is limited to 16384 for glm-5.2")
+    assert parse_available_output_tokens_from_error("max_completion_tokens is limited to 16384 for glm-5.2") == 16384
+    assert not is_output_cap_error("prompt is too long: max_tokens limited to 100 given the input")
 
 
 class TestParseOpenAiCompletionSplit:

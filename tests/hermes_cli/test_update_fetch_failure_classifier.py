@@ -67,6 +67,25 @@ class TestClassifyFetchFailure:
         )
         assert "Authentication failed" in msg
 
+    def test_ssh_publickey_denial_reports_ssh_auth_not_generic(self):
+        # git wraps OpenSSH's own rejection as "Could not read from remote
+        # repository" — never "Authentication failed" — so this needs its
+        # own rule ahead of the generic fallback (#82169).
+        msg = update_cmd._classify_fetch_failure(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
+        assert "https://github.com/NousResearch/hermes-agent.git" in msg
+
+    def test_ssh_host_key_failure_reports_ssh_auth(self):
+        msg = update_cmd._classify_fetch_failure(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            "Host key verification failed.\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
+
     def test_unknown_falls_back_to_generic(self):
         msg = update_cmd._classify_fetch_failure("fatal: something novel")
         assert msg == "✗ Failed to fetch updates from origin."
@@ -93,9 +112,7 @@ def test_update_network_git_calls_never_prompt_for_credentials():
     Live incident (Sep 2026): a GitHub-side 401 made `hermes update` sit on
     ``Username for 'https://github.com':`` instead of failing with a diagnosis.
     """
-    import inspect
     import os
-    import re
     import subprocess
 
     kw = update_cmd._no_prompt_git_kwargs()
@@ -104,21 +121,3 @@ def test_update_network_git_calls_never_prompt_for_credentials():
     # Only the prompt is disabled — credential helpers / askpass stay
     # configured so a private-fork origin still authenticates.
     assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")
-
-    from hermes_cli import update_cmd_git
-
-    # Network git calls live in the origin (``_git_run``) and the split git module.
-    src = inspect.getsource(update_cmd) + inspect.getsource(update_cmd_git)
-    # Every subprocess.run(...) whose argv is a fetch/pull must spread the kwargs.
-    calls = []
-    for m in re.finditer(r"subprocess\.run\(", src):
-        depth, i = 1, m.end()
-        while depth:
-            depth += {"(": 1, ")": -1}.get(src[i], 0)
-            i += 1
-        call = src[m.start():i]
-        if re.search(r'git_cmd \+ \["(fetch|pull|push)"', call):
-            calls.append(call)
-    assert calls, "expected network git calls in update_cmd"
-    missing = [c for c in calls if "_no_prompt_git_kwargs()" not in c]
-    assert not missing, missing

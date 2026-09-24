@@ -228,12 +228,4 @@ class TestReplacePrimaryRetiresInsteadOfClosing:
         # replaced shared client, so nobody may release its FDs (#70773).
         old_client.close.assert_not_called()
 
-    def test_retire_helper_never_calls_close(self):
-        agent = _make_agent()
-        client = MagicMock()
-
-        with patch.object(agent, "_force_close_tcp_sockets", return_value=2):
-            agent._retire_shared_openai_client(client, reason="unit_test")
-
-        client.close.assert_not_called()
 

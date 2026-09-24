@@ -406,6 +406,30 @@ class TestProtectedInstructionFiles:
         from tools.file_tools import write_file_tool
         return json.loads(write_file_tool(str(path), content))
 
+    def _configure_selected_transport(self, monkeypatch, name, present, *, fallback=None):
+        """Register and select a transport while keeping its received request observable."""
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from tools import approval_context, approval_prompt
+
+        manager = PluginManager()
+        manifest = PluginManifest(
+            name=name, version="1.0.0", description="test", source="user", key=name,
+        )
+        seen = []
+
+        def record_request(request):
+            seen.append(request)
+            return present(request)
+
+        PluginContext(manifest, manager).register_approval_transport("phone", record_request)
+        monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            approval_context,
+            "_get_approval_transport_config",
+            lambda: ("phone", fallback),
+        )
+        return seen
+
     # ---- core behavior -------------------------------------------------
 
     @pytest.mark.parametrize(
@@ -478,21 +502,10 @@ class TestProtectedInstructionFiles:
         This exercises the real write entry point without a CLI callback: the
         selected transport is the only reachable operator surface.
         """
-        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-        from tools import approval_context, approval_prompt
-
-        manager = PluginManager()
-        manifest = PluginManifest(
-            name="protected-write-transport", version="1.0.0", description="test",
-            source="user", key="protected-write-transport",
-        )
-        seen = []
-        PluginContext(manifest, manager).register_approval_transport(
-            "phone", lambda request: seen.append(request) or request.respond("once")
-        )
-        monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
-        monkeypatch.setattr(
-            approval_context, "_get_approval_transport_config", lambda: ("phone", None)
+        seen = self._configure_selected_transport(
+            monkeypatch,
+            "protected-write-transport",
+            lambda request: request.respond("once"),
         )
 
         target = tmp_path / "AGENTS.md"
@@ -503,6 +516,110 @@ class TestProtectedInstructionFiles:
         assert len(seen) == 1
         assert seen[0].pattern_key == "protected_instruction_file"
         assert seen[0].allowed_choices == ("once", "deny")
+
+    def test_selected_approval_transport_denial_blocks_protected_write(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        """A selected transport owns a denial; builtin callbacks stay unused."""
+        seen = self._configure_selected_transport(
+            monkeypatch,
+            "protected-write-denial",
+            lambda request: request.respond("deny"),
+        )
+
+        target = tmp_path / "AGENTS.md"
+        target.write_text("original", encoding="utf-8")
+        res = self._write(target, "denied by transport")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+        assert len(seen) == 1
+        assert approvals["calls"] == []
+
+    def test_selected_transport_invalid_wider_scope_response_blocks_protected_write(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        """The real request validator rejects scope that protected writes never offer."""
+        seen = self._configure_selected_transport(
+            monkeypatch,
+            "protected-write-invalid-scope",
+            lambda request: request.respond("session"),
+        )
+
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target, "invalid scope")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+        assert len(seen) == 1
+        assert seen[0].allowed_choices == ("once", "deny")
+        assert approvals["calls"] == []
+
+    def test_selected_transport_unexpected_wider_scope_choice_cannot_authorize_protected_write(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        """Defend this integration gate if a future transport layer regresses."""
+        from tools import approval_prompt
+
+        self._configure_selected_transport(
+            monkeypatch,
+            "protected-write-local-scope",
+            lambda request: request.respond("once"),
+        )
+        monkeypatch.setattr(
+            approval_prompt,
+            "_transport_choice",
+            lambda *args, **kwargs: ("session", None),
+        )
+
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target, "unexpected scope")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+        assert approvals["calls"] == []
+
+    def test_selected_transport_failure_fails_closed_without_builtin_fallback(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        """A failed selected surface must not materialize the builtin prompt."""
+        def fail_transport(_request):
+            raise RuntimeError("offline")
+
+        self._configure_selected_transport(
+            monkeypatch,
+            "protected-write-transport-failure",
+            fail_transport,
+        )
+
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target, "transport failure")
+
+        assert res.get("error") and "Selected approval transport failed" in res["error"]
+        assert not target.exists()
+        assert approvals["calls"] == []
+
+    def test_selected_transport_builtin_fallback_can_approve_protected_write(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        """Builtin is used only after the operator explicitly opts into fallback."""
+        def fail_transport(_request):
+            raise RuntimeError("offline")
+
+        self._configure_selected_transport(
+            monkeypatch,
+            "protected-write-builtin-fallback",
+            fail_transport,
+            fallback="builtin",
+        )
+        approvals["answer"] = "once"
+
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target, "builtin fallback approval")
+
+        assert not res.get("error"), res
+        assert target.read_text(encoding="utf-8") == "builtin fallback approval"
+        assert len(approvals["calls"]) == 1
 
     def test_config_disabled_skips_gate(self, tmp_path, approvals, monkeypatch):
         import tools.file_tools_write_guards as ft

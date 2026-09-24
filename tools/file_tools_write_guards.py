@@ -317,7 +317,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             why=f"Selected approval transport failed ({attempt.get('failure')})."
         )
     if choice is not None:
-        if choice in {"once", "session", "always"}:
+        if choice == "once":
             return None
         return timed_out if choice == "timeout" else denied
 

@@ -163,3 +163,44 @@ def test_cancel_marks_the_flow_terminal_for_a_retrying_worker():
     with pytest.raises(RuntimeError, match="cancelled"):
         asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=second"))
     assert flow.snapshot()["status"] == "error"
+
+
+def test_dashboard_reauth_marks_server_for_forced_oauth(monkeypatch, tmp_path):
+    """``_run_dashboard_mcp_oauth`` sets the one-shot force flag after ``manager.remove`` and
+    before the probe — the dashboard's Authenticate button must behave like ``hermes mcp login``
+    for servers that answer ``initialize`` with 200 and never challenge (#89412)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.mcp_config as mc
+    import tools.mcp_oauth_manager as mgr_mod
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    forced = []
+    real_manager = mgr_mod.get_manager()
+
+    class _RecordingManager:
+        def remove(self, name, hermes_home=None):
+            return real_manager.remove(name, hermes_home=hermes_home)
+
+        def set_force_oauth(self, name):
+            forced.append(name)
+
+        def restore_entry(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(mgr_mod, "get_manager", lambda: _RecordingManager())
+    monkeypatch.setattr(mc, "_probe_single_server", lambda name, cfg, connect_timeout=None: [("t", "d")])
+    monkeypatch.setattr(mc, "_oauth_tokens_present", lambda name: True)
+    monkeypatch.setattr(mc, "_save_mcp_server", lambda name, cfg: True)
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-force-oauth",
+        server_name="gmail",
+        profile=None,
+        hermes_home=str(tmp_path),
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/gmail",
+        reconnect_live=False,
+    )
+    _web_server_mcp._run_dashboard_mcp_oauth(flow, {"url": "https://gmailmcp.example.test/mcp/v1", "auth": "oauth"})
+
+    assert forced == ["gmail"]
+    assert flow.snapshot()["status"] == "approved"

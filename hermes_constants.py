@@ -1061,15 +1061,44 @@ _scratch_pruned_once = False
 SOCKET_TMPDIR_MAX_LEN = 50
 
 
+def _can_host_unix_socket(directory: str) -> bool:
+    """Whether an AF_UNIX socket can be bound in ``directory``.
+
+    Length is the wrong discriminator for this: FUSE mounts (e.g. ``fuse.grpcfuse``)
+    reject UDS ``bind()`` with ``EINVAL`` for any directory on them, at any path
+    length. The probe binds and unlinks a socket shaped like the ones the runtime
+    actually creates, so what passes here is what the kernel spawn will manage.
+    """
+    import socket
+    import uuid
+    if not hasattr(socket, "AF_UNIX"):
+        return True
+    probe_path = os.path.join(directory, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(probe_path)
+    except OSError:
+        return False
+    finally:
+        server.close()
+        with contextlib.suppress(OSError):
+            os.unlink(probe_path)
+    return True
+
+
 def socket_safe_tmpdir() -> str:
-    """Temp root short enough for AF_UNIX sockets. The scratch dir usually fits; macOS
-    ``TMPDIR`` never does and a deep profile home may not, so those fall back to the OS
-    default root for sockets only (everything else stays in the scratch dir)."""
+    """Temp root that can actually host an AF_UNIX socket. The scratch dir usually
+    qualifies; macOS ``TMPDIR`` never does and a deep profile home may not (path-length
+    caps), and a FUSE-backed TMPDIR cannot ``bind()`` a socket at any length — all of
+    those fall back to the OS default root for sockets only (everything else stays in
+    the scratch dir)."""
     import tempfile
     if sys.platform == "darwin":
         return "/tmp"  # no-tmp: ok — AF_UNIX 104-byte socket path limit on darwin
     candidate = tempfile.gettempdir()
-    if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
+    if len(candidate) <= SOCKET_TMPDIR_MAX_LEN and _can_host_unix_socket(candidate):
+        return candidate
+    if not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
         return candidate
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 

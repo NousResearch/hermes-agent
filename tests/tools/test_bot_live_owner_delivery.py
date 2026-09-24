@@ -7,12 +7,17 @@ import sys
 import pytest
 
 
+def _stub_canonical_owner(monkeypatch, mailbox, owner):
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda _home: owner)
+
+
 @pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
-def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
+def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status, monkeypatch):
     from tools import bot_live_delivery as mailbox
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
                  lease_id="lease", live_session_id="live")
+    _stub_canonical_owner(monkeypatch, mailbox, owner)
     delivery_id = "a" * 32
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id)
     assert queued["status"] == "queued"
@@ -54,11 +59,50 @@ def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
                  lease_id="lease", live_session_id="live")
+    _stub_canonical_owner(monkeypatch, mailbox, owner)
     for timestamp, message in ((100, "first"), (90, "second")):
         monkeypatch.setattr(mailbox.time, "time_ns", lambda: timestamp)
         mailbox.deliver_to_live_owner(tmp_path, owner, message)
     assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "first"
     assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "second"
+
+
+def test_delivery_refuses_noncanonical_live_owner_and_canonical_owner_claims(tmp_path):
+    """Only the advertised Bot Chat lease may receive a new mailbox ticket."""
+    from hermes_state import SessionDB
+    from hermes_cli.active_sessions import try_acquire_active_session
+    from tools import bot_live_delivery as mailbox
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="chat", source="cli")
+    db.set_session_title("chat", "Bot Chat")
+    db.create_session(session_id="other", source="cli")
+    metadata = {"live_session_id": "live-chat", "bot_live_delivery_consumer": True}
+    canonical_lease, refusal = try_acquire_active_session(
+        session_id="chat", surface="desktop", config={}, registry_home=tmp_path, metadata=metadata,
+    )
+    assert refusal is None
+    other_lease, refusal = try_acquire_active_session(
+        session_id="other", surface="desktop", config={}, registry_home=tmp_path,
+        metadata={"live_session_id": "live-other", "bot_live_delivery_consumer": True},
+    )
+    assert refusal is None
+    try:
+        canonical = mailbox.find_canonical_live_owner(tmp_path)
+        assert canonical is not None
+        noncanonical = dict(
+            profile_home=str(tmp_path.resolve()), session_id="other", lease_id=other_lease.lease_id,
+            live_session_id="live-other",
+        )
+        with pytest.raises(ValueError, match="canonical live owner"):
+            mailbox.deliver_to_live_owner(tmp_path, noncanonical, "dead drop")
+
+        queued = mailbox.deliver_to_live_owner(tmp_path, canonical, "claimable")
+        assert mailbox.claim_pending_delivery(tmp_path, canonical)["delivery_id"] == queued["delivery_id"]
+    finally:
+        other_lease.release()
+        canonical_lease.release()
+        db.close()
 
 
 @pytest.mark.parametrize("capable", [True, False])
@@ -95,10 +139,11 @@ def test_only_canonical_capable_owner_receives_across_compression(tmp_path, capa
         db.close()
 
 
-def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path):
+def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat", lease_id="lease", live_session_id="live")
+    _stub_canonical_owner(monkeypatch, mailbox, owner)
     author = {"id": "bot:coder", "name": "coder", "is_bot": True}
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author)
     assert queued["author"] == author
@@ -110,13 +155,14 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
 
 @pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
                     reason="needs POSIX file permissions for an unreadable ticket")
-def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
+def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog, monkeypatch):
     import logging
 
     from tools import bot_live_delivery as mailbox
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
                  lease_id="lease", live_session_id="live")
+    _stub_canonical_owner(monkeypatch, mailbox, owner)
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
     root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
     # A real admission that later turns unreadable: its sequence must survive the skip.
@@ -160,13 +206,14 @@ def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
 
 
-def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
+def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog, monkeypatch):
     import logging
 
     from tools import bot_live_delivery as mailbox
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
                  lease_id="lease", live_session_id="live")
+    _stub_canonical_owner(monkeypatch, mailbox, owner)
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
     bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
     bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
@@ -185,7 +232,7 @@ def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp
     assert bad.read_text(encoding="utf-8") == '"oops"'
 
 
-def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
+def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog, monkeypatch):
     """Valid JSON that lost a field must degrade like corrupt JSON: skipped, warned once, never raised."""
     import logging
 
@@ -193,6 +240,7 @@ def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
                  lease_id="lease", live_session_id="live")
+    _stub_canonical_owner(monkeypatch, mailbox, owner)
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy", delivery_id="d" * 32)
     root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
     damaged = {

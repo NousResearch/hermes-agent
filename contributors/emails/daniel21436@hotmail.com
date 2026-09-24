@@ -1,2 +1,2 @@
 strzhao
-# PR #81214 adoption
+# kanban auto_subscribe_mode + inheritance provenance (#115989)

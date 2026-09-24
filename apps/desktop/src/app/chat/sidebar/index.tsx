@@ -122,6 +122,7 @@ import {
   $messagingTruncated,
   $sessionProfilesTruncated,
   $sessions,
+  $sessionsLoadError,
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
@@ -367,6 +368,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => Promise<void> | void
+  onRetrySessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
@@ -388,6 +390,7 @@ export function ChatSidebar({
   currentView: routeView,
   onNavigate,
   onLoadMoreSessions,
+  onRetrySessions,
   onLoadMoreMessaging,
   onResumeSession,
   onDeleteSession,
@@ -480,6 +483,7 @@ export function ChatSidebar({
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
+  const sessionsLoadError = useStore($sessionsLoadError)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
@@ -1513,7 +1517,7 @@ export function ChatSidebar({
   // Filtered down to nothing still renders the section: the empty state is what
   // tells you the filter — not an empty account — is why the list is bare.
   const showSessionSections =
-    showSessionSkeletons || filtersActive || sortedSessions.length > 0 || projectModel.length > 0
+    showSessionSkeletons || sessionsLoadError || filtersActive || sortedSessions.length > 0 || projectModel.length > 0
 
   // The sidebar's session-area mode — exposed as data-attributes so custom
   // skins can target project mode (overview vs. entered), archived, or search
@@ -1803,6 +1807,8 @@ export function ChatSidebar({
                 emptyState={
                   inProject && projectLoadFailed ? null : showSessionSkeletons || (inProject && projectLoading) ? (
                     <SidebarSessionSkeletons />
+                  ) : !inProject && sessionsLoadError ? (
+                    <SidebarLoadErrorState onRetry={() => void onRetrySessions()} />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                       {inProject

@@ -22,8 +22,8 @@ import {
   setSelectedStoredSessionId,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
-  setSessionsLoadError,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionControl } from '@/store/session-control'

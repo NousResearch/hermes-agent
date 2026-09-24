@@ -26,8 +26,8 @@ import {
   setMessagingTruncated,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
-  setSessionsLoadError,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 

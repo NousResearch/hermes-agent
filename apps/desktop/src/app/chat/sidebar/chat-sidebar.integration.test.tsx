@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
@@ -17,6 +17,8 @@ import {
   $messagingTruncated,
   $selectedStoredSessionId,
   $sessions,
+  $sessionsLoadError,
+  $sessionsLoading,
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -38,7 +40,7 @@ const sessionRows = [
   makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
 ]
 
-const renderSidebar = (pathname: string, currentView: AppView) =>
+const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: () => Promise<void> = noopAsync) =>
   render(
     <MemoryRouter initialEntries={[pathname]}>
       <SidebarProvider>
@@ -53,6 +55,7 @@ const renderSidebar = (pathname: string, currentView: AppView) =>
           onNewSessionInWorkspace={noop}
           onNewSessionSplit={noop}
           onResumeSession={noop}
+          onRetrySessions={onRetrySessions}
           onTriggerCronJob={noopAsync}
         />
       </SidebarProvider>
@@ -193,6 +196,31 @@ describe('ChatSidebar navigation activity', () => {
 
     act(() => dispose())
     expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
+  })
+})
+
+// #67600: a cold-start read that failed used to render as an empty account.
+describe('ChatSidebar cold-start load failure', () => {
+  afterEach(() => {
+    cleanup()
+    $sessions.set([])
+    $sessionsLoading.set(true)
+    $sessionsLoadError.set(false)
+  })
+
+  it('offers retry in place of the empty state', () => {
+    const retry = vi.fn(noopAsync)
+    $sessions.set([])
+    $sessionsLoading.set(false)
+    $sessionsLoadError.set(true)
+
+    renderSidebar('/', 'chat', retry)
+
+    expect(screen.getByText('Could not load sessions')).toBeTruthy()
+    expect(screen.queryByText('No sessions yet')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledTimes(1)
   })
 })
 

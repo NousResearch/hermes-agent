@@ -35,8 +35,8 @@ import {
   setMessagingTruncated,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
-  setSessionsLoadError,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'

@@ -1110,6 +1110,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
     onLoadMoreSessions: loadMoreSessions,
+    onRetrySessions: () => refreshSessions().catch(() => undefined),
     onManageCronJob: jobId => {
       setCronFocusJobId(jobId)
       navigate(CRON_ROUTE)

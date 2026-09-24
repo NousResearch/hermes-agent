@@ -16,6 +16,7 @@ export type SidebarActions = Pick<
   | 'onDeleteSession'
   | 'onLoadMoreMessaging'
   | 'onLoadMoreSessions'
+  | 'onRetrySessions'
   | 'onManageCronJob'
   | 'onNavigate'
   | 'onNewSessionInWorkspace'

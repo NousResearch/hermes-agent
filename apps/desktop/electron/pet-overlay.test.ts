@@ -30,14 +30,8 @@ const PET_BOUNDS = { x: 200, y: 150, width: 300, height: 400 }
 test('resolvePetOverlayBounds returns null for missing or garbage input', () => {
   assert.equal(resolvePetOverlayBounds(null, LAPTOP, ANCHOR_ON_LAPTOP), null)
   assert.equal(resolvePetOverlayBounds(undefined, LAPTOP, ANCHOR_ON_LAPTOP), null)
-  assert.equal(
-    resolvePetOverlayBounds({ x: NaN, y: 0, width: 100, height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP),
-    null
-  )
-  assert.equal(
-    resolvePetOverlayBounds({ x: 0, y: 0, width: 'wide', height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP),
-    null
-  )
+  assert.equal(resolvePetOverlayBounds({ x: NaN, y: 0, width: 100, height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP), null)
+  assert.equal(resolvePetOverlayBounds({ x: 0, y: 0, width: 'wide', height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP), null)
 })
 
 test('resolvePetOverlayBounds returns requested unchanged with no displays to validate against', () => {

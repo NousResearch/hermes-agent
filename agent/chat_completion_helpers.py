@@ -2042,6 +2042,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
             if fb_client is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
+                agent._buffer_diagnostic_status(
+                    f"⚠️ Fallback candidate {fb_model} via {fb_provider} could not be resolved; "
+                    "trying next provider..."
+                )
                 unavailable.add(fb_key)
                 continue
             if fb_provider == "moa":

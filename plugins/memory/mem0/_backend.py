@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from abc import ABC, abstractmethod
 from contextlib import closing, suppress
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _add_kwargs(user_id: str, agent_id: str, infer: bool, metadata: dict | None) -> dict[str, Any]:
@@ -98,6 +102,70 @@ class SelfHostedBackend(Mem0Backend):
 _DIRECT_OPENAI_PROVIDER = "hermes_openai"
 _DIRECT_OPENAI_CLASS_PATH = "plugins.memory.mem0._openai_llm.DirectOpenAILLM"
 
+# qdrant-client raises this from local-mode init when <path>/.lock can't be locked.
+_QDRANT_STALE_LOCK_MARKER = "already accessed by another instance"
+
+
+def _clear_stale_qdrant_lock(storage_path: str) -> str:
+    """flock-probe ``<path>/.lock``; if stale (nobody holds it), delete it while still
+    holding the probe lock. Returns ``"cleared"`` | ``"live"`` (a process holds it —
+    nothing deleted) | ``"absent"`` (no lock file / probe unsupported). Never blocks.
+
+    qdrant-local guards its storage folder with an ``fcntl.flock`` (via portalocker) on
+    ``<path>/.lock``. A crashed init releases the kernel-side lock but leaves the file
+    behind, and a fresh client then refuses to open the folder until the file is gone —
+    so a lock file nobody holds is stale and safe to remove.
+    """
+    import errno
+    import fcntl
+
+    lock_path = os.path.join(storage_path, ".lock")
+    try:
+        fd = os.open(lock_path, os.O_RDWR)
+    except OSError:
+        return "absent"
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                return "live"
+            return "absent"
+        # Unlink under the held flock: no other client can grab this inode mid-recovery.
+        with suppress(OSError):
+            os.unlink(lock_path)
+        return "cleared"
+    finally:
+        os.close(fd)
+
+
+def _construct_with_stale_qdrant_lock_recovery(construct, provider: Any, storage_path: Any):
+    """Run mem0 OSS construction; if qdrant local mode fails on its folder lock, recover.
+
+    A crashed earlier init can leave a stale ``.lock`` file in the storage folder: the
+    kernel-side flock is gone with the process but qdrant-client refuses to open the
+    folder while the file exists. If the flock probe finds no live holder, delete the
+    stale file and retry construction exactly once (fail closed on a second failure —
+    no loops, no repeated deletion). If a live client holds the lock, re-raise with an
+    actionable hint and delete nothing. Non-POSIX platforms keep the original error.
+    """
+    try:
+        return construct()
+    except RuntimeError as exc:
+        if (_QDRANT_STALE_LOCK_MARKER not in str(exc) or os.name != "posix"
+                or str(provider or "").strip().lower() != "qdrant" or not storage_path):
+            raise
+        outcome = _clear_stale_qdrant_lock(str(storage_path))
+        if outcome == "live":
+            raise RuntimeError(
+                f"{exc} Another Qdrant client is live on {storage_path}: close it, or point "
+                f"vector_store.config at a Qdrant server (url/api_key) for concurrent access."
+            ) from exc
+        if outcome != "cleared":
+            raise
+        logger.warning("mem0 OSS: removed stale Qdrant lock file in %s and retrying backend init once", storage_path)
+        return construct()
+
 
 def _register_direct_openai_provider() -> None:
     """Register Hermes' OpenAI-only Mem0 LLM provider once per factory."""
@@ -141,18 +209,21 @@ class OSSBackend(Mem0Backend):
             self._recreate_collection_if_dims_changed(vector_store.get("provider", "qdrant"), vs_config, dims)
         vector_store["config"] = vs_config
         config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": _provider_block("embedder", EMBEDDER_PROVIDERS), "version": "v1.1"}
-        if str(config["llm"].get("provider") or "").strip().lower() == "openai":
-            # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
-            _register_direct_openai_provider()
-            from mem0.configs.base import MemoryConfig
-            memory_config = MemoryConfig(**config)
-            try:
-                memory_config.llm.provider = _DIRECT_OPENAI_PROVIDER
-            except (AttributeError, TypeError) as exc:
-                raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
-            self._memory = Memory(memory_config)
-        else:
-            self._memory = Memory.from_config(config)
+
+        def _construct() -> Any:
+            if str(config["llm"].get("provider") or "").strip().lower() == "openai":
+                # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
+                _register_direct_openai_provider()
+                from mem0.configs.base import MemoryConfig
+                memory_config = MemoryConfig(**config)
+                try:
+                    memory_config.llm.provider = _DIRECT_OPENAI_PROVIDER
+                except (AttributeError, TypeError) as exc:
+                    raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
+                return Memory(memory_config)
+            return Memory.from_config(config)
+
+        self._memory = _construct_with_stale_qdrant_lock_recovery(_construct, vector_store.get("provider", "qdrant"), vs_config.get("path"))
 
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:

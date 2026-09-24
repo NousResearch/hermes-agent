@@ -372,7 +372,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           </header>
 
           {section === 'sessions' ? (
-            <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="scrollbar-content min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
                 <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
               ) : (
@@ -585,7 +585,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pb-2">
+    <div className="scrollbar-content flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pb-2">
       {error && (
         <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
           <AlertCircle className="size-3.5" />

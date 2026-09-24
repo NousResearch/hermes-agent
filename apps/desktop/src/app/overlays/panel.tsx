@@ -136,7 +136,7 @@ export function PanelList({
           value={searchValue ?? ''}
         />
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">{children}</div>
+      <div className="scrollbar-content flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</div>
     </div>
   )
 }
@@ -278,7 +278,7 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
 // trace inspector), so the content stretches the full available width.
 export function PanelDetail({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain', className)}>
+    <div className={cn('scrollbar-content min-h-0 flex-1 overflow-y-auto', className)}>
       <div className="space-y-4 pb-6 pl-1 pr-2">{children}</div>
     </div>
   )

@@ -69,7 +69,7 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
         // they ride up via the shorter shared OVERLAY_TOP_CLEARANCE (same line
         // as a Panel header) instead of main's taller X-clearance. The bg still
         // fills from the card's top edge, so there's no gap above the sidebar.
-        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3',
+        'scrollbar-content flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3',
         OVERLAY_TOP_CLEARANCE,
         className
       )}

@@ -1461,6 +1461,27 @@ body.guest-pointer-lock :is(webview, iframe) {
     display: none;
   }
 
+  /* Durable page/list scrollers: keep a subtle thumb discoverable even before
+     hover, reserve classic-scrollbar space where the platform uses it, and
+     strengthen the thumb on interaction. On macOS overlay scrollbars remain
+     overlay-style; scrollbar-gutter has no visual cost there. */
+  .scrollbar-content {
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+  }
+
+  .scrollbar-content::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 12%, transparent);
+  }
+
+  .scrollbar-content:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent);
+  }
+
+  .scrollbar-content::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 50%, transparent);
+  }
+
   /* Retain the existing opt-in class as an alias for the global behavior. */
   .scrollbar-fade::-webkit-scrollbar-thumb,
   .scrollbar-dt .scrollbar-fade::-webkit-scrollbar-thumb {
@@ -1548,6 +1569,15 @@ body.guest-pointer-lock :is(webview, iframe) {
 
     *:hover {
       scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent) transparent;
+    }
+
+    .scrollbar-content {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 12%, transparent) transparent;
+    }
+
+    .scrollbar-content:hover {
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent) transparent;
     }
 
     .dt-portal-scrollbar {

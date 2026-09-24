@@ -264,6 +264,13 @@ blurred backdrop.
 - **Gutters:** `PAGE_INSET_X` (`src/app/layout-constants.ts`) for page side
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode
   `px-6`/`px-8` on pages.
+- **Durable content scrolling:** use `scrollbar-content` on page, settings,
+  master/detail, and long-lived overlay scroll regions. It keeps a subtle thumb
+  discoverable at rest, strengthens it on hover, reserves classic-scrollbar
+  space with `scrollbar-gutter: stable`, and contains overscroll. Keep
+  `scrollbar-overlay` / auto-hide behavior for compact code blocks, menus,
+  rails, and other transient surfaces where native platform overlay behavior is
+  preferable. Do not hide the scrollbar on primary content regions.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.

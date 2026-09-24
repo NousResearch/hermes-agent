@@ -1403,10 +1403,16 @@ plugin's); `event` is the BARE dotted name (`"feed.updated"`, not
 on a name nobody emits. `payload` is a JSON dict (or omitted → `{}`), delivered
 as the event's `payload`; the frame carries `session_id: ""` like every global
 event. Delivery is fire-and-forget (a wedged client is skipped, never stalling
-your handler) and per process: under `hermes serve` (the Desktop backend, where
-both `plugin_api.py` routers and slash commands run) it reaches every connected
-window; in a process with no connected client it is a logged no-op. Use this
-instead of importing `tui_gateway.server` internals; for plugin-scoped frames
+your handler). Where it lands depends on the process the call runs in:
+
+| Caller runs in | Reaches |
+|---|---|
+| `hermes serve` (the Desktop backend): `plugin_api.py` routers, plugin slash commands, tools and hooks in the agent turn | every connected Desktop window |
+| the `dashboard.turn_isolation` compute-host child (tools/hooks of an isolated turn) | relayed over the host pipe to `hermes serve`, then every window |
+| the stdio TUI (`hermes` in a terminal) | that terminal's client |
+| `hermes gateway run` (messaging platforms), `hermes chat`, cron, `hermes plugins validate` | nobody — no Desktop client is attached to that process; the call is a logged no-op |
+
+Use this instead of importing `tui_gateway.server` internals; for plugin-scoped frames
 with a payload tailored per connection, `ctx.socket('/events')` remains the
 richer door.
 

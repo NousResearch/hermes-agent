@@ -20,14 +20,20 @@ event names (``skin.changed``, ``session.reclaimed``, …).
 
 Delivery is per process: the frame goes to the clients of the gateway the
 caller runs in. Under ``hermes serve`` (the Desktop backend, where plugin
-routers and slash commands both run) that is every connected window; in a
-process with no connected client the call is a logged no-op.
+routers, slash commands and the agent turn's tools/hooks run) that is every
+connected window; a call from the ``dashboard.turn_isolation`` compute-host
+child rides the host pipe to ``hermes serve`` and fans out there. A process
+with no Desktop client at all (``hermes gateway run``, ``hermes chat``, cron)
+has nobody to deliver to: the call is a logged no-op.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 #: Every plugin event name starts with this — core owns all other names.
 PLUGIN_EVENT_PREFIX = "plugin."
@@ -71,6 +77,12 @@ def broadcast_plugin_event(plugin_id: str, event: str, payload: Optional[dict[st
     # Late import: plugin backends load before the gateway server is up in some
     # hosts (CLI tooling imports plugin_api modules for route inspection), and
     # tui_gateway.server pulls in the transport stack.
-    from tui_gateway.server import _broadcast_global_event
+    try:
+        from tui_gateway.server import _broadcast_global_event
+    except ImportError:
+        # A plugin-only process (``hermes plugins validate`` importing the backend, a trimmed
+        # install) has no gateway at all: nobody to deliver to, and the handler must not die for it.
+        logger.warning("plugin event %s dropped: no tui_gateway in this process", name, exc_info=True)
+        return
 
     _broadcast_global_event(name, dict(payload or {}))

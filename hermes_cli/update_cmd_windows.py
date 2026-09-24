@@ -231,7 +231,8 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
     Token-based, never substring (``kanban --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
-    ``hermes(.exe)`` entry token, return the first following token that isn't a flag or a flag's value.
+    ``hermes(.exe)`` entry token, return the first following token that isn't a flag or a flag's value. An exact
+    console-script basename is an entrypoint at token 0, or token 1 immediately after a Python interpreter.
 
     Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
     #90778.
@@ -249,7 +250,10 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
             low.endswith("hermes_cli.main") and i > 1 and tokens[i - 1] == "-m" and is_python
         ) or (
             (low == "hermes_cli/main.py" or low.endswith("/hermes_cli/main.py")) and i == 1 and is_python
-        ) or (i == 0 and low.rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
+        ) or (
+            i in (0, 1) and low.rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
+            and (i == 0 or is_python)
+        )
 
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
     if entry_idx is None:

@@ -18,6 +18,7 @@ LOOPBACK = "--host 127.0.0.1 --port 0"
 CMDLINES = [
     ("python -m hermes_cli.main serve " + LOOPBACK, "serve", True, True),
     ("python -m hermes_cli.main dashboard", "dashboard", False, True),
+    ("/venv/bin/python3 /venv/bin/hermes serve " + LOOPBACK, "serve", True, False),
     ("/venv/bin/hermes serve --isolated --host=127.0.0.1 --port=0 --ssh-owner-nonce abc", "serve", True, False),
     (r"C:\hermes\.venv\Scripts\hermes.exe serve --host 100.106.105.2 --port 9119", "serve", False, False),
     ("hermes.exe dashboard", "dashboard", False, False),

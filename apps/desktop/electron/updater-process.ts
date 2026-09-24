@@ -42,6 +42,35 @@ export interface UpdateScriptHandoff {
   scriptPath: string
 }
 
+export interface LinuxDesktopUpdateGateDeps {
+  isLinux?: boolean
+  isPackaged?: boolean
+  realpath?: (candidate: string) => string
+}
+
+/** Whether the source updater can replace the Linux executable that launched it. */
+export function linuxDesktopUpdateCanReplaceClient(
+  updateRoot: string,
+  executablePath: string,
+  deps: LinuxDesktopUpdateGateDeps = {}
+): boolean {
+  const isLinux = deps.isLinux ?? process.platform === 'linux'
+  const isPackaged = deps.isPackaged ?? true
+
+  if (!isLinux || !isPackaged) {
+    return true
+  }
+
+  const realpath = deps.realpath ?? (candidate => path.resolve(candidate))
+  const unpacked = realpath(path.posix.join(updateRoot, 'apps', 'desktop', 'release', 'linux-unpacked'))
+  const executable = realpath(executablePath)
+  const relative = path.posix.relative(unpacked, executable)
+
+  // AppImage and distro-package binaries live outside linux-unpacked. Updating
+  // only their Python checkout would pair a newer backend with the old client.
+  return relative.length > 0 && relative !== '..' && !relative.startsWith('../') && !path.posix.isAbsolute(relative)
+}
+
 /**
  * Repo-owned Windows update hand-off (frozen-binary escape hatch).
  *

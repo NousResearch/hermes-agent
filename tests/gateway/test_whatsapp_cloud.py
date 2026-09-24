@@ -67,6 +67,7 @@ def _make_adapter(**overrides):
     adapter._http_client = None
 
     # Behavior-mixin contract
+    adapter._send_read_receipts = overrides.pop("_send_read_receipts", True)
     adapter._reply_prefix = None
     adapter._dm_policy = "open"
     adapter._allow_from = set()
@@ -1352,6 +1353,99 @@ class TestSendTyping:
         assert payload["status"] == "read"
         assert payload["message_id"] == "wamid.LATEST"
         assert payload["typing_indicator"] == {"type": "text"}
+
+
+def _make_config_adapter(**extra):
+    """Build a WhatsAppCloudAdapter through the real ``__init__`` (extra parsing)."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"phone_number_id": "1234567890", "access_token": "test-token", **extra},
+    )
+    return WhatsAppCloudAdapter(cfg)
+
+
+def _fake_http():
+    client = MagicMock()
+    client.post = AsyncMock(return_value=_mock_httpx_response(200, {"success": True}))
+    return client
+
+
+class TestSendTypingReadReceiptOptOut:
+    """Cloud ``send_read_receipts`` opt-out (issue #80066). Default stays ON."""
+
+    @pytest.mark.asyncio
+    async def test_default_posts_read_plus_typing(self):
+        adapter = _make_config_adapter()
+        assert adapter._send_read_receipts is True
+        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.LATEST"
+        adapter._http_client = _fake_http()
+
+        await adapter.send_typing("15551234567")
+
+        adapter._http_client.post.assert_called_once()
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "read"
+        assert payload["typing_indicator"] == {"type": "text"}
+
+    @pytest.mark.asyncio
+    async def test_extra_false_disables_post(self):
+        adapter = _make_config_adapter(send_read_receipts=False)
+        assert adapter._send_read_receipts is False
+        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.LATEST"
+        adapter._http_client = _fake_http()
+
+        await adapter.send_typing("15551234567")
+
+        adapter._http_client.post.assert_not_called()
+
+    def test_env_false_maps_to_extra_false(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "1234567890")
+        monkeypatch.setenv("WHATSAPP_CLOUD_ACCESS_TOKEN", "test-token")
+        monkeypatch.setenv("WHATSAPP_CLOUD_SEND_READ_RECEIPTS", "false")
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        assert config.platforms[Platform.WHATSAPP_CLOUD].extra["send_read_receipts"] is False
+
+    @pytest.mark.asyncio
+    async def test_env_false_disables_post(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_CLOUD_SEND_READ_RECEIPTS", "false")
+        adapter = _make_config_adapter()
+        assert adapter._send_read_receipts is False
+        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.LATEST"
+        adapter._http_client = _fake_http()
+
+        await adapter.send_typing("15551234567")
+
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "enabled"),
+        [("false", False), ("0", False), ("no", False), ("true", True)],
+    )
+    async def test_string_values_parse(self, raw, enabled):
+        adapter = _make_config_adapter(send_read_receipts=raw)
+        assert adapter._send_read_receipts is enabled
+        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.LATEST"
+        adapter._http_client = _fake_http()
+
+        await adapter.send_typing("15551234567")
+
+        assert adapter._http_client.post.call_count == (1 if enabled else 0)
+
+    @pytest.mark.asyncio
+    async def test_no_cached_wamid_is_noop(self):
+        adapter = _make_config_adapter(send_read_receipts=False)
+        adapter._http_client = _fake_http()
+
+        await adapter.send_typing("15551234567")  # no wamid cached, must not raise
+
+        adapter._http_client.post.assert_not_called()
 
 
 

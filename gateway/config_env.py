@@ -522,7 +522,10 @@ _ENV_STEPS: tuple = (
     # WhatsApp Cloud API (Meta). Distinct from the Baileys bridge; both may run against different numbers.
     _Cred(
         Platform.WHATSAPP_CLOUD, ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
-        fixed=(("phone_number_id", "WHATSAPP_CLOUD_PHONE_NUMBER_ID"), ("access_token", "WHATSAPP_CLOUD_ACCESS_TOKEN")),
+        fixed=(
+            ("phone_number_id", "WHATSAPP_CLOUD_PHONE_NUMBER_ID"), ("access_token", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
+            ("send_read_receipts", "WHATSAPP_CLOUD_SEND_READ_RECEIPTS", "true", is_truthy_value),
+        ),
         optional=(
             ("app_id", "WHATSAPP_CLOUD_APP_ID"), ("app_secret", "WHATSAPP_CLOUD_APP_SECRET"),
             ("waba_id", "WHATSAPP_CLOUD_WABA_ID"), ("verify_token", "WHATSAPP_CLOUD_VERIFY_TOKEN"),

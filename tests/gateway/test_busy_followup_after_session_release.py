@@ -245,4 +245,3 @@ async def test_followup_still_queues_when_the_session_stays_active():
     assert session_key in adapter._active_sessions  # guard untouched
     pending = adapter._pending_messages.get(session_key)
     assert pending is not None and pending.text == "still busy here"
-

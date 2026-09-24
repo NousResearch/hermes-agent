@@ -220,9 +220,16 @@ def _build_child_system_prompt(
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
-    absolute directory is ever injected (never a fake container path)."""
+    absolute directory is ever injected (never a fake container path).
+
+    The parent's session workspace (``agent.session_cwd``, kept current by every
+    turn's ``_register_session_cwd``) outranks the process-wide TERMINAL_CWD:
+    after a launch from $HOME the env var points at the home dir — a valid
+    directory with no AGENTS.md — which used to leave the child with no project
+    context at all."""
     from agent.runtime_cwd import scope_terminal_cwd
     candidates = [
+        getattr(parent_agent, "session_cwd", None),
         scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
         getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
     ]

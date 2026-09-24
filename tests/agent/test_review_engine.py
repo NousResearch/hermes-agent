@@ -401,6 +401,33 @@ def test_child_system_prompt_embeds_workspace_context(tmp_path):
     assert "sibling call sites" in prompt
 
 
+def test_child_system_prompt_prefers_session_workspace_over_terminal_env(tmp_path, monkeypatch):
+    """The parent's session workspace (agent.session_cwd, kept current by every turn's
+    _register_session_cwd) must win over the process-wide TERMINAL_CWD, which after a
+    launch from $HOME points at the home dir — a valid directory with no AGENTS.md —
+    and used to leave the child with no project context at all."""
+    from types import SimpleNamespace
+    from tools.delegate_tool import _build_child_system_prompt
+    import tools.delegate_tool_progress as dtp
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "AGENTS.md").write_text("# Project Rules\nSESSION-CWD-WINS\n")
+
+    parent = SimpleNamespace(session_cwd=str(proj))
+
+    def fake_scope_terminal_cwd():
+        return str(tmp_path)  # a different valid dir (stands in for $HOME)
+
+    monkeypatch.setattr(dtp, "scope_terminal_cwd", fake_scope_terminal_cwd, raising=False)
+    # The import inside _resolve_workspace_hint re-binds from agent.runtime_cwd; patch there too.
+    import agent.runtime_cwd as rc
+    monkeypatch.setattr(rc, "scope_terminal_cwd", fake_scope_terminal_cwd, raising=False)
+
+    prompt = _build_child_system_prompt("goal", None, workspace_path=dtp._resolve_workspace_hint(parent))
+    assert "SESSION-CWD-WINS" in prompt, "child prompt used TERMINAL_CWD instead of the session workspace"
+
+
 def test_child_system_prompt_respects_model_context_window(tmp_path, monkeypatch):
     """A large AGENTS.md must not be truncated in a child prompt when the child
     model has a large context window (delegate_task children resolve their own

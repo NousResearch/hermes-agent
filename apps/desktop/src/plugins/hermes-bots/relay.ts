@@ -118,7 +118,7 @@ const RELAY_OUTBOX_ANY = '*'
 const routesWithOutboxWork = new Set<string>()
 
 function relayBotModeOn(): boolean {
-  const decisions = host.pluginDecisions.get()
+  const decisions = host.pluginDecisions?.get() ?? {}
 
   return ID in decisions ? Boolean(decisions[ID]) : true
 }

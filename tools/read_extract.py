@@ -1,5 +1,5 @@
-"""Document-to-text extraction for ``read_file``: stdlib Jupyter/DOCX/XLSX (always
-authoritative for those three), plus legacy Office/OpenDocument/RTF/EPUB/PDF when the
+"""Document-to-text extraction for ``read_file``: stdlib Jupyter/DOCX/XLSX/PDF/PPTX/SQLite
+(always authoritative for those), plus legacy Office/OpenDocument/RTF/EPUB when the
 optional ``firecrawl-anydoc`` package (imports as ``anydoc``) is installed. Malformed
 documents raise :class:`ExtractionError`; callers fall back to text/binary handling."""
 
@@ -27,7 +27,8 @@ from xml.etree import ElementTree as ET
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_bytes",
            "extract_document_text", "is_extractable_document"]
 
-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".db", ".sqlite", ".sqlite3"})
+EXTRACTABLE_EXTENSIONS = frozenset({
+    ".ipynb", ".docx", ".xlsx", ".pdf", ".pptx", ".db", ".sqlite", ".sqlite3"})
 ANYDOC_EXTENSIONS = frozenset({
     ".doc", ".docm", ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
     ".xls", ".xlsm", ".xlsb", ".odt", ".ods", ".odp", ".rtf", ".epub", ".pdf"})
@@ -119,14 +120,14 @@ def extract_document_bytes(data: bytes, path: str) -> str:
     """Extract a document already fetched across a file backend boundary."""
     _check_size(len(data), MAX_DOCUMENT_BYTES)
     ext = _extension(path)
+    if ext in _STDLIB_EXTRACTORS:
+        with _temp_copy(data, ext) as temp_path:  # the stdlib extractors are path-oriented
+            if ext == ".ipynb":
+                return _extract_notebook(temp_path, display_path=path)
+            return _STDLIB_EXTRACTORS[ext](temp_path)
     if ext in ANYDOC_EXTENSIONS:
         return _extract_anydoc_bytes(data, path)
-    if ext not in EXTRACTABLE_EXTENSIONS:
-        raise ExtractionError(f"Unsupported document type: {path!r}")
-    with _temp_copy(data, ext) as temp_path:  # the stdlib extractors are path-oriented
-        if ext == ".ipynb":
-            return _extract_notebook(temp_path, display_path=path)
-        return _STDLIB_EXTRACTORS[ext](temp_path)
+    raise ExtractionError(f"Unsupported document type: {path!r}")
 
 
 def _anydoc_missing_error(path: str) -> str:
@@ -612,9 +613,74 @@ def _sqlite_cell(value: Any) -> str:
     return text if len(text) <= _SQLITE_CELL_CHARS else text[:_SQLITE_CELL_CHARS - 1] + "…"
 
 
+def _extract_pdf(path: str) -> str:
+    """Text-layer PDF extraction: per-page text via pdftotext, each page labeled with a
+    ``===== 页N（page N）=====`` marker so callers can map text back to pages."""
+    if shutil.which("pdftotext") is None:
+        raise ExtractionError(
+            "PDF text extraction needs pdftotext (poppler-utils); install it or convert the "
+            "file with e.g. `libreoffice --headless --convert-to txt`")
+    texts = _pdf_page_texts(path)
+    if not texts:
+        raise ExtractionError("pdftotext returned no text for this PDF")
+    pages = []
+    for i, page in enumerate(texts, 1):
+        body = page.strip()
+        pages.append(f"===== \u9875{i}\uff08page {i}\uff09=====\n" + (body if body else "(empty)"))
+    note = _pdf_coverage_note(path)
+    body = "\n\n".join(pages) + "\n"
+    return f"{note}\n{body}" if note else body
+
+
+_PPTX_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_PPTX_SLIDE_TAG = re.compile(r"ppt/slides/slide(\d+)\.xml")
+
+
+def _pptx_slide_text(root: ET.Element) -> str:
+    """Text of one drawing-ml slide: paragraphs -> lines, <a:br> -> newline, runs collapsed."""
+    lines: list[str] = []
+    for paragraph in root.iter(f"{{{_PPTX_NS_A}}}p"):
+        parts: list[str] = []
+        for node in paragraph.iter():
+            tag = node.tag.rsplit("}", 1)[-1]
+            if tag == "br":
+                parts.append("\n")
+            elif tag == "t":
+                parts.append(node.text or "")
+        line = "".join(parts).strip()
+        if line.strip():
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _extract_pptx(path: str) -> str:
+    """Stdlib PPTX extraction: unzip slide parts, each labeled ``# ── Slide N ──`` so callers can
+    map text back to slides. Independent of the optional pptx/firecrawl anydoc presence."""
+    slides: list[tuple[int, str]] = []  # (number, text)
+    with _open_zip(path, "PPTX") as zf:
+        for name in zf.namelist():
+            match = _PPTX_SLIDE_TAG.fullmatch(name)
+            if match is None:
+                continue
+            num = int(match.group(1))
+            try:
+                root = ET.fromstring(zf.read(name))
+            except ET.ParseError as exc:
+                raise ExtractionError(f"Malformed slide {name}: {exc}") from exc
+            slides.append((num, _pptx_slide_text(root)))
+    if not slides:
+        raise ExtractionError("PPTX contains no slide parts")
+    slides.sort(key=lambda item: item[0])
+    return _joined(
+        [f"# \u2500\u2500 Slide {num} \u2500\u2500\n" + (text or "(no text)")
+         for num, text in slides],
+        "PPTX has no readable text")
+
+
 # Extension -> stdlib extractor; anydoc formats fall through in extract_document_text.
 _STDLIB_EXTRACTORS: dict[str, Callable[[str], str]] = {
     ".ipynb": _extract_notebook, ".docx": _extract_docx, ".xlsx": _extract_xlsx,
+    ".pdf": _extract_pdf, ".pptx": _extract_pptx,
     ".db": _extract_sqlite, ".sqlite": _extract_sqlite, ".sqlite3": _extract_sqlite}
 
 

@@ -31,7 +31,12 @@ def repo(tmp_path):
     d = tmp_path / "repo"
     d.mkdir()
     _git(d, "init", "-q")
-    (d / "tracked.py").write_text("print('hello')\n")
+    # Pin line endings in the repo itself: the fixture runs git with
+    # HOME=<repo> (system config only, core.autocrlf=true on Git for Windows)
+    # while collect_working_diff runs it with the ambient config, so a CRLF
+    # worktree file against an LF index made a clean repo look modified.
+    _git(d, "config", "core.autocrlf", "false")
+    (d / "tracked.py").write_bytes(b"print('hello')\n")
     _git(d, "add", "-A")
     _git(d, "commit", "-q", "-m", "init")
     return d

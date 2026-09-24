@@ -75,7 +75,12 @@ def repo(tmp_path, monkeypatch):
     d = tmp_path / "repo"
     d.mkdir()
     _git(d, "init", "-q")
-    (d / "main.py").write_text("print('hello')\n")
+    # Pin line endings instead of inheriting the host's: Git for Windows
+    # ships core.autocrlf=true in its SYSTEM config, so the CRLF that
+    # write_text emits there is normalised to LF in the index and the
+    # freshly committed repo reads as dirty to /diff.
+    _git(d, "config", "core.autocrlf", "false")
+    (d / "main.py").write_text("print('hello')\n", encoding="utf-8", newline="")
     _git(d, "add", "-A")
     _git(d, "commit", "-q", "-m", "init")
     monkeypatch.setenv("TERMINAL_CWD", str(d))

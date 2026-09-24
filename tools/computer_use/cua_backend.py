@@ -367,18 +367,22 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
-                   urls: Optional[List[str]] = None, additional_arguments: Optional[List[str]] = None,
-                   creates_new_application_instance: bool = False) -> Dict[str, Any]:
-        """Idempotent launch returning ``{pid, bundle_id, name, windows[]}``. ``creates_new_application_instance=True``
-        forces a fresh instance so concurrent runs touching the same app get isolated windows."""
-        if not bundle_id and not name:
-            raise ValueError("launch_app requires either bundle_id or name")
-        args: Dict[str, Any] = {"session": self._session_id, **{k: v for k, v in (
-            ("bundle_id", bundle_id), ("name", name), ("urls", urls and list(urls)),
-            ("additional_arguments", additional_arguments and list(additional_arguments)),
-            ("creates_new_application_instance", creates_new_application_instance or None)) if v}}
-        out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
+                   path: Optional[str] = None, aumid: Optional[str] = None,
+                   launch_path: Optional[str] = None, urls: Optional[List[str]] = None,
+                   additional_arguments: Optional[List[str]] = None,
+                   creates_new_application_instance: bool = False,
+                   start_minimized: bool = False) -> ActionResult:
+        """Launch an app and preserve cua-driver's structured success or error result."""
+        if not any((bundle_id, name, path, aumid, launch_path, urls)):
+            return ActionResult(ok=False, action="launch_app", message=(
+                "launch_app requires one of bundle_id, name, path, aumid, launch_path, or urls"))
+        args: Dict[str, Any] = {k: v for k, v in (
+            ("bundle_id", bundle_id), ("name", name), ("path", path), ("aumid", aumid),
+            ("launch_path", launch_path), ("urls", list(urls) if urls else None),
+            ("additional_arguments", list(additional_arguments) if additional_arguments else None),
+            ("creates_new_application_instance", creates_new_application_instance or None),
+            ("start_minimized", start_minimized or None)) if v is not None}
+        return self._action("launch_app", args)
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""

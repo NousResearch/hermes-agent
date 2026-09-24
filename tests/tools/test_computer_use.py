@@ -61,6 +61,29 @@ class TestRegistration:
 # ---------------------------------------------------------------------------
 
 class TestDispatch:
+    def test_launch_app_schema_and_dispatch_preserve_exact_path_and_args(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        from tools.computer_use.tool import _dispatch, _NoopBackend
+
+        properties = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "launch_app" in properties["action"]["enum"]
+        assert {"path", "additional_arguments", "aumid", "launch_path"} <= properties.keys()
+
+        backend = _NoopBackend()
+        result = json.loads(_dispatch(backend, "launch_app", {
+            "path": r"C:\Windows\System32\notepad.exe",
+            "additional_arguments": ["--literal", "two words"],
+            "start_minimized": True,
+        }))
+
+        assert result["ok"] is True
+        assert backend.calls == [("launch_app", {
+            "bundle_id": None, "name": None, "path": r"C:\Windows\System32\notepad.exe",
+            "aumid": None, "launch_path": None, "urls": None,
+            "additional_arguments": ["--literal", "two words"],
+            "creates_new_application_instance": None, "start_minimized": True,
+        })]
+
 
     def test_unknown_action_returns_error(self):
         from tools.computer_use.tool import handle_computer_use
@@ -2319,11 +2342,51 @@ class TestCuaToolCoverageExpansion:
 
     # ── App lifecycle ────────────────────────────────────────────
 
-    def test_launch_app_requires_bundle_id_or_name(self):
+    def test_launch_app_requires_a_launch_target(self):
         backend = self._backend()
-        import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
-            backend.launch_app()
+        result = backend.launch_app()
+
+        assert result.ok is False
+        assert "requires one of" in result.message
+        backend._session.call_tool.assert_not_called()
+
+    def test_launch_app_preserves_exact_path_args_and_structured_success(self):
+        backend = self._backend(structured={
+            "pid": 42, "name": "Notepad", "windows": [{"window_id": 7}],
+            "verified": True, "effect": "confirmed",
+        }, data="launched")
+
+        result = backend.launch_app(
+            path=r"C:\Windows\System32\notepad.exe",
+            additional_arguments=["--literal", "two words"],
+            start_minimized=True,
+        )
+
+        backend._session.call_tool.assert_called_once_with("launch_app", {
+            "path": r"C:\Windows\System32\notepad.exe",
+            "additional_arguments": ["--literal", "two words"],
+            "start_minimized": True,
+            "session": backend._session_id,
+        })
+        assert result.ok is True
+        assert result.message == "launched"
+        assert result.verified is True
+        assert result.effect == "confirmed"
+        assert result.meta["pid"] == 42
+        assert result.meta["windows"] == [{"window_id": 7}]
+
+    def test_launch_app_preserves_structured_driver_error(self):
+        backend = self._backend(structured={
+            "message": "executable not found", "code": "not_found", "requested_path": r"C:\missing.exe",
+        }, data="")
+        backend._session.call_tool.return_value["isError"] = True
+
+        result = backend.launch_app(path=r"C:\missing.exe")
+
+        assert result.ok is False
+        assert result.message == "executable not found"
+        assert result.code == "not_found"
+        assert result.meta["requested_path"] == r"C:\missing.exe"
 
     # ── Generic escape hatch ────────────────────────────────────
 

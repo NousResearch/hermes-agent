@@ -21,6 +21,8 @@ _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); deeper needs max_spawn_depth
 _MIN_SPAWN_DEPTH = 1  # floor for the configurable cap; MAX_DEPTH stays the default
 _LEGACY_MAX_ASYNC_WARNED = False
+_MEMORY_MODES = frozenset({"full", "on_demand", "off"})
+_MEMORY_MODE_RANK = {"off": 0, "on_demand": 1, "full": 2}
 # No default wall-clock cap on children: legitimate heavy work (deep reviews, research fan-outs, slow reasoning
 # models) was being killed mid-task. Stuck-child detection is the heartbeat staleness monitor;
 # delegation.child_timeout_seconds opts back in.
@@ -171,6 +173,46 @@ def _get_orchestrator_enabled() -> bool:
     if isinstance(val, str):
         return val.strip().lower() in {"true", "1", "yes", "on"}
     return True
+
+
+def _get_memory_mode() -> str:
+    """Validated ``delegation.memory_mode``; invalid config fails closed to off."""
+    raw = _cfg().get("memory_mode", "on_demand")
+    mode = str(raw or "").strip().lower()
+    if mode not in _MEMORY_MODES:
+        logger.warning(
+            "delegation.memory_mode=%r is invalid; using 'off' "
+            "(expected full, on_demand, or off)",
+            raw,
+        )
+        return "off"
+    return mode
+
+
+def _resolve_child_memory_mode(parent_agent: Any, requested: Optional[str]) -> str:
+    """Resolve a spawn policy, inheriting nested policy without escalation."""
+    parent_mode = getattr(parent_agent, "_delegate_memory_mode", None)
+    if parent_mode not in _MEMORY_MODES:
+        parent_mode = (
+            getattr(parent_agent, "_memory_mode", None)
+            if getattr(parent_agent, "_memory_mode_explicit", False) is True
+            else None
+        )
+    if parent_mode not in _MEMORY_MODES:
+        parent_mode = None
+    if requested is None:
+        return parent_mode or _get_memory_mode()
+    mode = str(requested).strip().lower()
+    if mode not in _MEMORY_MODES:
+        raise ValueError(
+            f"Invalid memory_mode {requested!r}; expected one of: full, on_demand, off"
+        )
+    if parent_mode is not None and _MEMORY_MODE_RANK[mode] > _MEMORY_MODE_RANK[parent_mode]:
+        raise ValueError(
+            f"Nested delegation cannot escalate memory_mode from {parent_mode!r} to {mode!r}"
+        )
+    return mode
+
 
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""

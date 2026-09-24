@@ -186,3 +186,74 @@ def test_deprecated_alias_keeps_a_frozen_out_of_tree_subclass_working(tmp_path):
     assert result["is_acp_client"] and result["base_url"] == "acp://frozen"
     assert result["models"] == ["open-model", "policy-blocked"]  # the alias keeps its enablement filter
     assert result["reply"] == "HELLO"
+
+
+# --- advertised capability surface matches the dispatch surface (fork: memory modes) ----
+
+def test_initialize_capabilities_match_supported_dispatch_surface():
+    from agent.acp_client import _FS_HANDLERS, _initialize_params
+
+    enabled = _initialize_params(allow_file_requests=True)["clientCapabilities"]
+    advertised_fs_methods = {
+        "fs/read_text_file" for supported in [enabled["fs"].get("readTextFile")] if supported
+    } | {
+        "fs/write_text_file" for supported in [enabled["fs"].get("writeTextFile")] if supported
+    }
+    assert advertised_fs_methods == set(_FS_HANDLERS)
+
+    disabled = _initialize_params(allow_file_requests=False)["clientCapabilities"]
+    assert "fs" not in disabled
+
+
+def test_model_discovery_does_not_allow_file_requests(tmp_path):
+    target = tmp_path / "should-not-be-read.txt"
+    target.write_text("private", encoding="utf-8")
+    server = tmp_path / "fake_acp_fs_request.py"
+    server.write_text(
+        f"""import json
+import sys
+
+initialize = json.loads(sys.stdin.readline())
+assert "fs" not in initialize["params"]["clientCapabilities"]
+print(json.dumps({{"jsonrpc": "2.0", "id": initialize["id"], "result": {{"protocolVersion": 1}}}}), flush=True)
+session = json.loads(sys.stdin.readline())
+print(json.dumps({{"jsonrpc": "2.0", "id": 99, "method": "fs/read_text_file", "params": {{"path": {str(target)!r}}}}}), flush=True)
+file_response = json.loads(sys.stdin.readline())
+assert file_response["error"]["code"] == -32601
+print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId": "catalog-session", "configOptions": [{{"id": "model", "options": [{{"value": "vendor-sol"}}]}}]}}}}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    client = ACPClient(
+        command=sys.executable,
+        args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    assert client.list_models(timeout_seconds=30) == ["vendor-sol"]
+
+
+def test_unknown_client_method_is_not_dispatched():
+    class _FakeProcess:
+        def __init__(self) -> None:
+            import io
+            self.stdin = io.StringIO()
+
+    client = ACPClient(acp_cwd="/tmp")
+    process = _FakeProcess()
+    handled = client._handle_server_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "terminal/create",
+            "params": {"command": "should-not-run"},
+        },
+        process=process,
+        cwd="/tmp",
+        text_parts=[],
+        reasoning_parts=[],
+    )
+    assert handled is True
+    response = json.loads(process.stdin.getvalue().strip())
+    assert response["error"]["code"] == -32601
+    assert "not supported" in response["error"]["message"]

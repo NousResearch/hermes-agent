@@ -362,20 +362,37 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
 
 def _apply_mcp_preset(
     name: str,
-    *,
     preset_name: Optional[str],
     url: Optional[str],
     command: Optional[str],
     cmd_args: List[str],
     server_config: Dict[str, Any]) -> tuple[Optional[str], Optional[str], List[str], bool]:
-    """Apply a known MCP preset when transport details were omitted."""
+    """Fill CLI add transport defaults, or serve the RPC's catalog-miss fallback.
+
+    Legacy registry entries take precedence here and retain their assignment semantics.
+    """
     if not preset_name:
         return url, command, cmd_args, False
     if url or command:
         return url, command, cmd_args, False
     preset = _MCP_PRESETS.get(preset_name)
     if not preset:
-        raise ValueError(f"Unknown MCP preset: {preset_name}")
+        from hermes_cli import mcp_catalog
+
+        entry = mcp_catalog.get_entry(preset_name)
+        if entry is None:
+            raise ValueError(f"Unknown MCP preset: {preset_name}")
+        try:
+            defaults = mcp_catalog.build_server_config(entry)
+        except mcp_catalog.CatalogError as exc:
+            raise ValueError(
+                f"Preset '{preset_name}' requires installation: "
+                f"use `hermes mcp install {preset_name}` ({exc})"
+            ) from exc
+        for key, value in defaults.items():
+            server_config.setdefault(key, value)
+        return (server_config.get("url"), server_config.get("command"),
+                list(server_config.get("args") or []), True)
     url, command = preset.get("url"), preset.get("command")
     cmd_args = list(preset.get("args") or [])
     if url:
@@ -660,6 +677,8 @@ def cmd_mcp_add(args):
 
     if not _validate_or_warn(name, server_config):
         return
+    if auth_type is None and _preset_applied:
+        auth_type = server_config.get("auth")
     if url and not _configure_http_auth(name, url, auth_type, server_config):
         return
 

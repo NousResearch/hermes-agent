@@ -310,6 +310,124 @@ class TestMcpAdd:
             **existing, "local-alias": {**expected, "enabled": True},
         }
 
+    @pytest.mark.parametrize("case", [
+        "http-none", "http-api_key", "http-oauth", "http-oauth-explicit-auth",
+        "stdio", "stdio-env", "unknown", "unknown-args-env", "install-command", "install-args",
+    ])
+    def test_catalog_preset_transport_contract(self, tmp_path, monkeypatch, capsys, case):
+        from dataclasses import replace
+        from types import SimpleNamespace
+        from hermes_cli import mcp_catalog, mcp_config
+        from hermes_cli.config import read_raw_config
+
+        existing = {"untouched": {"command": "existing"}}
+        _seed_config(tmp_path, existing)
+        before = (tmp_path / "config.yaml").read_bytes()
+        if case.startswith("stdio"):
+            # The shipped catalog currently has only HTTP transports. Exercise stdio via the
+            # real manifest parser and lookup, without depending on a particular catalog member.
+            import yaml
+
+            catalog_root = tmp_path / "catalog"
+            manifest = catalog_root / "stdio-fixture" / "manifest.yaml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(yaml.safe_dump({
+                "manifest_version": mcp_catalog._MANIFEST_VERSION,
+                "name": "stdio-fixture", "description": "Local stdio fixture", "source": "test",
+                "transport": {"type": "stdio", "command": "fixture-command",
+                              "args": ["fixture-arg"], "env": {"PRESET": "value"}},
+                "auth": {"type": "none"},
+            }), encoding="utf-8")
+            monkeypatch.setattr(mcp_catalog, "_catalog_root", lambda: catalog_root)
+        entries = [e for e in mcp_catalog.list_catalog() if e.name not in mcp_config._MCP_PRESETS]
+        kwargs = {"name": "local-catalog-alias", "args": ["must-not-replace-preset-args"]}
+        expected = {}
+        oauth_calls = []
+
+        def provider(*args):
+            oauth_calls.append(args)
+            return object()
+
+        monkeypatch.setattr("tools.mcp_oauth_manager.get_manager", lambda: SimpleNamespace(
+            get_or_build_provider=provider))
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        monkeypatch.setattr(mcp_config, "_choose_tools", lambda *args: 1)
+
+        if case.startswith("unknown"):
+            kwargs["preset"] = "missing-test-preset"
+            assert mcp_catalog.get_entry(kwargs["preset"]) is None
+            assert kwargs["preset"] not in mcp_config._MCP_PRESETS
+            if case == "unknown-args-env":
+                kwargs["env"] = ["EXPLICIT=value"]
+        elif case.startswith("install"):
+            entry = mcp_catalog.CatalogEntry(
+                name="install-test", description="Requires installation", source="test",
+                transport=mcp_catalog.TransportSpec(
+                    type="stdio",
+                    command="${INSTALL_DIR}/server" if case == "install-command" else "python",
+                    args=["${INSTALL_DIR}/server.py"] if case == "install-args" else [],
+                ), auth=mcp_catalog.AuthSpec(type="none"),
+            )
+            monkeypatch.setattr(mcp_catalog, "get_entry", lambda name: entry)
+            kwargs["preset"] = entry.name
+        elif case.startswith("http"):
+            auth = case.split("-")[1]
+            entry = next(e for e in entries if e.transport.type == "http"
+                         and e.auth.type == ("none" if auth == "api_key" else auth)
+                         and (auth != "oauth" or e.auth.oauth))
+            if auth == "api_key":
+                # Exercise header translation even when no shipped HTTP entry needs an API key.
+                entry = replace(entry, auth=mcp_catalog.AuthSpec(type="api_key"))
+                monkeypatch.setattr(mcp_catalog, "get_entry", lambda name: entry)
+            kwargs["preset"] = entry.name
+            expected["url"] = entry.transport.url
+            if auth == "oauth":
+                expected["auth"] = entry.auth.type
+                expected["oauth"] = dict(entry.auth.oauth)
+            elif auth == "api_key":
+                expected["headers"] = mcp_config._bearer_auth_headers(entry.name)
+            if case == "http-oauth-explicit-auth":
+                kwargs["auth"] = "header"
+        else:
+            entry = next(e for e in entries if e.transport.type == "stdio"
+                         and "${INSTALL_DIR}" not in (e.transport.command or "")
+                         and all("${INSTALL_DIR}" not in a for a in e.transport.args))
+            kwargs["preset"] = entry.name
+            expected["command"] = entry.transport.command
+            if entry.transport.args:
+                expected["args"] = list(entry.transport.args)
+            if entry.transport.env:
+                expected["env"] = dict(entry.transport.env)
+            if case == "stdio-env":
+                kwargs["env"] = ["EXPLICIT=value"]
+                expected["env"] = {"EXPLICIT": "value"}
+
+        rejected = case.startswith(("unknown", "install"))
+
+        def probe(name, config):
+            assert not rejected, "Rejected presets must never connect"
+            assert name == kwargs["name"]
+            assert config == expected
+            return [("tool", "description")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+        mcp_config.cmd_mcp_add(_make_args(**kwargs))
+        output = capsys.readouterr().out
+        if rejected:
+            assert (tmp_path / "config.yaml").read_bytes() == before
+            assert not (tmp_path / ".env").exists()
+            if case.startswith("unknown"):
+                assert f"Unknown MCP preset: {kwargs['preset']}" in output
+            else:
+                assert f"hermes mcp install {entry.name}" in output
+                assert "Unknown MCP preset" not in output
+        else:
+            assert read_raw_config()["mcp_servers"] == {
+                **existing, kwargs["name"]: {**expected, "enabled": True},
+            }
+        assert oauth_calls == ([(kwargs["name"], entry.transport.url, entry.auth.oauth)]
+                               if case == "http-oauth" else [])
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test

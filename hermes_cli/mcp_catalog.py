@@ -533,6 +533,11 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
     return cfg
 
 
+def build_server_config(entry: CatalogEntry) -> dict:
+    """Build preset defaults from a resolved entry without running installation."""
+    return _build_server_config(entry, install_dir=None)
+
+
 def _read_prior_tool_list(name: str, key: str) -> Optional[List[str]]:
     """The user's prior ``tools.<key>`` (``include``/``exclude``) for *name*, if well-formed.
 

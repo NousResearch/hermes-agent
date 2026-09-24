@@ -639,6 +639,10 @@ def _(rid, params: dict) -> dict:
         write_meta = _lazy("hermes_cli.profiles", "write_profile_meta")
         applied["description"] = _best_effort(lambda: write_meta(
             profile_dir, description=params["description"].strip(), description_auto=False))
+    if isinstance(params.get("display_name"), str):
+        set_display_name = _lazy("hermes_cli.profiles", "set_profile_display_name")
+        applied["display_name"] = _best_effort(lambda: set_display_name(
+            _name, params["display_name"]))
     confirm_message = _configure_model(profile_dir, params, applied)
     if any(isinstance(params.get(k), list) for k in ("disabled_skills", "enabled_toolsets", "enabled_mcp_servers")):
         _configure_cfg_sections(profile_dir, params, applied)

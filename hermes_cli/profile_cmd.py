@@ -431,7 +431,16 @@ def _profile_alias(args):
 
 
 def _profile_rename(args):
-    from hermes_cli.profiles import normalize_profile_name, rename_profile
+    from hermes_cli.profiles import normalize_profile_name, rename_profile, set_profile_display_name
+    if getattr(args, "display_name", None) is not None:
+        try:
+            set_profile_display_name(args.old_name, args.display_name)
+            print(f"\n✓ Display name set: {args.old_name} → {args.display_name}\n")
+        except (ValueError, FileNotFoundError) as e:
+            _die(f"Error: {e}")
+        return
+    if args.new_name is None:
+        _die("Error: new profile name or --display-name is required")
     try:
         new_dir = rename_profile(args.old_name, args.new_name)
         if normalize_profile_name(args.old_name) != "default":

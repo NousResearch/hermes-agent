@@ -850,6 +850,12 @@ async def open_profile_terminal_endpoint(name: str):
 @router.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
+    if body.display_name is not None:
+        # Presentation-only display name change: no directory rename, no identity rewrite.
+        with _profile_errors("PATCH /api/profiles/%s failed", name, bad_request=(ValueError,)):
+            await run_in_threadpool(profiles_mod.set_profile_display_name, name, body.display_name)
+        return {"ok": True, "name": profiles_mod.normalize_profile_name(name),
+                "display_name": body.display_name.strip()}
     with _profile_errors("PATCH /api/profiles/%s failed", name,
                          bad_request=(ValueError, FileExistsError)):
         # Stops a running gateway (10 s poll), renames the directory, rewrites the Honcho

@@ -436,7 +436,8 @@ class ProfileCreate(BaseModel):
     hub_skills: List[str] = []
 
 class ProfileRename(BaseModel):
-    new_name: str
+    new_name: str = ""
+    display_name: Optional[str] = None
 
 class ProfileExport(BaseModel):
     extra_files: Dict[str, str] = {}  # extra root-level files, filename → text

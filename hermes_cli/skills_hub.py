@@ -1222,6 +1222,8 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
             return False, f"Failed to fork {target_repo}: {resp.status_code}"
     except httpx.HTTPError as e:
         return False, f"Network error forking repo: {e}"
+    except ValueError:
+        return False, "GitHub fork response is not valid JSON. Please retry."
 
     # The fork response can identify the branch even if the metadata lookup fails.
     fallback_branch = fork.get("default_branch") or "main"

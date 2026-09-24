@@ -11,7 +11,7 @@ from hermes_cli.skills_hub import do_publish
 from tools.skills_hub_github import GitHubAuth
 
 
-@pytest.mark.parametrize("failure", ["fork_missing", "fork_empty", "fork_null", "fork_json_null", "fork_json_list", "branch", "upload", "network", "read"])
+@pytest.mark.parametrize("failure", ["fork_missing", "fork_empty", "fork_null", "fork_json_null", "fork_json_list", "fork_invalid_json", "branch", "upload", "network", "read"])
 def test_publish_reports_failure_without_creating_pr(tmp_path, monkeypatch, failure):
     skill = tmp_path / "example"
     skill.mkdir()
@@ -25,6 +25,8 @@ def test_publish_reports_failure_without_creating_pr(tmp_path, monkeypatch, fail
         requests.append(request)
         path = request.url.path
         if path.endswith("/forks"):
+            if failure == "fork_invalid_json":
+                return httpx.Response(202, text="not JSON")
             if failure.startswith("fork_"):
                 data = {"fork_missing": {}, "fork_empty": {"full_name": ""}, "fork_null": {"full_name": None}, "fork_json_null": None, "fork_json_list": []}[failure]
                 return httpx.Response(202, text=json.dumps(data))
@@ -62,6 +64,8 @@ def test_publish_reports_failure_without_creating_pr(tmp_path, monkeypatch, fail
     assert not any(r.url.path.endswith("/pulls") for r in requests), output.getvalue()
     assert "PR created" not in output.getvalue()
     expected = "full_name" if failure.startswith("fork_") else ("branch" if failure in {"branch", "network"} else "upload")
+    if failure == "fork_invalid_json":
+        expected = "not valid JSON"
     assert expected in output.getvalue(), output.getvalue()
     if failure.startswith("fork_"):
         assert len(requests) == 1

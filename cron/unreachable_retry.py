@@ -83,8 +83,13 @@ def clear_state(job: Dict[str, Any]) -> None:
 
 
 def is_retry_fire(job: Dict[str, Any], next_run: str) -> bool:
-    """True for the exact ladder instant parked by ``plan_retry`` (off the cron lattice)."""
-    return (job.get(STATE_KEY) or {}).get("at") == next_run
+    """True for the exact ladder instant parked by ``plan_retry`` (off the cron lattice).
+
+    The expression fingerprint keeps a direct ``jobs.json`` schedule edit from inheriting the
+    exception, as in ``cron.quota_hold.is_recovery_fire``.
+    """
+    state = job.get(STATE_KEY) or {}
+    return state.get("at") == next_run and state.get("expr") == (job.get("schedule") or {}).get("expr")
 
 
 def plan_retry(job: Dict[str, Any]) -> bool:
@@ -119,7 +124,7 @@ def plan_retry(job: Dict[str, Any]) -> bool:
         clear_state(job)
         return False
     retry_at = retry_dt.isoformat()
-    job[STATE_KEY] = {"attempt": attempt + 1, "at": retry_at}
+    job[STATE_KEY] = {"attempt": attempt + 1, "at": retry_at, "expr": job["schedule"].get("expr")}
     job["next_run_at"] = retry_at
     if job.get("state") != "paused":
         job["state"] = "scheduled"

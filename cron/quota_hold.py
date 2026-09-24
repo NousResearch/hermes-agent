@@ -90,7 +90,7 @@ def _window_end(hold_seconds: float) -> datetime:
 
 
 def _recovery_worthwhile(
-    job: Dict[str, Any], natural_next: Optional[datetime], window_end: datetime,
+    job: Dict[str, Any], natural_next: datetime, window_end: datetime,
 ) -> bool:
     """One off-lattice recovery fire, and only for a sparse schedule.
 
@@ -103,7 +103,7 @@ def _recovery_worthwhile(
     """
     from cron.jobs import _elapsed_seconds, _schedule_cadence_seconds
 
-    if job.get(STATE_KEY) or natural_next is None:
+    if job.get(STATE_KEY):
         return False
     cadence = _schedule_cadence_seconds(job.get("schedule") or {})
     return bool(cadence) and _elapsed_seconds(natural_next, window_end) >= cadence / 2

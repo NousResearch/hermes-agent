@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from cron import unreachable_retry as ur
-from cron.jobs import create_job, get_due_jobs, get_job, mark_job_run
+from cron.jobs import create_job, get_due_jobs, get_job, load_jobs, mark_job_run, save_jobs
 
 
 @pytest.fixture
@@ -64,6 +64,15 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     assert retry_at == pinned + timedelta(seconds=ur.RETRY_DELAYS_SECONDS[0])
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
     assert weekly["id"] in {due["id"] for due in get_due_jobs()}
+
+    # A direct jobs.json expression edit while a retry is parked re-anchors without firing.
+    assert mark_job_run(weekly["id"], False, "ConnectError: dns", model_unreachable=True)
+    retry_at = datetime.fromisoformat(get_job(weekly["id"])["next_run_at"])
+    jobs = load_jobs()
+    next(j for j in jobs if j["id"] == weekly["id"])["schedule"]["expr"] = "0 9 * * 1"
+    save_jobs(jobs)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
+    assert weekly["id"] not in {due["id"] for due in get_due_jobs()}
 
 
 def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home):

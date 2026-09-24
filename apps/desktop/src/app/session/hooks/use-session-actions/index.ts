@@ -1016,12 +1016,28 @@ export function useSessionActions({
       const routeToken = getRouteToken()
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
-      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
         getRouteToken() === routeToken
+
+      // A reconnect re-resumes the runtime this view is streaming. Let its
+      // replay land while that runtime still owns the view. Otherwise the REST
+      // read paints the finished turn first and the replayed rows are then
+      // overlaid onto it as concurrent runtime changes: the turn shows twice.
+      const viewRuntimeId = resumedSameSelectedSession ? activeSessionIdRef.current : null
+      const viewReplay = viewRuntimeId ? pendingSessionReplay(viewRuntimeId) : undefined
+
+      if (viewReplay) {
+        await viewReplay
+
+        if (!isCurrentResume()) {
+          return
+        }
+      }
+
+      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads

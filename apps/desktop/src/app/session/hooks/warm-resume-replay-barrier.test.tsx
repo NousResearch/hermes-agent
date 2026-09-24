@@ -10,6 +10,7 @@ import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journ
 import { setPrimaryGateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
+  $messages,
   _resetSessionOwnerHintsForTests,
   setActiveSessionId,
   setAwaitingResponse,
@@ -274,6 +275,43 @@ it('still settles a warm resume through session.activate when its replay socket 
     // leaving the view on an unrebound warm cache.
     expect(activateCalls(requestGateway)).toHaveLength(1)
     expect(requestGateway.mock.calls.some(([method]) => method === 'session.resume')).toBe(true)
+  } finally {
+    client.close()
+  }
+})
+
+it('holds a reconnect re-resume of the selected session behind its replay (cold path)', async () => {
+  const { result, client, requestGateway, second, request } = await mountWithPendingReplay()
+  const { activeSessionIdRef, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef } = result.current.cache
+
+  // The view is streaming this runtime, but the warm mapping is gone, so the
+  // route's reconnect re-resume takes the cold REST + session.resume path.
+  selectedStoredSessionIdRef.current = storedId
+  activeSessionIdRef.current = runtimeId
+  runtimeIdByStoredSessionIdRef.current.delete(storedId)
+
+  try {
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = result.current.actions.resumeSession(storedId, true)
+    })
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalled()
+
+    await act(async () => {
+      second.frame({ id: request.id, jsonrpc: '2.0', result: { events: replay } })
+      await pending
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    expect(requestGateway.mock.calls.some(([method]) => method === 'session.resume')).toBe(true)
+    expect(
+      $messages
+        .get()
+        .map(chatMessageText)
+        .join('\n')
+        .match(/Finished result\./g)
+    ).toHaveLength(1)
   } finally {
     client.close()
   }

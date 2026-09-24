@@ -451,6 +451,9 @@ def _roundtrip_load(path: Path):
     yaml_rt.allow_unicode = True
     yaml_rt.default_flow_style = False
     yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    # A folded plain mapping key is invalid YAML for PyYAML and the backend.
+    # Keep config keys on one line even when they contain whitespace.
+    yaml_rt.width = 4096
     # PyYAML (every reader in the tree) tolerates duplicate keys (last wins); refusing them here
     # would turn a file the CLI can read into one it cannot write.
     yaml_rt.allow_duplicate_keys = True

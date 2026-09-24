@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
+import { $previewTabs, closeRightRail } from '@/store/preview'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
@@ -27,6 +28,16 @@ vi.mock('@/store/pool-limits', async () => {
   const { atom } = await import('nanostores')
 
   return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
+})
+
+describe('host.openBrowser', () => {
+  afterEach(closeRightRail)
+
+  it('opens the in-app browser on a blank page', () => {
+    host.openBrowser()
+
+    expect($previewTabs.get().map(tab => tab.target.url)).toEqual(['about:blank'])
+  })
 })
 
 describe('host.warmProfile pool-saturation contract', () => {

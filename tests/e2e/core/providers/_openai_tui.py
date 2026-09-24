@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from tests.e2e.core.providers._openai_helpers import Home
+from tests.e2e.core.providers._openai_helpers import HarnessError, Home
 
 
 class TuiGateway:
@@ -23,6 +23,9 @@ class TuiGateway:
         self._stderr = open(self.stderr_path, "wb")  # noqa: SIM115 - closed in close()
         self.proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=h.project, env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr, bufsize=0)
+        if self.proc.stdin is None or self.proc.stdout is None:
+            raise HarnessError("tui_gateway spawned without stdio pipes")
+        self._stdin, self._stdout = self.proc.stdin, self.proc.stdout
         self._ids = itertools.count(1)
         self._cv = threading.Condition()
         self._responses: dict[int, dict[str, Any]] = {}
@@ -30,8 +33,7 @@ class TuiGateway:
         threading.Thread(target=self._read, name="tui-rpc", daemon=True).start()
 
     def _read(self) -> None:
-        assert self.proc.stdout is not None
-        for raw in iter(self.proc.stdout.readline, b""):
+        for raw in iter(self._stdout.readline, b""):
             try:
                 frame = json.loads(raw)
             except json.JSONDecodeError:
@@ -47,20 +49,19 @@ class TuiGateway:
 
     def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = 90.0) -> dict[str, Any]:
         rid = next(self._ids)
-        assert self.proc.stdin is not None
-        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method,
-                                          "params": params or {}}).encode() + b"\n")
-        self.proc.stdin.flush()
+        self._stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method,
+                                      "params": params or {}}).encode() + b"\n")
+        self._stdin.flush()
         deadline = time.monotonic() + timeout
         with self._cv:
             while rid not in self._responses:
                 left = deadline - time.monotonic()
                 if left <= 0 or self.proc.poll() is not None:
-                    raise AssertionError(f"no reply to {method} (rc={self.proc.poll()}){self.tail()}")
+                    raise HarnessError(f"no reply to {method} (rc={self.proc.poll()}){self.tail()}")
                 self._cv.wait(min(left, 0.5))
             frame = self._responses.pop(rid)
         if "error" in frame:
-            raise AssertionError(f"{method} -> {frame['error']}{self.tail()}")
+            raise HarnessError(f"{method} -> {frame['error']}{self.tail()}")
         return frame["result"]
 
     def wait_event(self, pred: Callable[[dict[str, Any]], bool], timeout: float, start: int = 0) -> dict[str, Any]:
@@ -75,14 +76,15 @@ class TuiGateway:
                         return {**ev, "_i": seen - 1}
                 left = deadline - time.monotonic()
                 if left <= 0 or self.proc.poll() is not None:
-                    raise AssertionError(f"event never arrived within {timeout}s{self.tail()}")
+                    raise HarnessError(f"event never arrived within {timeout}s{self.tail()}")
                 self._cv.wait(min(left, 0.5))
 
     def turn(self, sid: str, text: str, timeout: float = 120.0) -> str:
         """Submit one prompt and return the completed assistant text once the session settles."""
         start = len(self.events)
         reply = self.call("prompt.submit", {"session_id": sid, "text": text})
-        assert reply.get("status") == "streaming", reply
+        if reply.get("status") != "streaming":
+            raise HarnessError(f"prompt.submit did not start streaming: {reply}{self.tail()}")
         done = self.wait_event(lambda e: e.get("type") == "message.complete" and e.get("session_id") == sid,
                                timeout, start)
         self.wait_event(lambda e: e.get("type") == "session.info" and e.get("session_id") == sid
@@ -93,8 +95,7 @@ class TuiGateway:
 
     def close(self, timeout: float = 30.0) -> int | None:
         try:
-            assert self.proc.stdin is not None
-            self.proc.stdin.close()
+            self._stdin.close()
             return self.proc.wait(timeout=timeout)
         except (OSError, subprocess.TimeoutExpired):
             self.proc.kill()

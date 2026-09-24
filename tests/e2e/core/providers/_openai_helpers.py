@@ -15,16 +15,85 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 150.0
 _SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_ACCESS_KEY")
 _PASSTHROUGH_ENV = frozenset({"PATH", "LANG", "LANGUAGE", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ"})
+
+
+# KNOWN-bug plumbing ------------------------------------------------------------------
+
+
+class HarnessError(RuntimeError):
+    """The harness broke (a process died, a reply or event never came, a turn overran its
+    budget). Never an ``AssertionError``, so a KNOWN strict xfail can never excuse it."""
+
+
+class KnownBugError(AssertionError):
+    """Raised ONLY from inside ``bug_assertions()``: the one exception a KNOWN strict xfail
+    accepts. Preconditions, waits and teardown outside that block fail the test for real."""
+
+
+def known_marks(known: dict[str, str], name: str) -> list:
+    """Marks for a scenario: a strict xfail while ``name`` is in ``known`` (red the moment
+    the bug is fixed, forcing the entry out), nothing once it is gone."""
+    if name not in known:
+        return []
+    return [pytest.mark.xfail(strict=True, raises=KnownBugError, reason=known[name])]
+
+
+@contextmanager
+def bug_assertions() -> Iterator[None]:
+    """Wrap ONLY the final behavioural assertions that name the bug, after every wait has
+    settled; an ``AssertionError`` raised inside becomes a ``KnownBugError``."""
+    try:
+        yield
+    except KnownBugError:
+        raise
+    except AssertionError as exc:
+        raise KnownBugError(str(exc)) from exc
+
+
+# Vendor-boundary sitecustomize shims ---------------------------------------------------
+
+_CHAIN_ORIGINAL_SITECUSTOMIZE = '''\
+def _chain_original_sitecustomize():
+    """This shim dir is first on PYTHONPATH and shadows any sitecustomize the interpreter
+    already had (a venv or distro one): find the next one on sys.path and run it too."""
+    import importlib.machinery
+    import importlib.util
+    import os
+    import sys
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    rest = [p for p in sys.path if os.path.abspath(p or os.curdir) != here]
+    spec = importlib.machinery.PathFinder.find_spec("sitecustomize", rest)
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_e2e_original_sitecustomize"] = module
+    spec.loader.exec_module(module)
+
+
+_chain_original_sitecustomize()
+'''
+
+
+def write_sitecustomize_shim(shim_dir: Path, body: str) -> Path:
+    """Write ``body`` as ``shim_dir/sitecustomize.py`` after a prologue that chain-imports
+    the interpreter's original ``sitecustomize`` (the shim must not shadow it)."""
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    (shim_dir / "sitecustomize.py").write_text(_CHAIN_ORIGINAL_SITECUSTOMIZE + "\n\n" + body, encoding="utf-8")
+    return shim_dir
+
 
 # One tool Hermes always offers on the CLI toolset and that has an observable,
 # side-effect-free result: the model reads a file the fixture wrote.
@@ -56,7 +125,7 @@ class Home:
         credential env would silently reroute the child."""
         import pwd  # the suite is Linux-gated
 
-        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()
+        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()  # windows-footgun: ok — every file here is skipif(not linux)
         fixture = self.hermes_home.resolve()
         assert fixture != real_root and fixture.parent != real_root / "profiles", "fixture is a live home"
         env = {k: v for k, v in os.environ.items()
@@ -148,10 +217,19 @@ def oneshot(h: Home, prompt: str, *args: str, resume: str | None = None, timeout
     argv = ["-z", prompt, "--usage-file", str(usage_file), *args]
     if resume:
         argv += ["--resume", resume]
-    proc = subprocess.run(hermes_argv(*argv), cwd=h.project, env=h.env(env), capture_output=True, text=True,
-                          timeout=timeout, stdin=subprocess.DEVNULL)
+    proc = subprocess.run(hermes_argv(*argv), cwd=h.project, env=h.env(env), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
     usage = json.loads(usage_file.read_text(encoding="utf-8")) if usage_file.exists() else {}
     return Run(proc, usage)
+
+
+def bounded_turn(h: Home, prompt: str, budget: float, **kw: Any) -> Run:
+    """One ``oneshot`` turn that must finish inside ``budget`` seconds; overrunning it is a
+    ``HarnessError`` (never an ``AssertionError`` a KNOWN xfail could swallow)."""
+    try:
+        return oneshot(h, prompt, timeout=budget, **kw)
+    except subprocess.TimeoutExpired as exc:
+        raise HarnessError(f"turn {prompt!r} still running after {budget}s") from exc
 
 
 def wait_until(pred: Callable[[], Any], timeout: float, what: str, interval: float = 0.05) -> Any:
@@ -161,7 +239,7 @@ def wait_until(pred: Callable[[], Any], timeout: float, what: str, interval: flo
         if value:
             return value
         time.sleep(interval)
-    raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+    raise HarnessError(f"timed out after {timeout}s waiting for {what}")
 
 
 # Persisted state ---------------------------------------------------------------------

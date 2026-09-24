@@ -24,9 +24,11 @@ import pytest
 
 from tests.e2e.core.providers._openai_helpers import (
     Home,
+    bug_assertions,
     custom_chat_config,
     db_messages,
     db_tool_calls,
+    known_marks,
     oneshot,
     tool_call_args,
 )
@@ -41,8 +43,8 @@ from tests.fakes.providers.chat_variants import (
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
 
-# Scenario -> "#issue one-line symptom" for scenarios red on origin/main. Strict: the test
-# FAILS the moment the bug is fixed, forcing the entry out.
+# Scenario -> "#issue one-line symptom" for scenarios red on origin/main (strict xfail that
+# only a KnownBugError from bug_assertions() satisfies; see known_marks).
 KNOWN: dict[str, str] = {
     "in_stream_ban_fails_once": "#121270 in-stream error code 403 ignored: ban retried, reported as temporarily unavailable",
 }
@@ -55,8 +57,7 @@ EPSILON = 0.1
 
 
 def known(name: str) -> list:
-    """Marks for a scenario: a strict xfail while it is in KNOWN, nothing once fixed."""
-    return [pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN[name])] if name in KNOWN else []
+    return known_marks(KNOWN, name)
 
 
 def _home(tmp_path, srv: FakeChatVariantServer, **config) -> Home:
@@ -145,8 +146,10 @@ def test_in_stream_upstream_ban_fails_once_and_visibly(tmp_path, _) -> None:
         run = oneshot(h, "say hello")
         records = srv.main_records()
 
-    assert "SHOULD-NOT-ANSWER" not in run.stdout, run.describe()
-    assert run.proc.returncode != 0 or run.usage.get("failed") is True, run.describe()
-    surfaced = (run.stdout + run.proc.stderr).lower()
-    assert "banned" in surfaced, f"ban not surfaced to the user: {run.describe()}"
-    assert len(records) == 1, f"{len(records)} requests for a permanent account ban: {run.describe()}"
+    assert records, f"precondition: the endpoint was reached: {run.describe()}"
+    with bug_assertions():
+        assert "SHOULD-NOT-ANSWER" not in run.stdout, run.describe()
+        assert run.proc.returncode != 0 or run.usage.get("failed") is True, run.describe()
+        surfaced = (run.stdout + run.proc.stderr).lower()
+        assert "banned" in surfaced, f"ban not surfaced to the user: {run.describe()}"
+        assert len(records) == 1, f"{len(records)} requests for a permanent account ban: {run.describe()}"

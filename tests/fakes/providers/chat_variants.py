@@ -7,7 +7,7 @@ routes that bend the base dialect:
   message (streamed as ``delta.reasoning_details``) that the client must replay, and
   provider errors delivered as an ``{"error": {...}}`` chunk INSIDE a 200 SSE stream
   (an upstream ban or moderation block after the stream opened);
-* DeepSeek-style ``reasoning_content`` (and the ``reasoning`` alias) deltas;
+* DeepSeek-style ``reasoning_content`` deltas;
 * Ollama / llama.cpp / custom servers: ``strict_user_turn`` reproduces Ollama's
   renderer refusing a payload with no ``user`` message (HTTP 500
   ``no user query found in messages``); ``reasoning_budget_chars`` reproduces a route
@@ -43,11 +43,10 @@ MODEL_ID = "fake-model"
 
 @dataclass
 class CText:
-    """Assistant text; optional reasoning in any of the dialect's three fields."""
+    """Assistant text; optional reasoning as ``reasoning_content`` or ``reasoning_details``."""
 
     text: str
     reasoning_content: str | None = None
-    reasoning: str | None = None
     reasoning_details: list[dict[str, Any]] | None = None
     prompt_tokens: int = 100
     completion_tokens: int = 20
@@ -74,10 +73,9 @@ class CError:
 
 @dataclass
 class CStreamError:
-    """HTTP 200, stream opens, optional partial text, then an in-stream ``error`` object."""
+    """HTTP 200, stream opens, then an in-stream ``error`` object."""
 
     error: dict[str, Any] = field(default_factory=lambda: {"code": 403, "message": "scripted in-stream error"})
-    partial_text: str = ""
 
 
 @dataclass
@@ -162,10 +160,6 @@ class FakeChatVariantServer:
     @property
     def proxy_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
-
-    def push(self, *steps: Step) -> None:
-        with self._lock:
-            self._script.extend(steps)
 
     def _next(self, record: dict[str, Any]) -> Step:
         if self._responder is not None:
@@ -278,8 +272,6 @@ def _handler_for(server: FakeChatVariantServer) -> type[BaseHTTPRequestHandler]:
             self._start_sse()
             self._sse(_chunk({"role": "assistant", "content": ""}))
             if isinstance(step, CStreamError):
-                if step.partial_text:
-                    self._sse(_chunk({"content": step.partial_text}))
                 self.wfile.write(f"data: {json.dumps({'error': step.error})}\n\n".encode())
                 self.wfile.flush()
                 self.close_connection = True
@@ -312,8 +304,6 @@ def _handler_for(server: FakeChatVariantServer) -> type[BaseHTTPRequestHandler]:
         def _stream_reasoning(self, step: CText | CTools) -> None:
             if step.reasoning_content:
                 self._sse(_chunk({"reasoning_content": step.reasoning_content}))
-            if isinstance(step, CText) and step.reasoning:
-                self._sse(_chunk({"reasoning": step.reasoning}))
             if step.reasoning_details:
                 self._sse(_chunk({"reasoning_details": step.reasoning_details}))
 

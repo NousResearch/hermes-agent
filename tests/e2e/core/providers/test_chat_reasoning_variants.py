@@ -24,9 +24,11 @@ import pytest
 from tests.e2e.core.providers._openai_helpers import (
     READ_TOOL,
     Home,
+    bug_assertions,
     chat_messages,
     custom_chat_config,
     db_messages,
+    known_marks,
     oneshot,
 )
 from tests.e2e.core.providers._openai_tui import TuiGateway
@@ -41,7 +43,7 @@ KNOWN: dict[str, str] = {
 
 
 def known(name: str) -> list:
-    return [pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN[name])] if name in KNOWN else []
+    return known_marks(KNOWN, name)
 
 
 def _rd(tag: str, text: str | None = None) -> list[dict]:
@@ -148,4 +150,5 @@ def test_long_session_does_not_wedge_on_replayed_reasoning_budget(tmp_path, scen
     rejected = [i for i, r in enumerate(records) if r.get("response") == "route_rejection"]
     assert rejected, "precondition: the replayed total crossed the route budget at least once"
     missing = [i for i in range(turns) if f"ANSWER-{i}" not in answers[i]]
-    assert not missing, f"turns {missing} were not answered once replayed reasoning passed the budget: {answers}"
+    with bug_assertions():
+        assert not missing, f"turns {missing} were not answered once replayed reasoning passed the budget: {answers}"

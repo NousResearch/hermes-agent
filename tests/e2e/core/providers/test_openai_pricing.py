@@ -11,8 +11,11 @@ closed loopback proxy so nothing reaches a real vendor.
 
 The config is the issue's: a ``providers:`` entry keyed ``openrouter`` pointing at the
 aggregator's base URL. Its picker row is ``custom:openrouter``; the built-in ``openrouter``
-row (credentialed from ``.env``) is the control that prices from the same catalog, and a
-``myrelay`` provider serving a catalog model id is the decoy that must NOT borrow its prices.
+row (credentialed from ``.env``) is the control that prices from the same catalog. Two relays
+serving a catalog model id are decoys that must NOT borrow its prices: ``myrelay`` (a plain
+``myrelay`` row) and one keyed ``deepseek`` — a built-in, non-aggregator provider name, so its
+row takes the same ``custom:<key>`` slug path as the twin. Prices must follow the upstream a
+row actually talks to, not the ``custom:`` slug shape.
 
 The picker is driven with ``refresh: true`` (its explicit reload: catalogs are fetched
 synchronously, so no background prewarm timing is involved). ``get_pricing_for_provider`` is
@@ -31,7 +34,13 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core.providers._openai_helpers import REPO_ROOT, Home
+from tests.e2e.core.providers._openai_helpers import (
+    REPO_ROOT,
+    Home,
+    bug_assertions,
+    known_marks,
+    write_sitecustomize_shim,
+)
 from tests.e2e.core.providers._openai_tui import TuiGateway
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
@@ -42,8 +51,7 @@ KNOWN: dict[str, str] = {
 
 
 def known(name: str) -> list:
-    """Marks for a scenario: a strict xfail while it is in KNOWN, nothing once fixed."""
-    return [pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN[name])] if name in KNOWN else []
+    return known_marks(KNOWN, name)
 
 
 VENDOR_ORIGIN = "https://openrouter.ai"
@@ -55,6 +63,9 @@ CATALOG = [
 ]
 TWIN_MODELS = [mid for mid, _p, _c in CATALOG]
 RELAY_MODEL = TWIN_MODELS[-1]
+# (config key, picker slug) of each decoy relay. ``deepseek`` collides with a built-in
+# non-aggregator provider, so its row is ``custom:deepseek`` -- the twin's slug shape.
+DECOYS = [("myrelay", "myrelay"), ("deepseek", "custom:deepseek")]
 
 _SHIM = '''\
 """E2E vendor-boundary shim: route a hard-coded vendor origin to a loopback fake."""
@@ -154,8 +165,7 @@ def _closed_port() -> socket.socket:
 
 def _home(tmp_path: Path, catalog: FakeCatalog, dead: socket.socket) -> _ShimHome:
     h = _ShimHome(tmp_path)
-    (tmp_path / "shim").mkdir(exist_ok=True)
-    (tmp_path / "shim" / "sitecustomize.py").write_text(_SHIM, encoding="utf-8")
+    write_sitecustomize_shim(tmp_path / "shim", _SHIM)
     proxy = f"http://127.0.0.1:{dead.getsockname()[1]}"
     h.extra = {"PYTHONPATH": f"{tmp_path / 'shim'}:{REPO_ROOT}",
                "HERMES_E2E_ORIGIN_REDIRECT": f"{VENDOR_ORIGIN}={catalog.origin}",
@@ -166,11 +176,14 @@ def _home(tmp_path: Path, catalog: FakeCatalog, dead: socket.socket) -> _ShimHom
         "providers": {
             "openrouter": {"name": "OpenRouter-Full", "base_url": f"{VENDOR_ORIGIN}/api/v1",
                            "api_key": "sk-or-fake-twin", "models": TWIN_MODELS},
-            # Decoy: serves a catalog model id, but is a relay with no price catalog of its own.
-            "myrelay": {"name": "My Relay", "base_url": f"{catalog.origin}/relay/v1",
-                        "api_key": "sk-relay-fake", "models": [RELAY_MODEL]},
+            # Decoys: serve a catalog model id, but are relays with no price catalog of their own.
+            **{key: {"name": f"Relay {key}", "base_url": f"{catalog.origin}/relay/v1",
+                     "api_key": "sk-relay-fake", "models": [RELAY_MODEL]} for key, _slug in DECOYS},
         },
-    }, dotenv={"OPENROUTER_API_KEY": "sk-or-fake-builtin"})
+    }, dotenv={"OPENROUTER_API_KEY": "sk-or-fake-builtin",
+               # The picker lists a providers: entry keyed by a built-in name only while that
+               # built-in is credentialed; this makes the custom:deepseek decoy row appear.
+               "DEEPSEEK_API_KEY": "sk-ds-fake-builtin"})
     return h
 
 
@@ -230,13 +243,15 @@ def test_builtin_aggregator_row_prices_from_catalog(picker) -> None:
             _expected_price(mid)), (mid, priced[mid])
 
 
-def test_relay_without_catalog_gets_no_borrowed_prices(picker) -> None:
+@pytest.mark.parametrize("slug", [slug for _key, slug in DECOYS])
+def test_relay_without_catalog_gets_no_borrowed_prices(picker, slug: str) -> None:
     """Control (green on main): a config-defined relay that is NOT a priced aggregator serves
-    the same model ids but must not borrow the aggregator's prices."""
+    a catalog model id but must not borrow the aggregator's prices -- including the
+    ``custom:deepseek`` row, whose slug has the same ``custom:<key>`` shape as the twin."""
     payload, _requests = picker
-    relay = _row(payload, "myrelay")
+    relay = _row(payload, slug)
     assert relay is not None and RELAY_MODEL in (relay.get("models") or []), payload.get("providers")
-    assert _priced(relay) == {}, relay.get("pricing")
+    assert _priced(relay) == {}, f"{slug} (upstream: the relay) borrowed prices: {relay.get('pricing')}"
 
 
 @pytest.mark.parametrize("scenario", [pytest.param("custom_twin_priced", marks=known("custom_twin_priced"))])
@@ -247,9 +262,10 @@ def test_config_defined_twin_row_is_priced_like_the_aggregator(picker, scenario)
     twin, builtin = _row(payload, "custom:openrouter"), _row(payload, "openrouter")
     assert twin is not None and set(TWIN_MODELS) <= set(twin.get("models") or []), payload.get("providers")
     priced = _priced(twin)
-    assert set(priced) == set(TWIN_MODELS), (
-        f"custom:openrouter row has {len(priced)}/{len(TWIN_MODELS)} models priced "
-        f"(pricing={twin.get('pricing')!r})")
-    for mid, entry in _priced(builtin).items():
-        if mid in priced:
-            assert priced[mid] == entry, (mid, priced[mid], entry)
+    with bug_assertions():
+        assert set(priced) == set(TWIN_MODELS), (
+            f"custom:openrouter row has {len(priced)}/{len(TWIN_MODELS)} models priced "
+            f"(pricing={twin.get('pricing')!r})")
+        for mid, entry in _priced(builtin).items():
+            if mid in priced:
+                assert priced[mid] == entry, (mid, priced[mid], entry)

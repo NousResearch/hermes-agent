@@ -33,7 +33,14 @@ from urllib.parse import parse_qs
 
 import pytest
 
-from tests.e2e.core.providers._openai_helpers import REPO_ROOT, Home, oneshot
+from tests.e2e.core.providers._openai_helpers import (
+    REPO_ROOT,
+    Home,
+    bug_assertions,
+    known_marks,
+    oneshot,
+    write_sitecustomize_shim,
+)
 from tests.fakes.providers.openai_responses import FakeResponsesServer, Message, Turn
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
@@ -44,8 +51,7 @@ KNOWN: dict[str, str] = {
 
 
 def known(name: str) -> list:
-    """Marks for a scenario: a strict xfail while it is in KNOWN, nothing once fixed."""
-    return [pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN[name])] if name in KNOWN else []
+    return known_marks(KNOWN, name)
 
 
 TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -164,8 +170,7 @@ def _pool_store(a: dict[str, str], b: dict[str, str], now: float) -> dict[str, A
 def _home(tmp_path: Path, store: dict[str, Any]) -> Home:
     h = Home(tmp_path).write({"model": {"provider": "openai-codex", "default": MODEL, "context_length": 128000}},
                              auth=store)
-    (tmp_path / "shim").mkdir(exist_ok=True)
-    (tmp_path / "shim" / "sitecustomize.py").write_text(_SHIM, encoding="utf-8")
+    write_sitecustomize_shim(tmp_path / "shim", _SHIM)
     return h
 
 
@@ -230,10 +235,11 @@ def test_dead_grant_on_independent_login_keeps_login_a(tmp_path, scenario) -> No
     b_row = next((r for r in pools[0] if r["id"] == "login-b"), None)
     assert b_row is None or b_row.get("last_status") == "dead", b_row
     # A is a different grant: nothing about it may change.
-    assert stores[0]["providers"]["openai-codex"]["tokens"] == a, stores[0]["providers"]["openai-codex"]
-    for rows in pools:
-        assert _live_order(rows) == [("login-a", "device_code")], (
-            f"login A was quarantined by B's invalid_grant: live pool is {_live_order(rows)}")
+    with bug_assertions():
+        assert stores[0]["providers"]["openai-codex"]["tokens"] == a, stores[0]["providers"]["openai-codex"]
+        for rows in pools:
+            assert _live_order(rows) == [("login-a", "device_code")], (
+                f"login A was quarantined by B's invalid_grant: live pool is {_live_order(rows)}")
 
 
 def test_throttled_refresh_on_independent_login_leaves_login_a_untouched(tmp_path) -> None:

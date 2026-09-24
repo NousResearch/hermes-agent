@@ -20,28 +20,16 @@ api.openai.com ``/v1/responses``, Responses-speaking relays). One real HTTP serv
 Main-turn requests (those carrying ``tools``) consume the script in order; tool-less
 requests (title generation and other auxiliary calls, on ``/responses`` or
 ``/chat/completions``) get a canned answer and never eat a scripted turn.
-
-Record mode (manual, never run by the suite — no paid call is ever made by tests)::
-
-    python -m tests.fakes.providers.openai_responses record \\
-        --upstream https://api.openai.com/v1 --out tests/fakes/providers/cassettes/openai/<name>.json
-
-starts a pass-through proxy on 127.0.0.1; point a Hermes home's ``base_url`` at it,
-run one turn, and the proxy writes a *sanitized* cassette (auth headers dropped,
-``encrypted_content`` and ids replaced with stable placeholders, bodies kept). A
-cassette's recorded event list can be replayed with ``Cassette(path)`` in a script.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any, Callable, Union
 
 from openai.types.responses import (
@@ -127,14 +115,7 @@ class HttpError:
     retry_after: float | None = None
 
 
-@dataclass
-class Cassette:
-    """Replay the event list of a sanitized cassette written by record mode."""
-
-    path: Path
-
-
-Step = Union[Turn, SoftFail, HttpError, Cassette]
+Step = Union[Turn, SoftFail, HttpError]
 Responder = Callable[[dict[str, Any]], Step]
 
 _REQUEST_ADAPTER = TypeAdapter(ResponseCreateParamsStreaming)
@@ -335,10 +316,6 @@ class FakeResponsesServer:
         assert self._server is not None, "server not started"
         return f"http://127.0.0.1:{self._server.server_address[1]}/v1"
 
-    def push(self, *steps: Step) -> None:
-        with self._lock:
-            self._script.extend(steps)
-
     def next_step(self, record: dict[str, Any]) -> Step:
         if self._responder is not None:
             return self._responder(record)
@@ -417,8 +394,6 @@ def _handler_for(server: FakeResponsesServer) -> type[BaseHTTPRequestHandler]:
                 return
             if isinstance(step, SoftFail):
                 events, limit = soft_fail_events(step), None
-            elif isinstance(step, Cassette):
-                events, limit = json.loads(Path(step.path).read_text(encoding="utf-8"))["events"], None
             else:
                 events, limit = turn_events(step), step.drop_after_events
             self.send_response(200)
@@ -454,67 +429,3 @@ def _handler_for(server: FakeResponsesServer) -> type[BaseHTTPRequestHandler]:
             self.close_connection = True
 
     return Handler
-
-
-# Record mode (manual) ------------------------------------------------------------
-
-_SECRETISH = re.compile(r"(sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_.-]{20,})")
-
-
-def sanitize_event(event: dict[str, Any], counter: list[int]) -> dict[str, Any]:
-    """Replace opaque/secret-bearing values with stable placeholders (recursive)."""
-    def walk(v: Any, key: str = "") -> Any:
-        if isinstance(v, dict):
-            return {k: walk(x, k) for k, x in v.items()}
-        if isinstance(v, list):
-            return [walk(x) for x in v]
-        if isinstance(v, str):
-            if key == "encrypted_content":
-                counter[0] += 1
-                return f"ENC-PLACEHOLDER-{counter[0]}"
-            return _SECRETISH.sub("REDACTED", v)
-        return v
-    return walk(event)
-
-
-def record_proxy(upstream: str, out: Path, port: int = 0) -> None:  # pragma: no cover - manual tool
-    """Pass-through proxy that writes one sanitized cassette per ``/responses`` call."""
-    import httpx
-
-    def handler_cls() -> type[BaseHTTPRequestHandler]:
-        class H(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:  # noqa: N802
-                raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
-                headers = {k: v for k, v in self.headers.items() if k.lower() in {"authorization", "content-type"}}
-                url = upstream.rstrip("/") + self.path.removeprefix("/v1")
-                events: list[dict[str, Any]] = []
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.end_headers()
-                with httpx.stream("POST", url, content=raw, headers=headers, timeout=300) as resp:
-                    for line in resp.iter_lines():
-                        if line.startswith("data: ") and line != "data: [DONE]":
-                            events.append(json.loads(line[6:]))
-                        self.wfile.write((line + "\n").encode())
-                        self.wfile.flush()
-                counter = [0]
-                out.write_text(json.dumps({
-                    "request": sanitize_event(json.loads(raw or b"{}"), counter),
-                    "events": [sanitize_event(e, counter) for e in events]}, indent=1), encoding="utf-8")
-        return H
-
-    srv = ThreadingHTTPServer(("127.0.0.1", port), handler_cls())
-    print(f"recording proxy on http://127.0.0.1:{srv.server_address[1]}/v1 -> {upstream}", flush=True)
-    srv.serve_forever()
-
-
-if __name__ == "__main__":  # pragma: no cover - manual entry point
-    import argparse
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["record"])
-    ap.add_argument("--upstream", required=True)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--port", type=int, default=0)
-    ns = ap.parse_args()
-    record_proxy(ns.upstream, ns.out, ns.port)

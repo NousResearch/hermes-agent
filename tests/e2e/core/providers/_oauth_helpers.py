@@ -136,8 +136,9 @@ def wait_until(pred: Callable[[], Any], timeout: float, what: str, interval: flo
 #
 # Just enough of the Messages API for a text turn (JSON and SSE). The request
 # record keeps the bearer so a test can prove which access token each call
-# carried; ``decide`` maps a record to ("text", str) | ("error", status, type, msg)
-# | ("hold", threading.Event, next_decision).
+# carried; ``decide`` maps a record to ("text", str) | ("tool", name, input)
+# | ("error", status, type, msg) | ("hold", threading.Event, next_decision)
+# | ("call", zero-arg callable returning the decision at send time).
 
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
@@ -186,6 +187,9 @@ class MessagesServer:
 
             def do_POST(self) -> None:  # noqa: N802
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if not self.path.split("?", 1)[0].endswith("/v1/messages"):
+                    # Local-endpoint capability probes (e.g. ``/api/show``) are not Messages calls.
+                    return self._json(404, {"type": "error", "error": {"type": "not_found_error", "message": "no"}})
                 body = json.loads(raw or b"{}")
                 auth = self.headers.get("Authorization", "")
                 record = {"path": self.path, "body": body, "bearer": auth.removeprefix("Bearer ").strip(),
@@ -193,20 +197,28 @@ class MessagesServer:
                 with outer._lock:
                     outer.requests.append(record)
                 decision = outer.decide(record)
-                while decision[0] == "hold":
+                while decision[0] in ("hold", "call"):
+                    if decision[0] == "call":
+                        decision = decision[1]()
+                        continue
                     decision[1].wait(120)
                     decision = decision[2]
                 if decision[0] == "error":
                     _, status, etype, msg = decision
                     return self._json(status, {"type": "error", "error": {"type": etype, "message": msg}})
-                text = decision[1]
+                if decision[0] == "tool":
+                    block = {"type": "tool_use", "id": f"toolu_{uuid.uuid4().hex[:12]}", "name": decision[1],
+                             "input": decision[2]}
+                    stop = "tool_use"
+                else:
+                    block, stop = {"type": "text", "text": decision[1]}, "end_turn"
                 if body.get("stream"):
-                    return self._stream(text)
+                    return self._stream(block, stop)
                 self._json(200, {"id": "msg_fake", "type": "message", "role": "assistant", "model": outer.MODEL,
-                                 "content": [{"type": "text", "text": text}], "stop_reason": "end_turn",
+                                 "content": [block], "stop_reason": stop,
                                  "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 5}})
 
-            def _stream(self, text: str) -> None:
+            def _stream(self, block: dict[str, Any], stop: str) -> None:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Connection", "close")
@@ -214,15 +226,19 @@ class MessagesServer:
                 msg = {"id": "msg_fake", "type": "message", "role": "assistant", "model": outer.MODEL,
                        "content": [], "stop_reason": None, "stop_sequence": None,
                        "usage": {"input_tokens": 10, "output_tokens": 1}}
+                if block["type"] == "tool_use":
+                    start = {**block, "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
+                else:
+                    start = {"type": "text", "text": ""}
+                    delta = {"type": "text_delta", "text": block["text"]}
                 for chunk in (
                     _sse("message_start", {"type": "message_start", "message": msg}),
-                    _sse("content_block_start", {"type": "content_block_start", "index": 0,
-                                                 "content_block": {"type": "text", "text": ""}}),
-                    _sse("content_block_delta", {"type": "content_block_delta", "index": 0,
-                                                 "delta": {"type": "text_delta", "text": text}}),
+                    _sse("content_block_start", {"type": "content_block_start", "index": 0, "content_block": start}),
+                    _sse("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": delta}),
                     _sse("content_block_stop", {"type": "content_block_stop", "index": 0}),
                     _sse("message_delta", {"type": "message_delta",
-                                           "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                                           "delta": {"stop_reason": stop, "stop_sequence": None},
                                            "usage": {"output_tokens": 5}}),
                     _sse("message_stop", {"type": "message_stop"}),
                 ):
@@ -244,3 +260,62 @@ class MessagesServer:
                 return
 
         return Handler
+
+
+# ---- Anthropic OAuth rig ----------------------------------------------------
+#
+# The Anthropic token URL is hardcoded (no supported override), so the child
+# reaches the fake token server through TLSInterceptProxy: HTTPS_PROXY + a test
+# CA in SSL_CERT_FILE; NO_PROXY keeps inference to the loopback fake direct.
+
+ANTHROPIC_TOKEN_HOSTS = ("platform.claude.com", "console.anthropic.com")
+OLD_ACCESS = "sk-ant-oat01-e2e-old-access"
+
+
+@dataclass
+class AnthropicOAuthRig:
+    fh: FakeHome
+    tokens: Any  # OAuthTokenServer
+    proxy: Any  # TLSInterceptProxy
+    messages: MessagesServer
+    seed_refresh: str
+    child_env: dict[str, str]
+
+    def stop(self) -> None:
+        kill_tagged(self.fh.tag)
+        self.messages.stop()
+        self.proxy.stop()
+        self.tokens.stop()
+
+    def pool_row(self, entry_id: str = "e1") -> dict[str, Any]:
+        rows = self.fh.read_auth().get("credential_pool", {}).get("anthropic") or []
+        return next((r for r in rows if r.get("id") == entry_id), {})
+
+
+def start_anthropic_rig(root: Path, decide: Callable[[dict[str, Any]], tuple], *,
+                        title_generation: bool, entries: int = 1) -> AnthropicOAuthRig:
+    from tests.fakes.providers.oauth_token_server import OAuthTokenServer, TLSInterceptProxy, make_test_ca
+
+    ca = make_test_ca(root / "ca", ANTHROPIC_TOKEN_HOSTS)
+    tokens = OAuthTokenServer().start()
+    proxy = TLSInterceptProxy(tokens, ca, ANTHROPIC_TOKEN_HOSTS).start()
+    messages = MessagesServer(decide).start()
+    fh = make_home(root)
+    fh.write_config({
+        "model": {"provider": "anthropic", "default": MessagesServer.MODEL, "base_url": messages.base_url},
+        "auxiliary": {"title_generation": {"enabled": title_generation}},
+    })
+    seed = tokens.seed_refresh_token()
+    rows = [{"id": "e1", "label": "acct-1", "auth_type": "oauth", "priority": 0, "source": "manual",
+             "access_token": OLD_ACCESS, "refresh_token": seed,
+             # Not expired by the clock: the vendor revoking/expiring it early (401) is the trigger.
+             "expires_at_ms": int(time.time() * 1000) + 3_600_000}]
+    for i in range(2, entries + 1):
+        rows.append({"id": f"e{i}", "label": f"acct-{i}", "auth_type": "oauth", "priority": i - 1,
+                     "source": "manual", "access_token": f"sk-ant-oat01-e2e-spare-{i}",
+                     "refresh_token": tokens.seed_refresh_token(), "expires_at_ms": int(time.time() * 1000) + 3_600_000})
+    fh.write_auth({"version": 1, "credential_pool": {"anthropic": rows}})
+    loopback = "127.0.0.1,localhost"
+    env = {"HTTPS_PROXY": proxy.url, "https_proxy": proxy.url, "NO_PROXY": loopback, "no_proxy": loopback,
+           "SSL_CERT_FILE": str(ca.ca_pem)}
+    return AnthropicOAuthRig(fh=fh, tokens=tokens, proxy=proxy, messages=messages, seed_refresh=seed, child_env=env)

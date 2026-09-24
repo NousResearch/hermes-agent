@@ -109,6 +109,9 @@ class OAuthTokenServer:
         self.grants: list[Grant] = []
         self.device: DeviceFlow | None = None
         self.device_requests = 0
+        # Fault injection: called (outside the lock) after a refresh grant is recorded and the
+        # pair rotated, before the response is written -- a slow vendor token endpoint.
+        self.before_refresh_response: Callable[[Grant], None] | None = None
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -166,6 +169,8 @@ class OAuthTokenServer:
             self.spent.add(presented)
             access, refresh = self._issue_pair()
             grant.issued_access_token, grant.issued_refresh_token = access, refresh
+        if self.before_refresh_response is not None:
+            self.before_refresh_response(grant)
         return 200, self._token_body(access, refresh)
 
     def _device_poll(self, form: dict[str, str], meta: dict[str, str]) -> tuple[int, dict[str, Any]]:

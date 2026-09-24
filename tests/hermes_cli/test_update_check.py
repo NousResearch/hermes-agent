@@ -9,7 +9,9 @@ policy that keeps the API traffic to one request a day per install.
 import json
 import threading
 import time
+from io import BytesIO
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 import pytest
 
@@ -64,6 +66,53 @@ def test_passive_check_uses_the_api_and_never_fetches(git_repo, monkeypatch):
 
     cached = json.loads((git_repo.parent / ".update_check").read_text())
     assert (cached["head"], cached["target"], cached["behind"]) == (SHA_A, SHA_B, 61)
+
+
+def test_github_branch_tip_uses_resolved_auth_headers(monkeypatch):
+    """The passive tip probe shares the configured GitHub credentials."""
+    response = MagicMock()
+    response.read.return_value = f"{SHA_B}\n".encode()
+    response.__enter__.return_value = response
+    monkeypatch.setattr("tools.skills_hub_github.GitHubAuth.get_headers", lambda _: {
+        "Accept": "application/vnd.github.v3+json", "Authorization": "token test-token",
+    })
+    urlopen = MagicMock(return_value=response)
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    assert banner._github_branch_tip("nousresearch/hermes-agent", "main") == SHA_B
+    request = urlopen.call_args.args[0]
+    assert request.get_header("Authorization") == "token test-token"
+    assert request.get_header("Accept") == "application/vnd.github.sha"
+
+
+def test_github_branch_tip_retries_anonymously_after_auth_401(monkeypatch):
+    """A stale credential must not make a best-effort update check fail permanently."""
+    response = MagicMock()
+    response.read.return_value = f"{SHA_B}\n".encode()
+    response.__enter__.return_value = response
+    unauthorized = HTTPError("https://api.github.com/test", 401, "Unauthorized", {}, BytesIO())
+    monkeypatch.setattr("tools.skills_hub_github.GitHubAuth.get_headers", lambda _: {
+        "Authorization": "token expired-token",
+    })
+    urlopen = MagicMock(side_effect=[unauthorized, response])
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    assert banner._github_branch_tip("nousresearch/hermes-agent", "main") == SHA_B
+    authenticated, anonymous = (call.args[0] for call in urlopen.call_args_list)
+    assert authenticated.get_header("Authorization") == "token expired-token"
+    assert anonymous.get_header("Authorization") is None
+
+
+def test_github_branch_tip_stays_anonymous_without_credentials(monkeypatch):
+    response = MagicMock()
+    response.read.return_value = f"{SHA_B}\n".encode()
+    response.__enter__.return_value = response
+    monkeypatch.setattr("tools.skills_hub_github.GitHubAuth.get_headers", lambda _: {})
+    urlopen = MagicMock(return_value=response)
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    assert banner._github_branch_tip("nousresearch/hermes-agent", "main") == SHA_B
+    assert urlopen.call_args.args[0].get_header("Authorization") is None
 
 
 def test_cache_is_daily_but_invalidated_when_head_moves(git_repo, monkeypatch):

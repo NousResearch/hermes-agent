@@ -273,11 +273,26 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     return entry
 
 
-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[Dict[str, Any]]:
+def _title_match_result(db, query: str, current_lineage_root: Optional[str],
+                        excluded_roots: set, after_ts: Optional[int], before_ts: Optional[int]) -> Optional[Dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
-    session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
-                                        "resolve_session_by_title failed for %r", title_query)
+    # Resolution for resuming intentionally chooses the newest #N continuation;
+    # discovery prefers an exact title only when that session can actually be shown.
+    exact = title_query and _quiet(lambda: db.get_session_by_title(title_query), None,
+                                   "get_session_by_title failed for %r", title_query)
+    if exact:
+        exact_sid = exact["id"]
+        exact_root = _resolve_lineage(db, exact_sid)
+        if (exact.get("source") in _HIDDEN_SESSION_SOURCES
+                or {exact_sid, exact_root} & excluded_roots
+                or (current_lineage_root == exact_root and not _session_left_live_context(db, exact_sid))
+                or not _in_time_window(_coerce_started_ts(
+                    (_get_session_meta(db, exact_root) or exact).get("started_at")), after_ts, before_ts)):
+            exact = None
+    session_id = exact["id"] if exact else title_query and _quiet(
+        lambda: db.resolve_session_by_title(title_query), None,
+        "resolve_session_by_title failed for %r", title_query)
     if not session_id:
         return None
     lineage_root = _resolve_lineage(db, session_id)
@@ -358,7 +373,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(db, query, current_lineage_root, excluded_roots, after_ts, before_ts)
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
     # query, so it is the one place the window is re-checked in Python.
     if title_result:

@@ -79,7 +79,8 @@ def _no_store_result() -> Dict:
 
 
 def _empty_prune_result() -> Dict[str, int]:
-    return dict.fromkeys(("scanned", "deleted_orphan", "deleted_stale", "errors", "bytes_freed"), 0)
+    return dict.fromkeys(("scanned", "deleted_orphan", "deleted_stale", "retained_ambiguous",
+                          "errors", "bytes_freed"), 0)
 
 
 def _validate_commit_hash(commit_hash: str) -> Optional[str]:
@@ -1036,14 +1037,45 @@ def _int_or_none(value) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _orphan_state(workdir: str, parent_dev: Optional[int] = None, parent_ino: Optional[int] = None,
+                  require_parent_identity: bool = True, marker_unreadable: bool = False) -> str:
+    """One classification shared by ``store_status()`` and ``prune_checkpoints()`` so the CLI
+    never advertises a deletion that will not happen: ``"live"`` (reachable now), ``"orphan"``
+    (missing and *positively observed* as deleted — prune deletes these), or ``"ambiguous"``
+    (missing / unreadable, but the deletion cannot be proven — prune keeps these; see
+    ``_workdir_is_observably_gone``)."""
+    if marker_unreadable:
+        return "ambiguous"
+    if not workdir:
+        return "orphan"  # no live location was ever recorded; nothing reachable to protect
+    if Path(workdir).exists():
+        return "live"
+    return "orphan" if _workdir_is_observably_gone(
+        workdir, parent_dev, parent_ino, require_parent_identity) else "ambiguous"
+
+
+def _pre_v2_orphan_state(repo: Dict) -> str:
+    """``_orphan_state`` for a pre-v2 shadow repo, preserving v1's stricter reading of an
+    empty ``HERMES_WORKDIR`` marker: *present but blank* means the target is unknown (never
+    deletable), while a missing marker was always treated as \"nothing to protect\"."""
+    if repo["workdir"] == "":
+        return "ambiguous"
+    return _orphan_state(repo["workdir"] or "", require_parent_identity=False,
+                         marker_unreadable=repo["marker_unreadable"])
+
+
 def _sweep(entries, result: Dict[str, int], delete) -> None:
-    """Shared orphan/stale sweep.  ``entries`` yields ``(item, gone, allowed, is_stale)`` where
-    ``is_stale`` is a thunk (may do I/O, so only evaluated for non-orphans); "orphan" wins."""
-    for item, gone, allowed, is_stale in entries:
+    """Shared orphan/stale sweep.  ``entries`` yields ``(item, gone, allowed, is_stale, ambiguous)``
+    where ``ambiguous`` marks a workdir-less entry that ``delete_orphans`` would target but whose
+    deletion cannot be proven (counted in ``retained_ambiguous`` whenever this run leaves it
+    alone); ``is_stale`` is a thunk (may do I/O, so only evaluated for non-orphans); "orphan" wins."""
+    for item, gone, allowed, is_stale, ambiguous in entries:
         result["scanned"] += 1
         reason = "orphan" if gone and allowed else "stale" if is_stale() else None
         if reason is not None:
             delete(item, reason)
+        elif ambiguous:
+            result["retained_ambiguous"] += 1
 
 
 def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str, label) -> None:
@@ -1075,11 +1107,11 @@ def _prune_pre_v2_repos(base: Path, cutoff: float, delete_orphans: bool,
     def entries():
         for repo in _pre_v2_shadow_repos(base):
             child = repo["path"]
-            gone = delete_orphans and not repo["marker_unreadable"] and (
-                repo["workdir"] is None
-                or _workdir_is_observably_gone(repo["workdir"], require_parent_identity=False))
-            yield (child, gone, orphan_allowlist is None or str(child) in orphan_allowlist,
-                   lambda c=child: cutoff > 0 and 0 < _newest_mtime(c) < cutoff)
+            state = _pre_v2_orphan_state(repo)
+            yield (child, delete_orphans and state == "orphan",
+                   orphan_allowlist is None or str(child) in orphan_allowlist,
+                   lambda c=child: cutoff > 0 and 0 < _newest_mtime(c) < cutoff,
+                   delete_orphans and state == "ambiguous")
 
     _sweep(entries(), result, lambda child, reason: _rmtree_counted(
         child, result, f"deleted_{reason}", "Failed to prune checkpoint repo %s: %s", child.name))
@@ -1091,14 +1123,15 @@ def _prune_v2_projects(store: Path, cutoff: float, delete_orphans: bool,
     def entries():
         for meta in _list_projects(store):
             dir_hash = meta.get("_hash") or ""
-            workdir = meta.get("workdir") or ""
             if not dir_hash:
                 continue
-            gone = delete_orphans and (not workdir or _workdir_is_observably_gone(
-                workdir, parent_dev=_int_or_none(meta.get("workdir_parent_dev")),
-                parent_ino=_int_or_none(meta.get("workdir_parent_ino"))))
-            yield (dir_hash, gone, orphan_allowlist is None or dir_hash in orphan_allowlist,
-                   lambda m=meta: cutoff > 0 and 0 < float(m.get("last_touch", 0) or 0) < cutoff)
+            state = _orphan_state(meta.get("workdir") or "",
+                                  _int_or_none(meta.get("workdir_parent_dev")),
+                                  _int_or_none(meta.get("workdir_parent_ino")))
+            yield (dir_hash, delete_orphans and state == "orphan",
+                   orphan_allowlist is None or dir_hash in orphan_allowlist,
+                   lambda m=meta: cutoff > 0 and 0 < float(m.get("last_touch", 0) or 0) < cutoff,
+                   delete_orphans and state == "ambiguous")
 
     def delete(dir_hash: str, reason: str) -> None:
         _delete_ref(store, _ref_name(dir_hash))
@@ -1113,7 +1146,9 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
                       max_total_size_mb: int = 0, orphan_allowlist: Optional[set] = None) -> Dict[str, int]:
     """Delete stale/orphan checkpoints and reclaim store space.  Never raises.  Deleted when
     ``delete_orphans`` and the workdir is observably gone, OR last touch predates ``retention_days``
-    (``<= 0`` disables).  ``orphan_allowlist`` (v2 ``_hash`` strings and/or pre-v2 repo paths as
+    (``<= 0`` disables).  Entries whose workdir is missing but not provably deleted are retained —
+    counted in ``retained_ambiguous`` — and must never be presented as deletable (see
+    ``_orphan_state``).  ``orphan_allowlist`` (v2 ``_hash`` strings and/or pre-v2 repo paths as
     ``str``) binds orphan deletion to exactly what a ``store_status()`` preview showed — a project
     orphaned after the preview is skipped; ``None`` deletes every current orphan (``--force``,
     unattended).  ``max_total_size_mb > 0`` drops the oldest commit per project until the store fits."""
@@ -1234,7 +1269,9 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     "total_size_bytes", "project_count", "projects", "pre_v2_projects", "legacy_archives"}``.
     ``pre_v2_projects`` are repos still on the pre-v2 layout, distinct from the migrated
     ``legacy_archives``; an orphan-deletion preview must include both ``projects`` and
-    ``pre_v2_projects`` since ``prune_checkpoints`` sweeps both."""
+    ``pre_v2_projects`` since ``prune_checkpoints`` sweeps both.  Every project carries a
+    ``state`` (``live`` / ``orphan`` / ``ambiguous``) computed with the same criterion
+    ``prune_checkpoints`` deletes by, so callers never advertise a deletion that cannot happen."""
     base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict = {"base": str(base), "store_size_bytes": 0, "legacy_size_bytes": 0, "total_size_bytes": 0,
                  "project_count": 0, "projects": [], "pre_v2_projects": [], "legacy_archives": []}
@@ -1248,11 +1285,15 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
             out["projects"] = [{
                 "hash": meta.get("_hash") or "", "workdir": meta.get("workdir") or "",
                 "exists": bool(meta.get("workdir")) and Path(meta["workdir"]).exists(),
+                "state": _orphan_state(meta.get("workdir") or "",
+                                       _int_or_none(meta.get("workdir_parent_dev")),
+                                       _int_or_none(meta.get("workdir_parent_ino"))),
                 "created_at": meta.get("created_at"), "last_touch": meta.get("last_touch"),
                 "commits": _ref_commit_count(store, str(base), _ref_name(meta.get("_hash") or "")),
             } for meta in _list_projects(store)]
     out["project_count"] = len(out["projects"])
-    out["pre_v2_projects"] = [{"path": str(r["path"]), "workdir": r["workdir"], "exists": r["exists"]}
+    out["pre_v2_projects"] = [{"path": str(r["path"]), "workdir": r["workdir"], "exists": r["exists"],
+                               "state": _pre_v2_orphan_state(r)}
                               for r in _pre_v2_shadow_repos(base)]
 
     out["legacy_archives"] = [{"name": c.name, "size_bytes": _dir_size_bytes(c), "mtime": _mtime_or_none(c) or 0}

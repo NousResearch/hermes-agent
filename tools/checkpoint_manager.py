@@ -568,7 +568,9 @@ def _stage_all(p: _ProjectRefs) -> Tuple[bool, str, str]:
 def _diff_staged_tree(p: _ProjectRefs, *diff_args: List[str]) -> List[Tuple[bool, str, str]]:
     """Stage the working tree (so new files show), run each ``git diff`` variant,
     then point the index back at the ref so it doesn't drift."""
-    _stage_all(p)
+    staged_ok, _, staged_err = _stage_all(p)
+    if not staged_ok:
+        return [(False, "", staged_err) for _ in diff_args]
     results = [_run_git(args, p.store, p.abs_dir, index_file=p.index_file) for args in diff_args]
     _run_git(["read-tree", p.ref], p.store, p.abs_dir, index_file=p.index_file, allowed_returncodes={128})
     return results

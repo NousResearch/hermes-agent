@@ -366,6 +366,19 @@ const ComposerPane = memo(function ComposerPane({
 
   const endInputDrag = () => inputMouseRef.current?.end()
 
+  const floatingOverlayProps = {
+    cols: composer.cols,
+    compIdx: composer.compIdx,
+    completions: composer.completions,
+    onActiveSessionClose: actions.closeLiveSession,
+    onActiveSessionSelect: actions.activateLiveSession,
+    onModelSelect: actions.onModelSelect,
+    onNewLiveSession: actions.newLiveSession,
+    onNewPromptSession: actions.newPromptSession,
+    onResumeSelect: actions.resumeById,
+    pagerPageSize: composer.pagerPageSize
+  }
+
   return (
     <NoSelect
       flexDirection="column"
@@ -411,21 +424,7 @@ const ComposerPane = memo(function ComposerPane({
         marginTop={nativeMode ? 0 : ui.statusBar === 'top' ? 0 : 1}
         position={nativeMode ? undefined : 'relative'}
       >
-        {!nativeMode && (
-          <FloatingOverlays
-            cols={composer.cols}
-            compIdx={composer.compIdx}
-            completions={composer.completions}
-            nativeMode={false}
-            onActiveSessionClose={actions.closeLiveSession}
-            onActiveSessionSelect={actions.activateLiveSession}
-            onModelSelect={actions.onModelSelect}
-            onNewLiveSession={actions.newLiveSession}
-            onNewPromptSession={actions.newPromptSession}
-            onResumeSelect={actions.resumeById}
-            pagerPageSize={composer.pagerPageSize}
-          />
-        )}
+        {!nativeMode && <FloatingOverlays {...floatingOverlayProps} nativeMode={false} />}
 
         {!nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
@@ -493,21 +492,7 @@ const ComposerPane = memo(function ComposerPane({
         )}
       </Box>
 
-      {nativeMode && (
-        <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
-          nativeMode
-          onActiveSessionClose={actions.closeLiveSession}
-          onActiveSessionSelect={actions.activateLiveSession}
-          onModelSelect={actions.onModelSelect}
-          onNewLiveSession={actions.newLiveSession}
-          onNewPromptSession={actions.newPromptSession}
-          onResumeSelect={actions.resumeById}
-          pagerPageSize={composer.pagerPageSize}
-        />
-      )}
+      {nativeMode && <FloatingOverlays {...floatingOverlayProps} nativeMode />}
 
       {nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint nativeMode t={ui.theme} />}
 

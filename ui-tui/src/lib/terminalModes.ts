@@ -21,7 +21,18 @@ export const TERMINAL_MODE_RESET =
   '\x1b[0m' + // attributes
   '\x1b[?25h' // cursor visible
 
-export const NATIVE_TUI_EXIT_RESET = '\x1b[2J\x1b[H'
+export function clearNativeTuiFrame(stream: ResettableStream = process.stdout): boolean {
+  if (!stream.isTTY) {
+    return false
+  }
+
+  try {
+    stream.write('\x1b[2J\x1b[H')
+    return true
+  } catch {
+    return false
+  }
+}
 
 type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
   fd?: number

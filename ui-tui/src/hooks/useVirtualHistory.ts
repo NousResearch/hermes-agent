@@ -442,8 +442,8 @@ export function useVirtualHistory(
   // is cheap (unmount = remove fiber, no parse).
   const dStart = useDeferredValue(start)
   const dEnd = useDeferredValue(end)
-  let effStart = start < dStart ? dStart : start
-  let effEnd = end > dEnd ? dEnd : end
+  let effStart = nativeMode ? 0 : start < dStart ? dStart : start
+  let effEnd = nativeMode ? n : end > dEnd ? dEnd : end
 
   // Inverted range (large jump with deferred value lagging) or sticky snap
   // (scrollToBottom needs the tail mounted NOW so maxScroll lands on content,
@@ -467,7 +467,7 @@ export function useVirtualHistory(
   // wider than either bound alone. Trim the far edge by viewport position
   // (not pendingDelta direction — that flips mid-settle under concurrent
   // scheduling and yanks scrollTop).
-  if (effEnd - effStart > maxMounted && vp > 0) {
+  if (!nativeMode && effEnd - effStart > maxMounted && vp > 0) {
     const mid = (offsets[effStart]! + offsets[effEnd]!) / 2
 
     if (top < mid) {

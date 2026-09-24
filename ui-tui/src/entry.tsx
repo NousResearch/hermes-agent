@@ -13,7 +13,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
-import { NATIVE_TUI_EXIT_RESET, resetTerminalModes } from './lib/terminalModes.js'
+import { clearNativeTuiFrame, resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
@@ -39,11 +39,7 @@ resetTerminalModes()
 process.on('exit', () => {
   resetTerminalModes()
   if (NATIVE_MODE) {
-    try {
-      process.stdout.write(NATIVE_TUI_EXIT_RESET)
-    } catch {
-      // stdout may already be closed during terminal teardown.
-    }
+    clearNativeTuiFrame()
   }
 })
 

@@ -3,15 +3,13 @@
 // Run from ui-tui:
 //   npx tsx scripts/bench-native-history.tsx --warmups=1 --samples=3 --items=100,1000,10000
 //
-// Native terminal scrolling is handled by the terminal emulator after rows are
-// written, so it has no app-side scroll operation to time. This measures the
-// work that differs: initial history mount, a long-history rerender, memory,
-// and terminal output. The virtual path also reports its app-side scroll cost.
+// Native scrolling is handled by the terminal after rows are written, so this
+// compares the work before scrolling begins: mount, rerender, memory, and output.
 
 import { PassThrough } from 'stream'
 
 import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
-import React, { useLayoutEffect, useRef } from 'react'
+import React from 'react'
 
 import { useVirtualHistory } from '../src/hooks/useVirtualHistory.js'
 
@@ -31,16 +29,12 @@ interface Sample {
   heapDeltaBytes: number | null
   mountMs: number
   rerenderMs: number
-  scrollMs: number | null
   terminalBytes: number
   terminalWrites: number
 }
 
-interface HarnessProps {
-  items: readonly Item[]
-  expose?: React.MutableRefObject<ScrollBoxHandle | null>
-  scrollRef?: React.MutableRefObject<ScrollBoxHandle | null>
-}
+type ItemsProps = { items: readonly Item[] }
+type VirtualProps = ItemsProps & { scrollRef: React.MutableRefObject<ScrollBoxHandle | null> }
 
 class CountingStream extends PassThrough {
   columns = COLUMNS
@@ -72,7 +66,7 @@ function makeItems(count: number): Item[] {
   }))
 }
 
-function NativeHarness({ items }: HarnessProps) {
+function NativeHarness({ items }: ItemsProps) {
   return (
     <Box flexDirection="column" width="100%">
       {items.map(item => (
@@ -84,17 +78,13 @@ function NativeHarness({ items }: HarnessProps) {
   )
 }
 
-function VirtualHarness({ expose, items, scrollRef }: HarnessProps) {
+function VirtualHarness({ items, scrollRef }: VirtualProps) {
   const virtual = useVirtualHistory(scrollRef!, items, COLUMNS, {
     coldStartCount: 30,
     estimateHeight: index => items[index]?.height ?? 1,
     maxMounted: 120,
     overscan: 20
   })
-
-  useLayoutEffect(() => {
-    expose!.current = scrollRef!.current
-  }, [expose, scrollRef])
 
   return (
     <ScrollBox flexDirection="column" height={ROWS} ref={scrollRef} stickyScroll>
@@ -116,23 +106,23 @@ async function runSample(mode: 'native' | 'virtual', itemCount: number): Promise
   const stderr = new CountingStream()
   const stdin = new PassThrough()
   const scrollRef = { current: null as ScrollBoxHandle | null }
-  const exposedScrollRef = { current: null as ScrollBoxHandle | null }
-  let items = makeItems(itemCount)
+
+  const items = makeItems(itemCount)
+  const renderHarness = (nextItems: readonly Item[]) =>
+    mode === 'native' ? (
+      <NativeHarness items={nextItems} />
+    ) : (
+      <VirtualHarness items={nextItems} scrollRef={scrollRef} />
+    )
+
   const heapBefore = process.memoryUsage?.().heapUsed ?? null
   const mountStart = performance.now()
-  const instance = renderSync(
-    mode === 'native' ? (
-      <NativeHarness items={items} />
-    ) : (
-      <VirtualHarness expose={exposedScrollRef} items={items} scrollRef={scrollRef} />
-    ),
-    {
-      patchConsole: false,
-      stderr: stderr as unknown as NodeJS.WriteStream,
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      stdout: stdout as unknown as NodeJS.WriteStream
-    }
-  )
+  const instance = renderSync(renderHarness(items), {
+    patchConsole: false,
+    stderr: stderr as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream
+  })
   await settle()
   const mountMs = performance.now() - mountStart
 
@@ -140,31 +130,14 @@ async function runSample(mode: 'native' | 'virtual', itemCount: number): Promise
     index === items.length - 1 ? { ...item, text: `${item.text} rerender` } : item
   )
   const rerenderStart = performance.now()
-  instance.rerender(
-    mode === 'native' ? (
-      <NativeHarness items={rerenderItems} />
-    ) : (
-      <VirtualHarness expose={exposedScrollRef} items={rerenderItems} scrollRef={scrollRef} />
-    )
-  )
+  instance.rerender(renderHarness(rerenderItems))
   await settle()
   const rerenderMs = performance.now() - rerenderStart
-  items = rerenderItems
-
-  let scrollMs: number | null = null
-  if (mode === 'virtual' && exposedScrollRef.current) {
-    const scrollStart = performance.now()
-    exposedScrollRef.current.scrollTo(Math.max(0, itemCount - ROWS))
-    await settle(8)
-    scrollMs = performance.now() - scrollStart
-  }
-
   const heapAfter = process.memoryUsage?.().heapUsed ?? null
   const sample = {
     heapDeltaBytes: heapBefore === null || heapAfter === null ? null : heapAfter - heapBefore,
     mountMs,
     rerenderMs,
-    scrollMs,
     terminalBytes: stdout.bytes,
     terminalWrites: stdout.writes
   }
@@ -217,7 +190,6 @@ function summarize(samples: Sample[]) {
     heapDeltaBytes: distribution(samples.flatMap(sample => sample.heapDeltaBytes ?? [])),
     mountMs: distribution(samples.map(sample => sample.mountMs)),
     rerenderMs: distribution(samples.map(sample => sample.rerenderMs)),
-    scrollMs: distribution(samples.flatMap(sample => sample.scrollMs ?? [])),
     terminalBytes: distribution(samples.map(sample => sample.terminalBytes)),
     terminalWrites: distribution(samples.map(sample => sample.terminalWrites))
   }

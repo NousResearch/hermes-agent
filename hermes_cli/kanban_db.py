@@ -732,6 +732,10 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    guard_reason: Optional[str] = None
+    guard_last_seen_at: Optional[int] = None
+    guard_count: int = 0
+    acceptance_rejected: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -749,6 +753,8 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            guard_count=int(g("guard_count") or 0),
+            acceptance_rejected=bool(g("acceptance_rejected")),
         )
 
 
@@ -762,6 +768,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "guard_reason", "guard_last_seen_at",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -904,6 +911,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     worker_started_at    INTEGER,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
+    guard_reason         TEXT,
+    guard_last_seen_at   INTEGER,
+    guard_count          INTEGER NOT NULL DEFAULT 0,
+    acceptance_rejected  INTEGER NOT NULL DEFAULT 0,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
@@ -2783,7 +2794,8 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       acceptance_rejected = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
@@ -2793,6 +2805,7 @@ def complete_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        _clear_respawn_guard(conn, task_id)
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
@@ -3286,6 +3299,7 @@ def block_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        _clear_respawn_guard(conn, task_id)
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
@@ -3562,6 +3576,15 @@ def request_changes(
     return True, implementer
 
 
+def _clear_respawn_guard(conn: sqlite3.Connection, task_id: str) -> None:
+    """Retire an active dispatch hold exactly once within the caller's transaction."""
+    if conn.execute(
+        "UPDATE tasks SET guard_reason=NULL, guard_last_seen_at=NULL, guard_count=0 "
+        "WHERE id=? AND guard_reason IS NOT NULL", (task_id,),
+    ).rowcount:
+        _append_event(conn, task_id, "respawn_guard_cleared")
+
+
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
     dry_run: bool = False,
@@ -3601,11 +3624,12 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', acceptance_rejected = 0 "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        _clear_respawn_guard(conn, task_id)
         _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
 
     return True, None
@@ -3669,11 +3693,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # is a fresh start for the retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, acceptance_rejected = 0 "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False
+        _clear_respawn_guard(conn, task_id)
         _append_event(
             conn, task_id, "unblocked",
             (

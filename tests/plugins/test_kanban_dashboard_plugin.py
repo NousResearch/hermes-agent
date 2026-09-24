@@ -118,6 +118,63 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+@pytest.mark.parametrize("destination", ["todo", "triage", "blocked"])
+def test_dashboard_status_move_retires_guard_immediately(client, destination):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="guarded", assignee="default")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET guard_reason='blocker_auth', guard_count=1, "
+                "guard_last_seen_at=123, last_failure_error='401 auth failed' WHERE id=?", (tid,),
+            )
+    payload = {"status": destination}
+    if destination == "blocked":
+        payload["block_reason"] = "operator hold"
+    response = client.patch(f"/api/plugins/kanban/tasks/{tid}", json=payload)
+    assert response.status_code == 200, response.text
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == destination
+        assert task.guard_reason is None
+        assert task.last_failure_error == "401 auth failed"
+        assert len([e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_cleared"]) == 1
+
+
+@pytest.mark.parametrize("auth_hold", [False, True])
+def test_dashboard_retry_releases_acceptance_hold_but_not_auth(client, monkeypatch, auth_hold):
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _: True)
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="retry", assignee="default", workspace_kind="scratch",
+            completion_contract="example/widgets",
+        )
+        assert not kb.complete_task(conn, tid, summary="missing publication")
+        assert kb.get_task(conn, tid).acceptance_rejected
+        if auth_hold:
+            with kb.write_txn(conn):
+                conn.execute("UPDATE tasks SET last_failure_error='401 auth failed' WHERE id=?", (tid,))
+    for status in ("todo", "ready"):
+        response = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"status": status})
+        assert response.status_code == 200, response.text
+    spawned = []
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert not task.acceptance_rejected
+        if auth_hold:
+            assert task.last_failure_error == "401 auth failed"
+        else:
+            assert task.last_failure_error.startswith("PR acceptance missing:")
+        kbd.dispatch_once(
+            conn, spawn_fn=lambda task, workspace, board=None: spawned.append(task.id),
+            max_spawn=1, reconcile_orphans=False,
+        )
+        assert spawned == ([] if auth_hold else [tid])
+        assert kb.get_task(conn, tid).guard_reason == ("blocker_auth" if auth_hold else None)
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

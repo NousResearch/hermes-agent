@@ -1,0 +1,145 @@
+"""Regression for #121651: durable, independently held dispatch guards."""
+
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_diagnostics as kd
+
+
+def test_rejected_completion_keeps_auth_hold_and_coalesces_ticks(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _: True)
+    kbc.init_db()
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="held", assignee="default", workspace_kind="scratch",
+            completion_contract="https://github.com/example/widgets/pull/1",
+        )
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", ("401 auth failed", tid))
+        spawned = []
+
+        def spawn(task, workspace, board=None):
+            spawned.append(task.id)
+            return None
+
+        for _ in range(2):
+            kbd.dispatch_once(conn, spawn_fn=spawn, max_spawn=1, reconcile_orphans=False)
+        assert spawned == []
+        assert kb.get_task(conn, tid).guard_reason == "blocker_auth"
+        assert kb.get_task(conn, tid).guard_count == 2
+        assert conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guarded'", (tid,),
+        ).fetchone()[0] == 1
+
+        assert not kb.complete_task(
+            conn, tid, summary="rejected", metadata={
+                "published_pr": "https://github.com/other/repo/pull/2",
+            },
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.last_failure_error == "401 auth failed"
+        assert task.acceptance_rejected
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+        kbd.dispatch_once(conn, spawn_fn=spawn, max_spawn=1, reconcile_orphans=False)
+        assert spawned == []
+        assert kb.get_task(conn, tid).guard_count == 3
+        assert conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guarded'", (tid,),
+        ).fetchone()[0] == 1
+
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET last_failure_error=NULL WHERE id=?", (tid,))
+        assert kbd.check_respawn_guard(conn, tid) == "acceptance_rejected"
+        kbd.dispatch_once(conn, spawn_fn=spawn, max_spawn=1, reconcile_orphans=False)
+        assert spawned == []
+        assert kb.get_task(conn, tid).guard_count == 1
+        assert conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guarded'", (tid,),
+        ).fetchone()[0] == 2
+
+        assert kb.block_task(conn, tid, reason="operator review")
+        assert kb.get_task(conn, tid).guard_reason is None
+        assert not any(d.kind == "respawn_guard" for d in kd.compute_task_diagnostics(
+            kb.get_task(conn, tid), kb.list_events(conn, tid), kb.list_runs(conn, tid)))
+        # Older blocked rows can carry a persisted guard; unblock must retire it
+        # immediately rather than waiting for a dispatcher tick.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET guard_reason='acceptance_rejected', guard_count=1, "
+                         "guard_last_seen_at=123 WHERE id=?", (tid,))
+        assert kb.unblock_task(conn, tid)
+        assert not kb.get_task(conn, tid).acceptance_rejected
+        assert kb.get_task(conn, tid).guard_reason is None
+        assert not any(d.kind == "respawn_guard" for d in kd.compute_task_diagnostics(
+            kb.get_task(conn, tid), kb.list_events(conn, tid), kb.list_runs(conn, tid)))
+        assert kbd.check_respawn_guard(conn, tid) is None
+        kbd.dispatch_once(conn, spawn_fn=spawn, max_spawn=1, reconcile_orphans=False)
+        assert kb.get_task(conn, tid).guard_reason is None
+        assert kb.get_task(conn, tid).guard_count == 0
+        assert conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guard_cleared'", (tid,),
+        ).fetchone()[0] == 2
+        assert spawned == [tid]
+
+
+def test_rejection_survives_expired_rate_limit_cooldown(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    kbc.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="held after cooldown", completion_contract="example/widgets",
+        )
+        kb.claim_task(conn, tid)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET outcome='rate_limited', ended_at=1 WHERE task_id=?",
+                (tid,),
+            )
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert not kb.complete_task(conn, tid, summary="rejected")
+        assert kb.get_task(conn, tid).acceptance_rejected
+        assert kbd.check_respawn_guard(conn, tid) == "acceptance_rejected"
+
+
+def test_completion_closes_guard_episode_before_same_reason_requeue(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _: True)
+    kbc.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="requeue", assignee="default")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET last_failure_error='401 auth failed' WHERE id=?", (tid,))
+        tick = lambda: kbd.dispatch_once(
+            conn, spawn_fn=lambda *a, **k: None, max_spawn=1, reconcile_orphans=False)
+        tick()
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_events SET created_at=1 WHERE task_id=? AND kind='respawn_guarded'", (tid,))
+        assert kb.complete_task(conn, tid, summary="completed")
+        assert kb.get_task(conn, tid).guard_reason is None
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        tick()
+        task = kb.get_task(conn, tid)
+        guard = next(d for d in kd.compute_task_diagnostics(
+            task, kb.list_events(conn, tid), kb.list_runs(conn, tid)) if d.kind == "respawn_guard")
+        events = kb.list_events(conn, tid)
+        new_event = [e for e in events if e.kind == "respawn_guarded"][-1]
+        assert task.guard_count == 1
+        assert guard.first_seen_at == new_event.created_at
+        assert len([e for e in events if e.kind == "respawn_guard_cleared"]) == 1

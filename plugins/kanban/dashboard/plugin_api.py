@@ -739,11 +739,15 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END, "
+            "  acceptance_rejected = CASE WHEN ? = 'ready' AND status != 'ready' "
+            "    THEN 0 ELSE acceptance_rejected END "
             "WHERE id = ?",
-            (effective_status,) * 4 + (task_id,))
+            (effective_status,) * 5 + (task_id,))
         if cur.rowcount != 1:
             return False
+        if prev["status"] != effective_status:
+            kanban_db._clear_respawn_guard(conn, task_id)
         run_id = None
         if was_running and effective_status != "running" and prev["current_run_id"]:
             run_id = kanban_db._end_run(

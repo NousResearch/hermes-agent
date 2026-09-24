@@ -1510,7 +1510,7 @@ def check_respawn_guard(
     passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, acceptance_rejected FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1539,14 +1539,14 @@ def check_respawn_guard(
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
-            return None
+            return "acceptance_rejected" if row["acceptance_rejected"] else None
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
-        return None
+        return "acceptance_rejected" if row["acceptance_rejected"] else None
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
@@ -1556,6 +1556,8 @@ def check_respawn_guard(
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
+    if row["acceptance_rejected"]:
+        return "acceptance_rejected"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.
@@ -2026,17 +2028,23 @@ def _dispatch_lane_task(
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
-        # Event so ``hermes kanban tail`` shows why the task looks stuck.
-        # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
-        # operator-configured fallback exists, persist the assignment and proceed. This removes the
-        # dashboard footgun where a task created without an assignee parks in 'ready' forever even though
-        # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
-        # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
-        # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
             with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+                previous = conn.execute(
+                    "SELECT guard_reason FROM tasks WHERE id=?", (task_id,),
+                ).fetchone()
+                if previous and previous["guard_reason"] != guard_reason:
+                    _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+                conn.execute(
+                    "UPDATE tasks SET guard_reason=?, guard_last_seen_at=?, "
+                    "guard_count=CASE WHEN guard_reason=? THEN guard_count+1 ELSE 1 END "
+                    "WHERE id=?", (guard_reason, int(time.time()), guard_reason, task_id),
+                )
         return False
+
+    if not dry_run:
+        with _kb.write_txn(conn):
+            _kb._clear_respawn_guard(conn, task_id)
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent

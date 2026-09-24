@@ -42,17 +42,26 @@ def _poll_loop(interval: float, tick) -> int:
 
 def _cmd_tail(args: argparse.Namespace) -> int:
     last_id = 0
+    last_guard = None
     print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
 
     def tick():
-        nonlocal last_id
+        nonlocal last_id, last_guard
         with kbc.connect_closing() as conn:
             events = kb.list_events(conn, args.task_id)
+            task = kb.get_task(conn, args.task_id)
         for e in events:
             if e.id > last_id:
                 pl = f" {e.payload}" if e.payload else ""
                 print(f"[{_fmt_ts(e.created_at)}] {e.kind}{pl}", flush=True)
                 last_id = e.id
+        guard = (task.guard_reason, task.guard_count, task.guard_last_seen_at) if task and task.guard_reason else None
+        if guard != last_guard:
+            if guard:
+                print(f"[{_fmt_ts(guard[2])}] current guard: {guard[0]} (count={guard[1]})", flush=True)
+            elif last_guard:
+                print("Current guard cleared", flush=True)
+            last_guard = guard
 
     return _poll_loop(args.interval, tick)
 

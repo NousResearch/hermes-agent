@@ -525,6 +525,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+    if task.guard_reason:
+        field("guard", f"{task.guard_reason} (count={task.guard_count}, last seen {_fmt_ts(task.guard_last_seen_at)})")
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd

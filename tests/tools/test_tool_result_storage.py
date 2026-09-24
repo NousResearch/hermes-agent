@@ -99,6 +99,7 @@ class TestWriteToSandbox:
         [
             ("pipe", 512, False),      # short write: bytes lost
             ("pipe", 171, False),      # pipe backends must be exact
+            ("heredoc", 171, False),   # heredoc stdin is byte-exact too; a +1 is a loss, not the old newline
             ("host", 3, False),        # host spillover: os.stat says only 3 bytes landed
             ("host", None, True),      # host spillover: real write, real stat
         ],

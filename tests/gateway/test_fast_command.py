@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 import gateway.run as gateway_run
+import hermes_cli.models as models_module
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
@@ -174,3 +175,35 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
 
 
+@pytest.mark.asyncio
+async def test_fast_rejects_unsupported_session_model_even_when_default_supports_it(monkeypatch):
+    runner = _make_runner()
+    event = _make_event("/fast fast")
+    session_key = runner._session_key_for_source(event.source)
+    runner._session_model_overrides[session_key] = {"model": "session-slow"}
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "default-fast")
+    monkeypatch.setattr(models_module, "model_supports_fast_mode", lambda model: model == "default-fast")
+
+    response = await runner._handle_fast_command(event)
+
+    assert "only available" in response.lower()
+    assert runner._service_tier is None
+
+
+@pytest.mark.asyncio
+async def test_fast_permits_supported_session_model_even_when_default_does_not(monkeypatch):
+    runner = _make_runner()
+    event = _make_event("/fast fast")
+    session_key = runner._session_key_for_source(event.source)
+    runner._session_model_overrides[session_key] = {"model": "session-fast"}
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "default-slow")
+    monkeypatch.setattr(models_module, "model_supports_fast_mode", lambda model: model == "session-fast")
+
+    response = await runner._handle_fast_command(event)
+
+    assert "FAST" in response
+    assert runner._service_tier == "priority"

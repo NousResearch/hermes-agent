@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
@@ -1440,6 +1441,23 @@ describe('isSessionRemote (#94640)', () => {
 
     expect(isSessionRemote('rt-1')).toBe(true)
     expect(isSessionRemote('stored-1')).toBe(true)
+  })
+
+  it('fails safe to bytes for a connection-tagged remote row that has no persisted mode', () => {
+    // Unified rows carry connection_id and profile, but not the descriptor's
+    // mode. Falling back to the local ambient connection here would send a
+    // client-only image path to the remote owner.
+    $connection.set({ connectionId: 'local', mode: 'local' } as never)
+    setSessions([{ connection_id: 'homelab', id: 'stored-remote', profile: 'default' } as never])
+
+    expect(isSessionRemote('stored-remote')).toBe(true)
+  })
+
+  it('keeps a mode-less local connection row on the shared-filesystem path', () => {
+    $connection.set({ connectionId: 'homelab', mode: 'remote' } as never)
+    setSessions([{ connection_id: LOCAL_CONNECTION_ID, id: 'stored-local', profile: 'default' } as never])
+
+    expect(isSessionRemote('stored-local')).toBe(false)
   })
 
   it('falls back to ambient when the owner is a bare pool profile (no connectionId/mode)', () => {

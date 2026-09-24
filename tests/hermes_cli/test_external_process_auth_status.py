@@ -20,6 +20,7 @@ import pytest
 from hermes_cli.auth import (
     get_auth_status,
     get_external_process_provider_status,
+    resolve_external_process_provider_credentials,
 )
 
 
@@ -55,6 +56,25 @@ def test_get_auth_status_dispatches_external_process_by_auth_type(
     assert status.get("configured") is True
     assert status.get("resolved_command") == str(fake)
     assert "auth_verified" in status
+
+
+def test_external_process_status_finds_user_local_cli_outside_backend_path(
+    tmp_path, monkeypatch, _clean_copilot_env
+):
+    """Desktop SSH inventory must discover a CLI installed in the user's local bin."""
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    cli = local_bin / "copilot"
+    cli.write_text("", encoding="utf-8")
+    cli.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path / "backend-bin"))
+
+    status = get_external_process_provider_status("copilot-acp")
+
+    assert status["configured"] is True
+    assert status["resolved_command"] == str(cli)
+    assert resolve_external_process_provider_credentials("copilot-acp")["command"] == str(cli)
 
 
 def test_external_process_status_rejects_wrong_auth_type():

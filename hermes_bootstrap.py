@@ -344,8 +344,9 @@ def install_never_free_environ() -> None:
             if (line := lines.get(prefix + val)) is None:
                 line = lines[prefix + val] = ctypes.create_string_buffer(prefix + val)
             entry = ctypes.addressof(line)
-            # Every ctypes call is audited and a hook may write os.environ re-entrantly (RLock):
-            # redo the read if any write was published between reading the array and ours.
+            # create_string_buffer/addressof above are audited and a hook may write os.environ
+            # re-entrantly (RLock): redo the read if any write was published before ours. The loop
+            # itself makes no audited call, so a hook that writes on every event cannot spin it.
             while True:
                 start = gen[0]
                 # getenv returns a pointer just past "NAME=" inside the matching entry, so the
@@ -363,7 +364,7 @@ def install_never_free_environ() -> None:
                 grow = not hit and not (own is not None and environ.value == own_addr and n + 2 <= len(own))
                 if grow:
                     fresh = (ctypes.c_void_p * max(2 * (n + 2), 64))(*(live[:n] if live else ()), entry)
-                    fresh_addr = ctypes.addressof(fresh)
+                    fresh_addr = ctypes.cast(fresh, ctypes.c_void_p).value  # unaudited, unlike addressof
                 if gen[0] == start:
                     break
             # No audited call from here on. Plain aligned stores: a concurrent walker sees them in

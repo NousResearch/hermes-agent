@@ -238,6 +238,38 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
+def _store_partial_text(st: _Trunc, partial_response: str) -> None:
+    # Unanswered continue nudges made every later turn re-truncate: drop the trail.
+    idx = st.current_turn_user_idx
+    turn_start = idx + 1 if isinstance(idx, int) and idx >= 0 else 0
+    st.messages[turn_start:] = [
+        m for m in st.messages[turn_start:]
+        if not (isinstance(m, dict) and (
+            m.get("_length_continuation_fragment") or m.get("_length_continuation_nudge")
+        ))
+    ]
+    if partial_response:
+        append_message(st.messages, {
+            "role": "assistant", "content": partial_response, "finish_reason": "length"
+        })
+    st.agent._session_messages = st.messages
+
+
+def _stop_partial_stream(st: _Trunc, content: Any) -> TruncationVerdict:
+    from agent.conversation_loop import _join_truncated_parts
+
+    parts = [*st.truncated_response_parts]
+    if isinstance(content, str) and content:
+        parts.append(content)
+    partial = st.agent._strip_think_blocks(_join_truncated_parts(parts)).strip()
+    _store_partial_text(st, partial)
+    error = "Provider stream ended before completion; automatic continuation is disabled."
+    st.agent._ephemeral_reasoning_off = False
+    st.agent._flush_status_buffer()
+    close_interrupted_tool_sequence(st.messages, partial or error)
+    return st.end_turn(partial or error, error, failure=("invalid_response", True))
+
+
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
@@ -290,20 +322,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
            else "no visible text was produced."),
         force=True, diagnostic=True,
     )
-    # Unanswered continue nudges made every later turn re-truncate: drop the trail.
-    idx = st.current_turn_user_idx
-    _turn_start = idx + 1 if isinstance(idx, int) and idx >= 0 else 0
-    messages[_turn_start:] = [
-        m for m in messages[_turn_start:]
-        if not (isinstance(m, dict) and (
-            m.get("_length_continuation_fragment") or m.get("_length_continuation_nudge")
-        ))
-    ]
-    if partial_response:
-        append_message(messages, {
-            "role": "assistant", "content": partial_response, "finish_reason": "length"
-        })
-    agent._session_messages = messages
+    _store_partial_text(st, partial_response)
     if filled is not None:
         notice = _WINDOW_FILLED.format(prompt=filled[0], ctx=filled[1])
         return st.end_turn(
@@ -418,6 +437,9 @@ def recover_from_truncation(
     _trunc_msg = normalize_response_for_agent(agent, response)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
+    if st.is_stub and not getattr(agent, "_partial_stream_continuation", True):
+        return _stop_partial_stream(st, _trunc_content)
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:

@@ -2111,6 +2111,37 @@ def test_runner_fd_launch_routes_explicit_stdout_descriptor(tmp_path):
 
 
 @pytest.mark.linux_only
+def test_runner_fd_launch_accepts_max_child_fds_with_explicit_stdio(tmp_path):
+    broker = _load_broker()
+    root = _staging_root(tmp_path)
+    runner = _stage_runner(root, "fd_budget_runner.py", "pass\n")
+    proc, sock_path = _start_broker("broker-only-secret", root)
+    runner_fd = os.open(runner, os.O_RDONLY | os.O_CLOEXEC)
+    null_fd = os.open(os.devnull, os.O_RDWR | os.O_CLOEXEC)
+    conn = None
+    try:
+        conn, reply, remainder = broker.request_launch(
+            sock_path,
+            expected_peer_uid=os.geteuid(),
+            runner_fd=runner_fd,
+            env={},
+            fds=[null_fd] * broker.MAX_FDS,
+            stdin_fd=null_fd,
+            stdout_fd=null_fd,
+            stderr_fd=null_fd,
+        )
+        assert reply["ok"] is True
+        assert isinstance(remainder, bytes)
+    finally:
+        if conn is not None:
+            conn.close()
+        os.close(runner_fd)
+        os.close(null_fd)
+        _stop_broker(proc)
+        assert "Traceback" not in proc.stderr.read()
+
+
+@pytest.mark.linux_only
 def test_runner_fd_launch_requires_allowed_peer_uid(tmp_path):
     """Runner transport and peer authority are one boundary, enforced before launch."""
     broker = _load_broker()
@@ -3614,9 +3645,9 @@ def test_broker_transports_approved_resources_and_refuses_invalid_requests_witho
             # MSG_CTRUNC, so the broker must refuse rather than launch a child whose
             # HERMES_BROKER_FDS is silently short of what the client passed.
             (
-                "more descriptors than MAX_FDS",
+                "more descriptors than the request cap",
                 _launch_body(runner),
-                broker.MAX_FDS + 3,
+                broker.MAX_RECEIVED_FDS + 1,
                 "truncated_ancillary",
             ),
             # A complete frame larger than the cap: the broker drains through the newline
@@ -3651,7 +3682,7 @@ def test_broker_transports_approved_resources_and_refuses_invalid_requests_witho
         try:
             conn.settimeout(DEADLINE)
             conn.connect(sock_path)
-            first = broker.MAX_FDS // 2 + 1
+            first = broker.MAX_RECEIVED_FDS // 2 + 1
             conn.sendmsg(
                 [b'{"op":'],
                 _ancillary := [

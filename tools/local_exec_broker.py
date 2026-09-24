@@ -113,7 +113,9 @@ FDS_ENV = "HERMES_BROKER_FDS"
 
 # Caps on the one untrusted surface. These bound the TOTAL for a request, not a single recv.
 MAX_FDS = 8
-MAX_RECEIVED_FDS = MAX_FDS + 1  # one runner plus MAX_FDS child descriptors
+_MAX_STDIO_FDS = 3
+# One runner, up to three stdio descriptors, plus MAX_FDS child descriptors.
+MAX_RECEIVED_FDS = MAX_FDS + 1 + _MAX_STDIO_FDS
 # Linux permits roughly 2 MiB across argv+env and expands non-ASCII JSON characters to as
 # many as six bytes. Keep the protocol bounded while leaving room for every kernel-admissible
 # launch plus its JSON structure. Replies remain tiny and keep their own tighter cap.

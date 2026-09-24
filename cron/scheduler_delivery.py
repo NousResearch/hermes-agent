@@ -1482,7 +1482,12 @@ def _live_send_text(
         router._deliver_to_platform(
             route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
     if future is None:
-        target_errors.append("live adapter event loop scheduling failed")
+        # A soft lane downgrade, not a crash: standalone still delivers, but the
+        # downgrade reason must reach the log (#121725) — ``target_errors`` is
+        # discarded when the fallback succeeds.
+        msg = "live adapter event loop scheduling failed"
+        target_errors.append(msg)
+        _warn_live_lane_failure(job, f"live adapter send to {t.where}: {msg}", t.is_relay)
         return False, False, None
     try:
         send_result = future.result(timeout=60)
@@ -2052,6 +2057,14 @@ def _deliver_result(
         if t is None:
             continue
         target_errors: list = []
+        if not t.live_adapter_ready and not t.is_relay:
+            # The live lane never runs for this target (no running gateway loop):
+            # log the downgrade here or the lane choice is invisible (#121725).
+            # Attempted-but-failed already warned via _warn_live_lane_failure; don't
+            # double-log, and relay targets have no fallback to promise.
+            _warn_live_lane_failure(
+                job, f"live adapter not ready for {t.where}, "
+                     f"falling back to standalone", t.is_relay)
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
             t, cleaned_delivery_content, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,

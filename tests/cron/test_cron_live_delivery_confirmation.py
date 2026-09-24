@@ -127,14 +127,20 @@ def _record_verification(job, unverified_targets):
     RECORDED_VERIFICATION.append((job["id"], list(unverified_targets)))
 
 
-def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None):
+def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None,
+         live_ready=True, schedule_failed=False):
     """Drive ``_deliver_result`` over the live lane with a stubbed router.
 
     Returns ``(error, router_calls, standalone_calls)``. ``cron_cfg`` extends
     the ``cron:`` section handed to the scheduler (default: unwrapped output).
+    ``live_ready=False`` hands the delivery a dead loop (no live lane).
+    ``schedule_failed=True`` makes the loop-scheduling handoff return None
+    (the live lane's soft failure path).
     """
     loop = MagicMock()
-    loop.is_running.return_value = True
+    # live_ready=False is the #121725 downgrade shape: no running gateway loop,
+    # so ``live_adapter_ready`` computes False and the target falls to standalone.
+    loop.is_running.return_value = live_ready
 
     def fake_run_coro(coro, _loop):
         future = Future()
@@ -156,6 +162,16 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
 
     router._deliver_to_platform = _deliver_to_platform
 
+    # The gateway-loop handoff under test: ``schedule_failed=True`` reproduces the
+    # live lane's soft failure (safe_schedule_threadsafe returns None); otherwise
+    # the coroutine runs to completion like a healthy loop would.
+    def _no_schedule(coro, _loop):
+        coro.close()  # an unstarted coroutine must not leak
+        return None
+
+    def _live_schedule(coro, _loop):
+        return fake_run_coro(coro, _loop)
+
     async def _fake_send_to_platform(platform, pconfig, chat_id, text, **kwargs):
         standalone_calls.append({"chat_id": chat_id, "text": text, "kwargs": kwargs})
         return standalone_result if standalone_result is not None else {}
@@ -166,7 +182,8 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
          patch("cron.scheduler_delivery._record_delivery_verification", side_effect=_record_verification), \
          patch("gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
-         patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+         patch("asyncio.run_coroutine_threadsafe",
+               side_effect=_no_schedule if schedule_failed else _live_schedule):
         error = _deliver_result(job, content, adapters=_adapters(relay), loop=loop)
     return error, router_calls, standalone_calls
 
@@ -431,3 +448,30 @@ class TestStandaloneLaneGetsTheEvidenceGate:
         assert error is not None
         assert "unconfirmed result" in error
         assert "delivered to" not in caplog.text
+
+    def test_not_ready_downgrade_is_logged_before_the_standalone_send(self, caplog):
+        """Issue fix #2: a live→standalone downgrade must be visible in the log with
+        its reason, not parked in ``target_errors`` (discarded when standalone
+        succeeds). ``live_adapter_ready=False`` is the silent downgrade the issue
+        measured: the standalone lane delivers, nothing mentions the downgrade."""
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error, router_calls, standalone_calls = _run(
+                _job(), "Nightly report.", None, standalone_result={"success": True},
+                live_ready=False)
+
+        assert error is None  # the delivery itself succeeded
+        assert not router_calls and len(standalone_calls) == 1
+        assert "falling back to standalone" in caplog.text
+
+    def test_soft_schedule_failure_downgrade_names_the_fallback(self, caplog):
+        """Issue fix #3: the ``future is None`` soft-failure path in
+        ``_live_send_text`` must warn like the exception path does — the downgrade
+        reason must reach the log even though standalone then succeeds."""
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error, router_calls, standalone_calls = _run(
+                _job(), "Nightly report.", None, standalone_result={"success": True},
+                schedule_failed=True)
+
+        assert error is None
+        assert not router_calls and len(standalone_calls) == 1
+        assert "falling back to standalone" in caplog.text

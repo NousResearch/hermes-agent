@@ -554,7 +554,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         crate::paths::update_in_progress_marker(),
     ) {
         Ok(guard) => {
-            publish_cancel_channel(crate::paths::update_in_progress_marker());
+            publish_cancel_channel(&crate::paths::update_in_progress_marker());
             guard
         }
         Err(owner) => {

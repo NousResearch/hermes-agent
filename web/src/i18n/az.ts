@@ -10,6 +10,9 @@ export const az: Translations = {
     delete: "Sil",
     refresh: "Yenilə",
     retry: "Yenidən cəhd et",
+    loadFailed:
+      "{what} yükləmək mümkün olmadı. İdarə panelinin serverinin işlədiyini yoxla və Yenidən cəhd et düyməsinə bas.",
+    loadFailedDetails: "Təfərrüatlar: {detail}",
     search: "Axtarış...",
     loading: "Yüklənir...",
     create: "Yarat",
@@ -63,7 +66,9 @@ export const az: Translations = {
     activeSessionsLabel: "Aktiv sessiyalar:",
     gatewayStatusLabel: "Şlüzün vəziyyəti:",
     gatewayStrip: {
+      degraded: "Zəifləmiş",
       failed: "Başlatmaq mümkün olmadı",
+      heartbeatStale: "Ürək döyüntüsü passivdir",
       off: "Söndürülüb",
       running: "İşləyir",
       starting: "Başladılır",
@@ -106,6 +111,8 @@ export const az: Translations = {
       "Agentin diski demək olar ki, doludur. Yeni mesajları, xatirələri və parametrləri yadda saxlamaq mümkün olmaya bilər.",
     diskElevatedBanner:
       "Agentin diski dolur. Köhnə sessiyaları silməyi və ya disk həcmini artırmağı nəzərdən keçir.",
+    multiplexStandaloneBanner:
+      "Şlüz yalnız bir profilə xidmət edir. Xidmət göstərilməyən profillər: {profiles}. Səbəb: {reason}. Həll: hermes gateway migrate --multiplex",
     dismiss: "Bağla",
   },
 
@@ -190,6 +197,10 @@ export const az: Translations = {
     failedToDeleteSelected: "Seçilmiş sessiyaları silmək mümkün olmadı",
     resumeInChat: "Söhbətdə davam et",
     newChat: "Yeni söhbət başlat",
+    workspace: "iş sahəsi",
+    workspaceDefault: "Standart",
+    workspaceRescan: "Repozitoriyaları yenidən skan et",
+    workspaceCustom: "Digər yol…",
     previousPage: "Əvvəlki səhifəyə keç",
     nextPage: "Növbəti səhifəyə keç",
     roles: {
@@ -249,6 +260,9 @@ export const az: Translations = {
   },
 
   cron: {
+    loadWhat: "cron tapşırıqları",
+    scriptRequired:
+      "Yalnız skriptlə işləyən tapşırıqlar üçün skript yolu tələb olunur. Script sahəsini doldur və ya tapşırığı yenidən təlimat rejiminə keçir.",
     confirmDeleteMessage:
       "Bu əməliyyat tapşırığı cədvəldən silir. Bunu geri qaytarmaq mümkün deyil.",
     confirmDeleteTitle: "Planlaşdırılmış tapşırığın silinməsi",
@@ -299,6 +313,9 @@ export const az: Translations = {
     noJobs: "Cron tapşırığı tənzimlənməyib. Yuxarıda birini yarat.",
     last: "Sonuncu",
     next: "Növbəti",
+    overdueSince: "Gecikmənin başlanğıcı",
+    schedulerLastTicked:
+      "Planlaşdırıcı sonuncu dəfə {when} işləyib. O vaxtdan bəri icra vaxtı çatmış tapşırıqlar işə salınmayıb.",
     pause: "Fasilə ver",
     resume: "Davam et",
     triggerNow: "İndi işə sal",
@@ -385,6 +402,8 @@ export const az: Translations = {
     disableRuntime: "Deaktiv et",
     enableAfterInstall: "Quraşdırıldıqdan sonra aktiv et",
     enableRuntime: "Aktiv et",
+    toggleTakesEffectAfterRestart:
+      "Yadda saxlanıldı. Dəyişikliyi tətbiq etmək üçün şlüzü yenidən başlat.",
     forceReinstall: "Məcburi yenidən quraşdır (əvvəlcə mövcud qovluğu sil)",
     headline:
       "Hermes plaqinlərini tap, quraşdır, aktiv et və yenilə (`hermes plugins` ilə eyni imkanlar).",
@@ -415,6 +434,8 @@ export const az: Translations = {
     authRequired: "Kimlik təsdiqi tələb olunur",
     authRequiredHint: "Kimliyi təsdiqləmək üçün bu əmri icra et:",
     updateGit: "Git vasitəsilə yenilə",
+    updateConsentBody: (name: string, sha: string) =>
+      `${name} (${sha}) üçün kataloqda sancaqlanmış yeni versiya quraşdırılmış versiyada olmayan imkanlar əlavə edir. Yalnız onlara etibar edirsənsə, bu versiyanı tətbiq et:`,
     versionBadge: "Versiya",
     showInSidebar: "Yan paneldə göstər",
     hideFromSidebar: "Yan paneldən gizlət",
@@ -438,6 +459,9 @@ export const az: Translations = {
   skills: {
     title: "Bacarıqlar",
     searchPlaceholder: "Bacarıq və alət dəstlərində axtarış...",
+    loadWhat: "bacarıqları",
+    browseHub: "Bacarıqlar mərkəzinə bax",
+    createSkill: "Bacarıq yarat",
     enabledOf: "{enabled}/{total} aktivdir",
     all: "Hamısı",
     categories: "Kateqoriyalar",

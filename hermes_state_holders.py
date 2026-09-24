@@ -7,13 +7,12 @@ SQLite connection factory needed by the final lock probe.
 
 from __future__ import annotations
 
-import ctypes
 import errno
+import functools
 import logging
 import os
 import sqlite3
 import sys
-from ctypes import wintypes
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Tuple
 
@@ -320,40 +319,48 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     return other_home_seen
 
 
-# Restart Manager ctypes metadata lives at module level: ``ctypes.POINTER()`` on a freshly defined Structure
-# pins it in ``ctypes._pointer_type_cache`` forever, so rebuilding these per scan leaked one class set per call.
 _RM_ERROR_MORE_DATA = 234
 _RM_SESSION_KEY_LEN = 33  # CCH_RM_SESSION_KEY + 1
 
 
-class _RmUniqueProcess(ctypes.Structure):
-    _fields_ = [("pid", wintypes.DWORD), ("started", wintypes.FILETIME)]
+@functools.cache
+def _rm_ctypes():
+    """Restart Manager ctypes metadata, built once on first scan.
 
+    Once, because ``ctypes.POINTER()`` on a freshly defined Structure pins it in
+    ``ctypes._pointer_type_cache`` forever (a per-scan rebuild leaked a class set per call);
+    lazily, because POSIX processes import this module but never scan with Restart Manager.
+    """
+    import ctypes
+    from ctypes import wintypes
 
-class _RmProcessInfo(ctypes.Structure):
-    _fields_ = [
-        ("process", _RmUniqueProcess),
-        ("app_name", wintypes.WCHAR * 256),  # CCH_RM_MAX_APP_NAME + 1
-        ("service_name", wintypes.WCHAR * 64),  # CCH_RM_MAX_SVC_NAME + 1
-        ("app_type", wintypes.DWORD),
-        ("app_status", wintypes.ULONG),
-        ("ts_session_id", wintypes.DWORD),
-        ("restartable", wintypes.BOOL),
-    ]
+    class _RmUniqueProcess(ctypes.Structure):
+        _fields_ = [("pid", wintypes.DWORD), ("started", wintypes.FILETIME)]
 
+    class _RmProcessInfo(ctypes.Structure):
+        _fields_ = [
+            ("process", _RmUniqueProcess),
+            ("app_name", wintypes.WCHAR * 256),  # CCH_RM_MAX_APP_NAME + 1
+            ("service_name", wintypes.WCHAR * 64),  # CCH_RM_MAX_SVC_NAME + 1
+            ("app_type", wintypes.DWORD),
+            ("app_status", wintypes.ULONG),
+            ("ts_session_id", wintypes.DWORD),
+            ("restartable", wintypes.BOOL),
+        ]
 
-_RM_ARGTYPES = {
-    "RmStartSession": [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR],
-    "RmRegisterResources": [
-        wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
-        wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p,
-    ],
-    "RmGetList": [
-        wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
-        ctypes.POINTER(_RmProcessInfo), ctypes.POINTER(wintypes.DWORD),
-    ],
-    "RmEndSession": [wintypes.DWORD],
-}
+    argtypes = {
+        "RmStartSession": [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR],
+        "RmRegisterResources": [
+            wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
+            wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p,
+        ],
+        "RmGetList": [
+            wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+            ctypes.POINTER(_RmProcessInfo), ctypes.POINTER(wintypes.DWORD),
+        ],
+        "RmEndSession": [wintypes.DWORD],
+    }
+    return _RmProcessInfo, argtypes
 
 
 def _sqlite_family(base: str) -> Tuple[str, str, str]:
@@ -363,14 +370,19 @@ def _sqlite_family(base: str) -> Tuple[str, str, str]:
 
 def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
     """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
+    import ctypes
+    from ctypes import wintypes
+
+    process_info, argtypes = _rm_ctypes()
     # WinDLL per call (not memoised) so the unit test can inject a fake rstrtmgr through ctypes.WinDLL.
     api = ctypes.WinDLL("rstrtmgr", use_last_error=True)
+    for name, types in argtypes.items():
+        fn = getattr(api, name)
+        fn.argtypes = types
+        fn.restype = wintypes.DWORD
     start, register, get_list, end = (
         api.RmStartSession, api.RmRegisterResources, api.RmGetList, api.RmEndSession
     )
-    for name, fn in zip(_RM_ARGTYPES, (start, register, get_list, end)):
-        fn.argtypes = _RM_ARGTYPES[name]
-        fn.restype = wintypes.DWORD
 
     db_abspath = os.path.abspath(os.fspath(db_path))
     resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
@@ -392,7 +404,7 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
         # bounded race with a re-sized buffer.
         needed, reasons = wintypes.UINT(), wintypes.DWORD()
         for _ in range(4):
-            apps = (_RmProcessInfo * needed.value)()
+            apps = (process_info * needed.value)()
             count = wintypes.UINT(needed.value)
             rc = get_list(
                 session, ctypes.byref(needed), ctypes.byref(count),

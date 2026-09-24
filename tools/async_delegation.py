@@ -141,7 +141,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", "child_session_ids", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()
@@ -226,8 +226,7 @@ def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: 
 
 
 def recover_abandoned_delegations() -> int:
-    """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
-    recorded (``record_unit_child``) are replayed with their real results."""
+    """Recover dead owners, retaining recorded child results and closing their open session rows."""
     try:
         from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
     except Exception:
@@ -245,7 +244,11 @@ def recover_abandoned_delegations() -> int:
             ):
                 continue
             task = json.loads(task_json or "{}")
+            interrupted = bool(task.get("shutdown_requested"))
+            status = "interrupted" if interrupted else "unknown"
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
+            if interrupted:
+                error = "Delegation was interrupted during shutdown before recording a terminal result."
             recovered_results = _recovered_results(task, result_json, error)
             if recovered_results:
                 done = sum(1 for r in recovered_results if r.get("status") != "unknown")
@@ -265,15 +268,20 @@ def recover_abandoned_delegations() -> int:
                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None, "error": error, **diagnostics,
+                "status": status, "summary": None, "error": error, **diagnostics,
                 **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
-            result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
+            result = {"status": status, "summary": None, "error": event["error"], **diagnostics,
                       **({"results": recovered_results} if recovered_results else {})}
-            conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
+            conn.execute("""UPDATE async_delegations SET state=?, completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
-                   WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
+                   WHERE delegation_id=?""", (status, now, now, json.dumps(event), json.dumps(result), delegation_id))
+            # Other units can share this parent; only the exact children of the dead owner are ours.
+            for sid in (task.get("child_session_ids") or {}).values():
+                if isinstance(sid, str) and sid:
+                    conn.execute("""UPDATE sessions SET ended_at=?, end_reason='interrupted'
+                           WHERE id=? AND source='subagent' AND ended_at IS NULL""", (now, sid))
             recovered += 1
     return recovered
 
@@ -557,6 +565,7 @@ def _dispatch_admitted(
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    child_session_ids: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -579,6 +588,7 @@ def _dispatch_admitted(
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
         "slot_key": slot_key or delegation_id,
         **({"task_transcripts": dict(task_transcripts)} if task_transcripts else {}),
+        **({"child_session_ids": dict(child_session_ids)} if child_session_ids else {}),
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # The one stale-monitor thread serves every profile and starts with an empty Context;
@@ -670,6 +680,7 @@ def dispatch_async_delegation_batch(
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    child_session_ids: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -687,7 +698,7 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes, task_transcripts=task_transcripts,
+        task_indexes=task_indexes, task_transcripts=task_transcripts, child_session_ids=child_session_ids,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -1005,6 +1016,18 @@ def interrupt_all(reason: str = "shutdown") -> int:
     normal finalize path."""
     with _records_lock:
         targets = [r for r in _records.values() if r.get("status") in _ACTIVE_STATES]
+    # Daemon workers may not reach _finalize before exit. Persist intent first,
+    # so dead-owner recovery can distinguish a graceful shutdown from a crash.
+    if targets:
+        with _DB_LOCK, _transaction() as conn:
+            for record in targets:
+                row = conn.execute("SELECT task_json FROM async_delegations WHERE delegation_id=? AND state='running'",
+                                   (record["delegation_id"],)).fetchone()
+                if row is not None:
+                    task = json.loads(row[0] or "{}")
+                    task["shutdown_requested"] = True
+                    conn.execute("UPDATE async_delegations SET task_json=? WHERE delegation_id=? AND state='running'",
+                                 (json.dumps(task), record["delegation_id"]))
     return _interrupt_records(targets, "interrupt_all", reason, "Interrupted %d async delegation(s) (%s)")
 
 

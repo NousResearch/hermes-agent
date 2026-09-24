@@ -1507,6 +1507,8 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "nous": _nous_catalog,
     "stepfun": _api_key_provider_live,
     "gmi": _api_key_provider_live,
+    "tencent-tokenhub": _api_key_provider_live,
+    "tencent-tokenplan": _api_key_provider_live,
     "anthropic": _anthropic_catalog,
     "ai-gateway": lambda normalized, force_refresh: _fetch_ai_gateway_models() or None,
     # DeepInfra's generic /models mixes chat, image, video, speech and embedding models; the tagged

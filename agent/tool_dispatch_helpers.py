@@ -137,6 +137,7 @@ def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
     try:
         from tools.tool_search import (
             CONNECTOR_BATCH_SENTINEL,
+            LOCAL_BATCH_SENTINEL,
             TOOL_CALL_NAME,
             is_connector_name,
             resolve_underlying_call,
@@ -159,6 +160,8 @@ def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
                 for e in entries
             ):
                 return underlying, underlying_args
+            return tool_name, function_args
+        if underlying == LOCAL_BATCH_SENTINEL:
             return tool_name, function_args
         return underlying, underlying_args
     except Exception:

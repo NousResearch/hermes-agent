@@ -867,7 +867,7 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
@@ -876,6 +876,11 @@ class OpenAICompatRoutesMixin:
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
         try:
             await response.write(_sse_frame(_chunk({"role": "assistant"})))
+            # MEDIA: tags (e.g. generated images) must never reach the wire raw — remote
+            # clients can't read local paths. Deltas can split a tag across chunks, so
+            # buffer to line boundaries, resolve complete lines, and flush the tail once
+            # the agent finishes. Same conversion the non-streaming path applies.
+            text_buf = ""
             async for delta in _iter_stream_items(stream_q, agent_task, response):
                 if delta is None:
                     break
@@ -891,7 +896,18 @@ class OpenAICompatRoutesMixin:
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
                     await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
-                    await response.write(_sse_frame(_chunk({"content": delta})))
+                    if isinstance(delta, str) and ("MEDIA:" in text_buf or "MEDIA:" in delta):
+                        text_buf += delta
+                        nl = text_buf.rfind("\n")
+                        if nl >= 0:
+                            resolved = _resolve_media_to_data_urls(text_buf[:nl + 1])
+                            await response.write(_sse_frame(_chunk({"content": resolved})))
+                            text_buf = text_buf[nl + 1:]
+                    else:
+                        await response.write(_sse_frame(_chunk({"content": delta})))
+            if text_buf:
+                await response.write(
+                    _sse_frame(_chunk({"content": _resolve_media_to_data_urls(text_buf)})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}

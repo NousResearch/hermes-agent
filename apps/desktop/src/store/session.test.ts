@@ -606,6 +606,49 @@ describe('mergeSessionPage', () => {
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
   })
 
+  it('drops an old segment kept in the keep set after the chain reorg minted a fresh root (#85331)', () => {
+    // The reporter's unit repro: a manual compression-chain reorganization
+    // relinked old segments under a NEW root id. The backend now returns the
+    // tip (carrying _lineage_ids with every chain segment); the previous
+    // list still holds an old SEGMENT row that is in the keep set (it was
+    // the working/selected session at refresh time). Its id is absent from
+    // the incoming page and unmatched by the root-only lineage key, so it
+    // used to survive as a title-less ghost row the backend never sent.
+    const previous = [
+      session({ id: 'seg2' }),  // old segment: no lineage of its own
+      session({ id: 'tip', _lineage_root_id: 'fresh-root' }),
+      session({ id: 'other' })
+    ] as SessionInfo[]
+
+    const incoming = [
+      // The reorganized chain served as its tip, with every chain id.
+      session({ id: 'tip', _lineage_ids: ['seg1', 'seg2', 'fresh-root', 'tip'], _lineage_root_id: 'fresh-root' }),
+      session({ id: 'other' })
+    ] as SessionInfo[]
+
+    // seg2 was the working session at refresh time — in the keep set.
+    const merged = mergeSessionPage(previous, incoming, ['seg2'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+
+  it('keeps a pinned session aged off the page even when another row carries a deep lineage', () => {
+    // The absorption filter must NOT evict legitimately-kept rows: a pinned
+    // row's own id never appears inside ANOTHER session's lineage. Guard for
+    // the #85331 fix — this is the pre-existing pinned-aging-off behavior
+    // ('keeps a pinned session that has aged off the recent page') plus a
+    // deep _lineage_ids on the incoming page.
+    const previous = [session({ id: 'recent' }), session({ id: 'pinned' })]
+
+    const incoming = [
+      session({ id: 'recent', _lineage_ids: ['recent', 'recent-root'], _lineage_root_id: 'recent-root' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, ['pinned'])
+
+    expect(merged.map(s => s.id)).toEqual(['pinned', 'recent'])
+  })
+
   it('never regresses last_active behind an optimistic user-send bump', () => {
     const previous = [session({ id: 'old', last_active: 9_000 })]
     const incoming = [session({ id: 'old', last_active: 100, message_count: 4 })]

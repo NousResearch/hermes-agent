@@ -6,6 +6,9 @@ when ``HERMES_STANDIN_SLACK_API`` is set (e.g. ``http://127.0.0.1:PORT/api/``) e
 the Slack adapter builds defaults its ``base_url`` to the stand-in, which also moves
 ``apps.connections.open`` and therefore the Socket Mode websocket. Nothing in Hermes is touched: the
 redirect lives at the SDK/HTTP boundary, exactly where DNS would send the real traffic.
+
+Side effect: when the variable is set, slack_sdk (and aiohttp) are imported eagerly at interpreter
+startup, before Hermes runs, so the child pays that import up front even if Slack never connects.
 """
 
 import os

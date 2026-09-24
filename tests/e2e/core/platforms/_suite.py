@@ -1,19 +1,20 @@
 """Binds the shared contract (``_contract.py``) to one adapter driver for a test module.
 
-A test module declares ``KNOWN`` (scenario -> "#<issue> <symptom>") and gets:
+A test module declares ``KNOWN`` (scenario -> (pattern, "#<issue> <symptom>")) and gets:
 
 * two module-scoped rigs: ``rig`` (the adapter's default delivery config, ``agent.disabled_toolsets:
-  [file]``, supervisor-owned so ``/restart`` exits 75) and ``rig_stream`` (edit-streaming on,
-  ``platform_toolsets.<platform>: [file]``);
-* one parametrized ``test_contract`` over every scenario, KNOWN ones as ``xfail(strict=True)`` so
-  a fix turns them red until the entry is removed.
+  [file]``, supervisor-owned so ``/restart`` exits 75) and ``rig_stream`` (streaming on with the
+  platform's default transport, ``platform_toolsets.<platform>: [file]``);
+* one parametrized ``test_contract`` over every scenario. A KNOWN scenario runs its final assertions
+  under ``known_failure(pattern, reason)`` (``Rig.gate``): it xfails only while it fails with that
+  bug's own message, fails on anything else, and passes once the fix lands, in either merge order.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pytest
 
@@ -32,7 +33,10 @@ SCENARIOS: Dict[str, Tuple[str, Callable[..., None]]] = {
         r, t, d / "victim")),
     "disabled_toolsets": ("rig", lambda r, t, d: C.disabled_toolsets_are_honored(r, t)),
     "heic_as_image": ("rig", lambda r, t, d: C.heic_document_reaches_agent_as_image(r, t)),
+    "stream_reply_once": ("rig_stream", lambda r, t, d: C.streamed_reply_shown_once(r, t)),
     "stream_finalize_rejected": ("rig_stream", lambda r, t, d: C.rejected_finalize_leaves_one_copy(r, t)),
+    "stream_finalize_rejected_group": ("rig_stream",
+                                       lambda r, t, d: C.rejected_finalize_leaves_one_copy(r, t, group=True)),
     "stream_trailing_whitespace": ("rig_stream",
                                    lambda r, t, d: C.streamed_reply_ending_in_whitespace_shown_once(r, t)),
     "platform_toolsets": ("rig_stream", lambda r, t, d: C.platform_toolsets_are_honored(r, t)),
@@ -41,24 +45,22 @@ SCENARIOS: Dict[str, Tuple[str, Callable[..., None]]] = {
 }
 
 
-def scenario_params(known: Dict[str, str], skip: Dict[str, str] | None = None) -> List[Any]:
-    out = []
-    for name in SCENARIOS:
-        marks = []
-        if name in known:
-            marks.append(pytest.mark.xfail(strict=True, reason=known[name]))
-        if skip and name in skip:
-            marks.append(pytest.mark.skip(reason=skip[name]))
-        out.append(pytest.param(name, id=name, marks=marks))
-    return out
+def scenario_params(skip: Optional[Dict[str, str]] = None) -> List[Any]:
+    return [pytest.param(name, id=name, marks=[pytest.mark.skip(reason=skip[name])] if skip and name in skip else [])
+            for name in SCENARIOS]
 
 
-def run_scenario(name: str, request: pytest.FixtureRequest, tmp_path: Path) -> None:
+def run_scenario(name: str, request: pytest.FixtureRequest, tmp_path: Path,
+                 known: Optional[Dict[str, Tuple[str, str]]] = None) -> None:
     fixture, runner = SCENARIOS[name]
     rig = request.getfixturevalue(fixture)
     assert rig.gw.alive(), f"gateway died before {name}\n{rig.gw.tail()}"
-    rig.gw.wait_idle()  # the previous scenario's last turn fully closed (see barrier())
-    runner(rig, name.replace("_", ""), tmp_path)
+    rig.gw.wait_idle()  # no agent run of the previous scenario still in flight
+    rig.known = (known or {}).get(name)
+    try:
+        runner(rig, name.replace("_", ""), tmp_path)
+    finally:
+        rig.known = None
 
 
 class _RestartableRig(C.Rig):
@@ -106,7 +108,9 @@ def rig_fixtures(driver_cls: type) -> Tuple[Any, Any]:
 
     @pytest.fixture(scope="module")
     def rig(tmp_path_factory: pytest.TempPathFactory):
-        r = _make(tmp_path_factory, "a", {"agent": {"disabled_toolsets": ["file"]}},
+        # model.supports_vision: the fake model has no vision metadata, so photos would be routed
+        # through vision pre-analysis and no image part could ever reach the model request
+        r = _make(tmp_path_factory, "a", {"agent": {"disabled_toolsets": ["file"]}, "model": {"supports_vision": True}},
                   {"HERMES_GATEWAY_EXTERNAL_SUPERVISOR": "1"})
         yield r
         _teardown(r)

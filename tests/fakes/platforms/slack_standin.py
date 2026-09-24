@@ -10,8 +10,12 @@ Socket Mode client connects, receives ``hello``, and from then on the test pushe
 Web API semantics kept faithful to Slack: every response is HTTP 200 JSON with ``ok``; failures are
 ``{"ok": false, "error": "<code>"}`` (the SDK raises ``SlackApiError`` on them); bodies arrive
 form-encoded or JSON (structured fields like ``blocks`` may be JSON strings); ``chat.postMessage``
-above 40,000 chars answers ``msg_too_long``. Unknown methods answer ``{"ok": true}`` and are still
-recorded so a test can see them.
+above 40,000 chars answers ``msg_too_long``. Unknown methods answer ``{"ok": false, "error":
+"unknown_method"}`` like Slack (recorded as faulted), so an unmodelled call is never a silent success.
+
+Native streams: a fault's ``match`` for ``chat.appendStream``/``chat.stopStream`` also sees
+``_stream_text`` (the message text as it would read after this call), so a test can reject the call
+that completes a given piece of the reply however the deltas were cut.
 """
 
 from __future__ import annotations
@@ -126,13 +130,17 @@ class SlackStandin(StandinServer):
             body = {"ok": False, "error": "invalid_auth"}
             self.record(method, params, body, faulted=True)
             return self._reply(body)
-        fault = self.take_fault(method, params)
+        fault = self.take_fault(method, self._fault_view(method, params))
         if fault is not None:
             self.record(method, params, fault.body, faulted=True)
             return web.json_response(fault.body, status=fault.status)
         handler = getattr(self, "_m_" + method.replace(".", "_"), None)
+        if handler is None:
+            body = {"ok": False, "error": "unknown_method"}
+            self.record(method, params, body, faulted=True)
+            return self._reply(body)
         try:
-            result = handler(params) if handler else {}
+            result = handler(params)
         except _ApiError as exc:
             body = {"ok": False, "error": exc.code}
             self.record(method, params, body, faulted=True)
@@ -140,6 +148,14 @@ class SlackStandin(StandinServer):
         body = {"ok": True, **(result or {})}
         self.record(method, params, body)
         return self._reply(body)
+
+    def _fault_view(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        if method not in ("chat.appendStream", "chat.stopStream"):
+            return params
+        with self._lock:
+            vis = self._visible.get((str(params.get("channel", "")), str(params.get("ts", ""))))
+            before = vis.text if vis is not None else ""
+        return {**params, "_stream_text": before + str(params.get("markdown_text") or "")}
 
     async def _upload(self, request: web.Request) -> web.Response:
         fid = request.match_info["file_id"]
@@ -270,6 +286,11 @@ class SlackStandin(StandinServer):
     def _m_conversations_info(self, p: Dict[str, Any]) -> Dict[str, Any]:
         return {"channel": self._channel(str(p.get("channel", "")))}
 
+    def _m_users_conversations(self, _p: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            ids = sorted(c for c in self._history if not c.startswith("D"))
+        return {"channels": [self._channel(c) for c in ids], "response_metadata": {"next_cursor": ""}}
+
     def _m_conversations_open(self, p: Dict[str, Any]) -> Dict[str, Any]:
         users = str(p.get("users", "")).split(",")[0]
         return {"channel": self._channel("D" + users[1:])}
@@ -380,6 +401,13 @@ class SlackStandin(StandinServer):
 
     def _m_chat_stopStream(self, p: Dict[str, Any]) -> Dict[str, Any]:
         return self._append(p, stop=True)
+
+    def _m_ok(self, _p: Dict[str, Any]) -> Dict[str, Any]:
+        return {}
+
+    # Side-effect-only methods the adapter calls (reactions, assistant thread status/title/prompts).
+    _m_reactions_add = _m_reactions_remove = _m_ok
+    _m_assistant_threads_setStatus = _m_assistant_threads_setTitle = _m_assistant_threads_setSuggestedPrompts = _m_ok
 
     def _m_files_getUploadURLExternal(self, p: Dict[str, Any]) -> Dict[str, Any]:
         fid = f"F{next(self._ids):08d}"

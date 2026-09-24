@@ -3,8 +3,8 @@
 The child is ``hermes gateway run`` on a throwaway HOME; the adapter's own SDK (discord.py via the ``discord_shim`` sitecustomize) talks to
 ``tests/fakes/platforms/discord_standin.py``, a local stand-in shaped per the platform's published
 API. Scenarios live in ``_contract.py`` and are identical for every adapter; this file only binds the
-Discord driver and lists the scenarios that are red on main (``KNOWN``, strict xfail: a fix turns
-the entry red until it is removed).
+Discord driver and lists the scenarios that are red on main (``KNOWN``: scenario -> (the bug's failure-message
+pattern, reason); see ``_suite.py``: xfail only on that message, pass once the fix lands).
 """
 
 from __future__ import annotations
@@ -21,8 +21,10 @@ pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group gateway harness"),
 ]
 
-KNOWN: dict[str, str] = {
-    "planned_restart_notice": "#121325 a replayed /restart restarts the gateway again (guard needs Telegram update ids)",
+KNOWN: dict[str, tuple[str, str]] = {
+    "planned_restart_notice": (
+        r"a redelivered /restart restarted the gateway again|a second restart ack means the replayed /restart was obeyed",
+        "#121325 a replayed /restart restarts the gateway again (guard needs Telegram update ids)"),
 }
 SKIP: dict[str, str] = {
     "heic_as_image": "image attachments are fetched by URL behind the SSRF guard, which refuses the loopback "
@@ -32,6 +34,6 @@ SKIP: dict[str, str] = {
 rig, rig_stream = rig_fixtures(DiscordDriver)
 
 
-@pytest.mark.parametrize("scenario", scenario_params(KNOWN, SKIP))
+@pytest.mark.parametrize("scenario", scenario_params(SKIP))
 def test_contract(scenario: str, request: pytest.FixtureRequest, tmp_path) -> None:
-    run_scenario(scenario, request, tmp_path)
+    run_scenario(scenario, request, tmp_path, KNOWN)

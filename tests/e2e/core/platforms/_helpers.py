@@ -125,7 +125,7 @@ class GatewayUnderTest:
     def db_path(self) -> Path:
         return self.hermes_home / "state.db"
 
-    def start(self, timeout: float = 120.0) -> "GatewayUnderTest":
+    def start(self, timeout: float = 60.0) -> "GatewayUnderTest":
         assert self.proc is None or self.proc.poll() is not None
         log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 - handed to the child
         self.proc = subprocess.Popen(
@@ -184,8 +184,13 @@ class GatewayUnderTest:
         except (OSError, ValueError, TypeError):
             return None
 
-    def wait_idle(self, timeout: float = 90.0) -> None:
-        """Every turn finished (not merely its reply visible): the next inbound starts a fresh turn."""
+    def wait_idle(self, timeout: float = 30.0) -> None:
+        """No agent run is in flight (``active_agents == 0`` in gateway_state.json).
+
+        NOT delivery or adapter quiescence: the count drops when the agent run returns, before the
+        adapter sends the normal final reply and closes the turn, and a same-chat inbound in that
+        window can be dropped (#121393). Ordering after a turn's delivery comes from a same-chat
+        barrier (``_contract.barrier``); this only keeps a new scenario from racing the last one."""
         wait_until(lambda: self.active_agents() == 0 or not self.alive(), "gateway idle (active_agents == 0)",
                    timeout=timeout, on_timeout=self.tail)
 

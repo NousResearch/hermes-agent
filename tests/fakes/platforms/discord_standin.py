@@ -238,7 +238,7 @@ class DiscordStandin(StandinServer):
             return _json(body, status=401)
         if name == "unknown":
             body = {"message": "404: Not Found", "code": 0}
-            self.record(name, {**params, "_method": request.method, "_path": path}, body)
+            self.record(name, {**params, "_method": request.method, "_path": path}, body, faulted=True)
             return _json(body, status=404)
         fault = self.take_fault(name, params)
         if fault is not None:
@@ -252,7 +252,7 @@ class DiscordStandin(StandinServer):
             body = {"message": f"stand-in handler error: {exc!r}", "code": 0}
             self.record(name, {**params, "_error": repr(exc)}, body, faulted=True)
             return _json(body, status=500)
-        self.record(name, params, result)
+        self.record(name, params, result, faulted=status >= 400)
         if status == 204:
             return web.Response(status=204)
         return _json(result, status=status)
@@ -344,6 +344,9 @@ class DiscordStandin(StandinServer):
         if len(p.get("content") or "") > MAX_TEXT:
             return 400, {"message": "Invalid Form Body", "code": 50035, "errors": {"content": {"_errors": [
                 {"code": "BASE_TYPE_MAX_LENGTH", "message": "Must be 2000 or fewer in length."}]}}}
+        if not str(p.get("content") or "").strip() and not any(
+                p.get(k) for k in ("embeds", "components", "_files", "sticker_ids", "poll", "attachments")):
+            return 400, {"message": "Cannot send an empty message", "code": 50006}
         return 200, self._bot_message(cid, p)
 
     def _edit(self, cid: str, mid: str, p: Dict[str, Any]) -> Tuple[int, Any]:

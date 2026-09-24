@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from tests.fakes.platforms._standin import Call, Visible
+from tests.fakes.platforms._standin import Call, Fault, Visible
 from tests.fakes.platforms.slack_standin import SlackStandin
 
 _SHIM = Path(__file__).resolve().parents[3] / "fakes" / "platforms" / "slack_shim"
@@ -38,6 +38,7 @@ class SlackDriver:
     limit = 39_000  # SlackAdapter.MAX_MESSAGE_LENGTH (Slack rejects > 40,000 with msg_too_long)
     user_id = "U0000111"
     other_user_id = "U0000222"
+    stream_users = tuple(f"U0000{i}" for i in range(301, 307))
     group_chat_id = "C0000123"
     home_channel = "C0000999"
 
@@ -55,7 +56,7 @@ class SlackDriver:
 
     def gateway_env(self) -> Dict[str, str]:
         return {"SLACK_BOT_TOKEN": self.standin.bot_token, "SLACK_APP_TOKEN": self.standin.app_token,
-                "SLACK_ALLOWED_USERS": self.user_id, "SLACK_HOME_CHANNEL": self.home_channel,
+                "SLACK_ALLOWED_USERS": ",".join((self.user_id, *self.stream_users)), "SLACK_HOME_CHANNEL": self.home_channel,
                 "HERMES_STANDIN_SLACK_API": self.standin.api_base, "PYTHONPATH_PREPEND": str(_SHIM)}
 
     def connected(self) -> bool:
@@ -84,8 +85,13 @@ class SlackDriver:
     def buttons(self, chat_id: str) -> List[Dict[str, Any]]:
         return self.standin.buttons(chat_id)
 
-    def click(self, chat_id: str, button: Dict[str, Any], user_id: Optional[str] = None) -> None:
-        self.standin.block_action(user_id or self.user_id, chat_id, str(button["message_id"]), button)
+    def click(self, chat_id: str, button: Dict[str, Any], user_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.standin.block_action(user_id or self.user_id, chat_id, str(button["message_id"]), button)
+
+    def click_answered(self, handle: Dict[str, Any]) -> bool:
+        """Bolt acks an interactive envelope first, then authorizes the clicker synchronously; a
+        refused click is only logged, so the ack is the last platform-visible sign of it."""
+        return self.standin.acked(handle)
 
     def slash(self, command: str, text: str = "", chat_id: Optional[str] = None) -> Dict[str, Any]:
         return self.standin.slash(self.user_id, chat_id or self.standin.dm_channel(self.user_id), command, text)
@@ -113,15 +119,27 @@ class SlackDriver:
     def edits(self, chat_id: str) -> List[Call]:
         return self._ok(("chat.update", "chat.appendStream"), chat_id)
 
+    def format_rejections(self, chat_id: str) -> List[Call]:
+        return []  # mrkdwn never fails to parse; Slack renders what it cannot format as text
+
     def describe(self) -> str:
         return self.standin.describe()
 
     # faults ------------------------------------------------------------------------------------
-    def fail_send(self, *, times: int = 1, match: Optional[Callable[[str], bool]] = None) -> None:
+    def fail_send(self, *, times: int = 1, match: Optional[Callable[[str], bool]] = None) -> List[Fault]:
         pred = (lambda p: match(str(p.get("text", "")))) if match else None
-        self.standin.fail("chat.postMessage", {"ok": False, "error": "channel_not_found"}, times=times, match=pred)
+        return [self.standin.fail("chat.postMessage", {"ok": False, "error": "channel_not_found"}, times=times,
+                                  match=pred)]
 
-    def fail_edit(self, *, times: int = 1, match: Optional[Callable[[str], bool]] = None) -> None:
-        pred = (lambda p: match(str(p.get("text", "")) + str(p.get("markdown_text", "")))) if match else None
-        for method in ("chat.update", "chat.appendStream", "chat.stopStream"):
-            self.standin.fail(method, {"ok": False, "error": "cant_update_message"}, times=times, match=pred)
+    def fail_edit(self, *, times: int = 1, match: Optional[Callable[[str], bool]] = None) -> List[Fault]:
+        pred = (lambda p: match(str(p.get("text", "")))) if match else None
+        return [self.standin.fail("chat.update", {"ok": False, "error": "cant_update_message"}, times=times,
+                                  match=pred)]
+
+    def fail_finalize(self, has_footer: Callable[[str], bool], *, group: bool) -> List[Fault]:
+        """Native streaming (startStream/appendStream/stopStream) is the transport in DMs and channels:
+        refuse the stream call whose resulting text completes the reply (``_stream_text`` = what the
+        message would read after it), however the deltas were cut."""
+        pred = lambda p: has_footer(str(p.get("_stream_text", "")))  # noqa: E731
+        return [self.standin.fail(m, {"ok": False, "error": "message_not_in_streaming_state"}, times=50, match=pred)
+                for m in ("chat.appendStream", "chat.stopStream")]

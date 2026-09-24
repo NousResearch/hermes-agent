@@ -4,14 +4,19 @@ The real ``plugins/platforms/telegram`` adapter reaches it through python-telegr
 ``base_url``/``base_file_url`` (``platforms.telegram.extra.base_url``), so every request crosses the
 real PTB HTTP stack: ``POST {base}/bot<token>/<method>`` with form/JSON/multipart parameters, and
 long-poll ``getUpdates`` that returns queued ``Update`` objects. Only the methods the adapter calls
-are implemented; any other method answers ``ok: true, result: true`` and is still recorded, so a test
-can see it.
+are implemented; any other method answers ``404 Not Found`` like the real Bot API (recorded as
+faulted), so a call the stand-in does not model can never be mistaken for a success.
+
+Payload fidelity kept to the Bot API: message text must be 1..4096 chars after entity parsing
+(``message text is empty`` / ``message is too long``), and with ``parse_mode=MarkdownV2`` every
+reserved character outside an entity must be backslash-escaped, else ``400 can't parse entities``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import itertools
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +27,82 @@ from tests.fakes.platforms._standin import StandinServer, Visible, decode_value
 BOT_ID = 7000000001
 BOT_USERNAME = "hermes_standin_bot"
 MAX_TEXT = 4096
+# MarkdownV2 (https://core.telegram.org/bots/api#markdownv2-style): these must be escaped outside
+# entities; inside ``code``/```pre``` only ` and \ are special.
+_MDV2_RESERVED = set("_*[]()~`>#+-=|{}.!")
+_MDV2_LINK = re.compile(r"\[((?:\\.|[^\]\\])*)\]\(((?:\\.|[^)\\])*)\)")
+
+
+def mdv2_error(text: str) -> str | None:
+    """The Bot API's ``can't parse entities`` reason for ``text`` in MarkdownV2, or None if it parses.
+
+    A faithful subset of the server's parser: escapes, code/pre spans, links, the paired style
+    markers (``*`` ``_`` ``__`` ``~`` ``||``) and line-leading ``>`` quotes. Any other reserved
+    character must carry a preceding backslash.
+    """
+    i, n, open_marks = 0, len(text), []
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if text.startswith("```", i):
+            end = text.find("```", i + 3)
+            if end < 0:
+                return "Can't find end of Pre entity at byte offset %d" % i
+            i = end + 3
+            continue
+        if ch == "`":
+            end = text.find("`", i + 1)
+            if end < 0:
+                return "Can't find end of Code entity at byte offset %d" % i
+            i = end + 1
+            continue
+        if ch == "[":
+            m = _MDV2_LINK.match(text, i)
+            if not m:
+                return "Character '[' is reserved and must be escaped with the preceding '\\'"
+            i = m.end()
+            continue
+        if ch == ">" and (i == 0 or text[i - 1] == "\n"):
+            i += 1
+            continue
+        mark = next((mk for mk in ("||", "__", "*", "_", "~") if text.startswith(mk, i)), None)
+        if mark is not None:
+            if open_marks and open_marks[-1] == mark:
+                open_marks.pop()
+            else:
+                open_marks.append(mark)
+            i += len(mark)
+            continue
+        if ch in _MDV2_RESERVED:
+            return f"Character '{ch}' is reserved and must be escaped with the preceding '\\'"
+        i += 1
+    if open_marks:
+        return f"Can't find end of the entity starting with '{open_marks[-1]}'"
+    return None
+
+
+class BotApiError(Exception):
+    """A Bot API ``ok: false`` reply (``description`` + ``error_code``) from a method handler."""
+
+    def __init__(self, description: str, code: int = 400) -> None:
+        super().__init__(description)
+        self.description, self.code = description, code
+
+
+def _check_text(p: Dict[str, Any], field: str = "text") -> str:
+    text = str(p.get(field) or "")
+    if p.get("parse_mode") == "MarkdownV2":
+        why = mdv2_error(text)
+        if why:
+            raise BotApiError(f"Bad Request: can't parse entities: {why}")
+        text = re.sub(r"\\(.)", r"\1", text)  # length and emptiness count the parsed text
+    if not text.strip():
+        raise BotApiError("Bad Request: message text is empty")
+    if len(text) > MAX_TEXT:
+        raise BotApiError("Bad Request: message is too long")
+    return str(p.get(field) or "")
 
 
 class TelegramStandin(StandinServer):
@@ -38,6 +119,8 @@ class TelegramStandin(StandinServer):
         # (chat_id, message_id) -> Visible for BOT messages only
         self._visible: Dict[tuple, Visible] = {}
         self.chats: Dict[str, Dict[str, Any]] = {}
+        # (chat_id, draft_id) -> latest draft preview text (sendMessageDraft: ephemeral, not a message)
+        self.drafts: Dict[tuple, str] = {}
 
     @property
     def api_base(self) -> str:
@@ -86,7 +169,16 @@ class TelegramStandin(StandinServer):
             self.record(method, params, fault.body, faulted=True)
             return web.json_response(fault.body, status=fault.status)
         handler = getattr(self, f"_m_{method}", None)
-        result = handler(params) if handler else True
+        if handler is None:
+            body = {"ok": False, "error_code": 404, "description": "Not Found"}
+            self.record(method, params, body, faulted=True)
+            return web.json_response(body, status=404)
+        try:
+            result = handler(params)
+        except BotApiError as exc:
+            body = {"ok": False, "error_code": exc.code, "description": exc.description}
+            self.record(method, params, body, faulted=True)
+            return web.json_response(body, status=exc.code)
         self.record(method, params, result)
         return web.json_response({"ok": True, "result": result})
 
@@ -160,7 +252,30 @@ class TelegramStandin(StandinServer):
         return {**self._chat(p["chat_id"]), "accent_color_id": 0, "max_reaction_count": 11}
 
     def _m_sendMessage(self, p: Dict[str, Any]) -> Dict[str, Any]:
-        return self._bot_message(p, text=p.get("text", ""))
+        return self._bot_message(p, text=_check_text(p))
+
+    def _m_sendMessageDraft(self, p: Dict[str, Any]) -> bool:
+        """Animate a private-chat draft preview; not a message (no message_id)."""
+        if not int(p.get("draft_id") or 0):
+            raise BotApiError("Bad Request: draft_id must be non-zero")
+        text = _check_text(p)
+        with self._lock:
+            self.drafts[(str(p["chat_id"]), int(p["draft_id"]))] = text
+        return True
+
+    def _m_sendRichMessageDraft(self, p: Dict[str, Any]) -> bool:
+        if not int(p.get("draft_id") or 0):
+            raise BotApiError("Bad Request: draft_id must be non-zero")
+        with self._lock:
+            self.drafts[(str(p["chat_id"]), int(p["draft_id"]))] = str(p.get("text") or p.get("content") or "")
+        return True
+
+    def _ok_true(self, _p: Dict[str, Any]) -> bool:
+        return True
+
+    # Side-effect-only methods the adapter calls (reactions, typing, command menu, webhook reset).
+    _m_setMessageReaction = _m_sendChatAction = _m_setMyCommands = _m_deleteMyCommands = _ok_true
+    _m_setMyShortDescription = _m_setMyDescription = _m_deleteWebhook = _m_answerCallbackQuery = _ok_true
 
     def _m_sendPhoto(self, p: Dict[str, Any]) -> Dict[str, Any]:
         return self._bot_message(p, caption=p.get("caption", ""), _kind="photo",
@@ -171,6 +286,7 @@ class TelegramStandin(StandinServer):
                                  document={"file_id": "out-doc", "file_unique_id": "od"})
 
     def _m_editMessageText(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        _check_text(p)
         chat_id, mid = str(p["chat_id"]), str(p["message_id"])
         with self._lock:
             vis = self._visible.get((chat_id, mid))

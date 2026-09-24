@@ -54,13 +54,13 @@ vi.mock('./avatar-image', () => ({ isBackfilledFacePng: () => false }))
 vi.mock('./canonical-chat', () => ({ ensureBotMetadata: vi.fn() }))
 
 /** Every `host.request` recorded, with the params frozen at call time. */
-function recordRequests(reply: (method: string) => unknown = () => ({})) {
+function recordRequests(reply: (method: string, params: Record<string, unknown>) => unknown = () => ({})) {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = []
 
   hostMock.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     calls.push({ method, params: structuredClone(params ?? {}) })
 
-    return reply(method)
+    return reply(method, params)
   })
 
   return calls
@@ -77,6 +77,82 @@ beforeEach(() => {
 })
 
 describe('a save reports what the SERVER did, not just what the screen shows', () => {
+  it('rebases a stale appearance patch onto the newer server title', async () => {
+    let serverMeta = { sectionId: 'old-section', sectionName: 'Old section', title: 'New title' }
+    let serverRevision = 6
+
+    recordRequests((method, params) => {
+      if (method === 'profiles.list') {
+        return {
+          profiles: [
+            {
+              name: 'researcher',
+              ui_meta: { 'hermes-bots': serverMeta },
+              ui_meta_revisions: { 'hermes-bots': serverRevision }
+            }
+          ]
+        }
+      }
+
+      if (method === 'profiles.configure') {
+        const expected = (params.ui_meta_expected_revisions as Record<string, number> | undefined)?.['hermes-bots']
+
+        if (expected !== serverRevision) {
+          return { applied: { ui_meta: false } }
+        }
+
+        serverMeta = (params.ui_meta as Record<string, typeof serverMeta>)['hermes-bots']
+        serverRevision += 1
+
+        return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots': serverRevision } } }
+      }
+
+      return {}
+    })
+
+    const stale = {
+      name: 'researcher',
+      ui_meta: { 'hermes-bots': { sectionId: 'old-section', sectionName: 'Old section', title: 'Old title' } },
+      ui_meta_revisions: { 'hermes-bots': 5 }
+    } as RosterRow
+
+    await expect(saveBotMeta(stale, { sectionId: 'new-section', sectionName: 'New section' })).resolves.toEqual({
+      serverOutcome: 'persisted',
+      serverPersisted: true
+    })
+
+    expect(serverMeta).toEqual({ sectionId: 'new-section', sectionName: 'New section', title: 'New title' })
+    expect($botMeta.get().researcher).toMatchObject(serverMeta)
+  })
+
+  it('sends the roster revision when the local copy is current', async () => {
+    const calls = recordRequests(method => (method === 'profiles.configure' ? { applied: { ui_meta: true } } : {}))
+    const current = { name: 'researcher', ui_meta_revisions: { 'hermes-bots': 8 } } as RosterRow
+
+    await expect(saveBotMeta(current, { title: 'Current title' })).resolves.toEqual({
+      serverOutcome: 'persisted',
+      serverPersisted: true
+    })
+
+    expect(calls.find(call => call.method === 'profiles.configure')?.params.ui_meta_expected_revisions).toEqual({
+      'hermes-bots': 8
+    })
+  })
+
+  it('keeps the legacy request shape when a gateway did not send revisions', async () => {
+    const calls = recordRequests(method => (method === 'profiles.configure' ? { applied: { ui_meta: true } } : {}))
+    const legacy = { name: 'researcher' } as RosterRow
+
+    await expect(saveBotMeta(legacy, { title: 'Local fallback' })).resolves.toEqual({
+      serverOutcome: 'persisted',
+      serverPersisted: true
+    })
+
+    expect(calls.find(call => call.method === 'profiles.configure')?.params).not.toHaveProperty(
+      'ui_meta_expected_revisions'
+    )
+  })
+
   it('keeps the look locally and reports the remote failure', async () => {
     recordRequests(method => (method === 'profiles.configure' ? { applied: { ui_meta: false } } : {}))
 

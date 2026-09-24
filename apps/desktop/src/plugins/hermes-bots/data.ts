@@ -308,12 +308,24 @@ interface BotMetaSaveResult {
 /** `profiles.configure` reply. Older gateways answer without `applied` at all,
  *  which is what makes the field optional rather than the contract. */
 interface ProfilesConfigureResult {
-  applied?: { ui_meta?: boolean }
+  applied?: { ui_meta?: boolean; ui_meta_revisions?: Record<string, number> }
+}
+
+interface ProfilesListResult {
+  profiles?: RosterRow[]
 }
 
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
   const { bot, key, name, route } = botOwner(owner)
   const prevMeta = $botMeta.get()[key] || {}
+
+  // A roster row that carries this field came from a gateway which understands
+  // per-namespace CAS. Strings and older rows intentionally retain the legacy
+  // request shape so saves still work against older gateways.
+  const expectedRevision =
+    typeof owner === 'string' || !Object.hasOwn(owner, 'ui_meta_revisions')
+      ? null
+      : Math.max(0, Number(bot.ui_meta_revisions?.['hermes-bots'] || 0))
 
   const next = {
     ...$botMeta.get(),
@@ -350,24 +362,28 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   // the list call — so pfps follow the profile across machines too.
   let serverRequest: null | Promise<ProfilesConfigureResult> = null
 
+  const configureMeta = (meta: Record<string, unknown>, expected: null | number) => {
+    const params: {
+      name: string
+      ui_meta: Record<string, Record<string, unknown>>
+      ui_meta_expected_revisions?: Record<string, number>
+    } = {
+      name,
+      ui_meta: {
+        'hermes-bots': meta
+      }
+    }
+
+    if (expected !== null) {
+      params.ui_meta_expected_revisions = { 'hermes-bots': expected }
+    }
+
+    return route ? requestForBot(bot, 'profiles.configure', params) : host.request('profiles.configure', params)
+  }
+
   try {
     const { image, pet, ...rest } = next[key] || {}
-
-    const request = route
-      ? requestForBot(bot, 'profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-      : host.request('profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-
-    serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
+    serverRequest = Promise.resolve(configureMeta(rest, expectedRevision)) as Promise<ProfilesConfigureResult>
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -427,6 +443,33 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
 
       if (result?.applied?.ui_meta === true) {
         serverOutcome = 'persisted'
+      } else if (expectedRevision !== null && result?.applied?.ui_meta === false) {
+        // A stale Desktop must never turn its whole cached object into the
+        // winner. Read the authoritative namespace, then replay only this
+        // save's patch against the revision we just observed.
+        const snapshot = await requestForBot<ProfilesListResult>(bot, 'profiles.list', {})
+        const profile = snapshot?.profiles?.find(row => row?.name === name)
+        const remoteMeta = profile?.ui_meta?.['hermes-bots']
+
+        if (remoteMeta && typeof remoteMeta === 'object' && !Array.isArray(remoteMeta)) {
+          const revision = Math.max(0, Number(profile?.ui_meta_revisions?.['hermes-bots'] || 0))
+          const rebasedMeta = { ...remoteMeta, ...patch }
+          delete rebasedMeta.image
+          delete rebasedMeta.pet
+          const retry = (await configureMeta(rebasedMeta, revision)) as ProfilesConfigureResult
+
+          if (retry?.applied?.ui_meta === true) {
+            $botMeta.set({
+              ...$botMeta.get(),
+              [key]: { ...$botMeta.get()[key], ...remoteMeta, ...patch }
+            })
+            serverOutcome = 'persisted'
+          } else if (retry?.applied && typeof retry.applied === 'object') {
+            serverOutcome = 'failed'
+          }
+        } else {
+          serverOutcome = 'failed'
+        }
       } else if (result && typeof result === 'object' && result.applied && typeof result.applied === 'object') {
         serverOutcome = 'failed'
       }

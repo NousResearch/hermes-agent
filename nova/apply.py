@@ -194,6 +194,10 @@ def _apply_bundle(
     defaults_result = runtime.apply_runtime_defaults(
         bundle.deployment, audit=audit, correlation_id=correlation_id, dry_run=dry_run
     )
+    # Only under a declared policy, like every agent's plugin: governance is opted into by
+    # declaring it, and a tenant with no policy.yaml has agents that are not governed either.
+    if bundle.policy is not None:
+        runtime.govern_default_context(audit=audit, correlation_id=correlation_id, dry_run=dry_run)
 
     results: list[MaterializeResult] = []
     skipped: list[str] = []

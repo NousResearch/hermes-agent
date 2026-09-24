@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -782,6 +783,84 @@ class HermesRuntime(AgentRuntime):
             )
             outcome.update({"path": str(target)})
         return result
+
+    def govern_default_context(
+        self,
+        *,
+        audit: AuditLog,
+        correlation_id: str,
+        dry_run: bool = False,
+    ) -> bool:
+        """Give the gateway's own default profile a policy that refuses every tool.
+
+        The default profile is not a NOVA agent — it is the home the gateway runs from — so it
+        had no policy plugin and the runtime's full tool set, terminal and code execution
+        included. A live test found it reachable: the API server's unprefixed route ran a
+        read of /etc/hostname there with no policy at all. Nothing routes customers to it
+        today, but "nothing routes there" is a property of today's configuration; this makes
+        it a property of the deployment. Returns whether anything was (or would be) written.
+        """
+        from nova.policy.decide import POLICY_SCHEMA_VERSION
+
+        home = self.paths.home
+        plugin_dir = home / "plugins" / _materialize.POLICY_PLUGIN_NAME
+        document = {
+            "schema_version": POLICY_SCHEMA_VERSION,
+            "agent_id": "(gateway default profile)",
+            "refuse_all": (
+                "this is the gateway's own default profile, not a NOVA agent, and it has no "
+                "permissions. Conversations and work must be routed to an agent"
+            ),
+            "deny": [], "baseline": [], "approval_actions": {}, "allow": [],
+            "unlisted_tool": "deny", "max_tool_calls_per_run": 0, "may_assign_to": [],
+            "monthly_budget_usd": 0, "tenant_id": self.tenant_id or "",
+            "audit_log": str(audit.path),
+        }
+        writes = {
+            home / "nova-policy.json": json.dumps(document, indent=2, sort_keys=True) + "\n",
+            plugin_dir / "plugin.yaml": _materialize.PLUGIN_MANIFEST.read_text(encoding="utf-8"),
+            plugin_dir / "__init__.py": _materialize.PLUGIN_ENTRY.read_text(encoding="utf-8"),
+            plugin_dir / "_decide.py": _materialize.PLUGIN_DECIDE.read_text(encoding="utf-8"),
+        }
+
+        # Enable it in the root config.yaml — merged, like every other key NOVA writes there.
+        config_path = home / "config.yaml"
+        existing: dict[str, Any] = {}
+        if config_path.is_file():
+            try:
+                loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError) as exc:
+                raise RuntimeAdapterError(
+                    f"{config_path} could not be read as YAML, so NOVA will not overwrite it: {exc}"
+                ) from exc
+            if loaded is not None and not isinstance(loaded, Mapping):
+                raise RuntimeAdapterError(f"{config_path} is not a YAML mapping; refusing to overwrite it")
+            existing = dict(loaded or {})
+        plugins = dict(existing.get("plugins") or {})
+        enabled = list(plugins.get("enabled") or [])
+        if _materialize.POLICY_PLUGIN_NAME not in enabled:
+            enabled.append(_materialize.POLICY_PLUGIN_NAME)
+        entries = dict(plugins.get("entries") or {})
+        entries[_materialize.POLICY_PLUGIN_NAME] = {"allow_tool_override": False}
+        plugins.update({"enabled": enabled, "entries": entries})
+        merged = {**existing, "plugins": plugins}
+        if merged != existing or not config_path.is_file():
+            writes[config_path] = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
+
+        changed = [p for p, text in writes.items()
+                   if not p.is_file() or p.read_text(encoding="utf-8") != text]
+        if dry_run or not changed:
+            return bool(changed)
+        with audit.model_visible_change(
+            "runtime.default_profile_governed",
+            correlation_id=correlation_id,
+            subject=self.tenant_id or "nova",
+            detail={"runtime": self.name, "files": sorted(str(p) for p in changed)},
+        ):
+            for path in changed:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _materialize.atomic_write(path, writes[path])
+        return True
 
     def apply_identity(
         self,

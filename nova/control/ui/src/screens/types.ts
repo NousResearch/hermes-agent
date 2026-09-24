@@ -26,7 +26,6 @@ export type Agent = {
   model?: Record<string, any>;
   /** Agents this one may hand work to (delegation.may_assign_to). */
   may_assign_to?: string[];
-  permissions?: string[];
   /** MCP servers granted to this agent. */
   integrations?: string[];
 };

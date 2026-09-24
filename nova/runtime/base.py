@@ -840,6 +840,16 @@ class AgentRuntime(ABC):
         """
         return None
 
+    def govern_default_context(
+        self, *, audit: AuditLog, correlation_id: str, dry_run: bool = False
+    ) -> bool:
+        """Refuse every tool in the runtime's own default context, which is not an agent.
+
+        A runtime with no such context — nothing a conversation can reach that is not an
+        agent — has nothing to govern, hence a default. Returns whether anything changed.
+        """
+        return False
+
     @abstractmethod
     def apply_identity(
         self,

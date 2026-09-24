@@ -98,6 +98,12 @@ def decide(
             rule="policy-unsupported",
         )
 
+    # A profile that is not an agent at all — the gateway's own default profile — may do
+    # nothing. Checked before the baseline: it has no task to report on either.
+    refuse_all = policy.get("refuse_all")
+    if refuse_all:
+        return Decision(DENY, str(refuse_all), tool=tool, rule="not-an-agent")
+
     denied = set(policy.get("deny") or ())
     if tool in denied:
         return Decision(

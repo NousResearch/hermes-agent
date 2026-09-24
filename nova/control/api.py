@@ -928,9 +928,9 @@ class ControlAPI:
                     "approval_required_for": list(spec.approval.required_for),
                     "knowledge_sources": list(spec.knowledge.sources),
                     "may_assign_to": list(spec.delegation.may_assign_to),
-                    # For the Team chart: what each agent is allowed to do and reach, beside
-                    # who it may hand work to.
-                    "permissions": list(spec.permissions),
+                    # For the Team chart: the systems each agent reaches, beside who it may
+                    # hand work to. Permissions stay on /agents/<id>/config — this list is a
+                    # presentation view and is kept light.
                     "integrations": list(spec.extensions.mcp),
                 }
             )

@@ -375,3 +375,24 @@ def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch)
 
 
 
+
+def test_x_search_availability_check_also_prefers_api_key(monkeypatch):
+    """check_x_search_requirements (the check_fn the registry gates tool exposure on) must use
+    the same prefer_api_key precedence as the execution path (_resolve_xai_bearer) — same class
+    of asymmetry already fixed for the xAI TTS availability probe (#87045, #113727): an
+    availability probe consulting the OAuth pool while a key is configured means an unrelated
+    OAuth outage/refresh failure can flip tool availability even though the execution path would
+    have used the key and worked fine."""
+    from tools.x_search_tool import check_x_search_requirements
+
+    captured = {}
+
+    def _fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return {"provider": "xai", "api_key": _xcred("paid"), "base_url": "https://api.x.ai/v1"}
+
+    monkeypatch.setattr("tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve)
+
+    assert check_x_search_requirements() is True
+    assert captured.get("prefer_api_key") is True
+

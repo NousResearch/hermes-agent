@@ -1,6 +1,9 @@
 """Gateway ``/model`` picker listing is a read path (#41289, #74003): it must ask for
 cache-only catalogs and live-probe only the currently selected custom endpoint, so a
-stale provider cache cannot freeze the gateway on blocking HTTP fetches.
+stale provider cache cannot freeze the gateway on blocking HTTP requests.
+
+``/model --refresh`` is the one exception — the user asked for live data, so the saved
+custom endpoints are probed like the TUI refresh path does.
 """
 
 import threading
@@ -25,10 +28,10 @@ def _make_runner():
     return runner
 
 
-def _make_event():
+def _make_event(text="/model"):
     """A bare ``/model`` (no args) — triggers the listing branch."""
     return MessageEvent(
-        text="/model",
+        text=text,
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"),
     )
@@ -120,3 +123,33 @@ async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_e
     flags = {k: seen[0].get(k) for k in ("non_blocking_catalogs", "probe_custom_providers", "probe_current_custom_provider")}
     assert flags == {"non_blocking_catalogs": True, "probe_custom_providers": False,
                      "probe_current_custom_provider": True}, flags
+
+
+@pytest.mark.asyncio
+async def test_refresh_picker_path_probes_the_saved_custom_endpoints(_isolated_config, monkeypatch):
+    """``/model --refresh`` is an explicit request for live data, so it opts into the probes a plain
+    open withholds (#74003). Busting the disk cache *without* probing made the flag destructive: an
+    unprobed custom row falls back to its declared ``models:`` subset, so the user lost the very
+    list they asked to refresh."""
+    seen: list[dict] = []
+    cleared: list[bool] = []
+
+    def _fake_list_picker_providers(**kwargs):
+        seen.append(kwargs)
+        return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+                 "models": ["gpt-x"], "total_models": 1}]
+
+    import hermes_cli.models as models_module
+
+    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
+    monkeypatch.setattr(models_module, "clear_provider_models_cache",
+                        lambda *a, **k: cleared.append(True))
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
+
+    assert await runner._handle_model_command(_make_event("/model --refresh")) is None
+    assert seen, "listing never ran"
+    assert seen[0].get("probe_custom_providers") is True, seen[0]
+    assert cleared, "--refresh still busts the disk cache"

@@ -152,6 +152,18 @@ class TestGenerate:
         # The whole point of the native route: nothing about a chat model in the request.
         assert not any(key in body for key in ("tools", "input", "instructions"))
 
+    def test_custom_codex_base_receives_the_image_request(self, provider, codex_backend, tmp_path, monkeypatch):
+        """With ``HERMES_CODEX_BASE_URL`` set, image requests go to the gateway's base instead of
+        the hard-coded chatgpt.com host (#121486) — the text client honours the same override."""
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex-gw.example/backend-api/codex")
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "codex-gw.example"
+        assert request.url.path.endswith("/backend-api/codex/images/generations")
+
     def test_source_images_post_edits_with_inline_data_urls(self, provider, codex_backend, tmp_path):
         local = tmp_path / "ref.png"
         local.write_bytes(_png_bytes())

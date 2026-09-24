@@ -34,6 +34,14 @@ from plugins.image_gen._common import (
 logger = logging.getLogger(__name__)
 
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
+
+def _codex_base_url() -> str:
+    """Codex API base for image requests: a ``HERMES_CODEX_BASE_URL`` gateway replaces the
+    hard-coded chatgpt.com host (the text client honours the override the same way, #121486)."""
+    return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or _CODEX_BASE_URL
+
+
 _MAX_ERROR_BODY_CHARS = 500
 
 _MAX_REFERENCE_IMAGES = 16
@@ -202,7 +210,7 @@ def _post_image_request(
     path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        response = http.post(f"{_CODEX_BASE_URL}/{path}", json=body)
+        response = http.post(f"{_codex_base_url()}/{path}", json=body)
     if response.status_code >= 400:
         raise RuntimeError(
             f"Codex images API returned HTTP {response.status_code}: "

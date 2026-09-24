@@ -2552,7 +2552,9 @@ class _BedrockStream:
         # Liveness for the boto3 worker: ``for event in event_stream`` has NO read timeout,
         # so on_event stamps every event and the poll loop trips a watchdog on a long gap.
         self.started_at = time.time()
-        self.last_event = self.started_at
+        # Keep event deadlines independent of wall-clock adjustments. On Linux,
+        # monotonic time also excludes suspend; started_at remains a wall stamp.
+        self.last_event = time.monotonic()
         # Read (not popped): the worker's own pop inside _open_stream must
         # still resolve the same region.
         self.region = api_kwargs.get("__bedrock_region__", "us-east-1")
@@ -2608,7 +2610,7 @@ class _BedrockStream:
                 return token is None or stream_writer_is_current(agent, token)
 
             def _stamp_event() -> None:
-                self.last_event = time.time()
+                self.last_event = time.monotonic()
 
             try:
                 from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
@@ -2671,7 +2673,7 @@ class _BedrockStream:
             invalidate_runtime_client(self.region)
         except Exception as _inval_exc:
             logger.debug("bedrock: stale client eviction failed: %s", _inval_exc)
-        self.last_event = time.time()
+        self.last_event = time.monotonic()
         # Raises RuntimeError past HERMES_STREAM_STALE_GIVEUP; otherwise end
         # THIS call with a TimeoutError and let the streak carry forward.
         _check_stale_giveup(agent)
@@ -2685,7 +2687,7 @@ class _BedrockStream:
         while t.is_alive():
             t.join(timeout=0.3)
             self._raise_if_interrupted("Agent interrupted during Bedrock API call", worker=t)
-            stale_elapsed = time.time() - self.last_event
+            stale_elapsed = time.monotonic() - self.last_event
             if stale_elapsed > self.stale_timeout:
                 self._on_stale(stale_elapsed)
                 break

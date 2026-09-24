@@ -1253,11 +1253,16 @@ def run_compress_context_with_progress_timeout(
 
     def _is_unchanged_snapshot(result: Any) -> bool:
         # A worker that observed the deadline/cancel returns the SAME messages object it was handed.
-        return isinstance(result, tuple) and bool(result) and result[0] is messages
+        return result[0] is messages
 
-    def _recover_from_stall(since_progress: float) -> tuple[list[dict[str, Any]], str]:
+    def _recover_from_stall() -> tuple[list[dict[str, Any]], str]:
         """One stall-fallback ladder for every host-side stall exit (idle timeout, settled-at-deadline
         no-op, post-cancel unchanged commit): retry chain, then on_timeout, then the degraded prompt."""
+        # Sample before the retry chain so the reported wait is the stall itself, not stall + retry.
+        # #76354 S3 analogue: silence is charged from the LAST PROGRESS event, not from the start of
+        # this wait slice, or progress early in a previous slice would let silence approach 2x idle.
+        waited = time.monotonic() - wait_started
+        since_progress = fence.seconds_since_progress()
         # Lease is free, so run the fallback BEFORE on_timeout: that callback records
         # the summary-failure cooldown, which would no-op the retry's summary call.
         if stall_fallback:
@@ -1269,7 +1274,6 @@ def run_compress_context_with_progress_timeout(
             )
             if recovered is not None:
                 return recovered
-        waited = time.monotonic() - wait_started
         if on_timeout is not None:
             with _swallow('compress_context timeout callback failed', exc_info=True):
                 on_timeout(idle, waited, since_progress)
@@ -1294,7 +1298,7 @@ def run_compress_context_with_progress_timeout(
                 if on_timeout_cause is not None:
                     with _swallow('compress_context timeout-cause callback failed', exc_info=True):
                         on_timeout_cause(True, fence.progress_observed)
-                return _recover_from_stall(fence.seconds_since_progress())
+                return _recover_from_stall()
             return result
 
         # F6: a not-yet-started future must not linger as a stale queued job.
@@ -1327,19 +1331,16 @@ def run_compress_context_with_progress_timeout(
             # settled and its lease is free at this point, so retry exactly as the pre-commit cancel path
             # does.  A real compression result remains authoritative and returns immediately.
             if stall_fallback and _is_unchanged_snapshot(result):
-                return _recover_from_stall(fence.seconds_since_progress())
+                return _recover_from_stall()
             return result
 
         # Idle-timeout: cancel won pre-commit. Also free the worker's durable lease via
         # the holder-qualified hook so a NEW compressor can acquire at once (no ABA).
         handled_exit = True
         _release_cancelled_worker(future, fence, total_exhausted=total_exhausted, ceiling=ceiling)
-        # #76354 S3 analogue for this wait: charge the idle budget from the LAST PROGRESS event, not from
-        # the start of this wait slice. Waiting a full ``idle`` after progress that landed early in the
-        # previous slice would allow silence to approach 2x the budget.
         # Leave the future on the shared pool: fence cancel won, so a late
         # commit cannot land (same detachment model as gateway hygiene).
-        return _recover_from_stall(fence.seconds_since_progress())
+        return _recover_from_stall()
     finally:
         if not handled_exit:
             # Any unwind while waiting: revoke commit admission and release the worker's

@@ -132,6 +132,8 @@ class TestWorkerTeardownOnCeiling:
         lock_released: list[float] = []
 
         def stuck_worker(fence: CompressionCommitFence):
+            # Continuous progress so only the TOTAL ceiling can expire
+            # (the #97488 'last progress 0.0s ago' shape).
             fence.touch_progress()
             worker_started.set()
             while not release.wait(timeout=0.02):
@@ -164,7 +166,7 @@ class TestWorkerTeardownOnCeiling:
                     worker=stuck_worker,
                     messages=original,
                     system_prompt_fallback="fallback",
-                    idle_timeout_seconds=2.0,
+                    idle_timeout_seconds=0.3,
                     total_ceiling_seconds=0.3,
                     fence=fence,
                     stall_fallback=False,

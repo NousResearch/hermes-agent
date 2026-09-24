@@ -328,11 +328,13 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
         else:
             agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
-        _tc_boost = (agent.max_tokens if agent.max_tokens else 4096) * (2 ** n)
         _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+        # Ladder from the budget actually in use when max_tokens is unset, and cap at 2×
+        # that budget — a ceiling equal to the requested cap re-sends the same request (#72770).
+        _tc_boost = (agent.max_tokens if agent.max_tokens else (_tc_requested_cap or 4096)) * (2 ** n)
         if _tc_requested_cap is not None:
             _tc_boost = max(_tc_boost, _tc_requested_cap)
-        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
+        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, (_tc_requested_cap or 0) * 2))
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
     if st.is_stub:

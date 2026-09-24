@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { appIconCandidates, decodingFileProbe, resolveAppIcon } from './app-icon'
+import { appIconCandidates, decodingFileProbe, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 
 // Regression: a packaged app.asar can contain a TRUNCATED apple-touch-icon.png
 // (interrupted electron-builder run, partial copy). Electron's
@@ -80,4 +80,23 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
     path.join('C:\\resources', 'icon.ico'),
     'resources/ icon.ico is the highest-precedence Windows rung'
   )
+})
+
+// #73195: a runtime app.dock.setIcon(png) replaces the bundle's icon for the
+// life of the process, so macOS 26 cannot apply the Clear/Tinted Liquid Glass
+// styles to it. A packaged .app already carries the Hermes icon; only dev runs
+// (the stock Electron bundle) need the runtime override.
+test('shouldOverrideDockIcon leaves a packaged macOS app on its bundle icon', () => {
+  assert.equal(shouldOverrideDockIcon({ platform: 'darwin', isPackaged: true }), false)
+})
+
+test('shouldOverrideDockIcon still brands the dock in a macOS dev run', () => {
+  assert.equal(shouldOverrideDockIcon({ platform: 'darwin', isPackaged: false }), true)
+})
+
+test('shouldOverrideDockIcon never applies off macOS (there is no dock)', () => {
+  for (const platform of ['win32', 'linux'] as const) {
+    assert.equal(shouldOverrideDockIcon({ platform, isPackaged: false }), false)
+    assert.equal(shouldOverrideDockIcon({ platform, isPackaged: true }), false)
+  }
 })

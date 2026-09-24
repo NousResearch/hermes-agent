@@ -42,7 +42,7 @@ import {
   readStatusCode,
   withRetry
 } from './api-transport'
-import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
 import {
   stopBackendChild as stopBackendChildImpl,
@@ -15194,7 +15194,8 @@ function createWindow() {
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
 
-    if (icon) {
+    // Packaged builds keep the bundle icon so macOS can style it (#73195).
+    if (icon && shouldOverrideDockIcon({ platform: process.platform, isPackaged: app.isPackaged })) {
       app.dock?.setIcon(icon)
     }
   }

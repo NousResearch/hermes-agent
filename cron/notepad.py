@@ -1,5 +1,7 @@
-"""Per-job durable KV notepad (cursors, watermarks) carried across cron wake-ups; profile-local
-SQLite next to the executions ledger (same connection/pragma pattern as ``cron/executions.py``).
+"""Per-job durable KV notepad (cursors, watermarks) carried across cron wake-ups.
+
+SQLite profiles keep it next to the executions ledger; PostgreSQL profiles use
+the profile schema through the shared connection pool.
 
 Caps are a documented contract: ``MAX_VALUE_BYTES`` (16 KB per value, UTF-8) and
 ``MAX_JOB_TOTAL_BYTES`` (64 KB per job, key+value). Oversized writes raise ``ValueError`` and leave
@@ -58,7 +60,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
+def _transaction(*, write: bool = True) -> Iterator[sqlite3.Connection]:
+    from cron.database import postgres_transaction, uses_postgres
+
+    if uses_postgres(sqlite_override=NOTEPAD_FILE):
+        with postgres_transaction(store="notepad", write=write) as conn:
+            yield conn
+        return
+
     from hermes_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
@@ -82,10 +91,15 @@ def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
     _validate(job_id, key, value)
     now = _hermes_now().isoformat()
     with _transaction() as conn:
+        from cron.database import is_postgres_connection
+
+        if is_postgres_connection(conn):
+            byte_count = "OCTET_LENGTH(key) + OCTET_LENGTH(value)"
+        else:
+            byte_count = "LENGTH(CAST(key AS BLOB)) + LENGTH(CAST(value AS BLOB))"
         row = conn.execute(
-            """SELECT COALESCE(SUM(LENGTH(CAST(key AS BLOB))
-                 + LENGTH(CAST(value AS BLOB))), 0)
-               FROM cron_notepad WHERE job_id=? AND key<>?""",
+            f"""SELECT COALESCE(SUM({byte_count}), 0)
+                FROM cron_notepad WHERE job_id=? AND key<>?""",
             (job_id, key),
         ).fetchone()
         other_bytes = int(row[0])
@@ -106,7 +120,7 @@ def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
 
 
 def get_note(job_id: str, key: str) -> Optional[str]:
-    with _transaction() as conn:
+    with _transaction(write=False) as conn:
         row = conn.execute(
             "SELECT value FROM cron_notepad WHERE job_id=? AND key=?",
             (str(job_id), str(key)),
@@ -125,7 +139,7 @@ def delete_note(job_id: str, key: str) -> bool:
 
 def list_notes(job_id: str) -> List[Dict[str, Any]]:
     """All entries for one job, sorted by key."""
-    with _transaction() as conn:
+    with _transaction(write=False) as conn:
         rows = conn.execute(
             "SELECT job_id, key, value, updated_at FROM cron_notepad "
             "WHERE job_id=? ORDER BY key",
@@ -137,7 +151,9 @@ def list_notes(job_id: str) -> List[Dict[str, Any]]:
 def clear_notepad(job_id: str) -> int:
     """Delete every key for one job (called from ``cron.jobs.remove_job``). Returns row count;
     no-ops without creating the DB when no notepad file exists yet."""
-    if not _current_notepad_file().exists():
+    from cron.database import uses_postgres
+
+    if not uses_postgres(sqlite_override=NOTEPAD_FILE) and not _current_notepad_file().exists():
         return 0
     with _transaction() as conn:
         cur = conn.execute(

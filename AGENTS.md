@@ -193,6 +193,7 @@ hermes-agent/
 ├── toolsets.py           # TOOLSETS dict, _HERMES_CORE_TOOLS
 ├── cli.py                # HermesCLI (REPL, slash dispatch) + hermes_cli/cli_*_mixin.py
 ├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
+├── hermes_state_backend.py # Profile database settings; optional native hermes_state_postgres*.py backend
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── hermes_logging.py     # agent.log / errors.log / gateway.log (profile-aware)
 ├── batch_runner.py       # Parallel batch processing

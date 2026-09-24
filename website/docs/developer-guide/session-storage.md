@@ -1,8 +1,8 @@
 # Session Storage
 
-Hermes Agent uses a SQLite database (`~/.hermes/state.db`) to persist session
-metadata, full message history, and model configuration across CLI and gateway
-sessions. This replaces the earlier per-session JSONL file approach.
+Hermes Agent uses SQLite by default (`~/.hermes/state.db`) to persist session
+metadata, full message history, model configuration, and gateway delivery
+obligations. PostgreSQL 17 or later is an optional backend for this state.
 
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
@@ -52,6 +52,118 @@ either bypass in normal Hermes commands, development shells, or application
 configuration: it disables the guard (a hard `RuntimeError`) that protects live
 session history, and a shell that exports it hands the bypass to every later
 pytest run.
+
+## PostgreSQL conversation state
+
+Install the optional driver in your Hermes environment:
+
+```bash
+uv pip install -e '.[postgres]'
+```
+
+Configure the profile's `config.yaml`:
+
+```yaml
+database:
+  backend: postgres
+  schema: hermes_personal
+```
+
+Put the connection string in that profile's `.env`:
+
+```dotenv
+HERMES_DATABASE_URL=postgresql://hermes:password@localhost:5432/hermes
+```
+
+Create the database and role beforehand. The role needs permission to create its
+schema and objects within it. Hermes initializes those objects on the first
+writable open. Read-only opens require an initialized schema. PostgreSQL errors
+are reported without falling back to SQLite.
+
+Each profile resolves its own configuration and credentials. Process-level
+`HERMES_DATABASE_URL` overrides apply only to the process's home profile. Set a
+distinct `database.schema` for each independent profile. If omitted, Hermes
+derives it from the profile name and absolute database path; set an explicit
+schema before moving a profile to another machine or directory. Restart Hermes
+after changing backend settings so existing shared handles can close.
+
+This backend stores sessions, messages, model usage, conversation generations,
+routing, compression/turn leases, async delegations, gateway delivery obligations,
+optional Telegram topic bindings, and cron's execution, incident, delivery, and
+notepad tables. History, resume, search, analytics, profile session readers,
+gateway delivery recovery, and cron commands retain their existing APIs and field
+names. Kanban and other application stores retain their existing SQLite storage.
+Cron job definitions, output files, scripts, and scheduler lock files remain in the
+profile filesystem. Local profile files are still required; this setting does not
+make an entire deployment stateless.
+
+PostgreSQL delivery and cron execution owners use a process token and an expiring
+lease because a PID cannot establish whether a process on another container host
+is alive. Active cron runs and sends renew their leases. Expired execution attempts
+become `unknown`, and expired in-progress cron sends also become `unknown` without
+being retried. Store-scoped transaction locks prevent competing replicas from
+claiming the same send. SQLite retains its PID and process-start checks.
+
+The PostgreSQL implementation uses native SQL and a bounded connection pool.
+Each write callback runs in one transaction under a per-schema advisory lock,
+preserving the existing read/check/write ordering across clients. Reads use
+independent read-only transactions. Remote leases expire by TTL; a PID on one
+machine cannot establish that a holder on another machine has died.
+
+Search uses a GIN index over bounded text vectors. Oversized messages are also
+checked through an overflow index so text beyond the vector limit remains
+searchable; stored message content is not truncated. SQLite's existing search
+matcher supplies the result semantics and snippets. PostgreSQL autovacuum manages
+physical storage. Use PostgreSQL backup tools such as `pg_dump` for this backend;
+SQLite repair and file backup procedures below apply only to SQLite.
+
+### Copy existing SQLite history
+
+Stop writers for the source profile and the destination profile. Configure an
+empty PostgreSQL schema as above, then run from the Hermes checkout:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py /path/to/source/state.db \
+  --profile-home /path/to/destination/profile
+```
+
+The command opens SQLite read-only, checks integrity and foreign keys, then copies
+conversation and delivery-obligation tables in batches. Message IDs,
+archived/rewound messages, usage, provenance, routing, optional Telegram topic
+bindings, and owed gateway responses are retained. Generated search/display fields
+are rebuilt. Table counts are checked before one final commit; a failed copy rolls
+back, and a populated destination is refused. The SQLite source remains unchanged.
+Active leases and heartbeats are not copied. Migrated delivery rows have no active
+PostgreSQL owner lease, so unfinished responses can be recovered after startup.
+Restart the destination profile after a successful copy.
+
+To copy the three cron SQLite databases, keep both profiles stopped and run:
+
+```bash
+python scripts/migrate_cron_sqlite_to_postgres.py /path/to/source/cron \
+  --profile-home /path/to/destination/profile
+```
+
+The command reads `executions.db`, `deliveries.db`, and `notepad.db` without
+modifying them. It copies execution history, failure incidents, queued sends,
+delivery tombstones, and per-job notepad entries in one PostgreSQL transaction.
+The destination cron tables must be empty. An interrupted execution or delivery
+has no live PostgreSQL lease after migration, so normal startup recovery marks its
+outcome `unknown` instead of repeating possible side effects.
+
+### Test the backend
+
+The normal suite needs no PostgreSQL server. Backend integration tests opt in
+with `HERMES_TEST_POSTGRES=1`; CI supplies a disposable PostgreSQL 17 service at
+`127.0.0.1:55433`, database/user `hermes_test`/`hermes`, password `hermes-test`.
+Tests create and drop uniquely named schemas. They fail if opted-in PostgreSQL
+or its driver is unavailable.
+
+```bash
+HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_state/test_postgres_*.py
+HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/gateway/test_postgres_delivery_ledger.py
+HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/cron/test_postgres_cron_stores.py
+```
 
 ### Desktop profile isolation and compaction generations
 

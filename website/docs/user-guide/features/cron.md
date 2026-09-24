@@ -381,14 +381,16 @@ The worker is the gateway's own interpreter running `python -m cron.scheduler`, 
 
 ### Execution history
 
-Hermes records each claimed cron attempt in the profile-local
-`~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
-move through `claimed`, `running`, and one immutable terminal state:
-`completed`, `failed`, or `unknown`. After restart — and before every manual
-`hermes cron run` / `/cron run`, so a one-shot invocation with no scheduler
-running heals the ledger too — Hermes marks an abandoned attempt `unknown` only
-when the original PID and process-start fingerprint prove that its owner is
-gone. Unknown attempts are audit records and are never automatically rerun.
+Hermes records each claimed cron attempt before executor or provider dispatch.
+SQLite profiles use `~/.hermes/cron/executions.db`; profiles configured with the
+PostgreSQL database backend use the profile's PostgreSQL schema. Attempts move
+through `claimed`, `running`, and one immutable terminal state: `completed`,
+`failed`, or `unknown`. After restart — and before every manual `hermes cron run`
+or `/cron run`, so a one-shot invocation with no scheduler running heals the
+ledger too — Hermes marks an abandoned attempt `unknown` only when the original
+PID and process-start fingerprint prove that its owner is gone on SQLite, or
+when its renewable owner lease expires on PostgreSQL. Unknown attempts are audit
+records and are never automatically rerun.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
@@ -1342,6 +1344,11 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 ## Job storage
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+
+The database backend does not move these files. With PostgreSQL enabled, the
+local or shared filesystem still holds `jobs.json`, output, scripts, and
+the scheduler's `.tick.lock`; PostgreSQL holds execution history, incidents, the
+gateway delivery queue, and job notepad entries.
 
 Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
 

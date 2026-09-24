@@ -632,7 +632,7 @@ class SessionSessionsMixin:
                 "SELECT last_activity_description, last_activity_provenance FROM sessions WHERE id = ?",
                 (session_id,),
             )
-        except sqlite3.Error:
+        except self.database_errors:
             row = None
         if row is not None and not row[0] and (not row[1] or row[1] == ActivityProvenance.UNKNOWN.value):
             return
@@ -1064,6 +1064,31 @@ class SessionSessionsMixin:
             projected.append(merged)
         return projected
 
+    def _read_with_timeout(self, query, params, timeout_seconds):
+        deadline = time.monotonic() + timeout_seconds
+        interrupted_by_deadline = False
+
+        def _deadline_progress_handler() -> int:
+            nonlocal interrupted_by_deadline
+            if time.monotonic() >= deadline:
+                interrupted_by_deadline = True
+                return 1
+            return 0
+
+        try:
+            with self._read_ctx() as conn:
+                conn.set_progress_handler(_deadline_progress_handler, 1000)
+                try:
+                    return conn.execute(query, params).fetchall()
+                finally:
+                    conn.set_progress_handler(None, 0)
+        except self.database_operational_errors as exc:
+            if interrupted_by_deadline and "interrupt" in str(exc).lower():
+                raise TimeoutError(
+                    f"recent-session browse exceeded {timeout_seconds:g}s deadline"
+                ) from exc
+            raise
+
     def list_recent_sessions_bounded(
         self,
         *,
@@ -1127,13 +1152,16 @@ class SessionSessionsMixin:
                          s.started_at DESC, s.id DESC
                 LIMIT ?
             ),
-            ancestors(candidate_id, cur_id) AS (
+            ancestors_walk(candidate_id, cur_id) AS (
                 SELECT id, id FROM recent_candidates
                 UNION
                 SELECT a.candidate_id, parent.id
-                FROM ancestors a
+                FROM ancestors_walk a
                 JOIN sessions child ON child.id = a.cur_id
                 JOIN sessions parent ON {compression_parent_edge}
+            ),
+            ancestors(candidate_id, cur_id) AS MATERIALIZED (
+                SELECT candidate_id, cur_id FROM ancestors_walk
                 LIMIT ?
             ),
             candidate_roots(root_id) AS (
@@ -1146,13 +1174,16 @@ class SessionSessionsMixin:
                     WHERE {compression_parent_edge}
                 )
             ),
-            chain(root_id, cur_id) AS (
+            chain_walk(root_id, cur_id) AS (
                 SELECT root_id, root_id FROM candidate_roots
                 UNION
                 SELECT c.root_id, child.id
-                FROM chain c
+                FROM chain_walk c
                 JOIN sessions parent ON parent.id = c.cur_id
                 JOIN sessions child ON {compression_parent_edge}
+            ),
+            chain(root_id, cur_id) AS MATERIALIZED (
+                SELECT root_id, cur_id FROM chain_walk
                 LIMIT ?
             ),
             chain_rows AS (
@@ -1217,29 +1248,7 @@ class SessionSessionsMixin:
             lineage_limit,
             limit,
         ]
-        deadline = time.monotonic() + timeout_seconds
-        interrupted_by_deadline = False
-
-        def _deadline_progress_handler() -> int:
-            nonlocal interrupted_by_deadline
-            if time.monotonic() >= deadline:
-                interrupted_by_deadline = True
-                return 1
-            return 0
-
-        try:
-            with self._read_ctx() as conn:
-                conn.set_progress_handler(_deadline_progress_handler, 1000)
-                try:
-                    rows = conn.execute(query, params).fetchall()
-                finally:
-                    conn.set_progress_handler(None, 0)
-        except sqlite3.OperationalError as exc:
-            if interrupted_by_deadline and "interrupt" in str(exc).lower():
-                raise TimeoutError(
-                    f"recent-session browse exceeded {timeout_seconds:g}s deadline"
-                ) from exc
-            raise
+        rows = self._read_with_timeout(query, params, timeout_seconds)
 
         sessions = []
         for row in rows:
@@ -1497,8 +1506,6 @@ class SessionSessionsMixin:
             include_archived=include_archived,
         )
         with self._read_ctx() as conn:
-            if self._conn is None:
-                raise RuntimeError("SessionDB connection is closed")
             rows = conn.execute(
                 "SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count "
                 f"FROM sessions s{_where_sql(where_clauses, ' ')} "

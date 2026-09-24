@@ -30,11 +30,18 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
     from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
     path = home / "state.db"
-    if not path.exists():
-        return _check("ok", "not initialized")
-    if storage_state(path) == STORAGE_CORRUPT:
-        return _check("degraded", STORAGE_CORRUPT)
     try:
+        from hermes_state_backend import resolve_database_settings
+        settings = resolve_database_settings(path)
+        if settings.backend == "postgres":
+            from hermes_state import SessionDB
+            with SessionDB(path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
+                conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
+            return _check("ok")
+        if not path.exists():
+            return _check("ok", "not initialized")
+        if storage_state(path) == STORAGE_CORRUPT:
+            return _check("degraded", STORAGE_CORRUPT)
         # Read-only schema query: catches unreadable/corrupt DBs without competing with
         # writers. ``closing`` is required — sqlite3's context manager only commits/rolls
         # back, never closes, so a bare ``with connect()`` leaks a connection per poll.

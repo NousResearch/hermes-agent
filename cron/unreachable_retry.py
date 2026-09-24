@@ -31,7 +31,8 @@ logger = logging.getLogger("cron.scheduler")
 RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 1800)
 
 # Persisted on the job while a retry cycle is active: {"attempt": <1-based count of
-# retries already scheduled>, "at": <ISO instant of the pending retry>}. Cleared by any run
+# retries already scheduled>, "at": <ISO instant of the pending retry>, "expr": <the cron
+# expression it was planned under>}. Cleared by any run
 # that reached the model.
 STATE_KEY = "unreachable_retry"
 

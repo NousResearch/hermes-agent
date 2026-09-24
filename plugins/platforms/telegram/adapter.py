@@ -3455,6 +3455,65 @@ class TelegramAdapter(BasePlatformAdapter):
             _TimedOut = None  # type: ignore[assignment,misc]
         return _NetErr, _BadReq, _TimedOut
 
+    @staticmethod
+    def _looks_like_html(text: str) -> bool:
+        """True when payload carries HTML markup cron scripts emit (<a href>, <b>, <i>)."""
+        if not text:
+            return False
+        return bool(re.search(
+            r"<a\s+href=|<br\s*/?>|</?(b|i|u|s|code|pre|blockquote|details|summary)[>\s]",
+            text))
+
+    @staticmethod
+    def _strip_html_tags(text: str) -> str:
+        """Plain-text fallback: render links as 'text (url)', drop other tags."""
+        text = re.sub(r"<a\s+href=[\"']([^\"']*)[\"'][^>]*>(.*?)</a>",
+                      lambda m: (f"{m.group(2)} ({m.group(1)})" if m.group(2) else m.group(1)),
+                      text, flags=re.DOTALL)
+        text = re.sub(r"<br\s*/?>", "\n", text)
+        text = re.sub(r"</?(b|i|u|s|code|pre|blockquote|details|summary)[^>]*>", "", text)
+        return text
+
+    @staticmethod
+    def _chunk_html(text: str, limit: int = 3900) -> List[str]:
+        """Split raw HTML into <=limit chunks at tag-safe boundaries; tag-balanced
+        enough for Telegram HTML (unclosed <b>/<i> at chunk edges are the only risk,
+        accepted with plain-text fallback)."""
+        if len(text) <= limit:
+            return [text]
+        chunks: List[str] = []
+        while text:
+            if len(text) <= limit:
+                chunks.append(text)
+                break
+            cut = text.rfind("\n", 0, limit)
+            if cut < limit // 2:
+                cut = limit
+            lt = text.rfind("<", 0, cut)
+            gt = text.rfind(">", 0, cut)
+            if lt > gt:  # would cut inside a tag; back up to before it
+                cut = lt
+            if cut <= 0:  # degenerate (tag longer than limit): hard-cut, never stall
+                cut = limit
+            part, text = text[:cut], text[cut:].lstrip("\n")
+            chunks.append(part)
+        total = len(chunks)
+        return [f"{c} ({i + 1}/{total})" for i, c in enumerate(chunks)]
+
+    async def _send_chunk_html_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
+        """HTML parse_mode; on parse rejection resend as rendered plain text."""
+        try:
+            return await _await_with_thread_deadline(
+                self._bot.send_message(text=chunk, parse_mode=ParseMode.HTML, **send_kwargs),
+                timeout=_TEXT_SEND_DEADLINE, label="telegram-send-html", dump_on_blocked_loop=False)
+        except Exception as html_error:
+            if "parse" in str(html_error).lower() or "entity" in str(html_error).lower() or "tag" in str(html_error).lower():
+                logger.warning("[%s] HTML parse failed, falling back to plain text: %s", self.name, html_error)
+                return await _await_with_thread_deadline(
+                    self._bot.send_message(text=self._strip_html_tags(chunk), parse_mode=None, **send_kwargs),
+                    timeout=_TEXT_SEND_DEADLINE, label="telegram-send-html-plain", dump_on_blocked_loop=False)
+            raise
+
     async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
         try:
@@ -3471,7 +3530,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _send_chunk_with_retries(
         self, chat_id: str, chunk: str, index: int, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
-        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple):
+        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple,
+        chunk_sender: Optional[Callable] = None):
         """Deliver one chunk: routing, up to 3 attempts, thread-not-found / deleted-anchor / flood handling.
 
         Returns ``(msg, used_thread_fallback)`` on success or a ``SendResult`` to return verbatim (fail-loud DM-topic
@@ -3492,7 +3552,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
-                return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
+                sender = chunk_sender or self._send_chunk_markdown_or_plain
+                return await sender(chunk, send_kwargs), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
@@ -3668,6 +3729,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     if rich_result.success:
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
+            # HTML fastpath (4th landing): cron/script payloads carrying HTML (<a href>, <b>)
+            # are MarkdownV2-escaped by format_message() and arrive as raw tag soup. Send raw
+            # HTML chunks instead; plain-text fallback per chunk. Skips the rich path.
+            if not self._should_attempt_rich(content, metadata=metadata) and self._looks_like_html(content):
+                html_chunks = self._chunk_html(content, self.MAX_MESSAGE_LENGTH - 196)
+                return await self._send_chunks(
+                    chat_id, html_chunks, delivered, reply_to, metadata, error_types,
+                    chunk_sender=self._send_chunk_html_or_plain)
             chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
@@ -3701,7 +3770,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _send_chunks(
         self, chat_id: str, chunks: List[str], delivered: List[str], reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]], error_types: tuple) -> SendResult:
+        metadata: Optional[Dict[str, Any]], error_types: tuple,
+        chunk_sender: Optional[Callable] = None) -> SendResult:
         """Deliver formatted ``chunks`` in order, appending each landed message id to ``delivered``
         (pre-seeded with the ids of an earlier partial send when resuming — the chunk index used for
         reply routing continues from there). A mid-loop refusal returns the ``partial_overflow`` result."""
@@ -3711,7 +3781,8 @@ class TelegramAdapter(BasePlatformAdapter):
         prior = len(delivered)
         for chunk in chunks:
             outcome = await self._send_chunk_with_retries(
-                chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
+                chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types,
+                chunk_sender=chunk_sender)
             if isinstance(outcome, SendResult):
                 # Every SendResult returned here is a DEFINITE non-delivery (flood cap, DM-topic refusal);
                 # ambiguous timeouts raise instead, so the remainder is safe to resume from.

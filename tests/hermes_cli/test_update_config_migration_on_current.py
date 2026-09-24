@@ -29,6 +29,14 @@ def _run(current: int, latest: int):
     Returns (stdout, migrate_calls).
     """
     migrate_calls = []
+    check_calls = 0
+
+    def _fake_check():
+        nonlocal check_calls
+        check_calls += 1
+        # The second check verifies that a successful migration reached the
+        # target schema version.
+        return (latest, latest) if check_calls > 1 and current < latest else (current, latest)
 
     def _fake_migrate(interactive=False, quiet=False):
         migrate_calls.append((interactive, quiet))
@@ -39,11 +47,13 @@ def _run(current: int, latest: int):
     ), patch(
         "hermes_cli.config.get_missing_config_fields", return_value=[]
     ), patch.object(
-        update_cmd, "_run_config_check_fresh", return_value=(current, latest)
+        update_cmd, "_run_config_check_fresh", side_effect=_fake_check
     ), patch.object(
         update_cmd, "_run_migrate_config_fresh", side_effect=_fake_migrate
     ), patch.object(
         update_cmd, "_migrate_sibling_profile_configs", return_value=[]
+    ), patch.object(
+        update_cmd, "_validate_profile_configs", return_value=[("default", [])]
     ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -55,7 +65,10 @@ def test_migrates_when_config_behind():
     """Version bump on the repair path must be applied silently."""
     out, calls = _run(current=37, latest=38)
     assert "v37 → v38" in out
-    assert "Config format updated" in out
+    assert "default: migrated v37 → v38" in out
+    assert "→ Validating configuration..." in out
+    assert "default: valid" in out
+    assert "no new settings" not in out.lower()
     assert calls == [(False, True)]  # non-interactive, quiet
 
 
@@ -63,6 +76,7 @@ def test_noop_when_config_current():
     """No migration when the config version is already current."""
     out, calls = _run(current=38, latest=38)
     assert "Configuration is up to date" in out
+    assert "default: valid" in out
     assert calls == []
 
 
@@ -70,6 +84,7 @@ def test_noop_when_config_ahead():
     """No migration when local config is newer than the code's default."""
     out, calls = _run(current=39, latest=38)
     assert "Configuration is up to date" in out
+    assert "default: valid" in out
     assert calls == []
 
 
@@ -93,6 +108,8 @@ def test_surfaces_migration_warnings():
         update_cmd, "_run_migrate_config_fresh", side_effect=_fake_migrate
     ), patch.object(
         update_cmd, "_migrate_sibling_profile_configs", return_value=[]
+    ), patch.object(
+        update_cmd, "_validate_profile_configs", return_value=[("default", [])]
     ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -100,6 +117,28 @@ def test_surfaces_migration_warnings():
         out = buf.getvalue()
 
     assert "personality reset" in out
+
+
+def test_validation_status_is_explicit_per_profile():
+    """Migration and validation are separate, positively stated statuses."""
+
+    class Issue:
+        def __init__(self, severity):
+            self.severity = severity
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        update_cmd._print_config_validation_status([
+            ("default", []),
+            ("coder", [Issue("warning")]),
+            ("author", [Issue("error"), Issue("warning")]),
+        ])
+    out = buf.getvalue()
+
+    assert "→ Validating configuration..." in out
+    assert "default: valid" in out
+    assert "coder: valid with 1 warning(s)" in out
+    assert "author: invalid (1 error(s), 1 warning(s))" in out
 
 
 def test_check_failure_does_not_break_repair_path():

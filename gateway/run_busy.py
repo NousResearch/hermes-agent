@@ -1171,18 +1171,17 @@ class GatewayBusySessionMixin:
         ]
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """True if this /restart is a Telegram re-delivery we already handled.
+        """True if this /restart is a redelivery already handled by the prior gateway.
 
-        The previous gateway wrote ``.restart_last_processed.json`` (platform + update_id). A
-        /restart with update_id <= that value is a redelivery when this process booted from that
-        restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
+        Telegram retains its ordered ``update_id`` comparison for compatibility. Other platforms
+        identify a retried delivery by the stable message id written with the platform marker.
+        A matching marker is trusted only during the restart boot or for five minutes afterwards.
         """
         from gateway.run import _hermes_home
-        if event is None or event.source is None or event.platform_update_id is None:
+        if event is None or event.source is None:
             return False
         try:
-            if event.source.platform.value != "telegram":
-                return False
+            platform = event.source.platform.value
         except Exception:
             return False
 
@@ -1207,12 +1206,24 @@ class GatewayBusySessionMixin:
         except Exception:
             return False
 
+        if data.get("platform") != platform:
+            return False
+
         recorded_uid = data.get("update_id")
-        if (
-            data.get("platform") != "telegram"
-            or not isinstance(recorded_uid, int)
-            or event.platform_update_id > recorded_uid
-        ):
+        message_id = event.message_id if event.message_id is not None else event.source.message_id
+        recorded_message_id = data.get("message_id")
+        telegram_redelivery = (
+            platform == "telegram"
+            and isinstance(recorded_uid, int)
+            and event.platform_update_id is not None
+            and event.platform_update_id <= recorded_uid
+        )
+        message_redelivery = (
+            message_id is not None
+            and recorded_message_id is not None
+            and str(message_id) == str(recorded_message_id)
+        )
+        if not (telegram_redelivery or message_redelivery):
             return False
 
         # A service-managed restart can outlast the 5-minute trust window; consume the boot

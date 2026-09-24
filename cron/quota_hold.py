@@ -90,8 +90,7 @@ def _window_end(hold_seconds: float) -> datetime:
 
 
 def _recovery_worthwhile(
-    job: Dict[str, Any], schedule: Dict[str, Any], natural_next: Optional[datetime],
-    window_end: datetime, scheduled: bool,
+    job: Dict[str, Any], natural_next: Optional[datetime], window_end: datetime,
 ) -> bool:
     """One off-lattice recovery fire, and only for a sparse schedule.
 
@@ -102,12 +101,12 @@ def _recovery_worthwhile(
     ``cron.jobs._compute_grace_seconds`` — otherwise the recovery fire is a near-duplicate of the
     natural one (hourly job, hold ending at :58, would fire :58 AND :00).
     """
-    from cron.jobs import _schedule_cadence_seconds
+    from cron.jobs import _elapsed_seconds, _schedule_cadence_seconds
 
-    if not scheduled or job.get(STATE_KEY) or natural_next is None:
+    if job.get(STATE_KEY) or natural_next is None:
         return False
-    cadence = _schedule_cadence_seconds(schedule)
-    return bool(cadence) and (natural_next - window_end).total_seconds() >= cadence / 2
+    cadence = _schedule_cadence_seconds(job.get("schedule") or {})
+    return bool(cadence) and _elapsed_seconds(natural_next, window_end) >= cadence / 2
 
 
 def plan_hold(
@@ -127,23 +126,21 @@ def plan_hold(
     window_end = _window_end(hold_seconds)
     natural_next = _parse_aware(job.get("next_run_at"))
     blocked = natural_next is None or _instant_before(natural_next, window_end)
-    if kind == "interval":
-        if not blocked:
-            # No interval occurrence is blocked: its natural next run is already after recovery.
-            clear_state(job)
-            return False
-        parked = window_end.isoformat()
-        job.pop(SCHEDULE_EXPR_KEY, None)
+    recover = (kind == "cron" and not blocked and recover_consumed_fire
+               and _recovery_worthwhile(job, natural_next, window_end))
+    if not blocked and not recover:
+        clear_state(job)
+        return False
+    if kind == "cron" and blocked:
+        # Coalesce cron occurrences inside the closed window to the first legal instant after it.
+        parked = compute_next_run(schedule, window_end.isoformat()) or window_end.isoformat()
     else:
-        if not blocked:
-            if not _recovery_worthwhile(job, schedule, natural_next, window_end, recover_consumed_fire):
-                clear_state(job)
-                return False
-            parked = window_end.isoformat()
-        else:
-            # Coalesce cron occurrences inside the closed window to the first legal instant after it.
-            parked = compute_next_run(schedule, window_end.isoformat()) or window_end.isoformat()
+        parked = window_end.isoformat()
+    if recover:
+        # Only the recovery fire is off-lattice; the coalesced instant is a legal occurrence.
         job[SCHEDULE_EXPR_KEY] = schedule.get("expr")
+    else:
+        job.pop(SCHEDULE_EXPR_KEY, None)
     job["next_run_at"] = parked
     job[STATE_KEY] = parked
     logger.warning(

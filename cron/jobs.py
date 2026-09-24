@@ -2378,7 +2378,7 @@ def mark_job_run(
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
     quota_hold_seconds: Optional[float] = None,
-    quota_recover_occurrence: bool = False,
+    recover_consumed_fire: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2395,7 +2395,7 @@ def mark_job_run(
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
     ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
-    it on every tick. ``quota_recover_occurrence`` lets a scheduled sparse cron recover its
+    it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
     (cron/quota_hold.py, #89376).
     """
@@ -2419,8 +2419,7 @@ def mark_job_run(
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
         if not success and quota_hold_seconds and not is_terminal_job(job):
-            quota_hold.plan_hold(
-                job, quota_hold_seconds, recover_consumed_fire=quota_recover_occurrence)
+            quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
         else:
             quota_hold.clear_state(job)
         save_jobs(jobs)
@@ -2997,8 +2996,6 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     if stale_class == STALE_CRON_EXPR_EDIT:
         from cron.quota_hold import is_recovery_fire
         if is_recovery_fire(d.job, d.next_run):
-            # plan_hold deliberately creates one off-lattice recovery fire when a provider
-            # reopens before a sparse cron's next natural occurrence.
             logger.info(
                 "cron.quota_hold.recovery_fire job='%s' id=%s expr=%r at=%s",
                 d.label, d.job.get("id"), d.schedule.get("expr"), d.next_run)

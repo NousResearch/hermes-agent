@@ -66,7 +66,7 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
 
     assert mark_job_run(
         job["id"], False, QUOTA_MSG, quota_hold_seconds=20 * 60 * 60,
-        quota_recover_occurrence=True,
+        recover_consumed_fire=True,
     )
 
     held = get_job(job["id"])

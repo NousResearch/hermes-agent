@@ -29,6 +29,12 @@ nvidia = NvidiaProviderProfile(
     description="NVIDIA NIM — accelerated inference", signup_url="https://build.nvidia.com/",
     fallback_models=("nvidia/llama-3.1-nemotron-70b-instruct", "nvidia/llama-3.3-70b-instruct"),
     base_url="https://integrate.api.nvidia.com/v1", default_max_tokens=16384,
+    live_catalog_mode="authoritative",
+    live_excluded_markers=(
+        "embed", "retriever", "rerank", "content-safety", "topic-control",
+        "safety-guard", "llama-guard", "-reward", "nemotron-parse",
+        "detector", "nvclip", "deplot",
+    ),
 )
 
 register_provider(nvidia)

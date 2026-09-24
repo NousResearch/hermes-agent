@@ -117,6 +117,18 @@ class ProviderProfile:
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
     fallback_models: tuple = ()
+    # live_catalog_mode: how the generic live+curated merge treats a successful
+    # ``/v1/models`` listing. ``"union"`` (default) merges curated-first so a lagging
+    # live API never drops models; ``"authoritative"`` replaces the curated floor —
+    # for hosted catalogs that rotate retired ids out (NVIDIA NIM delists EOL models,
+    # and merging the static row back in resurrects ids that 410 Gone). A failed or
+    # absent fetch (None) still falls back regardless of mode.
+    live_catalog_mode: str = "union"
+    # live_excluded_markers: slug substrings filtering utility SKUs a hosted catalog
+    # mixes next to chat models. Matched after the ``vendor/`` prefix so a vendor name
+    # never false-positives. NVIDIA lists embed/safety/reward/parser models that 400
+    # on /chat/completions, so the chat picker must never offer them.
+    live_excluded_markers: tuple = ()
     # model_aliases: short name -> id in fallback_models, for providers whose catalog is not
     # in models.dev (external processes); `/model <alias>` resolves here before core guessing.
     model_aliases: dict = field(default_factory=dict)

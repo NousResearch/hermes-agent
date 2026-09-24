@@ -143,6 +143,52 @@ class TestGenericProviderLiveCuratedMerge:
         assert "x-preview-f-free" not in result
         assert "kimi-k3" in result
 
+    def test_authoritative_live_catalog_replaces_retired_curated(self):
+        """A provider whose hosted catalog rotates (NVIDIA NIM delists EOL models): a
+        successful live response replaces the curated floor instead of merging it back
+        in, or the picker keeps offering ids that 410 Gone (REVERT-PROOF: dropping the
+        authoritative mode resurrects the retired floor rows and this fails)."""
+        live = ["nvidia/nemotron-3-super-120b-a12b", "z-ai/glm-5.3"]
+        profile = self._make_profile(live)
+        profile.live_catalog_mode = "authoritative"
 
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+            patch.dict(
+                "hermes_cli.models._PROVIDER_MODELS",
+                {"nvidia": ["z-ai/glm-5.2", "minimaxai/minimax-m3"]},
+            ),
+        ):
+            result = provider_model_ids("nvidia")
 
+        assert result == live
 
+    def test_authoritative_live_catalog_filters_non_chat_skus(self):
+        """A hosted catalog mixing utility SKUs next to chat models (NVIDIA NIM lists
+        embed/safety models that 400 on /chat/completions): markers declared on the
+        profile filter the slug after the vendor prefix, so a vendor name never
+        false-positives (embed-labs/chat-model stays)."""
+        live = [
+            "nvidia/nemotron-3-super-120b-a12b",
+            "nvidia/nemotron-3-embed-1b",
+            "nvidia/nemotron-3.5-content-safety",
+            "embed-labs/chat-model",
+        ]
+        profile = self._make_profile(live)
+        profile.live_catalog_mode = "authoritative"
+        profile.live_excluded_markers = ("embed", "content-safety")
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("nvidia")
+
+        assert result == ["nvidia/nemotron-3-super-120b-a12b", "embed-labs/chat-model"]

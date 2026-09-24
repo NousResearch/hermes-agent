@@ -1320,6 +1320,22 @@ class TestLocalOllamaModelDiscovery:
         finally:
             models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
 
+    def test_empty_authoritative_catalog_clears_stale_disk_models(self):
+        """A successful empty listing from an authoritative catalog (NVIDIA NIM rotated
+        everything out) persists the empty row so stale disk models are not resurrected
+        on the next picker open. Failed fetches still serve stale (see ollama above)."""
+        import hermes_cli.models as models
+
+        cache = {"nvidia": {"fp": "same", "at": 0, "models": ["stale/model"]}}
+        with patch.object(
+            models, "_load_provider_models_cache", return_value=cache
+        ), patch.object(models, "_save_provider_models_cache") as save, patch.object(
+            models, "_credential_fingerprint", return_value="same"
+        ), patch.object(models, "provider_model_ids", return_value=[]):
+            assert models.cached_provider_model_ids("nvidia", force_refresh=True) == []
+
+        assert save.call_args.args[0]["nvidia"]["models"] == []
+
     def test_ollama_native_request_uses_redirect_safe_catalog_helper(self):
         import hermes_cli.models as models
 

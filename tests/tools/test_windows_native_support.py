@@ -693,6 +693,11 @@ class TestCronSchedulerBashResolution:
         found = str(tmp_path / "git" / "bin" / "bash.exe")
         monkeypatch.setattr(scheduler_script.shutil, "which",
                             lambda name: found if name == "bash" else None)
+        try:
+            import tools.environments.local as local
+            monkeypatch.setattr(local, "_find_bash", lambda: found)
+        except Exception:
+            pass
 
         argv, _overlay, error = scheduler_script._script_argv(script)
 
@@ -706,11 +711,37 @@ class TestCronSchedulerBashResolution:
         script.write_text("echo hi\n", encoding="utf-8")
         real_isfile = os.path.isfile
         monkeypatch.setattr(scheduler_script.shutil, "which", lambda name: None)
+        try:
+            import tools.environments.local as local
+            monkeypatch.setattr(local, "_find_bash", lambda: (_ for _ in ()).throw(RuntimeError("not found")))
+        except Exception:
+            pass
         monkeypatch.setattr(scheduler_script.os.path, "isfile",
                             lambda p: False if p == "/bin/bash" else real_isfile(p))
 
         argv, _overlay, error = scheduler_script._script_argv(script)
 
+
         assert argv is None
         assert "bash not found" in error
         assert "job.sh" in error
+
+    def test_sh_script_resolves_via_find_bash_not_wsl_stub(self, tmp_path, monkeypatch):
+        """A .sh cron script must be resolved via tools.environments.local._find_bash, never bare which (#120504)."""
+        from cron import scheduler_script
+        import tools.environments.local as local
+
+        script = tmp_path / "job.sh"
+        script.write_text("echo hi\n", encoding="utf-8")
+        git_bash = str(tmp_path / "Git" / "bin" / "bash.exe")
+        wsl_stub = str(tmp_path / "System32" / "bash.exe")
+
+        monkeypatch.setattr(scheduler_script.shutil, "which", lambda name: wsl_stub)
+        monkeypatch.setattr(local, "_find_bash", lambda: git_bash)
+
+        argv, _overlay, error = scheduler_script._script_argv(script)
+
+        assert error is None
+        assert argv == [git_bash, str(script)]
+        assert argv[0] != wsl_stub
+

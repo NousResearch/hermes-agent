@@ -796,6 +796,17 @@ DEFAULT_CONFIG = {
         "moa_aggregator": _aux(900, reasoning_effort=False),
     },
 
+    # Gateway conversation rotation (0 = off, the default). A chat session whose last prompt
+    # reached ``max_prompt_tokens``, or that sat idle ``idle_hours``, starts fresh on the next
+    # message — like /new, but decided before the turn, silently. ``note`` is what the agent is
+    # told at the start of the new conversation.
+    "session_rotation": {
+        "max_prompt_tokens": 0,
+        "idle_hours": 0,
+        "note": "[System note: the previous conversation grew long or went quiet and was closed. "
+                "This is a fresh conversation; earlier ones are reachable with session_search.]",
+    },
+
     "display": {
         "compact": False,
         "personality": "",

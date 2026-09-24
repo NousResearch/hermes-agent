@@ -88,11 +88,14 @@ un bloc « You run on Hermes Agent (by Nous Research)… ». Deux petits patches
 - `display.allow_silent_replies: true` : un `[SILENT]` en réponse à un humain devient un
   vrai silence. Sans ça, Hermes le remplace par « ⚠️ The model returned only a silence
   marker… Try again ». C'est ce qui lui permet d'ignorer un message.
+- `session_rotation` (désactivé par défaut) : une conversation dont le prompt atteint
+  `max_prompt_tokens`, ou restée muette `idle_hours`, est close avant le message suivant,
+  sans bruit, comme un `/new`. `install.sh` règle 40 000 tokens et 4 h.
 
 `cron.wrap_response: false` retire l'en-tête « Cronjob Response » autour de ses messages, et
 `cron.allow_agent_scheduling: true` lui donne la main sur les jobs cron.
 
-**Ces deux patches n'existent que dans ce fork.** Le VPS doit donc faire tourner le code
+**Ces patches n'existent que dans ce fork.** Le VPS doit donc faire tourner le code
 de `ziatatous/wintermute-v4` au lieu de celui de NousResearch : voir l'installation.
 Tout le reste (moteur, pulse, plugin) marcherait aussi sur un Hermes non modifié.
 
@@ -167,6 +170,12 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
   de Hermes (compression, titres), relevés par le plugin après chaque appel au modèle dans
   `~/.hermes/wintermute/usage.jsonl`. Épuisé → plus d'éveils autonomes (sommeil forcé) ; il
   répond encore aux messages, et le sait (« spent » dans son état).
+- **Taille des conversations** : tout l'historique d'une conversation Telegram est renvoyé
+  à chaque message, alors il grossit sans fin (60k tokens pour « ceci est un test »). Une
+  conversation est donc close à 40 000 tokens de prompt ou après 4 h de silence
+  (`session_rotation`, voir plus haut). Il ne perd rien d'essentiel : sa mémoire, son
+  autoportrait, ses liens, et la fin de sa dernière pensée (reprise au premier message de la
+  conversation suivante) ; les anciennes restent consultables avec `session_search`.
 - **Crédits OpenRouter** : le plugin lit le solde du compte (au plus toutes les 10 min, en
   arrière-plan) et l'affiche dans son état : « Credits: $4.54 left of $5.00 ».
 - **Outils du pulse** : `WINTERMUTE_TOOLSETS=wintermute,memory,web bash install.sh`. Moins

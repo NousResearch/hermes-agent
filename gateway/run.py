@@ -3307,6 +3307,7 @@ _SESSION_DB_UNPINNED = object()
 # Only explicit suspension can replace a routed conversation.
 _AUTO_RESET_CONTEXT_NOTES = {
     "suspended": "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]",
+    "rotated": "[System note: the previous conversation was closed (session_rotation). This is a fresh conversation; earlier ones are reachable with session_search.]",
 }
 
 

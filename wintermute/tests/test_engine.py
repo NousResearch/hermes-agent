@@ -763,3 +763,17 @@ def test_the_local_terminal_is_the_operator_not_a_stranger(plugin):
     with store.locked_state() as (_, peers):
         peers["cli:local"] = store.new_peer(T0)
     assert "forgotten" in status.forget("cli:local") and "cli:local" not in _peers()
+
+
+def test_a_fresh_conversation_picks_up_where_he_left_off(plugin):
+    hook = plugin.hooks
+    hook["pre_llm_call"](session_id="old", user_message="hi", platform="telegram", sender_id="7375758021")
+    hook["post_api_request"](usage={"total_tokens": 5}, platform="telegram", session_id="old",
+                             assistant_message={"reasoning": "We were talking about the static."})
+    hook["post_llm_call"](session_id="old", assistant_response="Yes.", platform="telegram")
+    again = hook["pre_llm_call"](session_id="old", user_message="and?", platform="telegram",
+                                 sender_id="7375758021")["context"]
+    assert "[WHERE YOU LEFT OFF]" not in again                     # same conversation: not repeated
+    fresh = hook["pre_llm_call"](session_id="new", user_message="back", platform="telegram",
+                                 sender_id="7375758021")["context"]
+    assert "[WHERE YOU LEFT OFF]" in fresh and "talking about the static" in fresh

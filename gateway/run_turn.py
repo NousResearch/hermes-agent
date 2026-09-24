@@ -538,6 +538,9 @@ class GatewayTurnMixin:
         from gateway.run import _AUTO_RESET_CONTEXT_NOTES
         reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
         context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["suspended"])
+        if reset_reason == "rotated":
+            from gateway.session_lifecycle import rotation_config
+            context_note = rotation_config()["note"] or _AUTO_RESET_CONTEXT_NOTES["rotated"]
         # Long-lived channels: point the agent at the prior same-channel session for session_search.
         try:
             # Returns None (appends nothing) for other platforms or when there's no prior activity to

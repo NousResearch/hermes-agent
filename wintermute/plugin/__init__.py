@@ -100,11 +100,16 @@ def _is_silent(response: Any, autonomous: bool) -> bool:
 
 
 def _chat_context(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
-                  outreach_lines: list, ts) -> str:
+                  outreach_lines: list, ts, session_id: str = "") -> str:
     # Hermes adds this block to the current turn only (never to the stored history), so
     # everything he should carry through a conversation is in it every turn.
     lines = [f"[INTERNAL STATE — {store.iso(ts)} — private; the person does not see this block]"]
     lines += render.self_block(drives, ts)
+    # A conversation that just started (a new one, or one rotated for size) picks up where his
+    # last thought ended, wherever that was.
+    thread = drives["meta"].get("thread")
+    if isinstance(thread, dict) and thread.get("session") != session_id:
+        lines += render.thread_block(drives, ts)
     lines += ["DRIVES"] + render.felt_drives(drives)
     lines += ["BODY"] + render.felt_body(drives) + [render.body_line(drives, store.tokens_used_today())]
     lines += ["THIS PEER"] + render.peer_lines(drives, key, peers[key], ts) + outreach_lines
@@ -118,7 +123,8 @@ def _keep_thread(drives: Dict[str, Any], session_id: str, response: Any, where: 
         thought = _last_thought.get(session_id, "")
     text = thought or " ".join(_text(response).split())
     if text:
-        drives["meta"]["thread"] = {"at": store.iso(ts), "where": where, "text": text[-400:]}
+        drives["meta"]["thread"] = {"at": store.iso(ts), "where": where, "text": text[-400:],
+                                    "session": session_id}
 
 
 def _peer_for(platform: str, sender_id: str) -> str:
@@ -173,7 +179,7 @@ def _on_pre_llm_call(session_id: str = "", user_message: Any = None, platform: s
         ts = store.now()
         with store.locked_state() as (drives, peers):
             outreach_lines = social.on_incoming(drives, peers, key, ts)
-            context = _chat_context(drives, peers, key, outreach_lines, ts)
+            context = _chat_context(drives, peers, key, outreach_lines, ts, session_id)
         return {"context": context}
     except Exception:
         logger.exception("wintermute: pre_llm_call failed")

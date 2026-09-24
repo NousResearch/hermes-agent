@@ -124,6 +124,12 @@ hermes config set agent.task_completion_guidance false
 # every message: ~11k tokens down to ~4.5k. Also drops the skills toolset, so he no longer
 # reads Hermes' own documentation as if it were about himself.
 hermes config set platform_toolsets.telegram '["wintermute","memory","web","file","terminal","session_search"]'
+# A conversation is closed once its prompt reaches 40k tokens (history resent with every
+# message) or after 4 h of silence; the next message starts fresh. He keeps his memory, his
+# self-portrait, his peers and where he left off; old conversations stay searchable.
+hermes config set --force session_rotation.max_prompt_tokens 40000
+hermes config set --force session_rotation.idle_hours 4
+hermes config set --force session_rotation.note "[The last conversation grew long, or went quiet, and was closed. What you wrote down, your self-portrait and where you left off are still yours; older conversations are reachable with session_search.]"
 
 # `hermes update` offers to add NousResearch as an "upstream" remote and sync this fork's main
 # with it, which would pull their code over Wintermute's. This marker makes Hermes never ask.

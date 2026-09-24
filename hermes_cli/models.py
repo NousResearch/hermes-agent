@@ -1386,13 +1386,22 @@ def _api_key_credentials(normalized: str) -> tuple[str, str]:
         return "", ""
 
 
+def _catalog_base_url(normalized: str, resolved_base_url: str) -> str:
+    """Picker catalog endpoint: matching ``model.base_url`` or the credential resolver's URL."""
+    try:
+        from hermes_cli.runtime_provider import _config_base_url_for_provider
+        return _config_base_url_for_provider(_get_model_config_dict(), normalized) or resolved_base_url
+    except Exception:
+        return resolved_base_url
+
+
 def _api_key_provider_live(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     """Live /v1/models for a simple api-key provider (stepfun, gmi); None on any miss."""
     api_key, base_url = _api_key_credentials(normalized)
     if not (api_key and base_url):
         return None
     try:
-        return fetch_api_models(api_key, base_url) or None
+        return fetch_api_models(api_key, _catalog_base_url(normalized, base_url)) or None
     except Exception:
         return None
 
@@ -1559,7 +1568,12 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)
-    return probe_profile_catalog(normalized, profile, api_key, base_url or profile.base_url or None)
+    # Keep picker discovery on the same configured endpoint as inference. The credential
+    # resolver intentionally returns the provider's env/default endpoint; ``model.base_url``
+    # is a per-selected-provider runtime override and must therefore be applied here rather
+    # than changing the shared credential contract.
+    return probe_profile_catalog(
+        normalized, profile, api_key, _catalog_base_url(normalized, base_url) or profile.base_url or None)
 
 
 def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base_url: Optional[str]) -> Optional[list[str]]:
@@ -1765,8 +1779,17 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    # config.yaml's model.base_url changes the endpoint discovery probes (data-residency hosts)
-    # without touching any env var, so it must change the fingerprint too.
+    # config.yaml's model.base_url changes catalog probes without touching any env var, so it
+    # must change the fingerprint too.  Use the shared runtime matcher so a stale URL for a
+    # different provider cannot invalidate or redirect this provider's catalog.
+    try:
+        from hermes_cli.runtime_provider import _config_base_url_for_provider
+        configured_base = _config_base_url_for_provider(_get_model_config_dict(), provider)
+        if configured_base:
+            parts.append(f"effective_base={configured_base}")
+    except Exception:
+        pass
+
     if provider in ("openai", "openai-api"):
         try:
             parts.append(f"effective_base={_openai_discovery_base_url(provider)}")
@@ -2545,7 +2568,8 @@ def _deepinfra_catalog_url() -> tuple[str, str]:
     """Return ``(cache_key, full_url)`` for the DeepInfra catalog endpoint. The key carries the
     api-key fingerprint: the catalog is user-scoped (private fine-tunes), so two profiles with
     different keys must not share an entry."""
-    base = (_deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL).rstrip("/")
+    base = _catalog_base_url(
+        "deepinfra", _deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL).rstrip("/")
     from agent.credential_persistence import fingerprint_secret_value
     fp = fingerprint_secret_value(_deepinfra_env("DEEPINFRA_API_KEY")) or "anon"
     return f"{base}#{fp}", f"{base}/models?{_DEEPINFRA_MODELS_QUERY}"
@@ -2637,6 +2661,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
     if not base_url:
         from hermes_constants import AI_GATEWAY_BASE_URL
         base_url = AI_GATEWAY_BASE_URL
+    base_url = _catalog_base_url("ai-gateway", base_url)
 
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _HERMES_USER_AGENT}
     try:

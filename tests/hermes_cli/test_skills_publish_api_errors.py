@@ -69,8 +69,23 @@ def test_publish_reports_failure_without_creating_pr(tmp_path, monkeypatch, fail
         assert not any("/contents/" in r.url.path for r in requests)
 
 
-@pytest.mark.parametrize("default_branch", ["development", "main"])
-def test_publish_preserves_selected_repository_and_file_content(tmp_path, monkeypatch, default_branch):
+@pytest.mark.parametrize(
+    "metadata, fork_branch, default_branch",
+    [
+        ({"default_branch": "development"}, "master", "development"),
+        ({}, None, "main"),
+        ({}, "master", "master"),
+        ("http_error", "master", "master"),
+        ("network_error", "master", "master"),
+        ("invalid_json", "master", "master"),
+        ({"default_branch": None}, "master", "master"),
+        ({"default_branch": ""}, "master", "master"),
+        ("network_error", None, "main"),
+    ],
+)
+def test_publish_preserves_selected_repository_and_file_content(
+    tmp_path, monkeypatch, metadata, fork_branch, default_branch
+):
     document = "---\nname: example\ndescription: A harmless example.\n---\n# Example\nHello.\n"
     (tmp_path / "SKILL.md").write_text(document, encoding="utf8")
     monkeypatch.setattr(GitHubAuth, "is_authenticated", lambda self: True)
@@ -80,11 +95,18 @@ def test_publish_preserves_selected_repository_and_file_content(tmp_path, monkey
         requests.append(request)
         path = request.url.path
         if path.endswith("/forks"):
-            return httpx.Response(202, json={"full_name": "contributor/project"})
+            return httpx.Response(202, json={"full_name": "contributor/project", "default_branch": fork_branch})
         if path == "/repos/owner/project":
-            return httpx.Response(200, json={"default_branch": default_branch} if default_branch != "main" else {})
+            if metadata == "network_error":
+                raise httpx.ConnectError("fixture unavailable", request=request)
+            if metadata == "invalid_json":
+                return httpx.Response(200, text="not JSON")
+            if metadata == "http_error":
+                return httpx.Response(503, json={"message": "unavailable"})
+            return httpx.Response(200, json=metadata)
         if "/git/refs/heads/" in path:
-            assert path.endswith("/" + default_branch)
+            if not path.endswith("/" + default_branch):
+                return httpx.Response(404, json={"message": "unknown branch"})
             return httpx.Response(200, json={"object": {"sha": "abc"}})
         return httpx.Response(201, json={"html_url": "https://example.test/pr/1"})
     output = io.StringIO()
@@ -92,6 +114,7 @@ def test_publish_preserves_selected_repository_and_file_content(tmp_path, monkey
         for method in ("get", "post", "put"):
             monkeypatch.setattr(httpx, method, getattr(client, method))
         do_publish(str(tmp_path), repo="owner/project", console=Console(file=output, width=160))
+    assert "PR created: https://example.test/pr/1" in output.getvalue(), output.getvalue()
     upload = next(r for r in requests if r.method == "PUT")
     assert base64.b64decode(json.loads(upload.content)["content"]) == (tmp_path / "SKILL.md").read_bytes()
     pull = requests[-1]

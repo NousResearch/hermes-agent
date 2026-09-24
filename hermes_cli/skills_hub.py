@@ -1223,10 +1223,14 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
     except httpx.HTTPError as e:
         return False, f"Network error forking repo: {e}"
 
+    # The fork response can identify the branch even if the metadata lookup fails.
+    fallback_branch = fork.get("default_branch") or "main"
     try:
-        default_branch = call("get", target_repo).json().get("default_branch", "main")
+        resp = call("get", target_repo)
+        resp.raise_for_status()
+        default_branch = resp.json().get("default_branch") or fallback_branch
     except Exception:
-        default_branch = "main"
+        default_branch = fallback_branch
     try:
         ref = call("get", f"{fork_repo}/git/refs/heads/{default_branch}").json()
         base_sha = ref["object"]["sha"]

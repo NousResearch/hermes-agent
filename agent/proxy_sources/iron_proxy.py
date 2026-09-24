@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import platform
+import re
+import platform
 import shutil
 import signal
 import subprocess
@@ -34,8 +36,33 @@ from utils import atomic_json_write, atomic_write_text
 logger = logging.getLogger(__name__)
 
 # Pinned: never auto-resolve "latest" — the YAML schema may change between releases.
+# Operators can move the pin without a hermes release via HERMES_IRON_PROXY_VERSION
+# (strict X.Y.Z); checksum + GPG verification always follow whichever version resolves.
 _IRON_PROXY_VERSION = "0.39.0"
-_IRON_PROXY_RELEASE_BASE = f"https://github.com/ironsh/iron-proxy/releases/download/v{_IRON_PROXY_VERSION}"
+_IRON_PROXY_VERSION_ENV = "HERMES_IRON_PROXY_VERSION"
+_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def _resolve_iron_proxy_version() -> str:
+    """The pinned version, or a strict ``X.Y.Z`` override from the environment.
+
+    The value feeds a download URL, so a malformed override must fail loudly at
+    resolve time — never silently mangled into the URL or the asset name.
+    """
+    override = os.environ.get(_IRON_PROXY_VERSION_ENV, "").strip()
+    if not override:
+        return _IRON_PROXY_VERSION
+    if not _VERSION_RE.match(override):
+        raise RuntimeError(
+            f"{_IRON_PROXY_VERSION_ENV} must be a plain X.Y.Z version (got {override!r}); "
+            f"refusing to build a download URL from it."
+        )
+    return override
+
+
+def _release_base() -> str:
+    """Download URL prefix for the resolved version (resolved per call, not at import)."""
+    return f"https://github.com/ironsh/iron-proxy/releases/download/v{_resolve_iron_proxy_version()}"
 _IRON_PROXY_CHECKSUM_NAME = "checksums.txt"
 # Optional GPG verification of checksums.txt (SHA-256 alone trusts the release channel).
 _IRON_PROXY_CHECKSUM_SIG_NAME = "checksums.txt.asc"
@@ -183,9 +210,12 @@ def _platform_asset_name() -> str:
     system, machine = platform.system(), platform.machine().lower()
     if os_name := {"Linux": "linux", "Darwin": "darwin"}.get(system):
         arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
-        return f"iron-proxy_{_IRON_PROXY_VERSION}_{os_name}_{arch}.tar.gz"
+        return f"iron-proxy_{_resolve_iron_proxy_version()}_{os_name}_{arch}.tar.gz"
     if system == "Windows":
-        raise RuntimeError(f"iron-proxy does not ship native Windows binaries as of v{_IRON_PROXY_VERSION}. Run the proxy on a Linux/macOS host, or inside WSL.")
+        raise RuntimeError(
+            f"iron-proxy does not ship native Windows binaries as of v{_resolve_iron_proxy_version()}. "
+            "Run the proxy on a Linux/macOS host, or inside WSL."
+        )
     raise RuntimeError(f"Unsupported platform for iron-proxy auto-install: {system} {machine}")
 
 
@@ -214,7 +244,7 @@ def install_iron_proxy(*, force: bool = False) -> Path:
     asset_name = _platform_asset_name()
     with tempfile.TemporaryDirectory(prefix="hermes-iron-proxy-") as tmpdir:
         archive_path, checksum_path = (tmp := Path(tmpdir)) / asset_name, tmp / _IRON_PROXY_CHECKSUM_NAME
-        logger.info("Downloading %s", f"{_IRON_PROXY_RELEASE_BASE}/{asset_name}")
+        logger.info("Downloading %s", f"{_release_base()}/{asset_name}")
         _release_asset(asset_name, archive_path)
         _release_asset(_IRON_PROXY_CHECKSUM_NAME, checksum_path)
         # Best-effort GPG check of checksums.txt closes the release-channel tamper gap.
@@ -238,13 +268,13 @@ def install_iron_proxy(*, force: bool = False) -> Path:
         os.replace(staged, target)
     # A freshly-installed binary must re-probe --version on the next get_status().
     _VERSION_CACHE.pop(str(target), None)
-    logger.info("Installed iron-proxy %s at %s", _IRON_PROXY_VERSION, target)
+    logger.info("Installed iron-proxy %s at %s", _resolve_iron_proxy_version(), target)
     return target
 
 
 def _release_asset(name: str, dest: Path) -> None:
     """Download one pinned-release asset to ``dest``; RuntimeError on any URL error."""
-    url = f"{_IRON_PROXY_RELEASE_BASE}/{name}"
+    url = f"{_release_base()}/{name}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent"})
         with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as resp, open(dest, "wb") as f:  # noqa: S310

@@ -1,6 +1,7 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import httpx
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -239,6 +240,75 @@ class TestSignalSSEUrlEncoding:
         """The + in E.164 phone numbers must be percent-encoded in the SSE query string."""
         encoded = quote("+31612345678", safe="")
         assert encoded == "%2B31612345678"
+
+
+class TestSignalSSECleanup:
+    @pytest.mark.asyncio
+    async def test_cancelled_listener_closes_its_response_without_clearing_newer_one(self, monkeypatch):
+        """A cancelled listener must not clear a response installed by a reconnect."""
+        adapter = _make_signal_adapter(monkeypatch)
+        entered = asyncio.Event()
+
+        class OldResponse:
+            async def aiter_text(self):
+                entered.set()
+                await asyncio.Event().wait()
+                yield ""
+
+            aclose = AsyncMock()
+
+        class Stream:
+            async def __aenter__(self):
+                return old_response
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        old_response = OldResponse()
+        newer_response = MagicMock()
+        adapter.client = MagicMock(stream=MagicMock(return_value=Stream()))
+        adapter._running = True
+
+        listener = asyncio.create_task(adapter._sse_listener())
+        await entered.wait()
+        adapter._sse_response = newer_response
+        listener.cancel()
+        await listener
+
+        old_response.aclose.assert_awaited_once()
+        assert adapter._sse_response is newer_response
+        assert adapter.client.stream.call_args.kwargs["headers"]["Connection"] == "close"
+
+    @pytest.mark.asyncio
+    async def test_force_reconnect_closes_response_after_stream_consumption_starts(self, monkeypatch):
+        """HTTPX marks an active response consumed before its body iterator finishes."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        class BlockingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = asyncio.Event()
+
+            async def __aiter__(self):
+                yield b": keepalive\n"
+                await self.closed.wait()
+
+            async def aclose(self):
+                self.closed.set()
+
+        stream = BlockingStream()
+        response = httpx.Response(200, stream=stream)
+        body = response.aiter_text()
+
+        assert await anext(body) == ": keepalive\n"
+        assert response.is_stream_consumed is True
+        assert response.is_closed is False
+
+        adapter._sse_response = response
+        adapter._force_reconnect()
+        await asyncio.wait_for(stream.closed.wait(), timeout=1)
+
+        assert response.is_closed is True
+        assert adapter._sse_response is None
 
 
 # ---------------------------------------------------------------------------
@@ -1383,3 +1453,80 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# SSE health monitor — hung stream vs daemon HTTP
+# ---------------------------------------------------------------------------
+
+class TestSignalSseHealthMonitor:
+    """Stale SSE must force reconnect even when daemon /check is still 200."""
+
+    @staticmethod
+    async def _run_one_health_cycle(adapter):
+        """Drive one monitor iteration then stop the loop."""
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                adapter._running = False
+
+        with patch("gateway.platforms.signal.asyncio.sleep", fake_sleep), \
+             patch.object(adapter, "_force_reconnect") as mock_reconnect:
+            await adapter._health_monitor()
+        return mock_reconnect
+
+    @pytest.mark.asyncio
+    async def test_forces_reconnect_when_daemon_healthy_but_sse_stale(self, monkeypatch):
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        call_order = []
+
+        async def fake_get(*args, **kwargs):
+            call_order.append("get")
+            return MagicMock(status_code=200)
+
+        def tracking_reconnect():
+            call_order.append("reconnect")
+
+        adapter.client.get = AsyncMock(side_effect=fake_get)
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time() - 200
+        stale_at = adapter._last_sse_activity
+
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                adapter._running = False
+
+        with patch("gateway.platforms.signal.asyncio.sleep", fake_sleep), \
+             patch.object(adapter, "_force_reconnect", side_effect=tracking_reconnect) as mock_reconnect:
+            await adapter._health_monitor()
+
+        adapter.client.get.assert_awaited_once_with(
+            "http://localhost:8080/api/v1/check", timeout=10.0
+        )
+        mock_reconnect.assert_called_once()
+        assert adapter._last_sse_activity == stale_at
+        assert call_order == ["reconnect", "get"]
+
+
+    @pytest.mark.asyncio
+    async def test_does_not_reconnect_when_sse_activity_is_fresh(self, monkeypatch):
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        adapter.client.get = AsyncMock(return_value=MagicMock(status_code=200))
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time()
+
+        mock_reconnect = await self._run_one_health_cycle(adapter)
+
+        adapter.client.get.assert_not_awaited()
+        mock_reconnect.assert_not_called()

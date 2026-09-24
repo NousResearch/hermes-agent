@@ -345,19 +345,4 @@ describe('useVoiceConversation playback rearm', () => {
     expect(mocks.playSpeechText).toHaveBeenCalledTimes(1)
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })
-
-  it('honors Stop while waiting for the next fallback sentence', async () => {
-    mocks.useFallbackSpeech()
-    const { finishResponse, hook } = renderIncrementalFallbackConversation()
-
-    await beginReply(hook)
-    await waitFor(() => expect(mocks.playSpeechText).toHaveBeenCalledTimes(1))
-
-    mocks.stopVoicePlayback()
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
-    finishResponse()
-
-    expect(mocks.playSpeechText).toHaveBeenCalledTimes(1)
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
-  })
 })

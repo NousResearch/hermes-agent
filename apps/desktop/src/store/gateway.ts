@@ -305,7 +305,10 @@ const openedSecondaryScopes = (): Set<string> => (g.openedSecondaryScopes ??= ne
 // Dev-HMR states predate this field, so read it through the same lazy accessor pattern.
 const reactivatingScopes = (): Set<string> => (g.reactivatingScopes ??= new Set<string>())
 
-function acquireActivationLease(entry: Secondary, signal?: AbortSignal): GatewayActivationLease {
+function acquireActivationLease(
+  entry: Secondary,
+  { lifetime, signal }: { lifetime: 'bounded' | 'phase-one'; signal?: AbortSignal }
+): GatewayActivationLease {
   const owner = (g.activationLeaseGeneration = (g.activationLeaseGeneration ?? 0) + 1)
   let released = false
 
@@ -326,11 +329,10 @@ function acquireActivationLease(entry: Secondary, signal?: AbortSignal): Gateway
   }
 
   entry.activationLeaseOwner = owner
-  // Ownership/cancellation, not an arbitrary wall-clock grace, determines
-  // phase one's lifetime. A queued phase two may legitimately outlast both
-  // the socket's min-lifetime and the former 30s lease; its controller releases
-  // this immediately on supersede, timeout, error, or abort.
-  entry.activationLeaseUntil = Number.MAX_SAFE_INTEGER
+  // A prepared phase-one switch may wait behind serialized phase two for
+  // longer than 30s, so its explicit owner controls the lifetime. Ordinary
+  // phase-two activation retains the 30s safety valve for a wedged connect.
+  entry.activationLeaseUntil = lifetime === 'phase-one' ? Number.MAX_SAFE_INTEGER : Date.now() + ACTIVATION_LEASE_MS
 
   if (signal?.aborted) {
     release()
@@ -1774,7 +1776,10 @@ export async function openGatewayForAgent(
   entry.retained = true
   rearmSecondary(entry, spawnPriority)
 
-  const lease = activationLease ? acquireActivationLease(entry, signal) : { release: () => undefined }
+  const lease = activationLease
+    ? acquireActivationLease(entry, { lifetime: 'phase-one', signal })
+    : { release: () => undefined }
+
   let opened = false
 
   try {
@@ -1836,7 +1841,7 @@ export async function ensureGatewayForAgent(
   // switch target is not yet active and has no live sessions, so a prune
   // recompute firing mid-spawn would otherwise dispose it and this
   // activation would fail (#89622).
-  const activationLease = acquireActivationLease(entry, signal)
+  const activationLease = acquireActivationLease(entry, { lifetime: 'bounded', signal })
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)

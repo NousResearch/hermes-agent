@@ -147,6 +147,27 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
     await expect(switching).resolves.toBe(true)
   })
 
+  it('reclaims a wedged phase-two agent activation after its bounded lease expires', async () => {
+    vi.useFakeTimers()
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+
+    const activating = ensureGatewayForAgent('homelab', 'research')
+    await flushUntilSecondaryRegistered()
+
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+
+    releaseConnect()
+    await expect(activating).resolves.toBe(false)
+  })
+
   it('keeps a settled phase-one target alive past min lifetime until phase two owns it (#93937)', async () => {
     vi.useFakeTimers()
 

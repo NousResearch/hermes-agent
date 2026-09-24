@@ -306,8 +306,10 @@ def _mirror_voice_sections(path) -> bool:
     """Copy stt/tts/voice sections from the launch profile (a fresh profile has only ``model``,
     so voice fell back to defaults); True if written."""
     try:
-        from hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
-        src_cfg = load_config_readonly() or {}
+        from hermes_cli.config import read_user_config_raw, save_config
+        # Launch file RAW too: the loaded config has ${VAR} refs expanded, and the new profile
+        # must get the ref (resolved against its own .env), never the launch profile's secret.
+        src_cfg = read_user_config_raw()
         sections = {k: src_cfg[k] for k in ("stt", "tts", "voice") if src_cfg.get(k)}
         if not sections:
             return False
@@ -341,7 +343,8 @@ def _inherit_launch_model(path) -> bool:
     # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
     # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
     # rejects a provider it has not been told about ("Unknown provider").
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
     if custom:
         from hermes_cli.config import load_config, save_config
         with _hermes_home_scope(path):
@@ -601,7 +604,8 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
     want_mcp = isinstance(params.get("enabled_mcp_servers"), list)
     launch_mcp = {}
     if want_mcp:  # launch catalog read BEFORE the home override flips config resolution
-        load_launch = _lazy("hermes_cli.config", "load_config_readonly")
+        # RAW: a copied entry keeps its ${VAR} refs instead of the launch profile's expanded secrets.
+        load_launch = _lazy("hermes_cli.config", "read_user_config_raw")
         launch_mcp = _try(lambda: (load_launch() or {}).get("mcp_servers"), {})
         launch_mcp = launch_mcp if isinstance(launch_mcp, dict) else {}
     with _hermes_home_scope(profile_dir):

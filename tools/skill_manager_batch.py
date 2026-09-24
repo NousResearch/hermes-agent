@@ -134,7 +134,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
     return names, None
 
 
-def _snapshot_skills(names, snap_root, find_skill, create_targets=None):
+def _snapshot_skills(names, snap_root, find_skill, create_targets):
     """Copy every touched skill aside. Returns (snapshots, None) or (None, error_text).
 
     ``create_targets`` maps a name with no skill yet to the dir its ``create`` op will use.
@@ -150,12 +150,12 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets=None):
                 shutil.copytree(pre_dir, snap)
             except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
-        target = (create_targets or {}).get(nm) if pre is None else None
+        target = create_targets.get(nm) if pre is None else None
         snapshots[nm] = (pre_dir, snap, target is not None and target.is_dir())
     return snapshots, None
 
 
-def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False) -> None:
+def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()) -> None:
     post_exists = post_dir is not None and post_dir.is_dir()
     if snap is None:
         if not post_exists:
@@ -163,10 +163,18 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False) -> None:
         if not dir_pre_existed:  # Batch created this skill: remove the partial result.
             shutil.rmtree(post_dir)
             return
-        # The dir predates the batch (adopted empty leftover): undo only the SKILL.md the batch
-        # wrote and drop the dir only if that leaves it empty — never anything foreign.
-        with suppress(OSError):
-            (post_dir / "SKILL.md").unlink()
+        # The dir predates the batch (adopted empty leftover): unlink exactly the files the
+        # batch wrote there, then rmdir() the now-empty dirs up to and including the skill dir.
+        # rmdir() fails on anything left, so a file that landed out-of-band survives.
+        for rel in ("SKILL.md", *written):
+            target = post_dir / rel
+            with suppress(OSError):
+                target.unlink()
+            for parent in target.parents:
+                if parent == post_dir or not parent.is_relative_to(post_dir):
+                    break
+                with suppress(OSError):
+                    parent.rmdir()
         with suppress(OSError):
             post_dir.rmdir()
         return
@@ -188,13 +196,17 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _rollback(snapshots, find_skill):
-    """Restore every snapshot. Returns (note, failed)."""
+def _rollback(snapshots, find_skill, results):
+    """Restore every snapshot. ``results`` are the ops applied so far (their name/file_path
+    tell an adopted dir's rollback which files were the batch's). Returns (note, failed)."""
     notes = []
     for nm, (pre_dir, snap, dir_pre_existed) in snapshots.items():
+        written = [posixpath.normpath(r["file_path"].lstrip("/")) for r in results
+                   if r["name"] == nm and r["action"] == "write_file" and r["file_path"]]
         try:
             post = find_skill(nm)
-            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None, dir_pre_existed)
+            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None,
+                              dir_pre_existed, written)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))
@@ -262,7 +274,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                 except Exception:  # noqa: BLE001
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
-                    note, rollback_failed = _rollback(snapshots, _smt._find_skill)
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
                     fail = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "

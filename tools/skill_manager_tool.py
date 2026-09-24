@@ -428,11 +428,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    from hermes_constants import assert_named_profile_home_live
-    assert_named_profile_home_live(skill_dir)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(skill_dir.parent)
     try:
-        skill_dir.mkdir(parents=True, exist_ok=False)
-        created_dir = True
+        skill_dir.mkdir(exist_ok=False)
     except FileExistsError:
         # mkdir raised EEXIST for a file, symlink (live or dangling) or dir alike; only an EMPTY
         # real directory (leftover of an earlier create whose SKILL.md write failed) may be used.
@@ -445,12 +444,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         if not usable:
             return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
                         "directory, or unreadable). Choose another name, or move/remove that path and retry.")
-        created_dir = False
     skill_md = skill_dir / "SKILL.md"
     if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
-        if created_dir:  # rmdir, not rmtree: an adopted leftover dir and anything foreign stay
-            with suppress(OSError):
-                skill_dir.rmdir()
+        with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
+            skill_dir.rmdir()
         return guard
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir

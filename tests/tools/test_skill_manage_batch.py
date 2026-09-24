@@ -180,8 +180,8 @@ class TestSkillManageBatch(unittest.TestCase):
     def test_cross_skill_batch_and_rollback(self):
         """Ops may target DIFFERENT skills; a late failure rolls back
         every touched skill, including removing a batch-created one — but a dir
-        that pre-dated the batch (empty leftover create adopted) is never rmtree'd,
-        only the SKILL.md the batch wrote is undone."""
+        that pre-dated the batch (empty leftover create adopted) is never rmtree'd:
+        every file the BATCH wrote there is undone, anything else survives."""
         self._call("alpha", [{"action": "create", "content": SK.format(n="alpha")}])
         gamma = os.path.join(self.home, "skills", "gamma")
         os.mkdir(gamma)  # empty pre-existing dir with no SKILL.md: create adopts it
@@ -189,7 +189,8 @@ class TestSkillManageBatch(unittest.TestCase):
 
         def drop_file_before_failing_op(payload, **kw):
             if payload.get("action") == "write_file":  # something lands mid-batch
-                open(os.path.join(gamma, "dropped.txt"), "w").write("keep me")
+                with open(os.path.join(gamma, "dropped.txt"), "w", encoding="utf-8") as fh:
+                    fh.write("keep me")
             return real_from(payload, **kw)
 
         with patch.object(self.smt, "_skill_manage_from", side_effect=drop_file_before_failing_op):
@@ -198,20 +199,38 @@ class TestSkillManageBatch(unittest.TestCase):
                  "old_string": "Step 1.", "new_string": "Step A."},
                 {"name": "beta", "action": "create", "content": SK.format(n="beta")},
                 {"name": "gamma", "action": "create", "content": SK.format(n="gamma")},
+                {"name": "gamma", "action": "write_file",
+                 "file_path": "references/a.md", "file_content": "a"},
                 {"name": "beta", "action": "write_file",
                  "file_path": "bad/nope.md", "file_content": "x"},
             ]))
         self.assertFalse(r["success"])
-        self.assertEqual(r["failed_index"], 3)
+        self.assertEqual(r["failed_index"], 4)
         # alpha's patch undone; beta (batch-created) removed entirely.
-        content = open(os.path.join(self.home, "skills", "alpha", "SKILL.md")).read()
+        with open(os.path.join(self.home, "skills", "alpha", "SKILL.md"), encoding="utf-8") as fh:
+            content = fh.read()
         self.assertIn("Step 1.", content)
         self.assertNotIn("Step A.", content)
         self.assertFalse(os.path.exists(os.path.join(self.home, "skills", "beta")))
-        # gamma pre-existed: its SKILL.md is undone, the dir and the foreign file survive.
+        # gamma pre-existed: SKILL.md and the batch's references/a.md are undone (with the
+        # dir that held it); the dir and the foreign file survive.
         self.assertTrue(os.path.isdir(gamma))
-        self.assertFalse(os.path.exists(os.path.join(gamma, "SKILL.md")))
-        self.assertEqual(open(os.path.join(gamma, "dropped.txt")).read(), "keep me")
+        with open(os.path.join(gamma, "dropped.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "keep me")
+        self.assertEqual(os.listdir(gamma), ["dropped.txt"])
+        # Without a foreign file the adopted dir is left as create found it (empty -> gone),
+        # so a retry create is not refused as "occupied".
+        delta = os.path.join(self.home, "skills", "delta")
+        os.mkdir(delta)
+        r = self._call("delta", [
+            {"action": "create", "content": SK.format(n="delta")},
+            {"action": "write_file", "file_path": "references/a.md", "file_content": "a"},
+            {"action": "write_file", "file_path": "bad/nope.md", "file_content": "x"},
+        ])
+        self.assertFalse(r["success"])
+        self.assertFalse(os.path.exists(delta))
+        r = self._call("delta", [{"action": "create", "content": SK.format(n="delta")}])
+        self.assertTrue(r["success"], r)
 
     def test_failed_restore_never_destroys_the_skill(self):
         """Rollback used to rmtree the live skill directory BEFORE

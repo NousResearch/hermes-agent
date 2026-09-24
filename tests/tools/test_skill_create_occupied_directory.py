@@ -40,8 +40,8 @@ def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
         data.write_bytes(b"keep me")
         result = _create_skill("new-skill", VALID_CONTENT)
 
-        # An EMPTY pre-existing directory (leftover of an earlier failed create) is a valid target,
-        # but a blocked scan removes only what create wrote and leaves the directory in place.
+        # An EMPTY pre-existing directory (leftover of an earlier failed create) is a valid target;
+        # a blocked scan removes what create wrote and the then-empty dir (rmdir, never rmtree).
         empty = tmp_path / "empty-skill"
         empty.mkdir()
         empty_result = _create_skill("empty-skill", VALID_CONTENT)
@@ -67,8 +67,7 @@ def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
     assert not (target / "SKILL.md").exists()
 
     assert empty_result["success"] is False
-    assert empty.is_dir()
-    assert not any(empty.iterdir())
+    assert not empty.exists()
 
     assert fresh_result["success"] is False
     assert not (tmp_path / "fresh-skill").exists()

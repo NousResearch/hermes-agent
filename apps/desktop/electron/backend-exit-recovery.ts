@@ -95,3 +95,28 @@ export function createBackendExitRecoveryLatch({
     }
   }
 }
+
+export type SupersededExitNoticeState = {
+  /** The dying child had completed boot and served renderer traffic. */
+  ready: boolean
+  /** The slot was emptied on purpose (re-home, quit, hand-off, shutdown). */
+  intentionalTeardown: boolean
+  /** The supervisor took the exit over (respawn, or its crash-loop notice). */
+  recovered: boolean
+}
+
+/**
+ * Whether a STALE exit — the slot moved on before this child's exit event was
+ * processed — should still tell the renderer the backend died (#118784).
+ *
+ * The current-owner branch sends `hermes:backend-exit` whenever the supervisor
+ * does not take over, but the stale branch sent nothing: a backend that died
+ * post-ready and was re-dialed by the renderer replaced itself with no user
+ * notice, and the open chat lost its pinned state silently. Notify exactly
+ * when the death was real (ready, not deliberate) and nobody else notified:
+ * the respawn and crash-loop paths already send their own exit payload, and
+ * boot-time exits stay silent so the boot overlay keeps owning failure UX.
+ */
+export function shouldNotifySupersededBackendExit(state: SupersededExitNoticeState): boolean {
+  return state.ready && !state.intentionalTeardown && !state.recovered
+}

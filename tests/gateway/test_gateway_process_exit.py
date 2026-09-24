@@ -89,3 +89,51 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
     assert exc_info.value.code == 78
     remove_pid.assert_called_once_with()
     release_lock.assert_called_once_with()
+
+
+def test_exit_backstop_writes_last_words_stderr_line_for_nonzero_exit(monkeypatch):
+    """A backend that dies silently must not vanish without a trace (#118784):
+    every non-zero exit writes one last-words line to stderr, which is exactly
+    what the desktop shell's buffered output tail attaches to its exit log —
+    otherwise the tail shows only replayed startup lines forever. A clean
+    exit(0) must stay silent to avoid noise on every ordinary shutdown."""
+    stderr_writes: list[str] = []
+    stderr = SimpleNamespace(write=stderr_writes.append, flush=Mock())
+
+    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(gateway_run.sys, "stdout", SimpleNamespace(flush=Mock()))
+    monkeypatch.setattr(gateway_run.sys, "stderr", stderr)
+
+    with pytest.raises(_ExitCalled):
+        gateway_run._exit_after_graceful_shutdown(1)
+
+    assert stderr_writes == ["gateway exiting with code 1\n"]
+
+    stderr_writes.clear()
+    with pytest.raises(_ExitCalled):
+        gateway_run._exit_after_graceful_shutdown(0)
+
+    assert stderr_writes == []
+
+
+def test_main_preserves_str_systemexit_reason_on_stderr(monkeypatch):
+    """CPython's top level prints a str exit code to stderr before exiting 1;
+    routing every exit through the os._exit backstop (#53107) must not swallow
+    that reason line (#118784) — it is the only human-readable cause that
+    reaches the desktop's output tail for a silently dying backend."""
+    async def fake_start_gateway(config=None):
+        raise SystemExit("gateway boom: example reason")
+
+    stderr_writes: list[str] = []
+
+    monkeypatch.setattr(gateway_run, "start_gateway", fake_start_gateway)
+    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(gateway_run.sys, "argv", ["gateway.run"])
+    monkeypatch.setattr(gateway_run.sys, "stdout", SimpleNamespace(flush=Mock()))
+    monkeypatch.setattr(gateway_run.sys, "stderr", SimpleNamespace(write=stderr_writes.append, flush=Mock()))
+
+    with pytest.raises(_ExitCalled) as exc_info:
+        gateway_run.main()
+
+    assert exc_info.value.code == 1
+    assert stderr_writes == ["gateway boom: example reason\n", "gateway exiting with code 1\n"]

@@ -323,6 +323,45 @@ def _github_branch_tip(repo_slug: str, branch: str) -> Optional[str]:
     return sha if _is_full_sha(sha) else None
 
 
+def _github_latest_release_tag(repo_slug: str) -> Optional[str]:
+    """Tag name of the latest GitHub release (``releases/latest``), version-shaped only.
+
+    Non-version tag names (``nightly``, hash tags) must never anchor an update check, so
+    anything that isn't dotted numerics with an optional leading ``v`` is ignored.
+    """
+    url = f"https://api.github.com/repos/{repo_slug}/releases/latest"
+
+    def _fetch():
+        import re as _re
+        import urllib.request
+        req = urllib.request.Request(
+            url, headers={"Accept": "application/vnd.github+json", "User-Agent": "hermes-cli-update-check"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        name = payload.get("tag_name") if isinstance(payload, dict) else None
+        if not isinstance(name, str) or not name:
+            return None
+        stripped = name.removeprefix("refs/tags/")
+        return stripped if _re.fullmatch(r"v?\d+(\.\d+)*", stripped) else None
+
+    return _quiet(_fetch)
+
+
+def _release_anchor_enabled() -> bool:
+    """True when ``updates.anchor: release`` pins update checks to tagged releases.
+
+    Fork installs on a fast-moving main are behind the branch tip almost permanently, so a
+    tip-anchored "update available" stays lit for days after every update. A release anchor
+    lights only when a tagged release exists that HEAD lacks. The tag still resolves through
+    the API — passive checks never ``git fetch``.
+    """
+    def _read():
+        from hermes_cli.config import load_config
+        return load_config().get("updates", {}).get("anchor", "branch") == "release"
+
+    return _quiet(_read) is True
+
+
 def _upstream_main_sha() -> Optional[str]:
     """Tip SHA of upstream main; API first, HTTPS ``ls-remote`` (no auth, no prompts) as fallback."""
     sha = _github_branch_tip(_OFFICIAL_REPO_CANONICAL.removeprefix("github.com/"), "main")
@@ -358,7 +397,18 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         return None
     canonical = _canonical_github_remote(origin_url)
     if canonical.startswith("github.com/"):
-        target_rev = _github_branch_tip(canonical.removeprefix("github.com/"), "main")
+        repo_slug = canonical.removeprefix("github.com/")
+        target_rev = None
+        if _release_anchor_enabled():
+            # Release anchor: compare against the latest tagged release's commit, not the
+            # branch tip — a fork on a fast-moving main sits behind the tip almost
+            # permanently, so the tip comparison lights "update available" for days after
+            # every update. Lookup failures (offline, rate limit) fall back to the tip.
+            release_tag = _github_latest_release_tag(repo_slug)
+            if release_tag:
+                target_rev = _github_branch_tip(repo_slug, release_tag)
+        if target_rev is None:
+            target_rev = _github_branch_tip(repo_slug, "main")
     else:
         # Non-GitHub origin: one ls-remote for the tip (ref advertisement only, no pack transfer).
         result = _git_run(["ls-remote", "origin", "refs/heads/main"], cwd=repo_dir, timeout=10, network=True)

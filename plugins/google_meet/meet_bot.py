@@ -2,14 +2,19 @@
 
 Standalone subprocess spawned by ``process_manager.py``; configured via ``HERMES_MEET_*`` env,
 status + transcript written under ``$HERMES_MEET_OUT_DIR`` (filesystem is the only IPC).
-No WebRTC audio parsing: Meet's live captions are watched via a MutationObserver — lossy and
-English-biased, but deterministic (no STT billing) and stable thanks to the ARIA role.
+No WebRTC audio parsing for *output*, but remote audio IS captured (see ``_RTC_HOOK_JS``):
+an ``RTCPeerConnection`` wrapper intercepts ``ontrack`` remote streams and MediaRecorder
+streams 10 s opus fragments out via ``page.expose_function``; each fragment is decoded
+with PyAV and transcribed locally with faster-whisper (``HERMES_MEET_RTC_AUDIO=0`` to
+disable, ``HERMES_MEET_WHISPER_MODEL`` to pick the model).
 Debug: ``HERMES_MEET_URL=... HERMES_MEET_OUT_DIR=./meet-out HERMES_MEET_HEADED=1 \\
     python -m plugins.google_meet.meet_bot``
 """
 
 from __future__ import annotations
 
+import base64
+import itertools
 import os
 import re
 import shutil
@@ -18,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -63,7 +69,10 @@ _STATUS_FIELDS = (
     ("realtime", "realtime", False), ("realtimeReady", "realtime_ready", False),
     ("realtimeDevice", "realtime_device", None), ("audioBytesOut", "audio_bytes_out", 0),
     ("lastAudioOutAt", "last_audio_out_at", None), ("lastBargeInAt", "last_barge_in_at", None),
-    ("leaveReason", "leave_reason", None), ("micState", "mic_state", None))
+    ("leaveReason", "leave_reason", None), ("micState", "mic_state", None),
+    # rtc capture telemetry
+    ("rtcCapturing", "rtc_capturing", False), ("audioFragments", "audio_fragments", 0),
+    ("whisperModel", "whisper_model", None))
 
 
 class _BotState:
@@ -98,6 +107,212 @@ class _BotState:
     def set(self, **kwargs) -> None:
         self.__dict__.update(kwargs)
         self._flush()
+
+
+# JS injected before page load: wraps RTCPeerConnection so every remote audio stream
+# Meet sets up is recorded by its own MediaRecorder; 10 s opus fragments are shipped to
+# Python via the ``__hermesMeetAudioChunk`` binding (base64 through readAsDataURL —
+# page.evaluate corrupts bytes > 127). One stream per remote participant (Meet's unified
+# plan), so per-stream transcription doubles as speaker separation.
+_RTC_HOOK_JS = r"""
+(() => {
+  window.__hermesRtcStreams = new Map();
+  const CHUNK_MS = 10000;
+  function hook(stream) {
+    try {
+      if (!stream || !stream.getAudioTracks || stream.getAudioTracks().length === 0) return;
+      const tracks = stream.getAudioTracks();
+      if (tracks.some(t => t.__hermesRtc)) return;
+      tracks.forEach(t => t.__hermesRtc = true);
+      const id = window.__hermesRtcStreams.size + 1;
+      const mr = new MediaRecorder(stream, {mimeType: 'audio/webm;codecs=opus'});
+      mr.ondataavailable = e => {
+        if (!e.data || e.data.size === 0) return;
+        const r = new FileReader();
+        r.onload = () => {
+          try { window.__hermesMeetAudioChunk(id, r.result.split(',')[1]); } catch (err) {}
+        };
+        r.readAsDataURL(e.data);
+      };
+      mr.start(CHUNK_MS);
+      window.__hermesRtcStreams.set(id, mr);
+    } catch (e) { window.__hermesRtcErr = String(e); }
+  }
+  const OrigPC = window.RTCPeerConnection;
+  function PatchedPC(...args) { return new OrigPC(...args); }
+  PatchedPC.prototype = OrigPC.prototype;
+  window.RTCPeerConnection = PatchedPC;
+  window.webkitRTCPeerConnection = PatchedPC;
+  const desc = Object.getOwnPropertyDescriptor(OrigPC.prototype, 'ontrack');
+  if (desc && desc.set) {
+    Object.defineProperty(OrigPC.prototype, 'ontrack', {
+      get: desc.get,
+      set(fn) {
+        desc.set.call(this, function(ev) {
+          try { if (ev.streams && ev.streams[0]) hook(ev.streams[0]); } catch (e) {}
+          if (fn) return fn.call(this, ev);
+        });
+      }
+    });
+  }
+  window.__hermesMeetRtcStop = () => {
+    for (const mr of window.__hermesRtcStreams.values()) {
+      try { if (mr.state !== 'inactive') mr.stop(); } catch (e) {}
+    }
+  };
+  window.__hermesMeetRtcPoll = () => ({streams: window.__hermesRtcStreams.size,
+                                       err: window.__hermesRtcErr || null});
+})();
+"""
+
+
+class _RtcTranscriber:
+    """Decodes recorded WebRTC audio and transcribes it with faster-whisper.
+
+    MediaRecorder timeslice blobs are NOT standalone files: only the first blob per
+    stream carries the EBML/Tracks header; continuation blobs are raw slices of the
+    same byte stream (sometimes with a fresh EBML header when Chrome restarts a
+    segment). So fragments are appended, in order, to one growing ``stream_NN.webm``
+    per stream — re-headers stripped down to the first Cluster element — and the
+    merged file is re-decoded per batch, transcribing only the PCM beyond what was
+    already transcribed. One worker thread per stream keeps fragments in order;
+    silence is skipped by a peak gate and VAD. Whisper runs lazily so the bot still
+    joins/records when av/faster-whisper are missing (merged audio stays on disk
+    under ``audio/`` for post-processing).
+    """
+
+    _EBML_MAGIC = b"\x1a\x45\xdf\xa3"
+    _CLUSTER_ID = b"\x1f\x43\xb6\x75"
+
+    def __init__(self, cfg: "_BotConfig", state: "_BotState", stop_flag: dict):
+        self.cfg, self.state, self.stop = cfg, state, stop_flag
+        self._queue = deque()          # (stream_id, Path)
+        self._lock = threading.Lock()
+        self.threads = []
+        self._last_text = {}
+        self._transcribed = {}         # stream_id → samples already transcribed
+        self._model = None
+        self._whisper_failed = False
+
+    def _whisper(self):
+        if self._model is None:
+            from faster_whisper import WhisperModel
+            self._model = WhisperModel(
+                self.cfg.whisper_model, device="cpu", compute_type="int8",
+                download_root=str(Path.home() / ".open-webui/cache/whisper/models"))
+        return self._model
+
+    def _decode(self, path: Path):
+        import av
+        import numpy as np
+        c = av.open(str(path))
+        astream = next((s for s in c.streams if s.type == "audio"), None)
+        if astream is None:
+            c.close()
+            return None
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+        pcm = bytearray()
+        for frame in c.decode(astream):
+            rf = resampler.resample(frame)
+            for f in (rf if isinstance(rf, list) else [rf]):
+                pcm.extend(f.to_ndarray().tobytes())
+        c.close()
+        return np.frombuffer(bytes(pcm), dtype=np.int16).astype(np.float32) / 32768.0
+
+    def submit(self, stream_id: int, path: Path) -> None:
+        with self._lock:
+            self._queue.append((stream_id, path))
+        alive = any(t.name == f"meet-rtc-{stream_id}" and t.is_alive() for t in self.threads)
+        if not alive:
+            t = threading.Thread(target=self._worker, args=(stream_id,),
+                                 name=f"meet-rtc-{stream_id}", daemon=True)
+            self.threads.append(t)
+            t.start()
+
+    def _pop(self, stream_id):
+        with self._lock:
+            for item in self._queue:
+                if item[0] == stream_id:
+                    self._queue.remove(item)
+                    return item
+        return None
+
+    def _worker(self, stream_id: int) -> None:
+        label = f"Voice {stream_id}"
+        merged = self.cfg.out_dir / "audio" / f"stream_{stream_id:02d}.webm"
+        merged.parent.mkdir(parents=True, exist_ok=True)  # standalone/offline use
+        fresh_bytes, last_flush = 0, time.time()
+        while True:
+            item = self._pop(stream_id)
+            if item is None:
+                if self.stop.get("stop"):
+                    self._flush_stream(stream_id, merged, label)
+                    return
+                # idle: flush whatever accumulated so the transcript stays near-live
+                if fresh_bytes > 0 and time.time() - last_flush > 25:
+                    self._flush_stream(stream_id, merged, label)
+                    fresh_bytes, last_flush = 0, time.time()
+                time.sleep(0.5)
+                continue
+            _, path = item
+            try:
+                data = path.read_bytes()
+                if data.startswith(self._EBML_MAGIC):
+                    cluster = data.find(self._CLUSTER_ID)
+                    # first fragment keeps its header; re-headers are stripped to Cluster
+                    if merged.exists() and merged.stat().st_size > 0 and cluster > 0:
+                        data = data[cluster:]
+                with merged.open("ab") as f:
+                    f.write(data)
+                fresh_bytes += len(data)
+                self.state.set(audio_fragments=self.state.audio_fragments + 1)
+                _quiet(path.unlink)  # only delete once safely merged
+            except Exception as e:
+                sys.stderr.write(f"meet rtc: merge {path.name} failed: {e}\n")
+            if fresh_bytes > 400_000 or time.time() - last_flush > 15:
+                self._flush_stream(stream_id, merged, label)
+                fresh_bytes, last_flush = 0, time.time()
+
+    def _flush_stream(self, stream_id: int, merged: Path, label: str) -> None:
+        """Decode the merged stream file and transcribe only the PCM not yet done."""
+        if not merged.exists() or merged.stat().st_size == 0:
+            return
+        try:
+            audio = self._decode(merged)
+        except Exception as e:
+            sys.stderr.write(f"meet rtc: decode {merged.name} failed: {e}\n")
+            return
+        if audio is None:
+            return
+        done = self._transcribed.get(stream_id, 0)
+        if len(audio) <= done + 16000 * 5:  # wait for ≥5 s of genuinely new audio
+            return
+        tail = audio[done:]
+        self._transcribed[stream_id] = len(audio)
+        try:
+            peak = float(abs(tail).max())
+            sys.stderr.write(f"meet rtc: flush stream {stream_id}: +{len(tail)/16000:.1f}s new audio, peak {peak:.4f}\n")
+            if peak < 0.01:  # digital silence / DTX noise floor
+                return
+        except Exception:
+            return
+        try:
+            model = self._whisper()
+        except Exception as e:
+            if not self._whisper_failed:
+                self._whisper_failed = True
+                self.state.set(error=f"whisper unavailable ({e}) — merged audio kept on disk")
+            return
+        try:
+            segs, _info = model.transcribe(tail, language=None, vad_filter=True,
+                                           initial_prompt=self._last_text.get(stream_id) or None)
+            for s in segs:
+                text = (s.text or "").strip()
+                if text:
+                    self.state.record_caption(speaker=label, text=text)
+                    self._last_text[stream_id] = text
+        except Exception as e:
+            sys.stderr.write(f"meet rtc: transcribe {merged.name} failed: {e}\n")
 
 
 # JS injected into the Meet tab: MutationObserver on the caption container
@@ -347,21 +562,47 @@ def _config_from_env() -> _BotConfig:
         realtime_api_key=env("HERMES_MEET_REALTIME_KEY") or env("OPENAI_API_KEY", ""),
         realtime_model=env("HERMES_MEET_REALTIME_MODEL", "gpt-realtime"),
         realtime_voice=env("HERMES_MEET_REALTIME_VOICE", "alloy"),
+        # RTC audio capture + local transcription (the reliable path; captions are dead)
+        rtc_audio=env("HERMES_MEET_RTC_AUDIO", "1").strip().lower() not in {"0", "false", "no"},
+        whisper_model=env("HERMES_MEET_WHISPER_MODEL", "small"),
         realtime_instructions=env("HERMES_MEET_REALTIME_INSTRUCTIONS", ""),
         lobby_timeout=float(env("HERMES_MEET_LOBBY_TIMEOUT", "300")))
 
 
 def _join(page, cfg: _BotConfig, state: _BotState, timeout: float = 30.0) -> None:
     """Fill the guest-name field and click 'Join now' / 'Ask to join' (the latter → lobby_waiting).
+
     Meet renders the pre-join buttons asynchronously after ``domcontentloaded``, so poll for up to
-    *timeout* seconds instead of checking once — a single miss leaves the bot silently in the lobby."""
+    *timeout* seconds instead of checking once — a single miss leaves the bot silently in the lobby.
+    Blocking modals are dismissed first ("Switch the call here" when this account is already in
+    the call from another device; misc one-time notices) — they intercept all clicks — and the
+    fake camera is turned off (visually disruptive to participants). Late-rendered dialogs are
+    caught by later poll iterations.
+    """
     deadline = time.time() + timeout
     while True:
+        for dismiss_sel in ('button:has-text("Got it")', 'div[role="dialog"] button'):
+            dlg = _visible(page.locator(dismiss_sel))
+            if dlg is not None:
+                _quiet(lambda: (dlg.click(timeout=2_000), True))
+                _quiet(page.wait_for_timeout, 1_500)
+        # Camera off: the fake-cam tile is visually disruptive to participants.
+        cam_off = _visible(page.get_by_role("button", name="Turn off camera", exact=False))
+        if cam_off is not None:
+            _quiet(lambda: (cam_off.click(timeout=2_000), True))
         name_box = _visible(page.locator('input[aria-label*="name" i]'))
         if name_box is not None:
             _quiet(name_box.fill, cfg.guest_name, timeout=2_000)
-        for label in ("Join now", "Ask to join"):
+        for label in ("Join now", "Ask to join", "Join here too"):
             btn = _visible(page.get_by_role("button", name=label, exact=False))
+            if btn is None and label == "Join here too":
+                # "Join here too" hides inside the collapsed "Other ways to join" accordion —
+                # expand it, then fall back to a text selector (accessible name carries an icon prefix).
+                accordion = _visible(page.locator('text=Other ways to join'))
+                if accordion is not None:
+                    _quiet(lambda: (accordion.click(timeout=2_000), True))
+                    time.sleep(1.5)
+                    btn = _visible(page.locator(f'button:has-text("{label}")'))
             if btn is not None and _quiet(lambda: (btn.click(timeout=3_000), True)):
                 if label == "Ask to join":
                     state.set(lobby_waiting=True)
@@ -384,6 +625,17 @@ def _ensure_mic_on(page) -> str:
     return "unknown"
 
 
+def _ensure_mic_muted(page) -> str:
+    """RTC-capture mirror of ``_ensure_mic_on``: a transcribing bot must NEVER broadcast
+    room audio from a real mic — mute on admission. Returns ``muted_clicked``/``muted``/``unknown``."""
+    live = _visible(page.locator('button[aria-label*="Turn off microphone" i]'))
+    if live is not None and _quiet(lambda: (live.click(timeout=3_000), True)):
+        return "muted_clicked"
+    if _visible(page.locator('button[aria-label*="Turn on microphone" i]')) is not None:
+        return "muted"
+    return "unknown"
+
+
 def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: dict) -> None:
     """Admission + caption drain loop until SIGTERM, duration expiry, lobby timeout/denial or page loss.
     Sets ``leave_reason`` for every exit but SIGTERM; triggers barge-in; mirrors realtime counters."""
@@ -398,7 +650,9 @@ def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: di
         if not state.in_call and (now - last_admission_check) > 3.0:
             last_admission_check = now
             if _probe(page, _ADMISSION_PROBE_JS):
-                state.set(in_call=True, lobby_waiting=False, joined_at=now, mic_state=_ensure_mic_on(page))
+                state.set(in_call=True, lobby_waiting=False, joined_at=now,
+                          mic_state=(_ensure_mic_muted(page) if (cfg.rtc_audio and not rt["enabled"])
+                                     else _ensure_mic_on(page)))
             elif now > lobby_deadline:
                 waited = int(lobby_deadline - state.join_attempted_at) if state.join_attempted_at else 0
                 state.set(error=f"lobby timeout — host never admitted the bot within {waited}s",
@@ -428,8 +682,15 @@ def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: di
 
 _CONTEXT_ARGS = {
     "viewport": {"width": 1280, "height": 800},
-    "user_agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+    "user_agent": os.environ.get(
+        "HERMES_MEET_USER_AGENT",
+        # Default keeps the historical Linux UA (verified working 2026-09-08); the RTC audio
+        # path, however, needs a Mac UA — Meet serves Linux clients digital-silence-only
+        # audio in some builds (A/B receipt 2026-09-21: Mac UA captured speech, Linux UA
+        # peak 0.0000 across 4 live runs). process_manager.start() sets the Mac UA when
+        # rtc audio is enabled.
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"),
     "permissions": ["microphone", "camera"]}
 
 
@@ -462,7 +723,11 @@ def run_bot() -> int:
             rt["bridge"].teardown()
         return 3
     chrome_args = ["--use-fake-ui-for-media-stream", "--disable-blink-features=AutomationControlled"]
-    if not rt["enabled"]:
+    # The fake silent mic breaks remote audio reception in some Meet builds (A/B receipt
+    # 2026-09-21: spike with real-device grant captured speech, fake-device bot got digital
+    # silence) — HERMES_MEET_NO_FAKE_DEVICE=1 opts into the real media stack.
+    _no_fake = os.environ.get("HERMES_MEET_NO_FAKE_DEVICE", "").lower() in {"1", "true", "yes"}
+    if not rt["enabled"] and not _no_fake:
         chrome_args.insert(1, "--use-fake-device-for-media-stream")  # silent fake mic
     elif rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
         # Playwright's launch() takes no env: set PULSE_SOURCE on ourselves so Chrome inherits it.
@@ -470,11 +735,45 @@ def run_bot() -> int:
     context_args = dict(_CONTEXT_ARGS)
     if cfg.auth_state and Path(cfg.auth_state).is_file():
         context_args["storage_state"] = cfg.auth_state
+    # RTC capture plumbing: init script must precede any page load, the binding before
+    # the first MediaRecorder chunk (~10 s after join). Fragments land in audio/ and are
+    # transcribed by the _RtcTranscriber workers.
+    rtc = {"transcriber": None, "audio_dir": None}
+    if cfg.rtc_audio:
+        rtc["audio_dir"] = cfg.out_dir / "audio"
+        rtc["audio_dir"].mkdir(parents=True, exist_ok=True)
+        rtc["transcriber"] = _RtcTranscriber(cfg, state, stop_flag)
+        state.set(whisper_model=cfg.whisper_model)
+        frag_seq = itertools.count()
+        transcriber_ref = rtc["transcriber"]
+        audio_dir_ref = rtc["audio_dir"]
+
+        def _on_audio_chunk(stream_id, b64):
+            try:
+                frag = audio_dir_ref / f"frag_{int(stream_id):02d}_{next(frag_seq):06d}.webm"
+                frag.write_bytes(base64.b64decode(b64))
+                if not state.rtc_capturing:
+                    state.set(rtc_capturing=True)
+                transcriber_ref.submit(int(stream_id), frag)
+            except Exception as e:  # never kill the binding thread
+                sys.stderr.write(f"meet rtc: chunk save failed: {e}\n")
+
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=not cfg.headed, args=chrome_args)
+            launch_kwargs = dict(headless=not cfg.headed, args=chrome_args)
+            if cfg.rtc_audio:
+                # headless Chromium ships --mute-audio by default — remote streams record
+                # as digital silence without dropping it.
+                launch_kwargs["ignore_default_args"] = ["--mute-audio"]
+                chrome_args.append("--autoplay-policy=no-user-gesture-required")
+                launch_kwargs["args"] = chrome_args
+            browser = pw.chromium.launch(**launch_kwargs)
             context = browser.new_context(**context_args)
+            if cfg.rtc_audio:
+                context.add_init_script(_RTC_HOOK_JS)
             page = context.new_page()
+            if cfg.rtc_audio:
+                page.expose_function("__hermesMeetAudioChunk", _on_audio_chunk)
             try:
                 page.goto(cfg.url, wait_until="domcontentloaded", timeout=30_000)
             except Exception as e:
@@ -492,11 +791,19 @@ def run_bot() -> int:
             if rt["enabled"]:
                 _start_realtime_speaker(rt, cfg, stop_flag, state)
             _drain_loop(page, cfg, state, rt, stop_flag)
+            # Stop the recorders so MediaRecorder flushes a final fragment, then let the
+            # transcriber workers drain their queues before the process tears down.
+            if cfg.rtc_audio:
+                _quiet(page.evaluate, "window.__hermesMeetRtcStop && window.__hermesMeetRtcStop()")
+                page.wait_for_timeout(1500)
+                stop_flag["stop"] = True
+                for t in rtc["transcriber"].threads:
+                    _quiet(t.join, timeout=30.0)
             _quiet(page.evaluate, _LEAVE_CALL_JS)
             context.close()
             browser.close()
             _teardown_realtime(rt)
-            state.set(in_call=False, captioning=False, exited=True)
+            state.set(in_call=False, captioning=False, rtc_capturing=False, exited=True)
             return 0
     except Exception as e:
         state.set(error=f"unhandled: {e}", exited=True)

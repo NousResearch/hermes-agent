@@ -268,10 +268,22 @@ def _strip_one_wrapper(text: str) -> str:
     return text
 
 
+# Machine-expanded attachment blocks appended by @-reference expansion
+# (agent/context_references.py). Their content is fetched text, not the user's
+# words — and a fabricated fetch must never leak into the session title.
+_ATTACHED_CONTEXT_MARKER = "--- Attached Context ---"
+
+
+def _strip_attachment_block(user_message: str) -> str:
+    idx = user_message.find(_ATTACHED_CONTEXT_MARKER)
+    return user_message[:idx].rstrip() if idx != -1 else user_message
+
+
 def _summarize_user_message(user_message: str) -> str:
     """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
     if not user_message:
         return ""
+    user_message = _strip_attachment_block(user_message)
     described = None
     try:
         from agent.skill_commands import describe_skill_invocation

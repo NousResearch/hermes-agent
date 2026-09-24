@@ -528,6 +528,40 @@ def _real_profile_autoclose() -> bool:
     return bool(_browser_setting("real_profile_autoclose") or False)
 
 
+def _version_sort_key(path: str):
+    """Sort key ranking numeric runs numerically (chromium-1243 > chromium-999)."""
+    import re as _re
+    return tuple((int(t), "") if t.isdigit() else (-1, t) for t in _re.split(r"(\d+)", path))
+
+
+def real_profile_binary_override() -> str | None:
+    """Optional launch-binary override from ``browser.real_profile_binary``.
+
+    Absolute path (``~`` expanded) or a glob — the NEWEST match wins, e.g. the packaged
+    Chrome-for-Testing under ms-playwright whose revision directory changes between installs.
+    None when unset or unresolvable; callers fall back to the detected real browser (logged,
+    never blocking). Rationale: a headless instance of the REAL Google Chrome.app holds the
+    macOS Launch Services registration, so dock clicks activate a windowless Chrome ("dock
+    trap"); Chrome-for-Testing is a separate bundle invisible to Launch Services.
+    """
+    raw = _browser_setting("real_profile_binary")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    raw = raw.strip()
+    if any(ch in raw for ch in "*?["):
+        import glob as _glob
+        matches = _glob.glob(os.path.expanduser(raw))
+        if not matches:
+            logger.debug("real-profile: binary override glob %r matched nothing", raw)
+            return None
+        return max(matches, key=_version_sort_key)
+    path = os.path.expanduser(raw)
+    if os.path.isfile(path):
+        return path
+    logger.debug("real-profile: binary override %r is not a file; using detected browser", raw)
+    return None
+
+
 def _processes_holding_profile(src: str):
     """Yield psutil.Process instances holding ``src`` open: Chromium-family binaries whose
     cmdline references THIS user-data-dir — never an unrelated same-PID process. An unreadable

@@ -89,3 +89,75 @@ describe('gateway `error` event → error card + toast', () => {
     expect(toast.detail).toBeUndefined()
   })
 })
+
+function warnContext(text: string) {
+  const updateSessionState = vi.fn()
+
+  const payload = { kind: 'warn', text } as GatewayEventContext['payload']
+
+  const ctx: GatewayEventContext = {
+    deps: {
+      compactedTurnRef: { current: new Set<string>() },
+      failAssistantMessage: vi.fn(),
+      flushQueuedDeltas: vi.fn(),
+      hydrateFromStoredSession: vi.fn(),
+      queryClient: { invalidateQueries: vi.fn() },
+      sessionStateByRuntimeIdRef: { current: new Map() },
+      updateSessionState
+    } as unknown as GatewayEventContext['deps'],
+    event: { payload, session_id: 'sess-1', type: 'status.update' },
+    explicitSid: 'sess-1',
+    fromActiveSource: () => true,
+    isActiveEvent: false,
+    occurredAt: 1_700_000_100,
+    payload,
+    scheduleConfigRefresh: vi.fn(),
+    sessionId: 'sess-1'
+  }
+
+  return { ctx, updateSessionState }
+}
+
+describe('status.update kind=warn → persistent transcript line', () => {
+  // The compressor's context-lockout warning (#101889 companion) rides the
+  // status rail; the desktop previously had no warn branch and dropped it —
+  // a session that could no longer compress kept slowing, warning only in
+  // agent.log. It must land as a persistent system line, deduped by id.
+
+  const LOCKOUT =
+    "⚠ Context lockout: this conversation can't be compressed and will keep slowing — /compact to compress history now or start a new chat."
+
+  it('appends a system message instead of dropping the warn silently', () => {
+    const { ctx, updateSessionState } = warnContext(LOCKOUT)
+
+    expect(handleStatusEvent(ctx)).toBe(true)
+
+    const updater = updateSessionState.mock.calls[0][1]
+    const next = updater({ messages: [] })
+
+    expect(next.messages).toHaveLength(1)
+    expect(next.messages[0].role).toBe('system')
+    expect(next.messages[0].id).toBe(`status-warn:${LOCKOUT.slice(0, 120)}`)
+    expect(next.messages[0].parts[0].text).toBe(LOCKOUT)
+  })
+
+  it('collapses a warn that repeats every turn into one line', () => {
+    const { ctx, updateSessionState } = warnContext(LOCKOUT)
+
+    handleStatusEvent(ctx)
+
+    const updater = updateSessionState.mock.calls[0][1]
+    const first = updater({ messages: [] })
+    const second = updater(first)
+
+    expect(second.messages).toHaveLength(1)
+  })
+
+  it('ignores an empty warn payload', () => {
+    const { ctx, updateSessionState } = warnContext('   ')
+
+    handleStatusEvent(ctx)
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+})

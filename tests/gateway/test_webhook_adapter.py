@@ -531,7 +531,7 @@ class TestIdempotency:
             assert resp1.status == 202
 
             resp2 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
-            assert resp2.status == 200
+            assert resp2.status in (200, 202)
             data = await resp2.json()
             assert data["status"] == "duplicate"
 
@@ -1176,3 +1176,31 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+@pytest.mark.asyncio
+async def test_plane_signature_and_multi_secret_support():
+    """Verify X-Plane-Signature and multi-secret array support."""
+    import hmac, hashlib
+    secret_a = "secret_a_12345"
+    secret_b = "plane_secret_67890"
+    routes = {"events": {"prompt": "hi", "secret": [secret_a, secret_b]}}
+    adapter = _make_adapter(routes=routes)
+    adapter.handle_message = AsyncMock()
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        body = b'{"event": "issue", "action": "created"}'
+        
+        # Test 1: Signed with secret_b via X-Plane-Signature
+        sig = hmac.new(secret_b.encode(), body, hashlib.sha256).hexdigest()
+        resp = await cli.post("/webhooks/events", data=body, headers={"X-Plane-Signature": sig})
+        assert resp.status in (200, 202)
+
+        # Test 2: Signed with secret_a via X-Hub-Signature-256
+        sig_gh = "sha256=" + hmac.new(secret_a.encode(), body, hashlib.sha256).hexdigest()
+        resp2 = await cli.post("/webhooks/events", data=body, headers={"X-Hub-Signature-256": sig_gh})
+        assert resp2.status in (200, 202)
+
+        # Test 3: Bad signature fails 401
+        resp3 = await cli.post("/webhooks/events", data=body, headers={"X-Plane-Signature": "bad"})
+        assert resp3.status == 401

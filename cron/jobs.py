@@ -324,6 +324,30 @@ def _jobs_lock():
             _jobs_lock_state.load_stamp = None
 
 
+_FENCE_COMPLAINT_INTERVAL_SECONDS = 600.0
+_fire_fence_complaints: "dict[str, float]" = {}
+_fire_fence_complaints_lock = threading.Lock()
+
+
+def _fence_timeout_log(lock_key: str, message: str, *args) -> None:
+    """One ERROR per fence-hold episode, DEBUG for repeats inside the interval.
+
+    A bot-chat delivery turn holding the fire fence for minutes timed out the NEXT
+    occurrence's claim on every scheduler tick — one episode became an 8-ERROR storm
+    plus restore warnings (2026-09-19). Repeats inside the interval log at DEBUG; a
+    genuinely stuck fence re-alerts at ERROR every interval; a successful acquire
+    clears the episode."""
+    now = time.monotonic()
+    with _fire_fence_complaints_lock:
+        last = _fire_fence_complaints.get(lock_key)
+        if last is not None and now - last < _FENCE_COMPLAINT_INTERVAL_SECONDS:
+            level = logger.debug
+        else:
+            _fire_fence_complaints[lock_key] = now
+            level = logger.error
+    level(message, *args)
+
+
 @contextlib.contextmanager
 def _fire_job_lock(job_id: str):
     """Serialize one job's owner mutations and external side effects. Unlike the global jobs lock
@@ -335,7 +359,8 @@ def _fire_job_lock(job_id: str):
         local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
 
     if not local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS):
-        logger.error("Timed out waiting for local fire fence %s; failing closed", lock_key)
+        _fence_timeout_log(lock_key,
+                           "Timed out waiting for local fire fence %s; failing closed", lock_key)
         yield False
         return
 
@@ -359,7 +384,11 @@ def _fire_job_lock(job_id: str):
             if result is None:  # pragma: no cover - supported platforms provide one backend
                 logger.error("No cross-process lock backend for cron fire fence")
             elif not result:
-                logger.error("Timed out waiting for fire fence %s; failing closed", lock_path)
+                _fence_timeout_log(lock_key,
+                                   "Timed out waiting for fire fence %s; failing closed", lock_path)
+            else:
+                with _fire_fence_complaints_lock:
+                    _fire_fence_complaints.pop(lock_key, None)
             acquired = bool(result)
         except (OSError, IOError) as exc:
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)

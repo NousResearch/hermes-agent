@@ -440,6 +440,15 @@ DEFAULT_CONFIG = {
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
         # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
         "real_profile_pin": "",
+        # Override the BINARY launched for real-profile browsing (absolute path, ~ expanded, or a
+        # glob — the NEWEST match wins, e.g. the packaged Chrome-for-Testing whose revision number
+        # changes between installs). Empty = launch the detected real browser. Rationale (macOS):
+        # a headless instance of the REAL Google Chrome.app holds the Launch Services
+        # registration, so every dock click activates a windowless Chrome ("dock trap");
+        # Chrome-for-Testing is a separate bundle invisible to Launch Services. Cookie behavior is
+        # identical in headless background launches either way. An unresolvable value falls back
+        # to the real binary (logged) — never blocks browsing.
+        "real_profile_binary": "",
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
         # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
         # is the legacy override that bypasses that denylist entirely.
@@ -2314,6 +2323,11 @@ DEFAULT_CONFIG = {
     "updates": {
         # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
         "check": True,
+        # What passive checks compare HEAD against: "branch" = the update branch's tip
+        # (default), "release" = the latest tagged release's commit. Fork installs on a
+        # fast-moving main are behind the tip almost permanently, so "release" makes the
+        # badge mean "a new release exists that you lack" instead.
+        "anchor": "branch",
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
         # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in

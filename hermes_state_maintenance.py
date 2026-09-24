@@ -102,6 +102,45 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
+    def clear_stored_system_prompts(self) -> Dict[str, Any]:
+        """Invalidate every stored system-prompt snapshot so each session rebuilds its
+        prompt from the live configuration on the next run or resume.
+
+        One transaction, both storage layouts: out-of-line (prompt text in
+        ``system_prompts`` referenced via ``sessions.system_prompt_hash``) and legacy
+        inline (text directly in ``sessions.system_prompt``). In the out-of-line case
+        the references are NULLed *before* the now-unreferenced snapshot rows are
+        deleted, so the ``system_prompt_hash`` foreign key never dangles. Session rows
+        themselves are never removed. Idempotent: a store with nothing stored (or
+        already cleared) reports ``cleared == 0``.
+
+        Returns ``{"cleared": <int affected sessions>, "storage_mode":
+        "out-of-line" | "inline" | "unknown"}``.
+        """
+        def _do(conn):
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            if "system_prompt_hash" in columns:
+                cleared = conn.execute(
+                    "UPDATE sessions SET system_prompt = NULL, system_prompt_hash = NULL "
+                    "WHERE system_prompt_hash IS NOT NULL "
+                    "OR (system_prompt IS NOT NULL AND system_prompt != '')"
+                ).rowcount
+                # Delete only now, after every reference is NULL: the NOT EXISTS sweep
+                # removes exactly the formerly-referenced snapshots and cannot orphan a
+                # live session's hash (the FK would abort the transaction otherwise).
+                self._delete_unreferenced_system_prompts(conn)
+                return cleared, "out-of-line"
+            if "system_prompt" in columns:
+                cleared = conn.execute(
+                    "UPDATE sessions SET system_prompt = '' "
+                    "WHERE system_prompt IS NOT NULL AND system_prompt != ''"
+                ).rowcount
+                return cleared, "inline"
+            return 0, "unknown"
+
+        cleared, storage_mode = self._execute_write(_do)
+        return {"cleared": cleared, "storage_mode": storage_mode}
+
     def _write_guards_reject(self, conn, sid: str, **kwargs) -> bool:
         """True when a live turn lease / compression lock protects ``sid``; expired or
         dead-holder guards are reclaimed and fenced as a side effect."""

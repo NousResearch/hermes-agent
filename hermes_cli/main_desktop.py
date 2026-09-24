@@ -1521,6 +1521,53 @@ def _promote_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Path:
     return packaged_executable
 
 
+_DESKTOP_POST_BUILD_HOOK_DIR_NAME = "post-build.d"
+
+
+def _desktop_post_build_hook_dir(desktop_dir: Path) -> Path:
+    """Operator hook dir ``apps/desktop/post-build.d/`` (#115669)."""
+    return desktop_dir / _DESKTOP_POST_BUILD_HOOK_DIR_NAME
+
+
+def _run_desktop_post_build_hooks(
+    desktop_dir: Path,
+    *,
+    packaged_executable: Optional[Path],
+    source_mode: bool,
+    env: Optional[dict] = None,
+) -> None:
+    """Run executable scripts in ``apps/desktop/post-build.d/`` (sorted by name).
+
+    Runs after the staged app is promoted and before the build stamp is
+    written, so operators can sign, notarize, or otherwise finalize the
+    freshly built app. A failing hook exits non-zero WITHOUT writing the
+    stamp, so the next run rebuilds instead of skipping. A missing hook
+    dir (or no executable hooks inside) is a no-op.
+    """
+    hook_dir = _desktop_post_build_hook_dir(desktop_dir)
+    if not hook_dir.is_dir():
+        return
+    hooks = sorted(
+        hook for hook in hook_dir.iterdir()
+        if hook.is_file() and os.access(hook, os.X_OK)
+    )
+    if not hooks:
+        return
+    hook_env = dict(os.environ)
+    if env:
+        hook_env.update({k: str(v) for k, v in env.items()})
+    hook_env["HERMES_DESKTOP_DIR"] = str(desktop_dir)
+    hook_env["HERMES_DESKTOP_SOURCE_MODE"] = "1" if source_mode else "0"
+    if packaged_executable is not None:
+        hook_env["HERMES_DESKTOP_EXECUTABLE"] = str(packaged_executable)
+    for hook in hooks:
+        print(f"\u2192 Running desktop post-build hook: {hook.name}...")
+        result = subprocess.run([str(hook)], env=hook_env, cwd=desktop_dir)
+        if result.returncode != 0:
+            print(f"\u2717 Desktop post-build hook failed: {hook.name} (exit {result.returncode})")
+            sys.exit(result.returncode or 1)
+
+
 def _build_desktop_app(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict) -> Optional[Path]:
     """npm-install + build the desktop app, stage-and-swapping the packaged tree. Returns the new
     packaged exe (None in source mode). Exits on unrecoverable failure with the previous app kept."""
@@ -1568,6 +1615,14 @@ def _build_desktop_app(desktop_dir: Path, *, source_mode: bool, npm: str, env: d
     packaged_executable = None
     if staging_dir is not None:
         packaged_executable = _promote_staged_desktop_app(desktop_dir, staging_dir)
+
+    # Operator post-build hooks run after promotion, before the stamp (#115669).
+    _run_desktop_post_build_hooks(
+        desktop_dir,
+        packaged_executable=packaged_executable,
+        source_mode=source_mode,
+        env=env,
+    )
 
     # Build succeeded — write the stamp so next run can skip
     _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)

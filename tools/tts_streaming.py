@@ -19,6 +19,7 @@ from typing import Callable, Dict, Iterator, List, Optional
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
+from tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,24 @@ class GeminiStreamer(StreamingTTSProvider):
         yield from _capped(_sse_chunks(), "Gemini streaming TTS")
 
 
+# Bounded like SpeakerPipeline's _CHUNK_QUEUE_MAX: the pump waits for the consumer instead of
+# buffering up to the full byte cap.
+_XAI_QUEUE_MAX = 64
+
+
+def _put_unless_stopped(q, item, stop, poll_s: float = 0.1) -> bool:
+    """Put *item* on bounded *q*, giving up once *stop* is set; False when dropped."""
+    import queue
+
+    while not stop.is_set():
+        try:
+            q.put(item, timeout=poll_s)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
 @register("xai")
 class XAIStreamer(StreamingTTSProvider):
     """xAI WebSocket TTS → base64 PCM ``audio.delta`` frames (24 kHz mono int16).
@@ -358,7 +377,7 @@ class XAIStreamer(StreamingTTSProvider):
     adapters that already run an event loop.
     """
 
-    sample_rate = 24000
+    sample_rate = DEFAULT_XAI_SAMPLE_RATE
 
     _RECV_TIMEOUT_S = 60  # a sentence of TTS should never gap this long
 
@@ -373,7 +392,8 @@ class XAIStreamer(StreamingTTSProvider):
             return False
 
     def stream(self, text: str) -> Iterator[bytes]:
-        yield from _capped(self._queued_frames(text), "xAI streaming TTS")
+        # The per-sentence byte cap is enforced once, pump-side (``_pump``), before enqueueing.
+        yield from self._queued_frames(text)
 
     # -- async→sync bridge -------------------------------------------------
 
@@ -385,18 +405,17 @@ class XAIStreamer(StreamingTTSProvider):
         Exceptions from the pump are re-raised on the consumer side so the
         caller's "raise on failure" contract holds.
 
-        ``_capped()`` runs on the consumer side of the queue, after
-        ``q.get()`` — so the byte budget is ALSO enforced in the pump before
-        each enqueue (see ``_pump``), and a consumer that stops early flips
-        ``stop`` so the pump closes the socket instead of piling decoded PCM
-        into a queue nobody drains.
+        The byte budget is enforced in the pump before each enqueue (see
+        ``_pump``); the queue is bounded and every put polls ``stop``, so a
+        consumer that stops early makes the pump close the socket instead of
+        blocking on (or piling PCM into) a queue nobody drains.
         """
         import asyncio
         import queue
         import threading
         from contextvars import copy_context
 
-        q: "queue.Queue[object]" = queue.Queue()
+        q: "queue.Queue[object]" = queue.Queue(maxsize=_XAI_QUEUE_MAX)
         done = object()
         stop = threading.Event()
 
@@ -404,9 +423,9 @@ class XAIStreamer(StreamingTTSProvider):
             try:
                 asyncio.run(self._pump(text, q, stop))
             except BaseException as exc:  # hand failures to the consumer
-                q.put(exc)
+                _put_unless_stopped(q, exc, stop)
             finally:
-                q.put(done)
+                _put_unless_stopped(q, done, stop)
 
         threading.Thread(
             target=copy_context().run, args=(_pump_thread,), name="xai-tts-pump", daemon=True
@@ -463,7 +482,7 @@ class XAIStreamer(StreamingTTSProvider):
                         ws.recv(), timeout=self._RECV_TIMEOUT_S
                     )
                 except asyncio.TimeoutError:
-                    raise RuntimeError("xAI streaming TTS: no audio for 60s")
+                    raise RuntimeError(f"xAI streaming TTS: no audio for {self._RECV_TIMEOUT_S}s")
                 except websockets.exceptions.ConnectionClosedOK:
                     return  # clean close, with or without audio.done
                 except websockets.exceptions.ConnectionClosedError as exc:
@@ -481,10 +500,9 @@ class XAIStreamer(StreamingTTSProvider):
                         pcm = base64.b64decode(b64)
                         enqueued += len(pcm)
                         if enqueued > _STREAM_SENTENCE_BYTE_CAP:
-                            # Enforce the per-sentence byte budget BEFORE
-                            # enqueueing: the consumer-side _capped() only
-                            # runs after q.get(), so without this a runaway
-                            # upstream piles decoded PCM into the queue.
+                            # The single per-sentence byte-budget check,
+                            # BEFORE enqueueing, so a runaway upstream
+                            # never piles decoded PCM into the queue.
                             # Returning exits the context manager, which
                             # closes the socket — we stop reading upstream.
                             logger.warning(
@@ -493,12 +511,11 @@ class XAIStreamer(StreamingTTSProvider):
                                 _STREAM_SENTENCE_BYTE_CAP,
                             )
                             return
-                        if stop.is_set():
-                            # Consumer went away (cap, playback failure):
-                            # close and stop reading rather than filling a
-                            # queue nobody drains.
+                        if not _put_unless_stopped(q, pcm, stop):
+                            # Consumer went away (playback failure, caller
+                            # dropped it): close and stop reading rather
+                            # than blocking on a queue nobody drains.
                             return
-                        q.put(pcm)
                 elif msg_type == "audio.done":
                     return
                 elif msg_type == "error":

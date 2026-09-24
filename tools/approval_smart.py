@@ -66,11 +66,15 @@ def _comment_spans(text: str) -> list[tuple[int, int]]:
 
 def _has_heredoc(text: str, comments: list[tuple[int, int]]) -> bool:
     """Whether an unquoted ``<<``/``<<-`` operator (not a ``<<<`` here-string) appears outside comments."""
-    for kind, i, _, quote in _scan_shell(text, subst="uq", brace=True):
-        if (kind == "char" and quote is None and text.startswith("<<", i)
-                and not text.startswith("<<<", i) and not (i and text[i - 1] == "<")
-                and not any(start <= i < end for start, end in comments)):
-            return True
+    pos = 0
+    # Comments cannot open quotes or substitutions in the following shell code.
+    # Each comment boundary is unquoted, so restarting after it is safe.
+    for start, end in [*comments, (len(text), len(text))]:
+        for kind, i, _, quote in _scan_shell(text, pos, start, subst="uq", brace=True):
+            if (kind == "char" and quote is None and text.startswith("<<", i)
+                    and not text.startswith("<<<", i) and not (i and text[i - 1] == "<")):
+                return True
+        pos = end
     return False
 
 
@@ -103,12 +107,15 @@ def _strip_shell_comments(command: str) -> str:
 
     kept: list[str] = []
     pos = 0
+    has_content = False
     for start, end in spans:
-        kept.append(command[pos:start].rstrip(" \t"))
+        piece = command[pos:start].rstrip(" \t")
+        kept.append(piece)
+        has_content = has_content or bool(piece)
         pos = end
-        # A line that held only the comment is dropped with its newline.
-        so_far = "".join(kept)
-        if pos < len(command) and (not so_far or so_far.endswith("\n")):
+        # Drop leading comments only. Later newlines may terminate a command
+        # whose preceding physical line ended in a backslash continuation.
+        if pos < len(command) and not has_content:
             pos += 1
     kept.append(command[pos:])
     return "".join(kept).rstrip()

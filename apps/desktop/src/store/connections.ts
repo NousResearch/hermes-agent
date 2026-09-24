@@ -7,7 +7,6 @@ import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
-import { cancelGatewayActivationLease } from '@/store/gateway'
 import {
   beginGatewaySwitch,
   endGatewaySwitch,
@@ -62,7 +61,7 @@ const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
-let phaseOneLeaseScope: null | { connectionId: string; profile: string } = null
+let phaseOneAbortController: AbortController | null = null
 
 export const $pendingConnectionId = atom<null | string>(null)
 
@@ -111,6 +110,8 @@ $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, 
 
 /** @internal Reset module-owned preferences and switch coordination for tests. */
 export function _resetConnectionsForTests(): void {
+  phaseOneAbortController?.abort()
+  phaseOneAbortController = null
   $lastProfileByConnection.set({})
   pendingTarget = null
   restoreAttempted = false
@@ -397,12 +398,9 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   const revision = ++switchRevision
 
-  if (phaseOneLeaseScope) {
-    cancelGatewayActivationLease(phaseOneLeaseScope.connectionId, phaseOneLeaseScope.profile)
-  }
-
-  const phaseOneScope = { connectionId, profile: targetProfile }
-  phaseOneLeaseScope = phaseOneScope
+  phaseOneAbortController?.abort()
+  const phaseOneController = new AbortController()
+  phaseOneAbortController = phaseOneController
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
   // Set by the commit hook once THIS switch has wiped — i.e. it owns the
@@ -416,14 +414,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
     const phaseOneLease = await withTimeout(
-      openGatewayAgent(connectionId, targetProfile),
+      openGatewayAgent(connectionId, targetProfile, { signal: phaseOneController.signal }),
       SWITCH_DIAL_TIMEOUT_MS,
       `Timed out connecting to "${targetConnection.label}".`,
-      () => {
-        if (phaseOneLeaseScope === phaseOneScope) {
-          cancelGatewayActivationLease(connectionId, targetProfile)
-        }
-      }
+      error => phaseOneController.abort(error)
     )
     // Older bridge/test implementations predate the explicit phase-one lease
     // return. They have nothing to release; the real gateway path always
@@ -559,8 +553,8 @@ export async function selectConnection(connectionId: string, options: SelectConn
   } finally {
     releasePhaseOne()
 
-    if (phaseOneLeaseScope === phaseOneScope) {
-      phaseOneLeaseScope = null
+    if (phaseOneAbortController === phaseOneController) {
+      phaseOneAbortController = null
     }
 
     if (revision === switchRevision) {

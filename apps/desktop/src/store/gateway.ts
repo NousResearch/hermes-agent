@@ -185,22 +185,18 @@ interface Secondary {
    */
   retiredByPool: boolean
   /**
-   * Epoch-ms deadline while an activation (prepare/ensure) is mid-dial. The
-   * live-work pruner must not dispose an entry the user is switching to: a
-   * switch target is not yet the active key, has no live sessions and holds
-   * no request lease, so during a cold pool spawn (~3s) every prune recompute
-   * saw it as idle garbage and disposed it mid-dial — the root of the dead
-   * profile clicks in #89622. Cleared when the activation settles; bounded so
-   * an orphaned lease self-heals.
+   * Live-work-pruner protection for an activation target. Ordinary activation
+   * paths use a 30s deadline as a safety net; phase one uses an owner-bound
+   * indefinite value and must release it explicitly on handoff, timeout,
+   * failure, abort, or supersede (#93937).
    */
   activationLeaseUntil: number
   /** Owner generation for activationLeaseUntil; stale cleanup must not clear a newer switch's lease. */
   activationLeaseOwner: number
 }
 
-// How long a mid-dial activation holds its prune lease: covers a cold pool
-// backend spawn + socket connect with margin, while still letting a leaked
-// lease expire quickly enough for the reaper to reclaim the entry.
+// Ordinary (non phase-one) activation safety window: covers a cold pool backend
+// spawn + socket connect, while allowing a leaked legacy lease to self-heal.
 const ACTIVATION_LEASE_MS = 30_000
 
 export interface GatewayActivationLease {
@@ -343,18 +339,6 @@ function acquireActivationLease(entry: Secondary, signal?: AbortSignal): Gateway
   }
 
   return { release }
-}
-
-/** Cancel the current phase-one owner for a superseded/timed-out source switch. */
-export function cancelGatewayActivationLease(connectionId: null | string, profile: string): void {
-  const entry = g.secondaries.get(registryBackendScopeKey(connectionId, profile))
-
-  if (!entry) {
-    return
-  }
-
-  entry.activationLeaseOwner = 0
-  entry.activationLeaseUntil = 0
 }
 
 // Re-exported as a stable binding: the atom instance lives in `g`, so every hot

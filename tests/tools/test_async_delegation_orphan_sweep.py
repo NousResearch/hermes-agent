@@ -237,6 +237,72 @@ def test_tui_notification_poller_sweeps_under_its_session_profile(tmp_path, monk
     assert seen and seen[0][0] == str(home_b) and seen[0][1] is isolated
 
 
+def _tui_session(session_key: str, home: Path) -> dict:
+    return {"history_lock": threading.RLock(), "running": False, "history": [], "session_key": session_key,
+            "profile_home": str(home), "_finalized": False, "_notification_emitted": set()}
+
+
+def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owner(tmp_path, monkeypatch):
+    """Every TUI/Desktop poller drains one process-wide queue. A session that cannot prove it owns an
+    async delegation drops its copy while the durable row stays pending, so the offer must not
+    suppress the next sweep: the owning session, live later, still gets the row without a restart."""
+    from tools.process_registry_notifications import format_process_notification
+    from tui_gateway import server
+
+    home = tmp_path / "home"
+    delegation_id = _orphan(home)
+    later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
+    q = queue.Queue()
+    registry = type("Registry", (), {"completion_queue": q, "is_completion_consumed": lambda self, sid: False})()
+    started = []
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, session, text, **kw: started.append(sid))
+
+    def drain(sid, session):
+        server._notif_handle_ready(sid, session, _drain(q), session["_notification_emitted"], registry,
+                                   format_process_notification, None)
+
+    other, owner = _tui_session("other-chat", home), _tui_session("bot-chat", home)
+    with _Home(home):
+        monkeypatch.setitem(server._sessions, "sid-other", other)
+        assert ad.sweep_orphaned_completions(q, now=later) == 1
+        drain("sid-other", other)  # the wrong session wins the dequeue while the owner is not live yet
+        assert q.empty() and started == []
+        assert _row(home, delegation_id)["delivery_state"] == "pending"
+
+        monkeypatch.setitem(server._sessions, "sid-owner", owner)  # the owner resumes
+        assert ad.sweep_orphaned_completions(q, now=later + ad.ORPHAN_SWEEP_INTERVAL_S) == 1
+        drain("sid-owner", owner)
+    assert started == ["sid-owner"]
+    assert _row(home, delegation_id)["delivery_state"] == "delivered"
+    with _Home(home):  # delivered rows are never offered again
+        assert ad.sweep_orphaned_completions(q, now=later + 2 * ad.ORPHAN_SWEEP_INTERVAL_S) == 0
+
+
+def test_offer_released_after_a_failed_tui_turn_is_re_offered(tmp_path, monkeypatch):
+    """The TUI poller releases its claim and discards its copy when the turn cannot start; the row is
+    pending again with one attempt spent, so the sweep offers it again instead of skipping it."""
+    from tui_gateway import server
+
+    home = tmp_path / "home"
+    delegation_id = _orphan(home)
+    later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
+    q = queue.Queue()
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no free worker")))
+    owner = _tui_session("bot-chat", home)
+    with _Home(home):
+        assert ad.sweep_orphaned_completions(q, now=later) == 1
+        (evt,) = _drain(q)
+        assert server._notif_claim_turn(owner)
+        server._notif_dispatch_event("sid-owner", owner, evt, "text")
+        row = _row(home, delegation_id)
+        assert (row["delivery_state"], row["delivery_claim"], row["delivery_attempts"]) == ("pending", None, 1)
+        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 1
+    assert [e["delegation_id"] for e in _drain(q)] == [delegation_id]
+
+
 def test_throttle_runs_at_most_one_sweep_per_home_per_interval(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(ad, "sweep_orphaned_completions", lambda q, **kw: calls.append(str(get_hermes_home())) or 0)

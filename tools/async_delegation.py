@@ -59,7 +59,9 @@ ORPHAN_SWEEP_INTERVAL_S = 30.0
 # Idle time before a dead owner's pending row is re-offered; keeps the sweep off a row just touched.
 _ORPHAN_STALE_S = 60.0
 _orphan_lock = threading.Lock()
-# (home key, delegation_id) already put on this process's queue by replay or sweep: offered once.
+# (home key, delegation_id) put on this process's queue by replay or sweep and not re-offered while
+# that copy is alive. A consumer that discards its copy with the row still pending hands it back
+# (``return_completion_offer``); the delivery claim stays the only thing that settles the row.
 _offered: set = set()
 _last_orphan_sweep: Dict[str, float] = {}
 
@@ -329,8 +331,8 @@ def restore_undelivered_completions(target_queue) -> int:
 
 def _replay_pending(conn, rows, target_queue, now: float) -> int:
     """Put each pending ``(delegation_id, event_json, completed_at, dispatched_at)`` row on ``target_queue``
-    stamped ``restored``, or terminally drop it past ``_MAX_COMPLETION_REPLAY_AGE_S``. Remembers what this
-    process was offered so the orphan sweep never offers it again."""
+    stamped ``restored``, or terminally drop it past ``_MAX_COMPLETION_REPLAY_AGE_S``. Records the offer so
+    the orphan sweep skips the row until the copy is handed back (``return_completion_offer``)."""
     home, restored = hermes_home_key(get_hermes_home()), 0
     for delegation_id, payload, completed_at, dispatched_at in rows:
         age_basis = completed_at or dispatched_at
@@ -360,7 +362,8 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     started; this covers the rest while it runs. Abandoned in-flight rows are first classified by
     ``recover_abandoned_delegations``. A terminal row qualifies when it is pending with an event, idle
     past ``_ORPHAN_STALE_S``, not under a live delivery claim, and its owner fails the shared liveness
-    check. Each row is offered to this process once; the consumer's ``claim_completion_delivery`` stays
+    check. A row is offered once per live in-memory copy: a consumer that discards the copy with the row
+    still pending hands it back for the next sweep. The consumer's ``claim_completion_delivery`` stays
     the atomic cross-process gate, so two processes offering one row never both deliver it. Rows past
     the delivery budget or the replay age converge to ``dropped``. Reads the current profile's ledger:
     callers bind the owning profile first."""
@@ -521,7 +524,22 @@ def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
 
 
 def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
+    """Release a failed claim for a consumer that discards its copy (the TUI poller): the row is pending
+    again, so it must stay eligible for the orphan sweep."""
     _event_delivery(release_completion_delivery, evt, claim_id)
+    return_completion_offer(evt)
+
+
+def return_completion_offer(evt: Dict[str, Any]) -> None:
+    """Hand an offered completion back to the orphan sweep after its in-memory copy was discarded while
+    the durable row stays pending, e.g. a TUI session that cannot prove it owns the event drops it (every
+    session poller drains one process-wide queue). The next sweep may offer the row again. Delegation ids
+    are unique across profiles, so this clears the offer in every home."""
+    delegation_id = str(evt.get("delegation_id") or "") if evt.get("type") == "async_delegation" else ""
+    if not delegation_id or is_interim_delegation_event(evt):
+        return
+    with _orphan_lock:
+        _offered.difference_update({key for key in _offered if key[1] == delegation_id})
 
 
 def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:

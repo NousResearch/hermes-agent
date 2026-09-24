@@ -501,9 +501,15 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
         if deferred is None:
-            (logger.warning if is_delegation else logger.debug)(
+            # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
+            # is live (#97202), and keep that retry out of WARNING.
+            restored = is_delegation and bool(evt.get("restored"))
+            (logger.warning if is_delegation and not restored else logger.debug)(
                 "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
                 evt_type, origin, key, sid)
+            if is_delegation:
+                from tools.async_delegation import return_completion_offer
+                return_completion_offer(evt)
         elif is_delegation:
             deferred.append(evt)
         else:

@@ -612,6 +612,19 @@ def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
     return catalog, own_endpoint and bool(catalog)
 
 
+def _profile_listing_authoritative(normalized: str) -> bool:
+    """Whether a live listing miss must reject the requested model.
+
+    Provider profiles default to the historical hard-allowlist behavior. Relays whose public
+    catalog can lag valid account- or route-specific slugs may opt out while retaining the live
+    list for picker discovery and typo suggestions.
+    """
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(normalized)
+    return profile is None or profile.model_listing_authoritative
+
+
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
     tries Bedrock discovery / the curated catalog). A profile that owns its catalog is validated
@@ -667,6 +680,12 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     if req.normalized == "nous" and req.lookup.lower() in _nous_portal_recommended_names():
         return _accept_with_note(f"Note: `{req.requested}` was not found in the live /v1/models listing "
                                  "but is a current Nous Portal recommendation — accepted.")
+    if not _profile_listing_authoritative(req.normalized):
+        return _soft_accept(
+            f"Note: `{req.requested}` was not found in this provider's model listing, "
+            "but this provider permits unlisted model slugs — accepted."
+            f"{match.suggestion_text}"
+        )
     return _reject(f"Model `{req.requested}` was not found in this provider's model listing.{match.suggestion_text}")
 
 

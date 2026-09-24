@@ -390,6 +390,42 @@ class TestValidateApiNotFound:
         assert "corrected_model" not in result
         assert "anthropic/claude-opus-4.6" in result["message"]
 
+    def test_profile_can_allow_unlisted_model_slugs(self):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(
+            name="relay",
+            base_url="https://relay.example/v1",
+            model_listing_authoritative=False,
+        )
+        with patch("providers.get_provider_profile", return_value=profile):
+            result = _validate(
+                "vendor/private-preview",
+                provider="relay",
+                api_models=["vendor/public"],
+                base_url=profile.base_url,
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "permits unlisted model slugs" in result["message"]
+
+    def test_profile_listing_remains_authoritative_by_default(self):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="relay", base_url="https://relay.example/v1")
+        with patch("providers.get_provider_profile", return_value=profile):
+            result = _validate(
+                "vendor/private-preview",
+                provider="relay",
+                api_models=["vendor/public"],
+                base_url=profile.base_url,
+            )
+
+        assert result["accepted"] is False
+        assert result["persist"] is False
+
 
 # -- validate — API unreachable — soft-accept via catalog or warning --------
 

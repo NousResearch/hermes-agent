@@ -126,9 +126,22 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
     @pytest.mark.windows_only
-    def test_watched_home_cannot_lock_staging_before_atomic_publish(self, profile_env, monkeypatch):
+    @pytest.mark.parametrize("temp_location", ["default", "inside_home", "other_volume"])
+    @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
+    def test_watched_home_cannot_lock_staging_before_atomic_publish(
+        self, profile_env, monkeypatch, temp_location, clone_kwargs
+    ):
         """A home watcher opening new skill files must not pin the rename source."""
         home = profile_env / ".hermes"
+        if temp_location == "inside_home":
+            monkeypatch.setattr(profiles.tempfile, "gettempdir", lambda: str(home))
+        elif temp_location == "other_volume":
+            other = next((Path(f"{drive}:/") for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                          if Path(f"{drive}:/").exists() and
+                          os.stat(f"{drive}:/").st_dev != os.stat(home).st_dev), None)
+            if other is None:
+                pytest.skip("No second Windows volume available")
+            monkeypatch.setattr(profiles.tempfile, "gettempdir", lambda: str(other))
         skills = home / "skills" / "example"
         skills.mkdir(parents=True)
         (skills / "SKILL.md").write_text("example")
@@ -142,11 +155,16 @@ class TestCreateProfile:
                 raise PermissionError(5, "watcher has an open skill", str(source))
             assert not target.exists()
             assert (source / ".env").is_file()
+            assert os.stat(source).st_dev == os.stat(target.parent).st_dev
+            import win32security
+            descriptor = win32security.GetFileSecurity(
+                str(source), win32security.DACL_SECURITY_INFORMATION)
+            assert descriptor.GetSecurityDescriptorControl()[0] & win32security.SE_DACL_PROTECTED
             published.append(source)
             return actual_rename(source, target)
 
         monkeypatch.setattr(profiles.os, "rename", rename)
-        profile_dir = create_profile("watched", clone_config=True, no_alias=True)
+        profile_dir = create_profile("watched", no_alias=True, **clone_kwargs)
         assert len(published) == 1
         assert (profile_dir / "skills" / "example" / "SKILL.md").read_text() == "example"
         assert not published[0].exists()

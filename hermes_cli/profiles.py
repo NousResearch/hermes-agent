@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -1181,15 +1182,42 @@ def _clone_staging_dir(profile_dir: Path) -> Path:
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         temp_root = Path(tempfile.gettempdir())
-        if os.stat(temp_root).st_dev == os.stat(profile_dir.parent).st_dev:
-            # A watcher holding any copied skill open prevents renaming its ancestor on
-            # Windows. Keep the entire build outside the watched home, but on the same
-            # volume so the final publish remains one atomic rename.
-            return Path(tempfile.mkdtemp(prefix=f".hermes-{profile_dir.name}-staging-", dir=temp_root))
+        home = profile_dir.parent.parent
+        if (os.stat(temp_root).st_dev != os.stat(profile_dir.parent).st_dev
+                or temp_root.resolve().is_relative_to(profile_dir.parent.resolve())):
+            temp_root = home
+        # A watcher holding a copied skill open prevents renaming its ancestor on Windows.
+        # Stage outside the watched home on the destination volume, then publish once.
+        return _private_windows_staging(temp_root, profile_dir.name)
     if staging.is_symlink() or staging.is_file():
         staging.unlink()
     elif staging.is_dir():
         shutil.rmtree(staging, ignore_errors=True)
+    return staging
+
+
+def _private_windows_staging(parent: Path, name: str) -> Path:
+    """Create the staging directory with a protected DACL before copying credentials."""
+    import ntsecuritycon
+    import win32api
+    import win32con
+    import win32file
+    import win32security
+
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    owner = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    system = win32security.ConvertStringSidToSid("S-1-5-18")
+    acl = win32security.ACL()
+    for sid in (owner, system):
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, sid)
+    descriptor = win32security.SECURITY_DESCRIPTOR()
+    descriptor.SetSecurityDescriptorOwner(owner, False)
+    descriptor.SetSecurityDescriptorDacl(True, acl, False)
+    descriptor.SetSecurityDescriptorControl(win32security.SE_DACL_PROTECTED, win32security.SE_DACL_PROTECTED)
+    attributes = win32security.SECURITY_ATTRIBUTES()
+    attributes.SECURITY_DESCRIPTOR = descriptor
+    staging = parent / f".hermes-{name}-staging-{secrets.token_hex(16)}"
+    win32file.CreateDirectory(str(staging), attributes)
     return staging
 
 

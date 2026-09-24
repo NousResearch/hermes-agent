@@ -196,7 +196,9 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const openAgents = () => navigate(AGENTS_ROUTE)
 
   const openSubagent = (item: ComposerStatusItem) =>
-    item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
+    item.sessionId
+      ? void openSessionInNewWindow(item.sessionId, { watch: true, parentSessionId: storedSessionId ?? sessionId })
+      : openAgents()
 
   const previewRows =
     visiblePreviews.length > 0 && sessionId

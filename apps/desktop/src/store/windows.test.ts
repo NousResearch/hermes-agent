@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $activeGatewayProfile } from './profile'
-import { $sessions } from './session'
+import { $sessions, setSessionOwnerHint } from './session'
 import {
   isPeerInstanceWindow,
   isProfilePinnedWindow,
@@ -62,6 +62,23 @@ describe('isProfilePinnedWindow', () => {
 })
 
 describe('openSessionInNewWindow', () => {
+  it('carries an exact session or parent route through the window bridge independently of the foreground', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+    $activeGatewayProfile.set('unrelated')
+    $sessions.set([{ id: 'remote-session', profile: 'writer', connection_id: 'remote-a' } as never])
+    setSessionOwnerHint('parent-session', { connectionId: 'remote-b', profile: 'research' })
+
+    await openSessionInNewWindow('remote-session')
+    await openSessionInNewWindow('unlisted-child', { watch: true, parentSessionId: 'parent-session' })
+    await openSessionInNewWindow('remote-session')
+
+    expect(open.mock.calls).toEqual([
+      ['remote-session', { connectionId: 'remote-a', profile: 'writer', watch: undefined }],
+      ['unlisted-child', { connectionId: 'remote-b', profile: 'research', watch: true }],
+      ['remote-session', { connectionId: 'remote-a', profile: 'writer', watch: undefined }]
+    ])
+  }, 60_000)
   it('no-ops without a session id', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(open)
@@ -87,10 +104,10 @@ describe('openSessionInNewWindow', () => {
     $sessions.set([{ id: 's1', profile: 'research' } as never])
 
     await openSessionInNewWindow('s1')
-    await openSessionInNewWindow('child-not-listed-yet', { watch: true })
+    await openSessionInNewWindow('child-not-listed-yet', { watch: true, parentSessionId: 's1' })
 
-    expect(open).toHaveBeenCalledWith('s1', { profile: 'research' })
-    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'work', watch: true })
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'research', connectionId: null })
+    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'research', connectionId: null, watch: true })
     expect(notifyError).not.toHaveBeenCalled()
   })
 

@@ -269,18 +269,20 @@ def test_in_place_compress_never_leaves_two_live_copies_of_a_row(session_db, sta
     assert len(contents) == len(set(contents))
 
 
-def test_in_place_compress_never_clones_a_row_a_merge_already_carried(session_db):
+@pytest.mark.parametrize("raw", ["", "here 2"])
+def test_in_place_compress_never_clones_a_row_a_merge_already_carried(session_db, raw):
     """Resume repair merges consecutive user rows into the first one's dict: that dict keeps its row id, drops the
     persisted marker, and the later row's id leaves the held history. Stopping the archive at the newest held id
     would then leave the later row above the stop, cloned as a concurrent append beside the merged row that
-    already carries its content. Two strings, so the exact-duplicate check above cannot see it."""
+    already carries its content. Two strings, so the exact-duplicate check above cannot see it. With ``here 2``
+    the merged row is the newest row of the verbatim tail, whose marker-swept copy must not vouch for its id."""
     agent, _ = _stored_agent(session_db, _exchanges(10))
     session_db.append_message("sid", "user", "first half of a split prompt")
     session_db.append_message("sid", "user", "second half 9931")
     held = session_db.get_resume_conversations("sid")[0]  # the resume path merges the two user rows
     assert "second half 9931" in held[-1]["content"] and held[-1]["content"] != "second half 9931"
 
-    assert _compress(agent, held, "").status == "compressed"
+    assert _compress(agent, held, raw).status == "compressed"
 
     contents = [m["content"] for m in session_db.get_messages_as_conversation("sid")]
     assert sum("second half 9931" in c for c in contents) == 1

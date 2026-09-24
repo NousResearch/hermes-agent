@@ -3585,39 +3585,42 @@ def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbat
     """The in-place archive watermark, capped at the newest durable row the compressor was handed.
 
     The lease watermark is the newest row in state.db, but a surface compacts the history it holds, and that
-    can be older: a Desktop/TUI or CLI /compress, or a long-lived CLI, does not hold turns another surface
-    appended to the same session since. Archived under the watermark, those rows would leave every surface's
+    can be older: a Desktop/TUI or CLI ``/compress`` does not hold turns another surface appended to the same
+    session since it loaded. Archived under the watermark, those rows would leave every surface's
     history and search, and the summary never saw them. Above the cap they take the concurrent-append path
     instead (cloned after the compacted set).
 
-    Only while the held history is a live prefix of the session: its LAST row names its ``_row_id`` (a
-    trailing row of unknown provenance may be durable under the lease watermark without any stamp, e.g. the
-    TUI model-switch marker appended to history and written with a bare ``append_message``; capped below it,
-    the clone would land beside its own carried copy), and that row is still active (after another surface
-    compacted, the held rows are archived and every live row would be cloned beside the new summary).
+    Only while the held history is a live prefix of the session: its LAST row names an exact ``_row_id``, and
+    that row is still active (after another surface compacted, the held rows are archived and every live row
+    would be cloned beside the new summary). An id is exact while its dict is unchanged since it was loaded: a
+    dict loaded from the DB is born carrying both the id and the persist marker, and a pass that rewrote its
+    content drops the marker and keeps the id (the user/assistant merges in ``repair_message_sequence``, or a
+    context engine that rewrites in place). Such a row absorbed later durable rows whose ids are gone from the
+    held set, so its id no longer names what the summary covered: capped there, those rows would be cloned
+    live beside a summary that already contains them. A trailing row of unknown provenance may be durable
+    under the lease watermark without any stamp (the TUI model-switch marker, written with a bare
+    ``append_message``); capped below it, the clone would land beside its own carried copy. A ``here N`` tail
+    is marker-swept copies, so ``compress_now`` keeps a copy's id only when its source still carried the
+    marker; their ids are trusted as given.
     """
     if watermark is None:
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    rows = [*messages, *(verbatim_tail or ())]
-    held = [m.get("_row_id") for m in rows if isinstance(m, dict)]
-    held = [rid for rid in held if isinstance(rid, int) and not isinstance(rid, bool) and rid > 0]
-    newest = next((m for m in reversed(rows) if isinstance(m, dict)), None)
-    if newest is None or newest.get("_row_id") not in held or max(held) >= watermark:
+
+    def _exact_id(m: dict, copied: bool) -> Optional[int]:
+        rid = m.get("_row_id")
+        if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
+            return None
+        return rid if copied or m.get(_DB_PERSISTED_MARKER) else None
+
+    ids = [_exact_id(m, False) for m in messages if isinstance(m, dict)]
+    ids += [_exact_id(m, True) for m in (verbatim_tail or ()) if isinstance(m, dict)]
+    held = [rid for rid in ids if rid is not None]
+    if not ids or ids[-1] is None or (newest_held := max(held)) >= watermark:
         return watermark
-    # ...and, when it is a summarized row, that it still matches its durable row. A dict loaded from
-    # the DB is born carrying both the id and the persist marker; a pass that rewrote its content drops
-    # the marker and keeps the id (the user/assistant merges in `repair_message_sequence`, or a context
-    # engine that rewrites in place). Such a row absorbed later durable rows whose ids are gone from
-    # `held`, so `max(held)` no longer names what the summary covered: capped there, those rows would be
-    # cloned live beside a summary that already contains them. A `here N` tail is exempt: it is copied
-    # verbatim (without the marker), so its ids are exact and, being newest, they lift the cap above
-    # anything a merged row earlier in `messages` absorbed.
-    if not any(isinstance(m, dict) for m in (verbatim_tail or ())) and not newest.get(_DB_PERSISTED_MARKER):
+    if agent._session_db.get_message_role(agent.session_id, newest_held) is None:
         return watermark
-    if agent._session_db.get_message_role(agent.session_id, max(held)) is None:
-        return watermark
-    return max(held)
+    return newest_held
 
 
 def _commit_compaction(

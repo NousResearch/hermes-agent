@@ -739,6 +739,43 @@ class TestDelegateFailedChildStatus(unittest.TestCase):
         self.assertEqual(entry["exit_reason"], "interrupted")
         self.assertFalse(entry["truncated"])
 
+    def test_interrupted_without_final_text_has_no_usable_summary(self):
+        """An interrupt can arrive before the child produces assistant text,
+        so stop must not promise a usable partial summary."""
+        entry = self._delegate_single(
+            {
+                "final_response": None,
+                "completed": False,
+                "interrupted": True,
+                "api_calls": 1,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "interrupted")
+        self.assertEqual(entry["exit_reason"], "interrupted")
+        self.assertEqual(entry["summary"], "")
+
+
+class TestDelegateStopContract(unittest.TestCase):
+    """Model-facing text must describe stop as destructive cancellation."""
+
+    def test_action_schema_describes_stop_as_destructive(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        stop_help = props["action"]["description"].lower()
+        self.assertIn("cancel", stop_help)
+        self.assertIn("not guaranteed", stop_help)
+        self.assertIn("steer", stop_help)
+        self.assertNotIn("partial result still returns", stop_help)
+
+    def test_top_level_description_describes_stop_as_destructive(self):
+        from tools.delegate_tool import _build_top_level_description
+
+        desc = _build_top_level_description(independent_completions=False)
+        self.assertIn("completion result", desc)
+        self.assertIn("destructive cancellation", desc)
+        self.assertIn("no usable summary", desc)
+        self.assertNotIn("final summary returns", desc)
+
 
 class TestSubagentCostRollup(unittest.TestCase):
     """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd

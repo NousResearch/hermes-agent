@@ -915,21 +915,85 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return cls._is_host_pid_alive(pid) and (
             expected_start is None or cls._safe_host_start_time(pid) == expected_start)
 
+    def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
+        """How a recovered host PID should be supervised.
+
+        ``running`` — alive and still ours (start time matches, no baseline, or
+        the start-time probe could not be read). Re-attach; do not invent an exit.
+        ``reused`` — alive, and the start time positively differs. The number
+        belongs to someone else; close our entry and never signal that PID.
+        ``gone`` — the PID is not alive. Prune it; no exit status was collected.
+        """
+        if self._host_pid_is_ours(pid, expected_start):
+            return "running"
+        if not pid or not self._is_host_pid_alive(pid):
+            return "gone"
+        if expected_start is None:
+            return "running"
+        current = self._safe_host_start_time(pid)
+        if current is None or current == expected_start:
+            return "running"
+        return "reused"
+
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
-        """Update recovered host-PID sessions when the underlying process has exited."""
+        """Re-attach, close, or prune a recovered host-PID session.
+
+        A completion is not queued here: recovery has no waitable handle, so it
+        never collected an exit status.
+        """
         if session is None or session.exited or not session.detached or session.pid_scope != "host":
             return session
-        # A recycled PID (alive but not ours) counts as "our process exited" so a
-        # later kill() can never tree-kill the stranger.
-        if self._host_pid_is_ours(session.pid, session.host_start_time):
+        fate = self._detached_host_fate(session.pid, session.host_start_time)
+        if fate == "running":
             return session
+        if fate == "gone":
+            return self._prune_uncollected_detached(session)
+        self._close_reused_detached(session)
+        return session
+
+    def _close_reused_detached(self, session: ProcessSession) -> None:
+        """Close an entry whose PID was recycled onto another process.
+
+        The stranger is not signalled, and no completion is queued: we never
+        collected an exit status for the process we spawned.
+        """
         with session._lock:
             if session.exited:
-                return session
-            # No waitable handle survives recovery, so the real exit code is unknown.
-            session.exited, session.exit_code = True, None
-        self._move_to_finished(session)
-        return session
+                return
+            session.exited = True
+        with self._lock:
+            if session.id in self._running:
+                session.exited_at = time.time()
+                self._running.pop(session.id, None)
+            self._finished[session.id] = session
+        self._write_checkpoint()
+        session._completion_event.set()
+
+    def _prune_uncollected_detached(self, session: ProcessSession) -> Optional[ProcessSession]:
+        """Drop a recovered entry whose PID is gone, without inventing an exit.
+
+        An owned systemd scope stays reachable so kill can still reap it. A
+        scope-less entry is removed: poll/list must not report a collected exit.
+        """
+        with session._lock:
+            session.exited = True
+        with self._lock:
+            self._running.pop(session.id, None)
+            if session.systemd_unit:
+                self._finished[session.id] = session
+            else:
+                self._finished.pop(session.id, None)
+        self._write_checkpoint()
+        session._completion_event.set()
+        return session if session.systemd_unit else None
+
+    def _uncollected_gone(self, session: Optional[ProcessSession]) -> bool:
+        """True when a detached entry was closed without a collected exit status
+        and the PID is no longer alive. List/poll must not report that as exited."""
+        return bool(
+            session is not None and session.exited and session.exit_code is None
+            and session.detached and session.pid_scope == "host"
+            and not self._is_host_pid_alive(session.pid))
 
     @staticmethod
     def _proc_alive(proc) -> bool:
@@ -1705,7 +1769,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if session is None:
             return False
         with suppress(Exception):
-            self._refresh_detached_session(session)
+            refreshed = self._refresh_detached_session(session)
+            if refreshed is None:
+                return False
+            session = refreshed
         return not session.exited and not (
             session.watch_patterns and not session._watch_disabled and session._watch_hits > 0)
 
@@ -1774,7 +1841,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # where the reader is blocked but the direct child has already exited (issue
                         # #17327).
                         self._reconcile_local_exit(session)
-                        self._refresh_detached_session(session)
+                        if self._refresh_detached_session(session) is None:
+                            break
                     if session._completion_event.is_set():
                         break
                     session._completion_event.wait(min(remaining, interval))
@@ -1996,7 +2064,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
         session = self.get(session_id)
-        if session is None:
+        if session is None or self._uncollected_gone(session):
             return _not_found(session_id)
         self._reconcile_local_exit(session)  # orphaned-pipe reader guard
         with session._lock:
@@ -2232,12 +2300,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if session.systemd_unit:
                     _stop_systemd_unit(session.systemd_unit)
                 with session._lock:
-                    session.exited = True
-                    session.exit_code = None
                     output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
-                self._move_to_finished(session)
+                # No waitable handle, so this is not a collected exit. Close the
+                # entry without queueing a completion, and do not signal a PID
+                # whose start time does not match.
+                self._close_reused_detached(session)
                 return {"status": "already_exited", "exit_code": session.exit_code, **output}
             self._terminate_host_pid(session.pid, session.host_start_time)
         else:
@@ -2342,7 +2411,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             sessions.update(self._finished)
             sessions.update(self._running)
-        all_sessions = [self._refresh_detached_session(s) for s in sessions.values()]
+        all_sessions = [
+            refreshed for refreshed in (
+                self._refresh_detached_session(s) for s in sessions.values()
+            ) if refreshed is not None and not self._uncollected_gone(refreshed)
+        ]
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
@@ -2412,6 +2485,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             return [s for s in self._finished.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
+                    and s.exit_code is not None
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,

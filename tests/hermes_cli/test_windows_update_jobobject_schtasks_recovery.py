@@ -7,15 +7,16 @@ empty and a Hermes Scheduled Task is registered, the updater must try
 ``schtasks /Run`` so Task Scheduler starts the gateway outside that Job
 Object, then poll again.
 
-Fail-open stays the pre-fix path: no task / query error / non-zero
-``/Run`` / still-empty second poll → original RuntimeError, never a
-fake ✓. Ordinary ``hermes gateway start()`` is unchanged (Scheduled
-Task remains login persistence only).
+Failure-preserving recovery: no task / query error / non-zero ``/Run`` /
+still-empty second poll → original RuntimeError, never a fake ✓. Ordinary
+``hermes gateway start()`` is unchanged (Scheduled Task remains login
+persistence only).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +25,7 @@ import hermes_cli.gateway as gateway
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.main as hm
 import hermes_cli.main_install_repair as main_install_repair
+import hermes_cli.update_inventory as update_inventory
 from hermes_cli import update_cmd, update_cmd_windows
 from hermes_cli.update_cmd import _resume_windows_gateways_after_update
 from hermes_cli.update_cmd_windows import _verify_relaunched_gateways_alive
@@ -450,3 +452,92 @@ class TestTargetedRecoveryContract:
         _resume_windows_gateways_after_update(_token({"beta": 1111}))
 
         assert order == ["refresh", "run"]
+
+
+class TestPlannedManualProfileRecovery:
+    def test_manual_planned_profile_with_registered_task_reaches_recovery(
+        self, monkeypatch, tmp_path
+    ):
+        """The real inventory calls this PID ``manual``; that label is not a
+        recovery veto.  Drive the actual Windows pause/resume entrypoints,
+        rather than adding an unused ``supervisor`` field to their token.
+
+        This is the scheduler-shaped case from #107002: task ancestry is not
+        SCM ownership, so the inventory's current classifier has no stronger
+        supervisor evidence and deliberately says ``manual``.  Once the
+        direct relaunch is not ready, an already registered *target* task is
+        still eligible for the one-shot post-update recovery.
+        """
+        beta_home = tmp_path / "profiles" / "beta"
+        beta_home.mkdir(parents=True)
+
+        # Build a real plan row through the production inventory collector.
+        # The test only stubs OS probes; it does not manufacture a plan field
+        # that the pause/resume code never reads.
+        monkeypatch.setattr(update_inventory, "_collect_install_shape", lambda plan: None)
+        monkeypatch.setattr(
+            "hermes_cli.build_info.get_code_identity",
+            lambda refresh=False: {"sha": None, "version": None},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.update_receipt._profile_homes", lambda: [("beta", beta_home)]
+        )
+        monkeypatch.setattr("hermes_cli.update_receipt._socket_identity", lambda home: None)
+        monkeypatch.setattr(
+            "gateway.status.live_gateway_pid_for_home", lambda home: 777 if home == beta_home else None
+        )
+        monkeypatch.setattr("gateway.status.read_runtime_status", lambda path: {})
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda **_kw: set())
+        monkeypatch.setattr(gateway, "find_windows_gateway_services", lambda **_kw: [])
+        monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **_kw: [])
+
+        plan = update_inventory.collect_runtime_inventory()
+        assert [(runtime.profile, runtime.supervisor, runtime.restart_via) for runtime in plan.runtimes] == [
+            ("beta", "manual", "manual")
+        ]
+
+        _install_windows_resume_stubs(monkeypatch)
+        monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
+        monkeypatch.setattr(hm, "_venv_launcher_ancestors", lambda _pids: [])
+        monkeypatch.setattr(hm, "_wait_for_windows_update_gateway_exit", lambda _pids, timeout: set())
+        monkeypatch.setattr(update_cmd_windows, "_gateway_drain_timeout", lambda _acks: 0.0)
+        beta = SimpleNamespace(pid=777, profile="beta", path=beta_home)
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_discover_windows_gateways",
+            lambda: ({777: beta}, [], set(), [777]),
+        )
+        monkeypatch.setattr(
+            update_cmd_windows,
+            "_request_socket_pauses",
+            lambda *_args: ({"beta": 777}, [777], []),
+        )
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: beta_home)
+
+        run_homes: list[Path | None] = []
+        readiness_attempts = 0
+
+        def readiness(*, home=None, **_kwargs):
+            nonlocal readiness_attempts
+            assert home == beta_home
+            readiness_attempts += 1
+            return [222] if run_homes else []
+
+        monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", readiness)
+        monkeypatch.setattr(
+            gateway_windows, "is_task_registered", lambda *, home=None: home == beta_home
+        )
+        monkeypatch.setattr(
+            gateway_windows,
+            "_run_scheduled_task_once",
+            lambda *, home=None: run_homes.append(home) or (0, "", ""),
+        )
+
+        token = update_cmd._pause_windows_gateways_for_update()
+        assert token["profiles"] == {"beta": 777}
+        with patch("builtins.print"):
+            update_cmd._resume_windows_gateways_after_update(token)
+
+        assert run_homes == [beta_home]
+        assert readiness_attempts == 2
+        assert token["resume_needed"] is False

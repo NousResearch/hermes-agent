@@ -1050,7 +1050,7 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
     (``gateway_windows._report_gateway_start``), instead of being printed unconditionally from the returned
     PID. An empty first poll plus a registered Scheduled Task tries ``schtasks /Run``
     once so Task Scheduler can start the gateway outside the updater Job Object
-    (#107002); fail-open otherwise.
+    (#107002); failure-preserving otherwise.
 
     Desktop-owned lifecycle suppresses the spawn only while nothing attests a gateway is expected: an
     attested gateway that died without a clean exit is restored even then (#109538) — the Desktop does
@@ -1300,7 +1300,8 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
 
     When the first poll is empty and a Hermes Scheduled Task is registered,
     try ``schtasks /Run`` once so Task Scheduler starts the gateway outside
-    the updater Job Object (#107002), then poll again. Fail-open otherwise.
+    the updater Job Object (#107002), then poll again. Failed recovery keeps
+    the original verification failure rather than reporting a false success.
     """
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from hermes_cli import gateway_windows

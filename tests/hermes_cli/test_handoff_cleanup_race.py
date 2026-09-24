@@ -17,6 +17,7 @@ completes, and ``_should_emit_cleanup_session_finalize`` /
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -157,3 +158,80 @@ def test_single_query_finalize_skipped_for_handed_off():
         cli_mod._notify_single_query_session_finalize(cli_mock)
 
     mock_finalize.assert_not_called()
+
+
+def test_tui_shutdown_does_not_close_handed_off_session():
+    """The interactive CLI teardown must leave a completed handoff to the gateway."""
+    import cli as cli_mod
+    from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
+
+    _reset_cli_globals(cli_mod)
+    session_id = "handoff-session-tui"
+    cli_mod._handed_off_session_ids.add(session_id)
+    session_db = MagicMock()
+    tui = SimpleNamespace(
+        _should_exit=False,
+        _pet_stop_anim=MagicMock(),
+        agent=SimpleNamespace(session_id=session_id),
+        _agent_running=False,
+        _voice_recorder=None,
+        _session_db=session_db,
+        _delete_session_on_exit=False,
+        _persist_active_session_before_close=MagicMock(),
+        _discard_session_if_empty=MagicMock(),
+        _print_exit_summary=MagicMock(),
+        _release_active_session=MagicMock(),
+    )
+
+    with (
+        patch("cli.set_sudo_password_callback"),
+        patch("cli.set_approval_callback"),
+        patch("cli.set_secret_capture_callback"),
+        patch("cli._run_cleanup"),
+        patch("agent.vault_backends.unlock.lock"),
+        patch("agent.vault_backends.unlock.set_code_prompt_callback"),
+        patch("agent.vault_backends.unlock.set_save_login_prompt_callback"),
+        patch("agent.vault_backends.unlock.set_unlock_prompt_callback"),
+        patch("tools.voice_mode.cleanup_temp_recordings"),
+    ):
+        CLITuiRuntimeMixin._tui_shutdown(tui)
+
+    session_db.end_session.assert_not_called()
+
+
+def test_tui_shutdown_still_closes_normal_session():
+    """A normal interactive CLI exit retains its explicit close behavior."""
+    import cli as cli_mod
+    from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
+
+    _reset_cli_globals(cli_mod)
+    session_id = "normal-session-tui"
+    session_db = MagicMock()
+    tui = SimpleNamespace(
+        _should_exit=False,
+        _pet_stop_anim=MagicMock(),
+        agent=SimpleNamespace(session_id=session_id),
+        _agent_running=False,
+        _voice_recorder=None,
+        _session_db=session_db,
+        _delete_session_on_exit=False,
+        _persist_active_session_before_close=MagicMock(),
+        _discard_session_if_empty=MagicMock(),
+        _print_exit_summary=MagicMock(),
+        _release_active_session=MagicMock(),
+    )
+
+    with (
+        patch("cli.set_sudo_password_callback"),
+        patch("cli.set_approval_callback"),
+        patch("cli.set_secret_capture_callback"),
+        patch("cli._run_cleanup"),
+        patch("agent.vault_backends.unlock.lock"),
+        patch("agent.vault_backends.unlock.set_code_prompt_callback"),
+        patch("agent.vault_backends.unlock.set_save_login_prompt_callback"),
+        patch("agent.vault_backends.unlock.set_unlock_prompt_callback"),
+        patch("tools.voice_mode.cleanup_temp_recordings"),
+    ):
+        CLITuiRuntimeMixin._tui_shutdown(tui)
+
+    session_db.end_session.assert_called_once_with(session_id, "cli_close")

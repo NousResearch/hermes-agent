@@ -472,7 +472,12 @@ class CLITuiRuntimeMixin:
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.
         self._persist_active_session_before_close()
 
-        if self._session_db and self.agent:
+        # A completed /handoff transfers this row to the gateway.  The ordinary
+        # interactive shutdown path runs after the handoff command returns, so it
+        # must not stamp the gateway-owned row with ``cli_close`` (or prune it as
+        # an empty CLI session) before the first platform reply arrives.
+        from cli import _handed_off_session_ids
+        if self._session_db and self.agent and self.agent.session_id not in _handed_off_session_ids:
             try:
                 self._session_db.end_session(self.agent.session_id, "cli_close")
             except (Exception, KeyboardInterrupt) as e:

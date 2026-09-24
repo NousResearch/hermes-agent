@@ -543,7 +543,15 @@ export function pendingSessionReplay(runtimeId: string): Promise<boolean> | unde
   const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen && !entry.retiredByPool)
   const clients = new Set([g.primaryGateway, ...reconnectable.map(entry => entry.gateway)])
 
+  // A closed socket's false means only that IT cannot replay yet. When another
+  // open socket already serves this runtime, that socket orders the read.
+  const servedOpen = [...clients].some(client => isOpen(client) && client?.getSeqWatermarks?.()[runtimeId] != null)
+
   const pending = [...clients].flatMap(client => {
+    if (servedOpen && !isOpen(client)) {
+      return []
+    }
+
     // A dev-HMR survivor can predate the barrier method.
     const barrier = client?.sessionReplayBarrier?.(runtimeId)
 

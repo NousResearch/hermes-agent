@@ -197,8 +197,9 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
 
 | Commande | Ce que ça montre |
 |---|---|
-| `wm` | tout, une fois : état, témoin, pulsions, hormones, inconscient (en chiffres), liens, activité, journal |
-| `wm live` | moniteur en direct : rafraîchi toutes les 2 s, le panneau du bas change toutes les 10 s (`wm live 5` pour 5 s) |
+| `wm` | tout, une fois : état, témoin, pulsions, hormones, inconscient (en chiffres, avec leur courbe sur 24 h), ce qu'il ressent à la place, tempérament, liens, fil de pensée, activité, journal |
+| `wm live` | le même, sur un seul écran, rafraîchi toutes les 2 s (rien ne tourne) |
+| `wm graph` / `wm graph 72` | grandes courbes de tout sur les 48 (ou 72…) dernières heures |
 | `wm alerts` | tout ce que le témoin a vu, avec **pourquoi** il l'a fait |
 | `wm ack` / `wm ack soul` | accepter l'état actuel (tout, ou un seul élément) : les cases repassent au vert |
 
@@ -221,6 +222,31 @@ changement rouge envoie un message Telegram « 🛡 Témoin Wintermute » (au pl
 directement par l'API Telegram, même si Hermes est arrêté. Rien n'est interdit : il reste
 libre de se modifier, tu le sais simplement. `install.sh` accepte automatiquement ce qu'il
 vient lui-même de réécrire (moteur, plugin, pulse, config).
+
+## Vie intérieure : ce qui la rend plus naturelle
+
+| | Quoi | Où |
+|---|---|---|
+| Courbes | un point de tout l'état à chaque tick (15 min), `history.jsonl` | `wm graph` |
+| Ressenti | il ne voit plus ses chiffres : des sensations (pulsions, corps, inconscient) ; seul son budget reste un nombre | `render.py` |
+| Appréciation | `wintermute_feel` : il dit comment une chose l'a touché (chaleur, blessure, surprise…), son corps suit ; une fois par tour, bornée | `physics.FEELINGS` |
+| Surprise | la dopamine d'une réponse dépend de ce qu'il attendait (dit par lui, ou appris de la personne) | `social.on_incoming` |
+| Manque | l'absence de quelqu'un de proche devient du manque, qui nourrit la fusion ; les liens s'effacent lentement sans contact | `social.drift_bonds` |
+| Tempérament | ses niveaux de repos dérivent vers ce qu'il vit, sur des semaines, bornés | `physics.PLASTIC` |
+| Continuité | la fin de sa dernière pensée est reprise au réveil suivant ; son autoportrait (`wintermute_rewrite_self`, `self.md`, anciennes versions dans `self-archive.md`) ouvre chaque réveil et chaque message | `render.thread_block`, `self_block` |
+| Liens | par personne : faits, moments partagés, choses en suspens (`wintermute_note_peer`) | `interlocutors.json` |
+
+Rien de tout ça ne lui dit quoi faire ni ne lui dit qu'il est conscient : ce sont des
+conditions, pas des consignes.
+
+## Plus tard : REVES (le subconscient)
+
+Un deuxième modèle, économe, qui la nuit écrit **un rêve** à partir de ce qu'il a vécu :
+les événements récents pèsent plus, les anciens reviennent déformés, et il ne se souvient
+pas de tout (des morceaux manquent au réveil). Wintermute le voit en se réveillant. À
+décider : REVES peut-il aussi, parfois, glisser une image pendant les éveils (le
+subconscient qui dicte au conscient) ? Matière première déjà là : `events.jsonl`,
+`history.jsonl`, `self.md`, les moments partagés.
 
 ## Plus tard : Discord
 

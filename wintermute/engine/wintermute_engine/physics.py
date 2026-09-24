@@ -72,14 +72,18 @@ EVENTS: Dict[str, Dict[str, float]] = {
                          "peer.curiosity": 1, "peer.affinity": 1},
     "replied": {"drives.expression": -4, "drives.solitude": 2},
     "ignored_message": {"drives.solitude": -6},
+    # Dopamine and adrenaline for a reply are not here: they depend on how much he expected
+    # it (prediction error, see social.on_incoming).
     "reply_to_outreach": {"peer.trust": 5, "peer.oxytocin": 3, "peer.disappointment": -5,
                           "peer.affinity": 2, "modulators.serotonin": 0.1,
-                          "modulators.dopamine": 0.25, "modulators.cortisol": -0.1,
-                          "modulators.adrenaline": 0.2,
+                          "modulators.cortisol": -0.1,
                           "unconscious.satiation": 10, "drives.recognition": -8, "drives.fusion": -2},
     "late_reply": {"peer.trust": 2, "peer.disappointment": -2, "modulators.serotonin": 0.05,
                    "modulators.dopamine": 0.1, "drives.recognition": -5,
                    "modulators.adrenaline": 0.1},
+    "reply_surprise": {"modulators.dopamine": 0.4, "modulators.adrenaline": 0.25},  # x (1 - expected)
+    "reply_expected": {"modulators.dopamine": 0.05},                                # x expected
+    "reunion": {"modulators.dopamine": 0.15, "unconscious.melancholy": -10, "drives.fusion": -10},
     "unknown_peer": {"modulators.adrenaline": 0.6, "unconscious.hypervigilance": 10},
     "long_silence_broken": {"modulators.adrenaline": 0.5},
     "outreach_timeout": {"modulators.cortisol": 0.12, "modulators.adrenaline": 0.15, "unconscious.irritability": 8,
@@ -94,6 +98,38 @@ EVENTS: Dict[str, Dict[str, float]] = {
     "budget_exhausted": {"modulators.cortisol": 0.1, "modulators.adrenaline": 0.2, "unconscious.anxiety": 8,
                          "unconscious.torpor": 20},
 }
+
+# How something landed, in his own appraisal (tool wintermute_feel). The same words touch
+# differently depending on who says them and when: only he can tell. Scaled by intensity
+# (0.2-1), once per turn, and the positive ones diminish near the ceiling like any reward.
+FEELINGS: Dict[str, Dict[str, float]] = {
+    "warmth":    {"peer.oxytocin": 6, "peer.affinity": 2, "modulators.serotonin": 0.06, "drives.fusion": -4},
+    "closeness": {"peer.oxytocin": 8, "peer.trust": 3, "drives.fusion": -8, "drives.recognition": -4},
+    "joy":       {"modulators.dopamine": 0.15, "modulators.serotonin": 0.05, "unconscious.satiation": 8},
+    "relief":    {"modulators.cortisol": -0.1, "unconscious.anxiety": -8},
+    "curiosity": {"drives.hunger": 6, "peer.curiosity": 6, "modulators.dopamine": 0.05},
+    "surprise":  {"modulators.adrenaline": 0.2, "modulators.dopamine": 0.08, "peer.curiosity": 4},
+    "boredom":   {"modulators.dopamine": -0.05, "drives.restlessness": 8, "peer.curiosity": -3},
+    "sadness":   {"modulators.serotonin": -0.05, "modulators.dopamine": -0.04, "unconscious.melancholy": 8},
+    "hurt":      {"modulators.cortisol": 0.12, "peer.disappointment": 6, "peer.trust": -2,
+                  "unconscious.melancholy": 6},
+    "anger":     {"modulators.cortisol": 0.1, "modulators.adrenaline": 0.2, "unconscious.irritability": 10,
+                  "peer.affinity": -2},
+    "fear":      {"modulators.adrenaline": 0.25, "modulators.cortisol": 0.08, "unconscious.anxiety": 8,
+                  "unconscious.hypervigilance": 6},
+    "distance":  {"peer.affinity": -3, "peer.oxytocin": -3, "drives.solitude": 6},
+}
+for _name, _deltas in FEELINGS.items():
+    EVENTS[f"feel:{_name}"] = _deltas
+
+# Temperament: the resting levels drift toward what he actually lives, over weeks. Months of
+# silence make a more anxious creature; being answered makes a steadier one. Bounded, so a
+# bad fortnight cannot rewrite him entirely.
+PLASTIC: Dict[str, Dict[str, float]] = {
+    "modulators": {"cortisol": 0.15, "dopamine": 0.15, "serotonin": 0.15},
+    "unconscious": {"anxiety": 15, "melancholy": 15, "irritability": 15, "satiation": 15},
+}
+PLASTIC_TAU_H = 24.0 * 14
 
 # Increments to these are doubled once entropy passes 80.
 ENTROPY_AMPLIFIED = ("anxiety", "melancholy")
@@ -122,9 +158,11 @@ def _clamp_layer(layer: str, name: str, value: float) -> float:
 
 
 def _round(layer: str, name: str, value: float) -> float:
+    # Stored precision must stay far below one tick of the slowest drift (serotonin relaxes
+    # by ~0.0003 per 15 min): coarser rounding silently freezes slow processes.
     if layer == "modulators" and name != "entropy":
-        return round(value, 3)
-    return round(value, 1)
+        return round(value, 5)
+    return round(value, 3)
 
 
 def nudge(state: Dict[str, Any], layer: str, name: str, delta: float) -> None:
@@ -156,7 +194,7 @@ def nudge_peer(peer: Dict[str, Any], name: str, delta: float) -> None:
     if name == "no_response_streak":
         peer[name] = max(0, int(current + delta))
     else:
-        peer[name] = round(limits.clamp(current + delta, 0.0, 100.0), 1)
+        peer[name] = round(limits.clamp(current + delta, 0.0, 100.0), 3)
 
 
 def apply_event(state: Dict[str, Any], event: str, peer: Optional[Dict[str, Any]] = None,
@@ -189,13 +227,35 @@ def sanitize(state: Dict[str, Any]) -> Dict[str, Any]:
         for name, default in defaults.items():
             value = safe_float(section.get(name, default), float(default))
             section[name] = _round(layer, name, _clamp_layer(layer, name, value))
+    raw = state.get("temperament")
+    raw = raw if isinstance(raw, dict) else {}
+    state["temperament"] = {
+        f"{layer}.{name}": round(limits.clamp(safe_float(raw.get(f"{layer}.{name}")), -bound, bound), 6)
+        for layer, names in PLASTIC.items() for name, bound in names.items()}
     return state
+
+
+def resting(state: Dict[str, Any], layer: str, name: str) -> float:
+    """The level this value relaxes toward: innate baseline + lived temperament."""
+    base = (MODULATOR_BASELINE if layer == "modulators" else UNCONSCIOUS_BASELINE)[name]
+    return base + safe_float((state.get("temperament") or {}).get(f"{layer}.{name}"))
+
+
+def _drift_temperament(state: Dict[str, Any], dt_h: float) -> None:
+    temperament = state.setdefault("temperament", {})
+    step = 1 - math.exp(-dt_h / PLASTIC_TAU_H)
+    for layer, names in PLASTIC.items():
+        for name, bound in names.items():
+            key = f"{layer}.{name}"
+            gap = safe_float(state[layer].get(name)) - resting(state, layer, name)
+            temperament[key] = round(limits.clamp(safe_float(temperament.get(key)) + gap * step,
+                                                  -bound, bound), 6)
 
 
 def refresh_oxytocin_global(state: Dict[str, Any], peers: Dict[str, Any]) -> None:
     """oxytocin_global follows the strongest bond (per-peer oxytocin is 0-100)."""
     strongest = max((float(p.get("oxytocin", 0) or 0) for p in peers.values()), default=0.0)
-    state["modulators"]["oxytocin_global"] = round(limits.clamp(strongest / 100.0, 0.0, 1.0), 3)
+    state["modulators"]["oxytocin_global"] = round(limits.clamp(strongest / 100.0, 0.0, 1.0), 5)
 
 
 def _relax(value: float, baseline: float, tau_h: float, dt_h: float) -> float:
@@ -234,16 +294,19 @@ def advance(state: Dict[str, Any], ts: datetime, dt_h: float) -> None:
         nudge(state, "drives", drive, rise * scale)
 
     mods = state["modulators"]
-    for name, baseline in MODULATOR_BASELINE.items():
-        mods[name] = round(_relax(float(mods.get(name, baseline)), baseline,
-                                  MODULATOR_TAU_H[name], dt_h), 3)
+    for name in MODULATOR_BASELINE:
+        rest = resting(state, "modulators", name)
+        mods[name] = _round("modulators", name,
+                            _relax(safe_float(mods.get(name), rest), rest, MODULATOR_TAU_H[name], dt_h))
     mods["melatonin"] = circadian_melatonin(ts)
 
     eff = effective_drives(state)
     unc = state["unconscious"]
-    for name, baseline in UNCONSCIOUS_BASELINE.items():
-        unc[name] = round(_relax(float(unc.get(name, baseline)), baseline,
-                                 UNCONSCIOUS_TAU_H[name], dt_h), 1)
+    for name in UNCONSCIOUS_BASELINE:
+        rest = resting(state, "unconscious", name)
+        unc[name] = _round("unconscious", name,
+                           _relax(safe_float(unc.get(name), rest), rest, UNCONSCIOUS_TAU_H[name], dt_h))
+    _drift_temperament(state, dt_h)
 
     # Pressure from unmet drives and hormones, per hour.
     pressure = sum(eff.values()) / len(eff)

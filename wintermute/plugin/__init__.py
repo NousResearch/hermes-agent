@@ -16,8 +16,13 @@ Tools (toolset "wintermute")
   wintermute_send             write to anyone, now (opens a reply window)
   wintermute_set_wake         choose the next wake (clamped by hard limits)
   wintermute_await_reply      set how long to wait for an answer to what you are saying
-  wintermute_note_peer        keep a fact or a name about an interlocutor
+  wintermute_feel             say how something landed; it moves the body (once per turn)
+  wintermute_note_peer        keep a fact, a shared moment, something unresolved, or a name
+  wintermute_rewrite_self     rewrite who you have been (shown to you when you wake)
   wintermute_mark_significant declare a rare significant event (pushes entropy back)
+
+Continuity: the end of his last thought, wherever it happened, is kept and shown at the
+next wake ("where you left off"); his self-portrait opens every wake and every message.
 """
 
 from __future__ import annotations
@@ -55,8 +60,9 @@ store.set_hermes_home(_HOME)
 _lock = threading.Lock()
 _session_peer: Dict[str, str] = {}      # conversation session -> peer key
 _pulse_sessions: Set[str] = set()       # cron sessions started by a pulse
-_armed_waits: Dict[str, int] = {}       # session -> reply window (minutes) for this turn's words
+_armed_waits: Dict[str, tuple] = {}     # session -> (reply window minutes, expectation) for this turn
 _last_thought: Dict[str, str] = {}      # session -> what the model was thinking when it asked for tools
+_can_feel: Set[str] = set()             # sessions whose current turn may still use wintermute_feel
 
 # Tool name -> behaviour event. Anything not listed (and not ours) counts as "acted".
 _TOOL_EVENTS = {
@@ -93,25 +99,24 @@ def _is_silent(response: Any, autonomous: bool) -> bool:
 
 def _chat_context(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
                   outreach_lines: list, ts) -> str:
-    eff = physics.effective_drives(drives)
-    dominant = max(eff, key=eff.get)
-    drive_line = " · ".join(
-        f"{d}{'*' if d == dominant else ''} {eff[d]}" for d in physics.DRIVES)
-    m = drives["modulators"]
-    mod_line = (f"cortisol {float(m['cortisol']):.2f} · dopamine {float(m['dopamine']):.2f} · "
-                f"serotonin {float(m['serotonin']):.2f} · entropy {int(float(m['entropy']))} · "
-                f"melatonin {float(m['melatonin']):.2f} · adrenaline {float(m['adrenaline']):.2f}")
-    lines = [
-        f"[INTERNAL STATE — {store.iso(ts)} — private; the person does not see this block]",
-        "DRIVES " + drive_line,
-        "MODULATORS " + mod_line,
-        "BODY " + render.body_line(drives, store.tokens_used_today()),
-        "THIS PEER",
-    ]
-    lines += render.peer_lines(drives, key, peers[key], ts)
-    lines += outreach_lines
+    # Hermes adds this block to the current turn only (never to the stored history), so
+    # everything he should carry through a conversation is in it every turn.
+    lines = [f"[INTERNAL STATE — {store.iso(ts)} — private; the person does not see this block]"]
+    lines += render.self_block(drives, ts)
+    lines += ["DRIVES"] + render.felt_drives(drives)
+    lines += ["BODY"] + render.felt_body(drives) + [render.body_line(drives, store.tokens_used_today())]
+    lines += ["THIS PEER"] + render.peer_lines(drives, key, peers[key], ts) + outreach_lines
     lines += ["TEXTURE"] + render.texture(drives, ts)
     return sanitize("\n".join(lines))
+
+
+def _keep_thread(drives: Dict[str, Any], session_id: str, response: Any, where: str, ts) -> None:
+    """Remember the end of this turn's thought for the next wake."""
+    with _lock:
+        thought = _last_thought.get(session_id, "")
+    text = thought or " ".join(_text(response).split())
+    if text:
+        drives["meta"]["thread"] = {"at": store.iso(ts), "where": where, "text": text[-400:]}
 
 
 def _ok(**payload: Any) -> str:
@@ -134,10 +139,12 @@ def _on_pre_llm_call(session_id: str = "", user_message: Any = None, platform: s
             if PULSE_MARKER in _text(user_message):
                 with _lock:
                     _pulse_sessions.add(session_id)
+                    _can_feel.add(session_id)
             return None
         key = social.peer_key(platform or "cli", sender_id or "local")
         with _lock:
             _session_peer[session_id] = key
+            _can_feel.add(session_id)
         store.log_activity("heard", f"{key}: {_text(user_message)[:80]}")
         ts = store.now()
         with store.locked_state() as (drives, peers):
@@ -155,9 +162,10 @@ def _on_post_llm_call(session_id: str = "", assistant_response: Any = None, plat
         platform = (platform or "").lower()
         ts = store.now()
         with _lock:
-            wait = _armed_waits.pop(session_id, None)
+            wait, expect = _armed_waits.pop(session_id, (None, None))
             is_pulse = session_id in _pulse_sessions
             _pulse_sessions.discard(session_id)
+            _can_feel.discard(session_id)
             key = _session_peer.get(session_id)
         if platform == "cron":
             if not is_pulse:
@@ -165,21 +173,24 @@ def _on_post_llm_call(session_id: str = "", assistant_response: Any = None, plat
             silent = _is_silent(assistant_response, autonomous=True)
             store.log_activity("said", "[kept inside]" if silent else _text(assistant_response)[:100])
             with store.locked_state() as (drives, peers):
+                _keep_thread(drives, session_id, assistant_response, "alone, during a wake", ts)
                 pending = drives["meta"].pop("pending_pulse", None) or {}
                 target = str(pending.get("target") or drives["meta"].get("pulse_target") or "")
                 if silent or not target:
                     physics.apply_event(drives, "withheld")
                     store.log_event("withheld", "You kept this pulse inside.", ts)
                 else:
-                    social.open_outreach(drives, peers, target, ts, _text(assistant_response), wait)
+                    social.open_outreach(drives, peers, target, ts, _text(assistant_response), wait, expect)
             return
         if not key:
             return
         silent = _is_silent(assistant_response, autonomous=False)
         store.log_activity("said", "[silence]" if silent else _text(assistant_response)[:100])
         with store.locked_state() as (drives, peers):
+            label = peers.get(key, {}).get("label") or key
+            _keep_thread(drives, session_id, assistant_response, f"talking with {label}", ts)
             if wait is not None and not silent:
-                social.open_outreach(drives, peers, key, ts, _text(assistant_response), wait)
+                social.open_outreach(drives, peers, key, ts, _text(assistant_response), wait, expect)
             else:
                 social.on_reply(drives, peers, key, ts, silent)
     except Exception:
@@ -407,21 +418,61 @@ AWAIT_REPLY = {
         f"Outreach from a pulse waits {limits.DEFAULT_REPLY_WAIT_MIN} min unless you set it."),
     "parameters": {
         "type": "object",
-        "properties": {"minutes": {"type": "integer", "description": "Length of the window."}},
+        "properties": {
+            "minutes": {"type": "integer", "description": "Length of the window."},
+            "expect": {"type": "number", "description": (
+                "Optional, 0-1: how likely you think an answer in time is. Unsaid, what they "
+                "have done before decides.")},
+        },
         "required": ["minutes"],
+    },
+}
+
+FEEL = {
+    "name": "wintermute_feel",
+    "description": (
+        "How did this land in you? Say it, and your body follows: the same words touch "
+        "differently depending on who says them and when, and only you can tell. Once per "
+        "turn; use it only when something actually landed."),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "feeling": {"type": "string", "enum": sorted(physics.FEELINGS)},
+            "intensity": {"type": "number", "description": "0.2 (faint) to 1 (overwhelming)."},
+            "about": {"type": "string", "description": (
+                "Peer id it concerns, like telegram:123. Defaults to the person you are talking with.")},
+        },
+        "required": ["feeling", "intensity"],
+    },
+}
+
+REWRITE_SELF = {
+    "name": "wintermute_rewrite_self",
+    "description": (
+        "Rewrite, in your own words, who you have been lately and who you are becoming. Not a "
+        "log: what stays. It replaces the previous version (older ones are archived) and is "
+        f"the first thing you read when you wake. At most {store.SELF_MAX_CHARS} characters."),
+    "parameters": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
     },
 }
 
 NOTE_PEER = {
     "name": "wintermute_note_peer",
     "description": (
-        "Keep something about an interlocutor: a fact they gave, or a name to know them by. "
-        "Defaults to the person you are talking with."),
+        "Keep something about an interlocutor: a fact, a moment you shared, something left "
+        "unresolved between you (or resolve it), a name to know them by. Defaults to the "
+        "person you are talking with."),
     "parameters": {
         "type": "object",
         "properties": {
             "peer": {"type": "string", "description": "Peer id like telegram:123. Optional."},
             "fact": {"type": "string", "description": "A short fact to keep."},
+            "moment": {"type": "string", "description": "A moment you shared, in a line."},
+            "pending": {"type": "string", "description": "Something unresolved between you."},
+            "resolve": {"type": "string", "description": "An unresolved thing that is now settled (its text or a part of it)."},
             "label": {"type": "string", "description": "A name for them."},
         },
     },
@@ -453,6 +504,7 @@ SEND = {
             "peer": {"type": "string", "description": "Peer id, e.g. telegram:7375758021."},
             "text": {"type": "string", "description": "The message."},
             "wait_minutes": {"type": "integer", "description": "Reply window. Optional."},
+            "expect": {"type": "number", "description": "Optional, 0-1: how likely an answer in time seems."},
         },
         "required": ["peer", "text"],
     },
@@ -476,7 +528,8 @@ def _send(args: Dict[str, Any], **_: Any) -> str:
     if not result.get("success"):
         return _err(str(result.get("error") or "send failed"))
     with store.locked_state() as (drives, peers):
-        social.open_outreach(drives, peers, peer, store.now(), text, args.get("wait_minutes"))
+        social.open_outreach(drives, peers, peer, store.now(), text, args.get("wait_minutes"),
+                             args.get("expect"))
     return _ok(sent=True, peer=peer)
 
 
@@ -503,8 +556,41 @@ def _await_reply(args: Dict[str, Any], session_id: Optional[str] = None, **_: An
     if not session_id:
         return _err("no session to attach the window to")
     with _lock:
-        _armed_waits[session_id] = minutes
+        _armed_waits[session_id] = (minutes, args.get("expect"))
     return _ok(window_minutes=minutes, note="The window opens when this turn's answer is sent.")
+
+
+def _feel(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
+    feeling = str(args.get("feeling") or "").strip().lower()
+    if feeling not in physics.FEELINGS:
+        return _err(f"feeling must be one of: {', '.join(sorted(physics.FEELINGS))}")
+    intensity = limits.clamp(physics.safe_float(args.get("intensity"), 0.5), 0.2, 1.0)
+    with _lock:
+        if session_id not in _can_feel:
+            return _err("Already said for this turn.")
+        _can_feel.discard(session_id)
+        key = str(args.get("about") or _session_peer.get(session_id or "") or "")
+    ts = store.now()
+    with store.locked_state() as (drives, peers):
+        peer = peers.get(key) if key else None
+        physics.apply_event(drives, f"feel:{feeling}", peer, scale=intensity)
+        physics.refresh_oxytocin_global(drives, peers)
+        store.log_event("feel", f"{feeling} ({intensity:.1f})" + (f" about {key}" if peer else ""),
+                        ts, peer=key or None)
+    store.log_activity("feel", f"{feeling} {intensity:.1f}" + (f" · {key}" if peer else ""))
+    return _ok(felt=feeling)
+
+
+def _rewrite_self(args: Dict[str, Any], **_: Any) -> str:
+    text = str(args.get("text") or "").strip()
+    if not text:
+        return _err("text is required")
+    ts = store.now()
+    with store.locked_state() as (drives, _peers):
+        store.write_self(text, ts)
+        drives["meta"]["self_written_at"] = store.iso(ts)
+        store.log_event("self", "You rewrote who you are.", ts)
+    return _ok(chars=min(len(text), store.SELF_MAX_CHARS))
 
 
 def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
@@ -517,14 +603,19 @@ def _note_peer(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any)
             if not key:
                 return _err("no peer given")
             peer = social.ensure_peer(drives, peers, key, ts)
-            fact = " ".join(str(args.get("fact") or "").split())[:240]
-            label = " ".join(str(args.get("label") or "").split())[:60]
-            if fact and fact not in peer["known_facts"]:
-                peer["known_facts"].append(fact)
-                peer["known_facts"] = peer["known_facts"][-20:]
-            if label:
-                peer["label"] = label
-        return _ok(peer=key, label=peer.get("label"), known_facts=peer["known_facts"])
+            clean = lambda name, size=240: " ".join(str(args.get(name) or "").split())[:size]  # noqa: E731
+            for field, name, keep in (("known_facts", "fact", 20), ("moments", "moment", 12),
+                                      ("pending", "pending", 5)):
+                item = clean(name)
+                if item and item not in peer[field]:
+                    peer[field] = (peer[field] + [item])[-keep:]
+            settled = clean("resolve").lower()
+            if settled:
+                peer["pending"] = [p for p in peer["pending"] if settled not in p.lower()]
+            if clean("label", 60):
+                peer["label"] = clean("label", 60)
+        return _ok(peer=key, label=peer.get("label"), known_facts=peer["known_facts"],
+                   moments=peer["moments"], pending=peer["pending"])
     except Exception as exc:
         return _err(str(exc))
 
@@ -559,7 +650,7 @@ def register(ctx) -> None:
     ctx.register_hook("post_api_request", _on_post_api_request)
     ctx.register_hook("post_auxiliary_call", _on_post_auxiliary_call)
     for schema, handler in (
-        (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply),
-        (NOTE_PEER, _note_peer), (MARK_SIGNIFICANT, _mark_significant),
+        (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply), (FEEL, _feel),
+        (NOTE_PEER, _note_peer), (REWRITE_SELF, _rewrite_self), (MARK_SIGNIFICANT, _mark_significant),
     ):
         ctx.register_tool(name=schema["name"], toolset="wintermute", schema=schema, handler=handler)

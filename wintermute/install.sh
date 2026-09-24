@@ -86,7 +86,7 @@ echo "==> Pulse script -> $HERMES_HOME/scripts/wintermute_pulse.py"
 # A real copy, not a symlink: Hermes refuses cron scripts that resolve outside scripts/.
 cp "$REPO_DIR/scripts/wintermute_pulse.py" "$HERMES_HOME/scripts/wintermute_pulse.py"
 
-echo "==> Command: wm (wm · wm live · wm alerts · wm ack)"
+echo "==> Command: wm (wm · wm live · wm graph · wm alerts · wm ack)"
 cat > /usr/local/bin/wm <<WM || echo "    could not write /usr/local/bin/wm (not root?)"
 #!/bin/sh
 HERMES_HOME="$HERMES_HOME" exec "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --status "\$@"

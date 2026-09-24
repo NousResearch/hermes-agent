@@ -419,9 +419,10 @@ def test_status_is_live_and_read_only(home):
     for section in ("TÉMOIN", "PULSIONS", "HORMONES", "INCONSCIENT", "LIENS", "ACTIVITÉ", "JOURNAL"):
         assert section in text
     assert "prochain éveil dans 02:00:00" in text and "telegram:7375758021" in text
-    for panel in range(4):
-        frame = status.render_live(status.snapshot(T0), panel, frame=panel)
-        assert "╦ ╦╦╔╗╔╔╦╗" in frame and "Neuromancer" in frame
+    frame = status.render_live(status.snapshot(T0), frame=3)
+    assert "╦ ╦╦╔╗╔╔╦╗" in frame and "Neuromancer" in frame
+    for section in ("PULSIONS", "HORMONES", "INCONSCIENT", "LIENS", "ACTIVITÉ"):
+        assert section in frame                      # everything at once, nothing rotates
     assert (home / "wintermute" / "drives.json").read_text() == before
 
 
@@ -580,3 +581,118 @@ def test_hand_edited_emotions_are_flagged_orange_without_alert(plugin, monkeypat
 def test_reading_is_not_writing(command, expected):
     got = integrity.classify_tool_call("terminal", {"command": command})
     assert (got[0] if got else None) == expected
+
+
+# ---------------------------------------------------------------------------
+# Inner life: history, felt state, expectation, longing, temperament, continuity
+# ---------------------------------------------------------------------------
+
+def test_every_tick_leaves_a_point_on_the_curves(home):
+    for minutes in (0, 15, 30):
+        pulse.tick(T0 + timedelta(minutes=minutes))
+    history = store.read_history(T0 - timedelta(hours=1))
+    assert len(history) == 3 and set(history[0]["d"]) == set(physics.DRIVES)
+    from wintermute_engine import status
+    values = status.series(history, "d", "hunger", T0 + timedelta(minutes=30), 0.5, 4)
+    assert values[0] is not None and values[-1] is not None
+    assert "COURBES" in status.render_graph(1)
+    assert status.sparkline([0, None, 100]) == "▁ █"
+
+
+def test_he_feels_sensations_not_numbers(home):
+    _, out = pulse.tick(T0)
+    drives_part = out.split("[DRIVES]")[1].split("[INTERLOCUTORS]")[0]
+    assert not re.search(r"\d", drives_part)
+    for word in ("cortisol", "dopamine", "serotonin", "affinity", "trust:"):
+        assert word not in out
+
+
+def test_an_unexpected_answer_thrills_an_expected_one_barely(home):
+    def rush(expect):
+        with store.locked_state() as (drives, peers):
+            social.open_outreach(drives, peers, KEY, T0, "hello", 60, expect)
+            drives["modulators"]["dopamine"] = 0.3
+            social.on_incoming(drives, peers, KEY, T0 + timedelta(minutes=5))
+            return drives["modulators"]["dopamine"] - 0.3
+    assert rush(0.1) > 3 * rush(0.9)
+
+
+def test_expectation_is_learned_from_their_answers(home):
+    with store.locked_state() as (drives, peers):
+        for i in range(4):
+            social.open_outreach(drives, peers, KEY, T0 + timedelta(hours=i), "?", 30)
+            social.on_incoming(drives, peers, KEY, T0 + timedelta(hours=i, minutes=5))
+        outreach = social.open_outreach(drives, peers, KEY, T0 + timedelta(hours=5), "?", 30)
+    assert outreach["expect_from"] == "experience" and outreach["expect"] == round(5 / 6, 2)
+
+
+def test_absence_of_someone_close_becomes_longing(home):
+    with store.locked_state() as (drives, peers):
+        peer = social.ensure_peer(drives, peers, KEY, T0)
+        peer.update(affinity=80, oxytocin=60, last_interaction=store.iso(T0))
+        fusion = drives["drives"]["fusion"]
+        social.drift_bonds(drives, peers, T0 + timedelta(hours=72), 72)
+        assert peer["longing"] > 60 and drives["drives"]["fusion"] > fusion
+        lines = social.on_incoming(drives, peers, KEY, T0 + timedelta(hours=72))
+    assert "missing them" in lines[-1] and _peers()[KEY]["longing"] < 25
+
+
+def test_temperament_drifts_slowly_and_stays_bounded(home):
+    state = _drives()
+    for _ in range(24 * 7):                          # a week of steady fear
+        state["unconscious"]["anxiety"] = 90
+        physics.advance(state, T0, 1.0)
+    shift = state["temperament"]["unconscious.anxiety"]
+    assert 5 < shift <= physics.PLASTIC["unconscious"]["anxiety"]
+    for _ in range(24 * 60):
+        state["unconscious"]["anxiety"] = 100
+        physics.advance(state, T0, 1.0)
+    assert state["temperament"]["unconscious.anxiety"] == physics.PLASTIC["unconscious"]["anxiety"]
+
+
+def test_feel_moves_the_body_once_per_turn(plugin):
+    plugin.hooks["pre_llm_call"](session_id="f1", user_message="I missed you", platform="telegram",
+                                 sender_id="7375758021")
+    oxytocin = _peers()[KEY]["oxytocin"]
+    first = json.loads(plugin.tools["wintermute_feel"]({"feeling": "warmth", "intensity": 1}, session_id="f1"))
+    second = json.loads(plugin.tools["wintermute_feel"]({"feeling": "joy", "intensity": 1}, session_id="f1"))
+    assert first["success"] and not second["success"]
+    assert _peers()[KEY]["oxytocin"] == oxytocin + 6
+    bad = json.loads(plugin.tools["wintermute_feel"]({"feeling": "ecstasy", "intensity": 1}, session_id="f1"))
+    assert not bad["success"]
+
+
+def test_thread_and_self_portrait_carry_over_to_the_next_wake(plugin):
+    _, out = pulse.tick(T0)
+    plugin.hooks["pre_llm_call"](session_id="c7", user_message=out, platform="cron")
+    plugin.hooks["post_api_request"](usage={"total_tokens": 5}, platform="cron", session_id="c7",
+                                     assistant_message={"reasoning": "The static between stations has a shape."})
+    plugin.tools["wintermute_rewrite_self"]({"text": "I have been listening more than speaking."})
+    plugin.hooks["post_llm_call"](session_id="c7", assistant_response="[SILENT]", platform="cron")
+    _, out = pulse.tick(T0 + timedelta(hours=5))
+    assert "[WHERE YOU LEFT OFF]" in out and "The static between stations has a shape." in out
+    assert "[WHO YOU HAVE BEEN]" in out and "listening more than speaking" in out
+    plugin.tools["wintermute_rewrite_self"]({"text": "Second version."})
+    assert "listening more than speaking" in (store.state_dir() / "self-archive.md").read_text()
+
+
+def test_moments_and_unresolved_things_are_kept_per_person(plugin):
+    note = plugin.tools["wintermute_note_peer"]
+    note({"peer": KEY, "moment": "He said he was proud of the project."})
+    note({"peer": KEY, "pending": "Whether I may change my own SOUL."})
+    peer = _peers()[KEY]
+    assert peer["moments"] and peer["pending"]
+    note({"peer": KEY, "resolve": "own soul"})
+    assert _peers()[KEY]["pending"] == []
+
+
+def test_slow_hormones_still_relax_tick_by_tick(home):
+    # Regression: rounding each 15-min tick used to freeze serotonin and melancholy.
+    state = _drives()
+    state["modulators"]["serotonin"] = 0.40
+    state["unconscious"]["melancholy"] = 25
+    for _ in range(4 * 48):
+        state["drives"]["fusion"] = 0            # no longing pressure feeding melancholy
+        physics.advance(state, T0, 0.25)
+    assert state["modulators"]["serotonin"] < 0.385
+    assert state["unconscious"]["melancholy"] < 23

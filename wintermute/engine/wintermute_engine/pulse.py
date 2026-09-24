@@ -77,6 +77,18 @@ def _update_budget(meta: Dict[str, Any], ts: datetime) -> int:
     return used
 
 
+def _history_record(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime) -> Dict[str, Any]:
+    """One point of every curve ``wm`` draws (effective drives: what he actually feels)."""
+    return {
+        "ts": store.iso(ts),
+        "d": physics.effective_drives(drives),
+        "m": {k: round(physics.safe_float(v), 3) for k, v in drives["modulators"].items()},
+        "u": {k: round(physics.safe_float(v), 1) for k, v in drives["unconscious"].items()},
+        "p": {k: {"bond": round(social.disposition(drives, p)), "longing": p.get("longing", 0)}
+              for k, p in peers.items()},
+    }
+
+
 def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool, str]:
     """Run one tick. Returns ``(woke, stdout_text)``.
 
@@ -86,8 +98,11 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
         meta = drives["meta"]
 
         last_tick = store.parse_time(meta.get("last_tick")) or store.parse_time(meta.get("last_pulse"))
-        physics.advance(drives, ts, store.hours_between(last_tick, ts) if last_tick else 0.0)
+        dt_h = store.hours_between(last_tick, ts) if last_tick else 0.0
+        physics.advance(drives, ts, dt_h)
+        social.drift_bonds(drives, peers, ts, dt_h)
         meta["last_tick"] = store.iso(ts)
+        store.append_history(_history_record(drives, peers, ts))
 
         used = _update_budget(meta, ts)
         social.expire_outreach(drives, peers, ts)
@@ -153,8 +168,13 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
 
         lines: List[str] = [PULSE_MARKER]
         lines += render.header(drives, ts, extra="Woke because: " + "; ".join(reasons))
-        lines += [""] + render.drives_block(drives)
-        lines += [""] + render.modulators_block(drives)
+        for block in (render.self_block(drives, ts), render.thread_block(drives, ts)):
+            if block:
+                lines += [""] + block
+        lines += ["", "[DRIVES]"] + render.felt_drives(drives)
+        body = render.felt_body(drives)
+        if body:
+            lines += ["", "[BODY]"] + body
         lines += [""] + render.interlocutors_block(drives, peers, ts)
         block = render.events_block(events)
         if block:

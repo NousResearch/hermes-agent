@@ -71,6 +71,14 @@ def activity_path() -> Path:
     return state_dir() / "activity.jsonl"
 
 
+def history_path() -> Path:
+    return state_dir() / "history.jsonl"
+
+
+def self_path() -> Path:
+    return state_dir() / "self.md"
+
+
 # ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
@@ -128,7 +136,11 @@ DEFAULT_DRIVES: Dict[str, Any] = {
         "pulse_count": 0,
         "last_significant_at": None,
         "pulse_target": "telegram:7375758021",
+        "thread": None,
+        "self_written_at": None,
     },
+    # Slow drift of his resting levels with lived experience (see physics.PLASTIC).
+    "temperament": {},
 }
 
 DEFAULT_PEER: Dict[str, Any] = {
@@ -147,6 +159,11 @@ DEFAULT_PEER: Dict[str, Any] = {
     "messages_to_them": 0,
     "ignored_count": 0,
     "known_facts": [],
+    "moments": [],          # shared moments he chose to keep
+    "pending": [],          # things left unresolved between them
+    "longing": 0,           # missing this one person; grows with absence, by the strength of the bond
+    "outreach_total": 0,    # how often he reached out...
+    "outreach_answered": 0, # ...and how often they answered in time: what he comes to expect
     "outreach": None,
 }
 
@@ -170,17 +187,21 @@ def new_peer(ts: datetime) -> Dict[str, Any]:
     return peer
 
 
-_PEER_NUMBERS = ("affinity", "trust", "disappointment", "curiosity", "oxytocin")
+_PEER_NUMBERS = ("affinity", "trust", "disappointment", "curiosity", "oxytocin", "longing")
+_PEER_COUNTS = ("no_response_streak", "outreach_total", "outreach_answered")
+_PEER_LISTS = ("known_facts", "moments", "pending")
 
 
 def normalize_peer(peer: Any) -> Dict[str, Any]:
     from .physics import safe_float
     merged = _merge_defaults(peer, DEFAULT_PEER)
-    if not isinstance(merged.get("known_facts"), list):
-        merged["known_facts"] = []
+    for name in _PEER_LISTS:
+        if not isinstance(merged.get(name), list):
+            merged[name] = []
     for name in _PEER_NUMBERS:
-        merged[name] = round(limits.clamp(safe_float(merged.get(name), DEFAULT_PEER[name]), 0, 100), 1)
-    merged["no_response_streak"] = max(0, int(safe_float(merged.get("no_response_streak"))))
+        merged[name] = round(limits.clamp(safe_float(merged.get(name), DEFAULT_PEER[name]), 0, 100), 3)
+    for name in _PEER_COUNTS:
+        merged[name] = max(0, int(safe_float(merged.get(name))))
     if merged.get("outreach") is not None and not isinstance(merged["outreach"], dict):
         merged["outreach"] = None
     return merged
@@ -336,6 +357,65 @@ def events_since(since: Optional[datetime], limit: int = 12) -> List[Dict[str, A
         if since is None or (ts is not None and ts > since):
             out.append(record)
     return out[-limit:]
+
+
+# ---------------------------------------------------------------------------
+# History: one snapshot of the whole state per pulse tick, for the curves in ``wm``.
+# ---------------------------------------------------------------------------
+
+def append_history(record: Dict[str, Any]) -> None:
+    if _dry_run:
+        return
+    path = history_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        if path.exists() and path.stat().st_size > 2 * EVENTS_MAX_BYTES:
+            os.replace(path, path.with_suffix(".jsonl.1"))
+    with contextlib.suppress(OSError), open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def read_history(since: datetime) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for path in _with_rotated(history_path()):
+        with contextlib.suppress(OSError), open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                ts = parse_time(record.get("ts"))
+                if ts is not None and ts >= since:
+                    record["_ts"] = ts
+                    out.append(record)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Who he has been: a short text he rewrites himself (autobiography, not a log).
+# Older versions are kept in self-archive.md, oldest first.
+# ---------------------------------------------------------------------------
+
+SELF_MAX_CHARS = 1200  # read with every message: kept short on purpose
+
+
+def read_self() -> str:
+    try:
+        return self_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def write_self(text: str, ts: datetime) -> None:
+    previous = read_self()
+    if previous:
+        with open(state_dir() / "self-archive.md", "a", encoding="utf-8") as fh:
+            fh.write(f"\n## until {iso(ts)}\n\n{previous}\n")
+    path = self_path()
+    fd, tmp = tempfile.mkstemp(prefix=".self.", dir=str(path.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text.strip()[:SELF_MAX_CHARS] + "\n")
+    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------

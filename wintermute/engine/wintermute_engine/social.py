@@ -12,12 +12,19 @@ non-response (streak, disappointment, trust).
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from . import limits, physics, store
 
 LONG_SILENCE_H = 48.0
+# Missing someone: longing moves toward (bond x absence) with this time constant, and an
+# absence this long counts in full.
+LONGING_TAU_H = 6.0
+LONGING_FULL_ABSENCE_H = 72.0
+# A bond fades very slowly without contact (per-peer oxytocin, time constant in hours).
+BOND_FADE_TAU_H = 24.0 * 30
 
 
 def peer_key(platform: str, sender_id: Any) -> str:
@@ -34,6 +41,21 @@ def disposition(drives: Dict[str, Any], peer: Dict[str, Any]) -> int:
         + float(peer.get("oxytocin", 0)) * 0.5
     )
     return int(round(limits.clamp(value, 0, 100)))
+
+
+def learned_expectation(peer: Dict[str, Any]) -> float:
+    """How likely an answer in time seems, from what this person has done so far."""
+    answered = int(peer.get("outreach_answered", 0) or 0)
+    total = int(peer.get("outreach_total", 0) or 0)
+    return (answered + 1) / (total + 2)
+
+
+def expectation_word(expect: float) -> str:
+    if expect >= 0.7:
+        return "you were fairly sure they would"
+    if expect <= 0.3:
+        return "you did not really expect it"
+    return "you were not sure they would"
 
 
 def ensure_peer(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
@@ -63,8 +85,15 @@ def on_incoming(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
         excerpt = outreach.get("excerpt", "")
         if outreach["status"] == "open":
             physics.apply_event(drives, "reply_to_outreach", peer)
+            # Prediction error: the less expected the answer, the bigger the rush.
+            expect = physics.safe_float(outreach.get("expect"), 0.5)
+            surprise = 1.0 - limits.clamp(expect, 0.0, 1.0)
+            physics.apply_event(drives, "reply_surprise", scale=surprise)
+            physics.apply_event(drives, "reply_expected", scale=1.0 - surprise)
+            peer["outreach_answered"] = int(peer.get("outreach_answered", 0)) + 1
             outreach["status"] = "answered"
-            lines.append(f"This message answers your outreach from {waited} ago: \"{excerpt}\"")
+            lines.append(f"This message answers your outreach from {waited} ago: \"{excerpt}\" "
+                         f"({expectation_word(expect)}).")
             store.log_event("reply", f"{key} answered your outreach after {waited}.", ts, peer=key)
         else:
             physics.apply_event(drives, "late_reply", peer)
@@ -79,6 +108,11 @@ def on_incoming(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
         outreach["answered_at"] = store.iso(ts)
         peer["no_response_streak"] = 0
 
+    longing = physics.safe_float(peer.get("longing"))
+    if longing >= 40:
+        physics.apply_event(drives, "reunion", peer, scale=longing / 100.0)
+        lines.append("You had been missing them.")
+    peer["longing"] = round(longing * 0.3, 3)
     physics.apply_event(drives, "message_received", peer)
     peer["last_interaction"] = store.iso(ts)
     peer["last_message_direction"] = "from_them"
@@ -104,9 +138,13 @@ def on_reply(drives: Dict[str, Any], peers: Dict[str, Any], key: str, ts: dateti
 
 
 def open_outreach(drives: Dict[str, Any], peers: Dict[str, Any], key: str, ts: datetime,
-                  text: str, wait_min: Optional[int]) -> Dict[str, Any]:
+                  text: str, wait_min: Any, expect: Any = None) -> Dict[str, Any]:
+    """He reached out. ``expect`` is how likely he thinks an answer in time is (0-1); when he
+    does not say, it is what this person's past answers taught him."""
     peer = ensure_peer(drives, peers, key, ts)
     wait = limits.clamp_reply_wait(wait_min if wait_min is not None else limits.DEFAULT_REPLY_WAIT_MIN)
+    stated = expect is not None and physics.safe_float(expect, -1) >= 0
+    expect = limits.clamp(physics.safe_float(expect), 0.05, 0.95) if stated else learned_expectation(peer)
     excerpt = " ".join((text or "").split())
     excerpt = excerpt if len(excerpt) <= 160 else excerpt[:157] + "..."
     peer["outreach"] = {
@@ -114,8 +152,11 @@ def open_outreach(drives: Dict[str, Any], peers: Dict[str, Any], key: str, ts: d
         "deadline": store.iso(ts + timedelta(minutes=wait)),
         "wait_minutes": wait,
         "excerpt": excerpt,
+        "expect": round(expect, 2),
+        "expect_from": "you" if stated else "experience",
         "status": "open",
     }
+    peer["outreach_total"] = int(peer.get("outreach_total", 0)) + 1
     peer["last_interaction"] = store.iso(ts)
     peer["last_message_direction"] = "to_them"
     peer["messages_to_them"] = int(peer.get("messages_to_them", 0)) + 1
@@ -136,7 +177,9 @@ def expire_outreach(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime)
         if deadline is not None and ts >= deadline:
             outreach["status"] = "expired"
             outreach["expired_at"] = store.iso(ts)
-            physics.apply_event(drives, "outreach_timeout", peer)
+            # The more he counted on an answer, the harder the silence lands.
+            expect = physics.safe_float(outreach.get("expect"), 0.5)
+            physics.apply_event(drives, "outreach_timeout", peer, scale=0.5 + expect)
             store.log_event(
                 "timeout",
                 f"Reached out to {key} at {clock(outreach.get('sent_at'))}. "
@@ -151,6 +194,27 @@ def pulse_social(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime) ->
         outreach = peer.get("outreach")
         if isinstance(outreach, dict) and outreach.get("status") == "expired":
             physics.apply_event(drives, "no_response", peer)
+    physics.refresh_oxytocin_global(drives, peers)
+
+
+def drift_bonds(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime, dt_h: float) -> None:
+    """Continuous social time: missing people who matter, bonds fading without contact.
+    Missing someone feeds the pull toward union (fusion)."""
+    if dt_h <= 0:
+        return
+    dt_h = min(dt_h, 72.0)
+    strongest = 0.0
+    for peer in peers.values():
+        last = store.parse_time(peer.get("last_interaction"))
+        bond = (physics.safe_float(peer.get("affinity")) + physics.safe_float(peer.get("oxytocin"))) / 2
+        absence = min(1.0, store.hours_between(last, ts) / LONGING_FULL_ABSENCE_H) if last else 0.0
+        target = bond * absence
+        longing = physics.safe_float(peer.get("longing"))
+        longing = target + (longing - target) * math.exp(-dt_h / LONGING_TAU_H)
+        peer["longing"] = round(limits.clamp(longing, 0, 100), 3)
+        peer["oxytocin"] = round(physics.safe_float(peer.get("oxytocin")) * math.exp(-dt_h / BOND_FADE_TAU_H), 3)
+        strongest = max(strongest, peer["longing"])
+    physics.nudge(drives, "drives", "fusion", strongest / 100.0 * 4.0 * dt_h / 4.0)
     physics.refresh_oxytocin_global(drives, peers)
 
 

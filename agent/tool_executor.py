@@ -842,17 +842,17 @@ def _run_agent_tool_execution_middleware(
     from agent.terminal_approval_batch import bind_prepared_dispatch
     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
 
-    relay_request_block: dict[str, Any] = {}
+    relay_execution_block: dict[str, Any] = {}
 
-    def _relay_request_guard(_name: str, effective_args: dict[str, Any]) -> None:
+    def _relay_execution_guard(_name: str, effective_args: dict[str, Any]) -> None:
         block = _pruned_tool_arguments_block(function_name, effective_args)
         if block is None:
             return
-        relay_request_block["args"] = effective_args
-        relay_request_block["payload"] = block
-        # Relay request-intercept failures reject managed execution before execution
-        # intercepts. The side channel above preserves the structured Hermes refusal
-        # even if the native boundary wraps this exception.
+        relay_execution_block["args"] = effective_args
+        relay_execution_block["payload"] = block
+        # The scope-local guard runs first in Relay's execution-intercept family,
+        # after request rewrites but before any configured execution interceptor.
+        # The side channel preserves Hermes's structured refusal across native wrapping.
         raise RuntimeError(_PRUNED_TOOL_ARGUMENTS_ERROR)
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
@@ -892,10 +892,10 @@ def _run_agent_tool_execution_middleware(
                 "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
                 "tool_call_id": tool_call_id or "",
             },
-            request_guard=_relay_request_guard,
+            execution_guard=_relay_execution_guard,
         )
     except BaseException:
-        blocked_args = relay_request_block.get("args")
+        blocked_args = relay_execution_block.get("args")
         if isinstance(blocked_args, dict):
             state.result = _block_pruned(blocked_args)
             return state

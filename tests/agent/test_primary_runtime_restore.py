@@ -867,3 +867,26 @@ class TestSwitchModelRequestOverridesSnapshot:
             result = agent._restore_primary_runtime()
         assert result is True
         assert agent.request_overrides == overrides
+
+    def test_switch_to_custom_restores_route_scoped_fast_overrides(self):
+        agent = _make_agent()
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent.request_overrides = {"speed": "fast", "temperature": 0.2}
+        agent.service_tier = "priority"
+
+        self._switch(
+            agent, new_model="local-model", new_provider="custom",
+            base_url="https://my-llm.example.com/v1",
+        )
+        assert agent.request_overrides == {"temperature": 0.2}
+        assert agent._primary_runtime["request_overrides"] == agent.request_overrides
+
+        agent._fallback_activated = True
+        agent.request_overrides = {"service_tier": "priority"}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime()
+        assert agent.request_overrides == {"temperature": 0.2}
+
+        self._switch(agent, new_model="gpt-5.4", new_provider="openai")
+        assert agent.request_overrides == {"temperature": 0.2, "service_tier": "priority"}

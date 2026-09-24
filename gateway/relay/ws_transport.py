@@ -226,15 +226,35 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         text, msg_type = _normalize_slack_parent_command(text, msg_type)
 
     reply_to = raw.get("reply_to") or {}
+    if not isinstance(reply_to, dict):
+        reply_to = {}
+    reply_author = reply_to.get("author")
+    if isinstance(reply_author, dict):
+        reply_author_id = reply_author.get("id")
+        reply_author_name = reply_author.get("name")
+    else:
+        # Older connectors used a display-name string for author.
+        reply_author_id = None
+        reply_author_name = reply_author
+    reply_attachments = reply_to.get("attachments")
+    if not isinstance(reply_attachments, list):
+        reply_attachments = []
     prompt_response = raw.get("prompt_response")
     return MessageEvent(
         text=text,
         message_type=msg_type,
         source=source,
         message_id=raw.get("message_id"),
-        reply_to_message_id=raw.get("reply_to_message_id"),
+        reply_to_message_id=reply_to.get("message_id") or raw.get("reply_to_message_id"),
         reply_to_text=reply_to.get("text"),
-        reply_to_author_name=reply_to.get("author"),
+        reply_to_channel_id=reply_to.get("channel_id"),
+        reply_to_origin_channel_id=reply_to.get("origin_channel_id"),
+        reply_to_author_id=reply_author_id,
+        reply_to_author_name=reply_author_name,
+        reply_to_attachments=[
+            {str(key): str(value) for key, value in attachment.items() if value is not None}
+            for attachment in reply_attachments if isinstance(attachment, dict)
+        ],
         reply_to_is_own_message=bool(reply_to.get("is_own", False)),
         media_urls=raw.get("media_urls") or [],
         # Parallel to media_urls; run.py's per-attachment classifiers consult

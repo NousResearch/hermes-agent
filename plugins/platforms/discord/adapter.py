@@ -6037,7 +6037,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         resolved_reference = getattr(reference, "resolved", None) if reference else None
         if resolved_reference is not None:
             referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
+            for snapshot in getattr(resolved_reference, "message_snapshots", []) or []:
+                referenced_attachments.extend(getattr(snapshot, "attachments", []) or [])
+        # A referenced message's media is reply context, not a new attachment on
+        # this inbound turn. Keeping the lists separate prevents vision/document
+        # handling from presenting it as if the replier uploaded it.
+        all_attachments = list(message.attachments) + snapshot_attachments
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif all_attachments:
@@ -6080,6 +6085,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
+        reply_media_urls, reply_media_types, _, _ = await self._collect_attachment_media(referenced_attachments)
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
@@ -6119,15 +6125,61 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
         reply_to_id = None
         reply_to_text = None
+        reply_to_channel_id = None
+        reply_to_origin_channel_id = None
+        reply_to_author_id = None
+        reply_to_author_name = None
+        reply_to_attachments = []
         if message.reference:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                referenced = message.reference.resolved
+                reply_to_text = getattr(referenced, "content", None) or None
+                reply_to_channel_id = str(
+                    getattr(getattr(referenced, "channel", None), "id", None)
+                    or getattr(message.reference, "channel_id", None) or ""
+                ) or None
+                reply_to_author_id = str(getattr(getattr(referenced, "author", None), "id", None) or "") or None
+                reply_to_author_name = (
+                    getattr(getattr(referenced, "author", None), "display_name", None)
+                    or getattr(getattr(referenced, "author", None), "name", None)
+                )
+                # Forward provenance belongs to the selected reference target. A
+                # reply itself can have snapshots too, but those must not overwrite
+                # the origin of the message the user asked Hermes to inspect.
+                snapshots = (
+                    getattr(referenced, "message_snapshots", None)
+                    or getattr(message, "message_snapshots", [])
+                    or []
+                )
+                for snapshot in snapshots:
+                    origin_id = getattr(snapshot, "origin_channel_id", None) or getattr(snapshot, "channel_id", None)
+                    if origin_id is not None:
+                        reply_to_origin_channel_id = str(origin_id)
+                        break
+                for index, attachment in enumerate(referenced_attachments):
+                    if index >= len(reply_media_urls):
+                        break
+                    reply_to_attachments.append({
+                        "id": str(getattr(attachment, "id", "") or ""),
+                        "filename": str(getattr(attachment, "filename", "") or ""),
+                        "content_type": str(reply_media_types[index] or getattr(attachment, "content_type", "") or ""),
+                        "url": str(reply_media_urls[index]),
+                    })
+        bot_user = getattr(getattr(self, "_client", None), "user", None)
+        reply_to_is_own_message = bool(
+            reply_to_author_id and getattr(bot_user, "id", None) is not None
+            and str(bot_user.id) == reply_to_author_id
+        )
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_channel_id=reply_to_channel_id, reply_to_origin_channel_id=reply_to_origin_channel_id,
+            reply_to_author_id=reply_to_author_id, reply_to_author_name=reply_to_author_name,
+            reply_to_attachments=reply_to_attachments,
+            reply_to_is_own_message=reply_to_is_own_message,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )

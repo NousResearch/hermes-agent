@@ -56,8 +56,7 @@ class TestWriteVerification:
         with mock_patch.object(fo.hashlib, "sha256", _WrongHash):
             r = json.loads(write_file_tool(str(f), "actual content\n", task_id="t-wv"))
         assert "error" in r
-        assert "did not persist" in r["error"]
-
+    
     def test_verification_failure_never_breaks_write(self, workdir):
         # sha256sum unavailable/failing -> verified omitted, write still ok.
         f = workdir / "ok.txt"

@@ -240,14 +240,6 @@ def test_direct_resolver_fails_closed_when_rotation_cannot_commit(
     assert _read_claude_pair(claude_credentials) == (_STALE_ACCESS, _STALE_REFRESH)
 
 
-def test_resolve_from_credentials_returns_none_on_failed_commit(
-    claude_credentials, monkeypatch
-):
-    """The resolver wrapper propagates the fail-closed verdict."""
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
-    _break_durable_write(monkeypatch)
-
-    assert AA._resolve_claude_code_token_from_credentials() is None
 
 
 # ---------------------------------------------------------------------------

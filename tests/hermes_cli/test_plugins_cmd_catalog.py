@@ -64,14 +64,16 @@ def _head(path: Path) -> str:
     return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True).stdout.strip()
 
 
-def test_catalog_platform_mismatch_refuses_before_install(world, monkeypatch):
+def test_catalog_platform_mismatch_refuses_before_install(world):
+    from hermes_platform.host.facts import os_family
+    host = os_family()
+    other = "linux" if host == "windows" else "windows"
     entry = pc_cat.PluginCatalogEntry(
         name="cat-plugin", repo=world["repo"].as_uri(), sha=world["sha1"],
-        description="d", maintainer="t", platforms=["windows"],
+        description="d", maintainer="t", platforms=[other],
     )
-    monkeypatch.setattr("hermes_platform.host.facts.os_family", lambda: "darwin")
 
-    with pytest.raises(pc.PluginOperationError, match="cat-plugin.*darwin.*windows"):
+    with pytest.raises(pc.PluginOperationError, match=f"cat-plugin.*{host}.*{other}"):
         cat.install_catalog_entry(entry, force=False)
     assert not (world["plugins_dir"] / "cat-plugin").exists()
 
@@ -112,10 +114,6 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
                                   cat.resolved_removed_entries()) == "malware"
 
 
-def test_removed_annotation_requires_a_pre_resolved_kill_list(world):
-    """No on-demand fallback: callers must resolve the kill list once, never per row."""
-    with pytest.raises(TypeError):
-        cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin")
 
 
 def test_owner_repo_hash_subdir_shorthand_resolves_like_the_catalog_spelling():

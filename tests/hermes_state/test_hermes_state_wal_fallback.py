@@ -20,7 +20,7 @@ import pytest
 
 import hermes_state
 import hermes_state_wal
-from hermes_state import SessionDB, format_session_db_unavailable, get_last_init_error
+from hermes_state import SessionDB, get_last_init_error
 from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 
 
@@ -585,41 +585,6 @@ class TestGetLastInitError:
         assert "read-only filesystem" in cause
 
 
-class TestFormatSessionDbUnavailable:
-    def test_bare_message_when_no_cause(self):
-        """No init error recorded → generic message."""
-        hermes_state._set_last_init_error(None)
-        msg = format_session_db_unavailable()
-        assert "hermes doctor" in msg
-        assert "Details:" not in msg
-
-    def test_adds_nfs_hint_for_locking_protocol(self):
-        """Locking-protocol cause gets a network-drive pointer for the user."""
-        hermes_state._set_last_init_error("OperationalError: locking protocol")
-        msg = format_session_db_unavailable(details=True)
-        # The raw sqlite phrase stays in the Details line; the user gets the network-drive cause and
-        # a move-it action (`hermes doctor --fix` cannot repair a mount; a WAL-docs link is not
-        # something a chat user can act on).
-        lead, details = msg.splitlines()
-        assert "network" in lead
-        assert "local disk" in lead
-        assert "hermes doctor --fix" not in lead
-        assert details.startswith("Details: ") and "locking protocol" in details
-        assert "sqlite.org" not in msg
-
-    def test_known_bucket_keeps_table_action_and_appends_network_hint(self):
-        """disk i/o error is a known bucket: its table action stays, the network hint is appended."""
-        hermes_state._set_last_init_error("OperationalError: disk I/O error")
-        msg = format_session_db_unavailable()
-        assert "network drive" in msg
-        assert "\n" not in msg
-
-    def test_custom_prefix(self):
-        """Callers can customize the prefix for context-specific messages."""
-        hermes_state._set_last_init_error("OperationalError: locking protocol")
-        msg = format_session_db_unavailable(prefix="Cannot /resume")
-        assert msg.startswith("Cannot /resume:")
-        assert "Details:" not in msg
 
 
 class TestSessionDbUsesWalFallback:

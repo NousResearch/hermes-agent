@@ -74,7 +74,13 @@ and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
 one executable token with a separate argument list, never through a shell.
 Use `skills_list` to discover the full qualified skill name. Portable skill
 namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
-from the discovered plugin key so sanitized names cannot collide.
+from the discovered plugin key so sanitized names cannot collide. A portable
+package's MCP servers keep the names their `mcp.json` gives them, the same rule
+as a user's own `mcp_servers` block, so the model-facing `mcp__<server>__<tool>`
+name keeps the tool verb inside the 64-character provider cap. A duplicate server
+name is a load-time conflict: a `config.yaml` server wins over a package, and the
+first-loaded package wins over the next; the loser is skipped with a warning
+naming both.
 
 Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
 locations, `mcp.json`, resolved paths, and symlink containment locally. It does
@@ -371,6 +377,34 @@ When both exist the `pyproject.toml` wins. What Hermes does with them:
 
 `HERMES_HOME/plugins/` survives `hermes update` and Desktop updates: the updater only rebuilds the
 venv and the checkout, never the home directory.
+
+### Dependency security policy
+
+Hermes quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
+keeps a freshly published release of any package Hermes itself depends on out of `hermes update`
+and the built-in lazy installs for two weeks, so a hijacked upload is caught upstream before it
+reaches users. **That quarantine does not apply to your plugin's dependencies.** Plugin installs
+run outside Hermes's project policy (`uv pip install --no-config`, still under the core constraints
+file above), so a plugin can floor on a release published yesterday and install today — and the
+plugin's author, not Hermes, is responsible for what that pulls in.
+
+Set your own policy and hold yourself to it. Strongly recommended:
+
+- **Upper bounds on every dependency** — `>=floor,<next_major` for stable packages,
+  `>=0.29,<0.32` for pre-1.0 ones. A bare `>=X.Y` adopts every future release unreviewed.
+- **Floor on the oldest API-compatible version**, not the release of the week. A floor on a
+  fresh wheel forces every installer onto it the day it appears; `>=old,!=broken,<next` keeps the
+  wide range and skips the one bad release.
+- **Adopt a new-release quarantine of your own** — wait ~14 days before floors move to a new
+  release, and resolve with `uv --exclude-newer "14 days"` (or `UV_EXCLUDE_NEWER`) in your own CI so
+  the lock you test is the one users get. Operators who want the same guard on plugin installs
+  can set `UV_EXCLUDE_NEWER` in Hermes's environment; it applies to every install Hermes runs.
+- **Pin your lock, review your bumps.** Treat a dependency bump as a code change: read the
+  upstream diff, then re-pin.
+
+The plugin catalog review reads your dependency list at the pinned SHA (`plugin.yaml` or
+`pyproject.toml`) and flags bare floors and missing bounds; an entry is not held for a floor that
+is merely recent.
 
 ## Step 3: Write the tool schemas
 
@@ -1452,6 +1486,36 @@ def register(ctx):
 
     ctx.register_platform_handler("discord", _wire)
 ```
+
+### Mid-run plugin loading: what activates now vs next session
+
+A plugin can load while the gateway (or the TUI/Desktop server) is already running: `hermes plugins
+install`/`enable`, a Desktop or dashboard install, a catalog re-pin, or a tool-triggered force
+re-discovery. Every one of those paths runs a **real forced rescan** (`discover_plugins(force=True)`) and
+`PluginManager.on_plugin_loaded(callback)` fires from inside it with one summary per **newly** loaded plugin
+(`hermes_cli/plugins_activation.py`):
+
+```python
+{"name": "late-mcp", "key": "late-mcp",
+ "activated_now": {"gateway_commands": ["late"], "callbacks": ["telegram"]},
+ "deferred": {"tools": ["late_tool"], "prompt": ["late.section"], "mcp_servers": ["worker"]}}
+```
+
+- **Active immediately** — gateway slash commands, gateway transform hooks / other hooks, and platform
+  callbacks: the gateway runner subscribes at boot and calls every live adapter's idempotent
+  `rewire_plugin_handlers()`, so a `register_platform_handler` factory (or Slack action handler) registered
+  by a late plugin is wired without a restart. Re-wiring is deduped per native client by `(plugin, factory
+  qualname)`; on Telegram the late handlers are hoisted ahead of core's catch-all `filters.COMMAND` /
+  `CallbackQueryHandler` (PTB dispatches the first match per group), exactly as they would sit at connect.
+- **Deferred** — `tools` and `prompt` sections apply from the **next session** (the running session's
+  prompt/tool schema is cache-stable, same rule as `/skills install`); `mcp_servers` (the plugin's
+  `mcp.json` servers, by their mcp.json names) connect on `mcp.reload` or the next session.
+- There is no un-wire: disabling a plugin mid-run keeps its already-wired handlers until the gateway
+  restarts, and the surfaces say so.
+
+Install surfaces report exactly this split: `hermes plugins install/enable` prints it after nudging the running
+gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
+`gateway_reloaded` (`restart_required` is true only when no gateway answered).
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

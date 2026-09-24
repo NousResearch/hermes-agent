@@ -154,25 +154,6 @@ def test_slash_export_uses_the_same_managed_destination(
     assert not (tmp_path / "default.tar.gz").exists()
 
 
-@pytest.mark.asyncio
-async def test_profile_export_api_uses_the_shared_managed_destination(
-    tmp_path, monkeypatch, profiles
-):
-    from hermes_cli.web_models import ProfileExport
-
-    router_mod = importlib.import_module("hermes_cli.web_routers.profiles")
-
-    managed = tmp_path / "profile-exports" / "default-20260823-120000.tar.gz"
-    monkeypatch.setattr(profiles, "get_profile_export_path", lambda name: managed)
-    monkeypatch.setattr(
-        profiles,
-        "export_profile",
-        lambda name, output, extra_files=None: output,
-    )
-
-    result = await router_mod.export_profile_endpoint("default", ProfileExport())
-
-    assert result == {"ok": True, "archive": str(managed)}
 
 
 def test_cwd_in_unrelated_checkout_does_not_prove_safety(

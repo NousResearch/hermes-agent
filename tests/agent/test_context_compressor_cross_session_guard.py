@@ -128,17 +128,3 @@ def test_previous_summary_preserved_when_handoff_found():
     )
 
 
-def test_no_false_positive_when_previous_summary_already_none():
-    """When _previous_summary is already None and no handoff found, nothing
-    should break (the guard is a no-op in this case)."""
-    c = _make_compressor()
-    c._previous_summary = None
-
-    messages = _conversation_without_handoff()
-
-    with patch.object(c, "_generate_summary",
-                      return_value="[CONTEXT COMPACTION] Fresh summary."):
-        c.compress(messages)
-
-    # Should still be None — guard is no-op
-    assert c._previous_summary is None

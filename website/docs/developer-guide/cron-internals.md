@@ -333,7 +333,7 @@ Windows continues to use `taskkill /F /T`.
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
 
-- **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain.
+- **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain. **Unpinned jobs only:** `_job_fallback_chain()` returns no chain for a job carrying its own `provider`, `model` or `base_url`, and the same answer feeds the credential-resolution walk in `_resolve_job_runtime()`, the pre-dispatch key check, and the mid-run ladder, so a pinned job never lands on a global chain entry (#100437). It shares `hermes_cli.fallback_config.scoped_fallback_chain()` with pinned delegation children.
 - **Credential pool** — loads via `load_pool(provider)` from `agent.credential_pool` using the resolved runtime provider name. Only passed when the pool has credentials (`pool.has_credentials()`). Enables same-provider key rotation on 429/rate-limit errors.
 
 This mirrors the gateway's behavior — without it, cron agents would fail on rate limits without attempting recovery.

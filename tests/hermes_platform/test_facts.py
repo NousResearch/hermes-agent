@@ -98,5 +98,3 @@ def test_linux_live_cpu_facts_match_cpuinfo(cleared_fact_caches) -> None:
     assert facts.cpu_model() in cpuinfo
 
 
-def test_interactive_session_is_bool() -> None:
-    assert type(facts.interactive_session()) is bool

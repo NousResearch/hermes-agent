@@ -806,22 +806,35 @@ class MemoryManager:
         """Mirror a built-in memory tool call to external providers.
 
         Gates on a committed write, expands single-op and batched ``operations`` shapes, keeps only
-        mutating actions, and forwards ``old_text`` plus provenance from ``build_metadata`` (the loop
-        knows session/task/tool-call identity; we do not).
+        mutating actions, and forwards ``old_text`` plus provenance from ``build_metadata``.
+        ``previous_content`` comes only from the committed store result, never the search
+        argument: a partial provider registry cannot safely resolve that argument itself.
         """
         if not self._memory_tool_result_succeeded(tool_result):
             return
+        result = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
         target = str(tool_args.get("target") or "memory")
         operations = tool_args.get("operations")
-        for op in operations if isinstance(operations, list) and operations else [tool_args]:
+        batched = isinstance(operations, list) and bool(operations)
+        for index, op in enumerate(operations if batched else [tool_args], start=1):
             action = str(op.get("action") or "") if isinstance(op, dict) else ""
             if action not in self._MIRRORED_MEMORY_ACTIONS:
                 continue
             try:
                 metadata = dict(build_metadata() if build_metadata else {})
+                metadata.pop("previous_content", None)
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
+                field = {"replace": "replaced", "remove": "removed"}.get(action)
+                if field:
+                    if batched:
+                        entries = result.get(f"{field}_entries", {})
+                        previous = entries.get(str(index), entries.get(index)) if isinstance(entries, dict) else None
+                    else:
+                        previous = result.get(f"{field}_entry")
+                    if isinstance(previous, str) and previous:
+                        metadata["previous_content"] = previous
                 self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)

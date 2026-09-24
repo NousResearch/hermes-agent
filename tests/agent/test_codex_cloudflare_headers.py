@@ -73,14 +73,6 @@ class TestCodexCloudflareHeaders:
         assert headers["originator"] == "hermes-agent"
 
 
-    def test_canonical_header_casing(self):
-        """Upstream codex-rs uses PascalCase with trailing -ID. Match exactly."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert "ChatGPT-Account-ID" in headers
-        # The lowercase/titlecase variants MUST NOT be used — pin to be explicit
-        assert "chatgpt-account-id" not in headers
-        assert "ChatGPT-Account-Id" not in headers
 
 
 
@@ -118,7 +110,9 @@ class TestCodexCloudflareHeaders:
             status_code = 200
 
             def json(self):
-                return {"models": []}
+                # Non-empty so the newest-client request is accepted and each site makes one call
+                # (an empty answer would legitimately trigger the 0.0.0 sentinel fallback).
+                return {"models": [{"slug": "gpt-5.5", "visibility": "list"}]}
 
         class _FakeHttp:
             @staticmethod

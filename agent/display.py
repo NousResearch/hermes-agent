@@ -643,19 +643,29 @@ def _resolve_skill_manage_paths(args: dict) -> list[Path]:
     return [skill_dir / "SKILL.md"] if action in {"edit", "patch"} else []
 
 
-def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:
+def _resolve_local_edit_paths(tool_name: str, function_args: dict | None, task_id: str | None = None) -> list[Path]:
     """Resolve local filesystem targets for write-capable tools."""
     if not isinstance(function_args, dict):
         return []
     if tool_name == "skill_manage":
         return _resolve_skill_manage_paths(function_args)
     path = function_args.get("path") if tool_name in {"write_file", "patch"} else None
+    if path and task_id is not None:
+        from tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
+
+        # A remote target may happen to exist on this host too. Never persist a
+        # preview of that unrelated file; patch can still supply its own diff.
+        if _terminal_env_type_for_task(task_id) != "local":
+            return []
+        return [Path(_resolve_path_for_task(path, task_id))]
     return [_resolved_path(path)] if path else []
 
 
-def capture_local_edit_snapshot(tool_name: str, function_args: dict | None) -> LocalEditSnapshot | None:
+def capture_local_edit_snapshot(
+    tool_name: str, function_args: dict | None, *, task_id: str | None = None,
+) -> LocalEditSnapshot | None:
     """Capture before-state for local write previews."""
-    paths = _resolve_local_edit_paths(tool_name, function_args)
+    paths = _resolve_local_edit_paths(tool_name, function_args, task_id)
     if not paths:
         return None
     return LocalEditSnapshot(paths=paths, before={str(path): _snapshot_text(path) for path in paths})

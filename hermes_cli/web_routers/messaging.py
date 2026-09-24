@@ -871,17 +871,32 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             raise HTTPException(status_code=400, detail=f"{key} is not configurable for {entry['name']}")
 
     def _apply():
-        with _profile_scope(target_profile):
+        with _profile_scope(target_profile) as scoped_dir:
+            env_on_disk = load_env()
+            updates: dict[str, str] = {}
+
+            # Validate the whole request against the same credential snapshot the GET
+            # response uses before clearing or replacing anything.
             for key in body.clear_env:
                 _check_allowed(key)
-                remove_env_value(key)
-
             for key, value in body.env.items():
                 _check_allowed(key)
                 trimmed = value.strip()
-                if trimmed:
-                    _validate_messaging_env_value(platform_id, key, trimmed)
-                    save_env_value(key, trimmed)
+                if not trimmed:
+                    continue
+                current = env_on_disk.get(key) or ("" if scoped_dir is not None else os.getenv(key, ""))
+                if current and trimmed == redact_key(current):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Refusing to save a redacted credential preview; re-enter the full secret to replace it.",
+                    )
+                _validate_messaging_env_value(platform_id, key, trimmed)
+                updates[key] = trimmed
+
+            for key in body.clear_env:
+                remove_env_value(key)
+            for key, value in updates.items():
+                save_env_value(key, value)
 
             if body.enabled is not None:
                 _write_platform_enabled(platform_id, body.enabled)

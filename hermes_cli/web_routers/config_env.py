@@ -47,6 +47,10 @@ _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
+_REDACTED_CREDENTIAL_WRITE_DETAIL = (
+    "Refusing to save a redacted credential preview; re-enter the full secret to replace it."
+)
+
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
@@ -295,9 +299,13 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     with _env_write_errors("PUT /api/env failed", http_passthrough=False):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
-        return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
-        )
+        def _save():
+            current = load_env().get(body.key)
+            if current and body.value == redact_key(current):
+                raise ValueError(_REDACTED_CREDENTIAL_WRITE_DETAIL)
+            return save_provider_env_credential(body.key, body.value)
+
+        return await scoped_to_thread(body.profile or profile, _save)
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -620,6 +628,11 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     env_var = custom_endpoint_key_env(endpoint_id)
     submitted_key = body.api_key.strip() if body.api_key is not None else None
     if submitted_key:
+        display_preview = _api_key_display(existing)[1]
+        existing_key_env = str(existing.get("key_env") or "").strip()
+        stored_secret = load_env().get(existing_key_env) if existing_key_env else None
+        if submitted_key == display_preview or (stored_secret and submitted_key == redact_key(stored_secret)):
+            raise HTTPException(status_code=400, detail=_REDACTED_CREDENTIAL_WRITE_DETAIL)
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var
         entry.pop("api_key", None)

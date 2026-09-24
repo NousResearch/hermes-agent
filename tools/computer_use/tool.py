@@ -319,6 +319,8 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     click, drag, scroll = _noop_stub("click"), _noop_stub("drag"), _noop_stub("scroll")
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
+    launch_app = _noop_stub("launch_app", "bundle_id", "name", "path", "aumid", "launch_path", "urls",
+                            "additional_arguments", "creates_new_application_instance", "start_minimized")
     focus_app = _noop_stub("focus_app", "app", "raise_window")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
@@ -457,6 +459,11 @@ def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
     return f"{action}{where}{fg}"
 
+def _summarize_launch(action: str, args: Dict[str, Any], fg: str) -> str:
+    target = (args.get("launch_path") or args.get("path") or args.get("aumid") or
+              args.get("bundle_id") or args.get("name") or args.get("urls") or "")
+    return f"launch {target!r}"
+
 # One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
 # guard). ``destructive``: mutates user-visible state -> approval prompt (the rest only read).
 # ``summarize(action, args, fg_suffix)`` renders the one-line approval prompt.
@@ -483,6 +490,11 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+    "launch_app": _ActionSpec(lambda backend, action, args, **_: backend.launch_app(**{
+        k: args[k] for k in ("bundle_id", "name", "path", "aumid", "launch_path", "urls",
+                              "additional_arguments", "creates_new_application_instance", "start_minimized")
+        if args.get(k) is not None
+    }), destructive=True, summarize=_summarize_launch),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),

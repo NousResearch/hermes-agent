@@ -441,9 +441,14 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         if not lock.startswith(host_prefix):
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
-        # so retries must be measured from the active task_runs row.
-        elapsed = now - int(row["active_started_at"])
-        limit = int(row["max_runtime_seconds"])
+        # so retries must be measured from the active task_runs row. Epoch
+        # columns arrive as TEXT from legacy rows — coerce, never ``int(str)``.
+        active_started_at = _kb._to_epoch(row["active_started_at"])
+        max_runtime = _kb._to_epoch(row["max_runtime_seconds"])
+        if active_started_at is None or max_runtime is None:
+            continue
+        elapsed = now - active_started_at
+        limit = max_runtime
         if elapsed < limit:
             continue
 
@@ -539,12 +544,20 @@ def detect_stale_running(
     for row in rows:
         if row["active_started_at"] is None:
             continue
-        elapsed = now - int(row["active_started_at"])
+        # Legacy rows hand epoch columns back as TEXT: coerce before the
+        # subtraction, else the whole tick dies with `float - str`.
+        active_started_at = _kb._to_epoch(row["active_started_at"])
+        if active_started_at is None:
+            continue
+        elapsed = now - active_started_at
         if elapsed < stale_timeout_seconds:
             continue
 
         last_hb = row["last_heartbeat_at"]
-        hb_age = (now - int(last_hb)) if last_hb is not None else None
+        hb_age = None
+        if last_hb is not None:
+            last_hb_epoch = _kb._to_epoch(last_hb)
+            hb_age = (now - last_hb_epoch) if last_hb_epoch is not None else None
         if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
             continue
 
@@ -818,7 +831,13 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
             # before its PID is visible on /proc.
-            started_at = _kb._row_get(row, "started_at")
+            # SQLite hands back legacy epoch columns as TEXT: `float - str` raises
+            # TypeError and aborts the WHOLE dispatcher tick, which silently
+            # disables dead-worker detection (dead workers then wait for the
+            # claim TTL, adding a ~15 min tail per reclaim). Same defect class as
+            # the detect_crashed_workers / build_worker_context guards in
+            # kanban_db.py — coerce with the canonical helper before arithmetic.
+            started_at = _kb._to_epoch(_kb._row_get(row, "started_at"))
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
             if _kb._pid_alive(row["worker_pid"]):
@@ -1022,7 +1041,7 @@ def _record_task_failure(
             if release_claim
             else ("review" if row["status"] == "review" else "ready")
         )
-        failures = int(row["consecutive_failures"]) + 1
+        failures = int(row["consecutive_failures"] or 0) + 1
 
         # Per-task override wins over caller-supplied and default thresholds.
         task_override = _kb._row_get(row, "max_retries")

@@ -939,10 +939,8 @@ def _merge_pool_row_generation(
     from agent.credential_pool import STATUS_DEAD
 
     merge_disk = None if status_cleared else disk_entry
-    if not isinstance(disk_entry, dict) or base_pair is None:
-        return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
     disk_pair = _credential_token_pair(disk_entry)
-    if not any(disk_pair) or disk_pair == base_pair:
+    if base_pair is None or not any(disk_pair) or disk_pair == base_pair:
         return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
 
     merged = dict(entry)

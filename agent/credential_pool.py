@@ -1143,7 +1143,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 # unchanged row would replace the live object (and pull peer cooldown state
                 # merged into the written row) on every ordinary flush.
                 if pair != (entry.access_token, entry.refresh_token):
-                    self._entries[index] = PooledCredential.from_dict(self.provider, row)
+                    self._replace_entry(entry, PooledCredential.from_dict(self.provider, row))
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
         """``replace(entry, **updates)``, swap it into the pool, optionally persist."""

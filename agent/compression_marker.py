@@ -29,3 +29,47 @@ _COMPRESSION_MARKER_RE = re.compile(
     .replace(re.escape("{omitted:,}"), r"\d[\d,]*")
     .replace(re.escape("{total:,}"), r"\d[\d,]*")
 )
+
+# #121548 — every OTHER model-visible elision (turn text, summaries, skill bodies, diagnostics)
+# mints this shorter marker instead of the open-coded bare truncation idiom those renderers used
+# to compose, which the model imitated from replayed context into new durable writes. The first
+# sentence is byte-identical to the args marker's, so _COMPRESSION_MARKER_RE — and therefore the
+# dispatch-boundary guard in ``agent.tool_dispatch_helpers`` — rejects a copied marker regardless
+# of which renderer leaked it; only the tool-call-specific second sentence is dropped so the
+# marker still fits small caps (the clarify summary cap is 199 chars).
+_ELISION_MARKER_TEMPLATE = (
+    _COMPRESSION_MARKER_PREFIX
+    + " {omitted:,} of {total:,} chars omitted here by Hermes's context compressor.⟫"
+)
+
+
+def _elision_marker(omitted: int, total: int) -> str:
+    """Render the non-imitable elision marker with per-instance byte counts."""
+    return _ELISION_MARKER_TEMPLATE.format(omitted=omitted, total=total)
+
+
+def elide(text: str, limit: int) -> str:
+    """Cap ``text`` at ``limit`` chars, marking the elision with ``_elision_marker``.
+
+    Every model-visible renderer must truncate through here (#121548). ``text`` is
+    returned unchanged when it already fits. Otherwise the result is ``head + marker``
+    with accurate omitted/total counts and never exceeds ``limit`` (sized against the
+    widest rendering the counts can take), unless ``limit`` cannot hold the marker at
+    all, in which case the marker alone is returned.
+    """
+    if len(text) <= limit:
+        return text
+    total = len(text)
+    head_len = limit - len(_elision_marker(omitted=total, total=total))
+    if head_len <= 0:
+        return _elision_marker(omitted=total, total=total)
+    kept = text[:head_len].rstrip()
+    return kept + _elision_marker(omitted=total - len(kept), total=total)
+
+
+def elide_middle(text: str, head: int, tail: int) -> str:
+    """Keep ``head`` chars from the start and ``tail`` from the end, eliding the middle."""
+    if len(text) <= head + tail:
+        return text
+    marker = _elision_marker(omitted=len(text) - head - tail, total=len(text))
+    return text[:head] + marker + text[-tail:]

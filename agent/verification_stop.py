@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from agent.compression_marker import elide
+
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
 
@@ -150,7 +152,7 @@ def _status_detail(status: dict[str, Any]) -> str:
         parts.append(f"last command `{command}`")
     if summary:
         if len(summary) > 1200:
-            summary = summary[:1200].rstrip() + "\n... [truncated]"
+            summary = elide(summary, 1200)
         parts.append(f"last output:\n{summary}")
     return "\n".join(parts)
 

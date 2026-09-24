@@ -9,6 +9,8 @@ from __future__ import annotations
 import html
 from typing import Any, Dict, List
 
+from agent.compression_marker import elide
+
 # ERROR only by default — warnings/info/hints would flood the agent.
 SEVERITY_NAMES = {1: "ERROR", 2: "WARN", 3: "INFO", 4: "HINT"}
 DEFAULT_SEVERITIES = frozenset({1})
@@ -71,11 +73,8 @@ def report_for_file(
 
 
 def truncate(s: str, *, limit: int = MAX_TOTAL_CHARS) -> str:
-    """Hard-cap a formatted summary string."""
-    if len(s) <= limit:
-        return s
-    marker = "\n…[truncated]"
-    return s[: limit - len(marker)] + marker
+    """Hard-cap a formatted summary string with the non-imitable elision marker."""
+    return elide(s, limit)
 
 
 __all__ = ["SEVERITY_NAMES", "DEFAULT_SEVERITIES", "MAX_PER_FILE", "format_diagnostic", "report_for_file", "truncate"]

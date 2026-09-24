@@ -43,7 +43,9 @@ def _diag(line=0, col=0, sev=1, code="E001", source="ls", msg="oops"):
 def test_truncate_above_limit_appends_marker():
     s = "x" * 10000
     out = truncate(s, limit=200)
-    assert out.endswith("[truncated]")
+    # Non-imitable elision marker (#121548), not the old bare truncation idiom.
+    assert "HERMES-CONTEXT-COMPRESSION" in out
+    assert out.endswith("⟫")
     assert len(out) <= 200
 
 

@@ -147,9 +147,11 @@ class _RunStream:
     def attach(
         self, last_seq: int = -1
     ) -> tuple[asyncio.Queue, list[tuple[int, Optional[Dict[str, Any]]]]]:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=self.SUBSCRIBER_QUEUE_LIMIT)
+        replay = [(seq, event) for seq, event in self.backlog if seq > last_seq]
+        # Headroom for events produced while the replay is still being written.
+        queue: asyncio.Queue = asyncio.Queue(maxsize=self.SUBSCRIBER_QUEUE_LIMIT + len(replay))
         self.subscribers.add(queue)
-        return queue, [(seq, event) for seq, event in self.backlog if seq > last_seq]
+        return queue, replay
 
     def detach(self, queue: asyncio.Queue) -> None:
         self.subscribers.discard(queue)
@@ -220,7 +222,6 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # outlive the request, hence the separate stopping set), pollable statuses, and
     # approval session keys (approval core resolves by session key, clients by run_id).
     self._run_idempotency_ids: set[str] = set()
-    self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
     self._shutdown_interrupted_run_ids: set[str] = set()
     self._run_shutdown_requested_at: Optional[float] = None
@@ -531,7 +532,6 @@ def _drop_run_transport(self, run_id: str) -> None:
         run_id,
         self._run_streams,
         self._run_streams_created,
-        self._run_stream_subscribers,
     )
 
 
@@ -1092,16 +1092,14 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     except (TypeError, ValueError):
         last_seq = -1
     q, replay = stream.attach(last_seq)
-    self._run_stream_subscribers.add(run_id)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     async def _write(data: bytes) -> None:
         try:
-            await asyncio.wait_for(
-                response.write(data), timeout=_RUN_STREAM_WRITE_TIMEOUT
-            )
-        except asyncio.TimeoutError:
+            async with asyncio.timeout(_RUN_STREAM_WRITE_TIMEOUT):
+                await response.write(data)
+        except TimeoutError:
             with suppress(Exception):
                 response.force_close()
             raise
@@ -1109,7 +1107,7 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     async def _write_event(seq: int, event: Dict[str, Any]) -> None:
         payload = dict(event)
         payload["seq"] = seq
-        await _write(f"id: {seq}\n".encode() + _api_server._sse_frame(payload))
+        await _write(_api_server._sse_frame(payload, id=seq))
 
     prepared = False
     try:
@@ -1152,8 +1150,6 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
         logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
         stream.detach(q)
-        if not stream.subscribers:
-            self._run_stream_subscribers.discard(run_id)
         self._release_run_owner_if_forgotten(run_id)
     return response
 
@@ -1292,12 +1288,7 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
         now = time.time()
     for run_id, created_at in list(self._run_streams_created.items()):
         stream = self._run_streams.get(run_id)
-        has_live_subscribers = (
-            bool(stream.subscribers)
-            if isinstance(stream, _RunStream)
-            else run_id in self._run_stream_subscribers
-        )
-        if now - created_at <= self._RUN_STREAM_TTL or has_live_subscribers:
+        if now - created_at <= self._RUN_STREAM_TTL or (stream is not None and stream.subscribers):
             continue
         logger.debug("[api_server] sweeping expired run transport %s", run_id)
         task = self._active_run_tasks.get(run_id)

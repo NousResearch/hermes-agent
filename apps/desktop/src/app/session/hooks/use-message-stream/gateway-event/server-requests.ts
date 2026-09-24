@@ -17,9 +17,11 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
+import { $selectedStoredSessionId, $sessions, idsShareLineage } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
+import { isHudWindow } from '@/store/windows'
 
 import type { GatewayEventDeps } from './types'
 
@@ -94,6 +96,23 @@ export function previewSessionRoute({
   }
 
   return replayed && !activeSessionId ? 'retry' : 'ignore'
+}
+
+/** The HUD is a full renderer showing exactly one conversation, but by design
+ *  it never binds $activeSessionId (main holds the session id on the HUD's
+ *  behalf), so a scoped window.read in HUD mode found no claimant: every
+ *  window took route 'ignore' and the tool stalled its full 30s deadline
+ *  (#121609). The HUD is also the geometrically correct answerer for
+ *  window.read — "below" is measured from the answering window's bounds, and
+ *  the HUD is the visible one. Lineage-aware: the request names the runtime
+ *  id, the HUD knows the stored id, and compression rotates the runtime id.
+ *  Deliberately NOT extended to pane requests — the HUD has no preview or
+ *  terminal pane, so an empty answer from it would win the #113348 race and
+ *  starve the window whose pane is actually open. */
+const hudClaimsWindowRead = (sessionId: string): boolean => {
+  const stored = $selectedStoredSessionId.get()
+
+  return isHudWindow() && stored != null && idsShareLineage(sessionId, stored, $sessions.get())
 }
 
 const markNeedsInput = (ctx: ServerRequestContext) => {
@@ -458,7 +477,12 @@ export function handleServerRequest(
   const sessionId = str(request.params.session_id)
 
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
-    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
+    const routeOf = (active: null | string, replayed: boolean | undefined): PreviewSessionRoute =>
+      request.method === 'window.read' && hudClaimsWindowRead(sessionId)
+        ? 'run'
+        : previewSessionRoute({ activeSessionId: active, replayed, sessionId })
+
+    const route = routeOf(activeSessionId, request.replayed)
 
     if (route === 'ignore') {
       return true
@@ -469,10 +493,7 @@ export function handleServerRequest(
       // publishes its binding synchronously between this replay and the next
       // turn. A second miss deliberately stays silent for another window.
       setTimeout(() => {
-        if (
-          previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) ===
-          'run'
-        ) {
+        if (routeOf(deps.activeSessionIdRef.current, false) === 'run') {
           handler({ deps, request, sessionId, isActiveSession: true })
         }
       }, 0)

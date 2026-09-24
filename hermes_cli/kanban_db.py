@@ -2795,10 +2795,7 @@ def complete_task(
                        worker_pid   = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0,
-                       acceptance_rejected = 0,
-                       guard_reason = NULL,
-                       guard_last_seen_at = NULL,
-                       guard_count = 0
+                       acceptance_rejected = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
@@ -2808,6 +2805,7 @@ def complete_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        _clear_respawn_guard(conn, task_id)
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(

@@ -119,6 +119,28 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+@pytest.mark.parametrize("destination", ["todo", "triage", "blocked"])
+def test_dashboard_status_move_retires_guard_immediately(client, destination):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="guarded", assignee="default")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET guard_reason='blocker_auth', guard_count=1, "
+                "guard_last_seen_at=123, last_failure_error='401 auth failed' WHERE id=?", (tid,),
+            )
+    payload = {"status": destination}
+    if destination == "blocked":
+        payload["block_reason"] = "operator hold"
+    response = client.patch(f"/api/plugins/kanban/tasks/{tid}", json=payload)
+    assert response.status_code == 200, response.text
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == destination
+        assert task.guard_reason is None
+        assert task.last_failure_error == "401 auth failed"
+        assert len([e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_cleared"]) == 1
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

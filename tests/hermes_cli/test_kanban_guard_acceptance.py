@@ -111,3 +111,35 @@ def test_rejection_survives_expired_rate_limit_cooldown(tmp_path, monkeypatch):
         assert not kb.complete_task(conn, tid, summary="rejected")
         assert kb.get_task(conn, tid).acceptance_rejected
         assert kbd.check_respawn_guard(conn, tid) == "acceptance_rejected"
+
+
+def test_completion_closes_guard_episode_before_same_reason_requeue(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _: True)
+    kbc.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="requeue", assignee="default")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET last_failure_error='401 auth failed' WHERE id=?", (tid,))
+        tick = lambda: kbd.dispatch_once(
+            conn, spawn_fn=lambda *a, **k: None, max_spawn=1, reconcile_orphans=False)
+        tick()
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_events SET created_at=1 WHERE task_id=? AND kind='respawn_guarded'", (tid,))
+        assert kb.complete_task(conn, tid, summary="completed")
+        assert kb.get_task(conn, tid).guard_reason is None
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        tick()
+        task = kb.get_task(conn, tid)
+        guard = next(d for d in kd.compute_task_diagnostics(
+            task, kb.list_events(conn, tid), kb.list_runs(conn, tid)) if d.kind == "respawn_guard")
+        events = kb.list_events(conn, tid)
+        new_event = [e for e in events if e.kind == "respawn_guarded"][-1]
+        assert task.guard_count == 1
+        assert guard.first_seen_at == new_event.created_at
+        assert len([e for e in events if e.kind == "respawn_guard_cleared"]) == 1

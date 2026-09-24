@@ -731,6 +731,8 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             (effective_status,) * 4 + (task_id,))
         if cur.rowcount != 1:
             return False
+        if prev["status"] != effective_status:
+            kanban_db._clear_respawn_guard(conn, task_id)
         run_id = None
         if was_running and effective_status != "running" and prev["current_run_id"]:
             run_id = kanban_db._end_run(

@@ -12,6 +12,7 @@ import { pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { canReadLocalFolder, zipLocalFolderForRemoteUpload } from '@/lib/remote-folder-upload'
 import { normalize } from '@/lib/text'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { clearClarifyRequest } from '@/store/clarify'
@@ -113,10 +114,11 @@ function attachmentPathNeedsUpload(path: string, backendCwd?: null | string, ter
 }
 
 /**
- * Stage one file/image attachment into the session workspace and return the
+ * Stage one file/image/folder attachment into the session workspace and return the
  * attachment rewritten with the gateway-side ref. Attachments upload their
  * bytes for remote gateways and local cross-filesystem backends; otherwise the
- * gateway receives the shared local path. Throws on failure so callers can
+ * gateway receives the shared local path. Folders upload zipped (extract:true)
+ * when they live on this machine; backend-side folder paths pass through. Throws on failure so callers can
  * surface an error. Shared by submit-time sync, the eager drop-time upload, and
  * the message-edit composer drop — keep them in lockstep.
  */
@@ -166,6 +168,65 @@ export async function uploadComposerAttachment(
   }
 
   const stageForSession = async (liveSessionId: string): Promise<ComposerAttachment> => {
+    if (attachment.kind === 'folder') {
+      const passthrough: ComposerAttachment = { ...attachment, attachedSessionId: liveSessionId, uploadState: undefined }
+
+      if (!uploadBytes) {
+        return passthrough
+      }
+
+      // Remote folder upload (#120449): a LOCAL folder is zipped through the
+      // file.attach channel (extract:true) and the chip takes the gateway's
+      // @folder: ref. A backend-side path (in-app drag from a remote project
+      // tree) isn't on this machine — the gateway resolves it directly.
+      const localReader = {
+        readDir: async (dir: string) => {
+          const result = await window.hermesDesktop?.readDir(dir)
+
+          if (!result || result.error) {
+            throw new Error(result?.error || `Could not read folder ${dir}.`)
+          }
+
+          return result
+        },
+        readFileDataUrl: (file: string) => readFileDataUrlForAttach(file)
+      }
+
+      if (!(await canReadLocalFolder(localReader, path))) {
+        return passthrough
+      }
+
+      let zipped: Awaited<ReturnType<typeof zipLocalFolderForRemoteUpload>>
+
+      try {
+        zipped = await zipLocalFolderForRemoteUpload(path, localReader)
+      } catch (err) {
+        throw friendlyRemoteAttachError(err, label)
+      }
+
+      const result = await requestGateway<FileAttachResponse>('file.attach', {
+        data_url: zipped.dataUrl,
+        extract: true,
+        name: zipped.filename,
+        path,
+        session_id: liveSessionId
+      })
+
+      if (!result.attached || !result.extracted || !result.ref_text) {
+        throw new Error(
+          result.message || `The backend could not stage ${label} — update the backend to align with this app.`
+        )
+      }
+
+      return {
+        ...attachment,
+        attachedSessionId: liveSessionId,
+        path: result.path || path,
+        refText: result.ref_text,
+        uploadState: undefined
+      }
+    }
+
     if (attachment.kind === 'image') {
       const result = imagePayload
         ? await requestGateway<ImageAttachResponse>('image.attach_bytes', {
@@ -404,7 +465,7 @@ export function usePromptActions({
           continue
         }
 
-        if (attachment.kind === 'image' || attachment.kind === 'file') {
+        if (attachment.kind === 'image' || attachment.kind === 'file' || attachment.kind === 'folder') {
           const nextAttachment = await uploadComposerAttachment(attachment, {
             backendCwd: $currentCwd.get(),
             remote,

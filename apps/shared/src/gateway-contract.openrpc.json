@@ -13058,7 +13058,7 @@
       },
       "FileAttachParams": {
         "additionalProperties": false,
-        "description": "``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels\nan uploaded file.",
+        "description": "``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels\nan uploaded file. ``extract`` expands a zip archive into ``attachments/<name>/`` (remote-mode\nfolder upload) and answers an ``@folder:`` ref.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -13111,6 +13111,11 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "extract": {
+            "default": false,
+            "title": "Extract",
+            "type": "boolean"
           }
         },
         "required": [
@@ -13145,6 +13150,16 @@
           "uploaded": {
             "title": "Uploaded",
             "type": "boolean"
+          },
+          "extracted": {
+            "default": false,
+            "title": "Extracted",
+            "type": "boolean"
+          },
+          "file_count": {
+            "default": 0,
+            "title": "File Count",
+            "type": "integer"
           }
         },
         "required": [

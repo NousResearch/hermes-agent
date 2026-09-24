@@ -900,7 +900,10 @@ def _(rid, params: dict) -> dict:
 @method("file.attach")
 def _(rid, params: dict) -> dict:
     """Stage a non-image file into the session workspace; returns a workspace-relative
-    ``@file:`` ref.  ``data_url`` carries the bytes when ``path`` isn't gateway-visible."""
+    ``@file:`` ref.  ``data_url`` carries the bytes when ``path`` isn't gateway-visible.
+    With ``extract:true`` the staged payload must be a zip archive: it is expanded into
+    ``attachments/<name>/`` (remote-mode folder upload) and the reply carries an
+    ``@folder:`` ref instead; the intermediate archive is not kept."""
     session, err = _sess_building(params, rid)
     if err:
         return err
@@ -911,6 +914,18 @@ def _(rid, params: dict) -> dict:
     try:
         stored_path, uploaded = _stage_session_file_attachment(
             session, raw_path=raw, data_url=data_url, name=name)
+        if params.get("extract"):
+            folder, file_count = _expand_session_folder_archive(
+                session, archive_bytes=stored_path.read_bytes(), name=stored_path.stem)
+            if uploaded:
+                with contextlib.suppress(OSError):
+                    stored_path.unlink()
+            ref_path = _attachment_ref_path(session, folder)
+            return _ok(rid, {
+                "attached": True, "extracted": True, "name": folder.name,
+                "path": str(folder), "ref_path": ref_path,
+                "ref_text": f"@folder:{_format_ref_value(ref_path)}",
+                "uploaded": True, "file_count": file_count})
         ref_path = _attachment_ref_path(session, stored_path)
         return _ok(rid, {
             "attached": True, "name": stored_path.name, "path": str(stored_path),

@@ -2518,13 +2518,14 @@ export interface PdfPage {
   path: string
   page: number
 }
-/** ``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels an uploaded file. */
+/** ``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels an uploaded file. ``extract`` expands a zip archive into ``attachments/<name>/`` (remote-mode folder upload) and answers an ``@folder:`` ref. */
 export interface FileAttachParams {
   session_id: string
   profile?: string | null
   path?: string | null
   data_url?: string | null
   name?: string | null
+  extract?: boolean
 }
 export interface FileAttachResult {
   attached: boolean
@@ -2533,6 +2534,8 @@ export interface FileAttachResult {
   ref_path: string
   ref_text: string
   uploaded: boolean
+  extracted?: boolean
+  file_count?: number
 }
 export interface ImageDetachParams {
   session_id: string

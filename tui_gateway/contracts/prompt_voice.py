@@ -163,11 +163,13 @@ method("pdf.attach", params=PdfAttachParams, result=PdfAttachResult,
 
 class FileAttachParams(SessionParams):
     """``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels
-    an uploaded file."""
+    an uploaded file. ``extract`` expands a zip archive into ``attachments/<name>/`` (remote-mode
+    folder upload) and answers an ``@folder:`` ref."""
 
     path: str | None = None
     data_url: str | None = None
     name: str | None = None
+    extract: bool = False
 
 
 class FileAttachResult(Result):
@@ -177,6 +179,8 @@ class FileAttachResult(Result):
     ref_path: str
     ref_text: str
     uploaded: bool
+    extracted: bool = False
+    file_count: int = 0
 
 
 method("file.attach", params=FileAttachParams, result=FileAttachResult,

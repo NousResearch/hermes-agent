@@ -41,6 +41,10 @@ export interface FileAttachResponse {
   // True when bytes/host file were copied into the session workspace.
   uploaded?: boolean
   name?: string
+  // Set when the backend expanded a zip archive (folder upload): ref_text is
+  // an @folder: ref and file_count is the number of staged files.
+  extracted?: boolean
+  file_count?: number
 }
 
 export interface SlashExecResponse {

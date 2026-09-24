@@ -187,6 +187,75 @@ def _stage_session_file_attachment(
     return target.resolve(), True
 
 
+_FOLDER_ARCHIVE_MAX_FILES = 1000
+_FOLDER_ARCHIVE_MAX_TOTAL_BYTES = 100 * 1024 * 1024
+# Archive members under these directories are never staged (VCS/dependency trees).
+_FOLDER_ARCHIVE_SKIP_DIRS = frozenset({".git", "node_modules", "__MACOSX"})
+# ponytail: fixed caps; raise them if legitimate folder uploads ever hit the ceiling.
+
+
+def _expand_session_folder_archive(
+    session: dict, *, archive_bytes: bytes, name: str) -> tuple[Path, int]:
+    """Expand uploaded zip bytes into ``attachments/<name>/``: ``(dir, file_count)``.
+
+    Remote-mode folder upload: the client zips a local folder and sends it through
+    the ``file.attach`` channel with ``extract:true``. Absolute/``..`` members are
+    refused (zip-slip), symlinks skipped, ``.git``/``node_modules`` trees skipped,
+    and member count + total uncompressed size are capped.
+    """
+    import io as _io
+    import stat as _stat
+    import zipfile as _zipfile
+    if not _zipfile.is_zipfile(_io.BytesIO(archive_bytes)):
+        raise ValueError("extract requires a zip archive (.zip)")
+    root = _session_home_dir(session, "attachments")
+    root.mkdir(parents=True, exist_ok=True)
+    stem = _sanitize_attachment_name(Path(str(name or "")).stem or "folder")
+    target = root / stem
+    if target.exists():
+        counter = 2
+        while (target := root / f"{stem}-{counter}").exists():
+            counter += 1
+    target.mkdir(parents=True)
+    anchor = target.resolve()
+    total = 0
+    count = 0
+    try:
+        with _zipfile.ZipFile(_io.BytesIO(archive_bytes)) as zf:
+            members = [info for info in zf.infolist() if not info.is_dir()]
+            if len(members) > _FOLDER_ARCHIVE_MAX_FILES:
+                raise ValueError(
+                    f"folder has too many files ({len(members)}; cap is {_FOLDER_ARCHIVE_MAX_FILES})")
+            for info in members:
+                raw_name = info.filename.replace("\\", "/")
+                parts = [p for p in raw_name.split("/") if p not in ("", ".")]
+                if not parts or raw_name.startswith("/") or ".." in parts:
+                    raise ValueError(f"archive contains an unsafe path: {info.filename!r}")
+                if any(p in _FOLDER_ARCHIVE_SKIP_DIRS for p in parts):
+                    continue
+                if parts[-1] == ".DS_Store":
+                    continue
+                if _stat.S_ISLNK((info.external_attr >> 16) & 0o170000):
+                    continue
+                total += info.file_size
+                if total > _FOLDER_ARCHIVE_MAX_TOTAL_BYTES:
+                    mb = _FOLDER_ARCHIVE_MAX_TOTAL_BYTES // (1024 * 1024)
+                    raise ValueError(f"folder too large (over {mb} MB uncompressed)")
+                dest = anchor.joinpath(*parts)
+                if anchor not in dest.resolve().parents:
+                    raise ValueError(f"archive contains an unsafe path: {info.filename!r}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src, open(dest, "wb") as dst:
+                    while chunk := src.read(1024 * 1024):
+                        dst.write(chunk)
+                count += 1
+    except Exception:
+        import shutil as _shutil
+        _shutil.rmtree(target, ignore_errors=True)
+        raise
+    return anchor, count
+
+
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

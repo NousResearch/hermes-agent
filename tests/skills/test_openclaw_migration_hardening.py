@@ -35,11 +35,25 @@ def _load():
     return module
 
 
+REDACTION_PATH = SCRIPT_PATH.with_name("openclaw_to_hermes_redaction.py")
+
+
+def _load_redaction():
+    """Load the defining module directly — the migration script does not
+    re-export the redaction names (AGENTS.md: no re-export shims)."""
+    spec = importlib.util.spec_from_file_location("openclaw_to_hermes_redaction_hard", REDACTION_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Redaction
 # ───────────────────────────────────────────────────────────────────────
 def test_redact_replaces_secret_by_key_name():
-    mod = _load()
+    mod = _load_redaction()
     out = mod.redact_migration_value({"OPENROUTER_API_KEY": "sk-or-v1-abcdef12345678"})
     assert out["OPENROUTER_API_KEY"] == mod.REDACTED_MIGRATION_VALUE
 
@@ -47,7 +61,7 @@ def test_redact_replaces_secret_by_key_name():
 
 
 def test_redact_handles_github_token_pattern():
-    mod = _load()
+    mod = _load_redaction()
     out = mod.redact_migration_value({"detail": "token: ghp_1234567890abcdef1234"})
     assert "ghp_" not in out["detail"]
     assert mod.REDACTED_MIGRATION_VALUE in out["detail"]
@@ -60,7 +74,7 @@ def test_redact_handles_github_token_pattern():
 
 
 def test_redact_is_recursive():
-    mod = _load()
+    mod = _load_redaction()
     nested = {
         "outer": {
             "items": [
@@ -75,14 +89,14 @@ def test_redact_is_recursive():
 
 
 def test_redact_preserves_non_secret_keys_and_values():
-    mod = _load()
+    mod = _load_redaction()
     input_data = {"name": "hermes", "count": 42, "tags": ["a", "b"]}
     out = mod.redact_migration_value(input_data)
     assert out == input_data
 
 
 def test_redact_normalizes_key_case_and_punctuation():
-    mod = _load()
+    mod = _load_redaction()
     # "Api Key", "api-key", "API_KEY" all normalize the same way.
     for key in ("Api Key", "api-key", "API_KEY", "apikey"):
         out = mod.redact_migration_value({key: "secret"})
@@ -91,7 +105,7 @@ def test_redact_normalizes_key_case_and_punctuation():
 
 def test_redact_leaves_env_secretref_alone():
     """SecretRef-like shapes ({source: env, id: ...}) are pointers, not secrets."""
-    mod = _load()
+    mod = _load_redaction()
     ref = {"source": "env", "id": "OPENAI_API_KEY"}
     out = mod.redact_migration_value({"apiKey": ref})
     # The key "apiKey" itself triggers redaction today — this test locks that in.
@@ -102,6 +116,7 @@ def test_redact_leaves_env_secretref_alone():
 
 def test_write_report_redacts_api_keys_on_disk(tmp_path):
     mod = _load()
+    redaction = _load_redaction()
     report = {
         "timestamp": "20260427T120000",
         "mode": "execute",
@@ -123,7 +138,7 @@ def test_write_report_redacts_api_keys_on_disk(tmp_path):
     persisted = json.loads((tmp_path / "report.json").read_text())
     # The raw secret must not appear anywhere in the persisted JSON.
     assert "sk-or-v1-1234567890abcdef" not in (tmp_path / "report.json").read_text()
-    assert persisted["items"][0]["details"]["OPENROUTER_API_KEY"] == mod.REDACTED_MIGRATION_VALUE
+    assert persisted["items"][0]["details"]["OPENROUTER_API_KEY"] == redaction.REDACTED_MIGRATION_VALUE
 
 
 # ───────────────────────────────────────────────────────────────────────

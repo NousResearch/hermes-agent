@@ -74,10 +74,11 @@ tts:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
-    model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
-    voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
-    audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
-    persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
+    model: "gemini-2.5-flash-preview-tts"  # or Gemini 3.1 / 3.8 TTS (see below)
+    voice: "Kore"               # prebuilt voice, or a Gemini 3.8 voice_... ID
+    style: ""                    # Gemini 3.8 turn-level delivery direction
+    audio_tags: false            # 3.1 uses [tags]; 3.8 uses momentary <events>
+    persona_prompt_file: ""     # Legacy 2.5/3.1 voice direction only
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # BCP-47 code (e.g. "en", "pt-BR") or "auto" for detection
@@ -123,6 +124,12 @@ MiniMax TTS selects its region, endpoint, and credential together:
 Gemini TTS can follow natural-language performance direction. Set `tts.gemini.persona_prompt_file` to a local Markdown or text file that describes the voice persona. The file can include Gemini-style sections such as `AUDIO PROFILE`, `SCENE`, `DIRECTOR'S NOTES`, `SAMPLE CONTEXT`, and `TRANSCRIPT`.
 
 If the file contains `{transcript}` or `{{ transcript }}`, Hermes replaces that placeholder with the live TTS text. Otherwise, Hermes appends a labeled `TRANSCRIPT` section automatically. The persona prompt stays local and is not shown in the chat reply.
+
+### Gemini 3.8 TTS migration
+
+Set `tts.gemini.model` to `gemini-3.8-flash-tts` or `gemini-3.8-flash-lite-tts` to opt in; existing models and settings are unchanged. Gemini 3.8 treats `text` as a verbatim transcript, so Hermes does not include `persona_prompt_file` in that text. Move sustained voice direction to `tts.gemini.style` (or pass `instructions` to `text_to_speech`, which takes precedence), and use an existing designed or replicated `voice_...` ID in `voice` when available.
+
+For Gemini 3.8, `audio_tags: true` inserts only private momentary angle-bracket events such as `<laugh>` or `<short pause>`; ongoing delivery belongs in `style`. Gemini 3.8 unary responses are WAV and Hermes preserves that header before converting to Telegram Opus or another requested delivery format. Legacy Gemini models retain persona prompts, square-bracket tags, and raw-PCM handling.
 
 ```yaml
 tts:

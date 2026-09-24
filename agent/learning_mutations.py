@@ -5,7 +5,7 @@ Node ids (from ``agent.learning_graph``): skills → the skill name; memories �
 for USER.md; ``index`` = position in the combined card list, MEMORY.md first).
 Shared by CLI ``hermes journey``, the TUI ``/journey`` overlay and the desktop.
 Deleting a skill *archives* it (``hermes curator restore`` recovers it);
-deleting a memory rewrites its file.
+deleting a memory rewrites its file under the memory tool's lock.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 _MEMORY_FILES = {"memory": "MEMORY.md", "profile": "USER.md"}
+_STORE_TARGETS = {"memory": "memory", "profile": "user"}  # journey source -> MemoryStore target
 
 
 def parse_node_kind(node_id: str) -> str:
@@ -35,7 +36,8 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     """Resolve a memory node id to (file, all §-delimited entries, local index).
     Entries come from ``MemoryStore._read_file`` — the memory tool's own parser —
     so journey indices stay aligned with what the graph renders; a profile card's
-    local index is its global index minus the MEMORY.md card count."""
+    local index is its global index minus the MEMORY.md card count. Read-only view:
+    mutations resolve the id again INSIDE ``_mutate_memory``'s lock."""
     from hermes_constants import get_hermes_home
     from agent.learning_graph import _memory_cards
     from tools.memory_tool import MemoryStore
@@ -56,11 +58,32 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
-def _write_memory(path: Path, chunks: list[str]) -> None:
-    """Atomic temp-file + rename via the memory tool, so a concurrent reader
-    never sees a half-written file (and the §-join stays single-sourced)."""
-    from tools.memory_tool import MemoryStore
-    MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
+def _mutate_memory(node_id: str, replacement: str | None) -> dict[str, Any]:
+    """Replace (or, with ``replacement=None``, remove) the entry *node_id* names, through
+    ``MemoryStore._mutate`` — the memory tool's cross-process lock, re-read under lock and
+    drift guard (``.bak`` snapshot + refusal when the file wouldn't round-trip). The file is
+    shared with the live agent, so a read-modify-write from an unlocked snapshot silently
+    dropped whatever the agent stored in between and reformatted hand-edited files
+    (#119668). The id is resolved to its entry text INSIDE the lock and matched by exact
+    text against the store's re-read entries; a target gone under the lock is refused."""
+    from tools.memory_tool import load_on_disk_store
+
+    source, _ = _parse_memory_id(node_id)
+    name = _MEMORY_FILES[source]
+    message = f"deleted memory from {name}" if replacement is None else f"updated memory in {name}"
+
+    def _apply(entries, _limit):
+        _, chunks, local = _locate_memory(node_id)
+        text = chunks[local].strip()
+        if text not in entries:
+            return {"success": False, "error": "memory node id is stale — refresh the graph"}
+        idx = entries.index(text)
+        return entries[:idx] + ([] if replacement is None else [replacement]) + entries[idx + 1:], message
+
+    result = load_on_disk_store()._mutate(_STORE_TARGETS[source], _apply)
+    if not result.get("success"):
+        return {"ok": False, "message": result.get("error", f"{name} write failed")}
+    return {"ok": True, "message": message}
 
 
 def _clear_skill_cache() -> None:
@@ -125,10 +148,7 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
-    path, chunks, local = _locate_memory(node_id)
-    del chunks[local]
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"deleted memory from {path.name}"}
+    return _mutate_memory(node_id, None)
 
 
 # ── Edit ────────────────────────────────────────────────────────────────────
@@ -151,7 +171,4 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(node_id)
-    chunks[local] = body
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"updated memory in {path.name}"}
+    return _mutate_memory(node_id, body)

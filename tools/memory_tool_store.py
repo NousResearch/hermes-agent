@@ -462,8 +462,9 @@ class MemoryStore:
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
-        """Atomic temp-file + rename: readers never see a truncated file. Also used by
-        agent/learning_mutations.py."""
+        """Atomic temp-file + rename: readers never see a truncated file. Callers
+        hold ``_file_lock`` (via ``_mutate``): a bare write from an earlier snapshot
+        drops concurrent entries (#119668)."""
         try:
             atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_")
         except OSError as e:

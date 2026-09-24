@@ -326,6 +326,13 @@ def recorded_standalone_warning_lines() -> list[str]:
     """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
     make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
     try:
+        # A profile-scoped CLI can have an old standalone record of its own while the verified
+        # default gateway is actively multiplexing that profile.  The default gateway's live
+        # served set is authoritative for the host topology; only an empty (or unavailable)
+        # record may leave a standalone warning relevant.
+        from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+        if recorded_served_profiles():
+            return []
         from gateway.status import read_runtime_status
         reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
     except Exception:

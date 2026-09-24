@@ -175,6 +175,41 @@ def test_live_record_outranks_the_raw_flag_for_other_processes(fleet, monkeypatc
     assert mode.default_gateway_multiplexes(root) is True
 
 
+def test_stale_secondary_status_does_not_warn_when_live_default_multiplexes(fleet, monkeypatch):
+    """A profile-scoped CLI must consult the live default gateway, not its own old status file."""
+    root, _services, _pids = fleet
+    secondary = root / "profiles/coder"
+    import gateway.status as status
+
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
+    (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
+    (root / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
+        "served_profiles": ["default", "coder", "ops"],
+    }))
+    (secondary / "gateway_state.json").write_text(json.dumps({
+        "multiplex_standalone_reason": "profile(s) 'ops' still run their own gateway",
+    }))
+    monkeypatch.setattr(status, "_get_process_hermes_home", lambda: secondary)
+
+    assert mode.recorded_standalone_warning_lines() == []
+
+
+def test_recorded_guard_refusal_still_warns_without_a_live_multiplexer(fleet, monkeypatch):
+    root, _services, _pids = fleet
+    import gateway.status as status
+
+    (root / "gateway_state.json").write_text(json.dumps({
+        "multiplex_standalone_reason": "profile(s) 'coder' still run their own gateway",
+    }))
+    monkeypatch.setattr(status, "_get_process_hermes_home", lambda: root)
+
+    warning = mode.recorded_standalone_warning_lines()
+
+    assert any("This gateway is STANDALONE" in line for line in warning)
+    assert any("coder" in line for line in warning)
+
+
 def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_path, monkeypatch):
     """A guard refusal must be visible to `hermes gateway status`, not only in the boot log; a later
     boot that multiplexes clears it (a stale reason would misdescribe the live gateway)."""

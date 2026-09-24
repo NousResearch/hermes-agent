@@ -3886,11 +3886,82 @@
   // link hits GET /attachments/:id which streams the file; the worker
   // context surfaces the same files' absolute paths so a kanban worker
   // can read them with the file/terminal tools.
+  // Image attachments additionally render as inline thumbnails; clicking
+  // one opens a full-size lightbox. Thumbnails use the same authenticated
+  // fetch → blob path as download (a plain <img src> can't carry auth).
   function AttachmentsSection(props) {
     const i18n = props.i18n;
     const atts = props.attachments || [];
     const fileRef = useRef(null);
     const [dlErr, setDlErr] = useState(null);
+    const isImage = function (a) {
+      const ct = (a.content_type || "").toLowerCase();
+      if (ct.startsWith("image/")) return true;
+      return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(a.filename || "");
+    };
+    const images = atts.filter(isImage);
+    // Inline image previews: one authenticated fetch → blob URL per image
+    // attachment, fetched once (fetchedRef guards re-renders) and revoked
+    // when the drawer unmounts. A failure leaves the download row as the
+    // only affordance for that file.
+    const [thumbs, setThumbs] = useState({});
+    const [lightbox, setLightbox] = useState(null);
+    const fetchedRef = useRef({});
+    const urlsRef = useRef([]);
+    useEffect(function () {
+      return function () {
+        urlsRef.current.forEach(function (u) {
+          try { URL.revokeObjectURL(u); } catch (_e) { /* already gone */ }
+        });
+      };
+    }, []);
+    useEffect(function () {
+      let cancelled = false;
+      images.forEach(function (a) {
+        if (fetchedRef.current[a.id]) return;
+        fetchedRef.current[a.id] = true;
+        SDK.authedFetch(withBoard(`${API}/attachments/${a.id}`, props.boardSlug))
+          .then(function (resp) {
+            if (!resp.ok) throw new Error(String(resp.status));
+            return resp.blob();
+          })
+          .then(function (blob) {
+            if (cancelled) return;
+            const url = URL.createObjectURL(blob);
+            urlsRef.current.push(url);
+            setThumbs(function (prev) {
+              const next = Object.assign({}, prev);
+              next[a.id] = url;
+              return next;
+            });
+          })
+          .catch(function () {
+            delete fetchedRef.current[a.id]; // allow a retry on re-render
+          });
+      });
+      return function () { cancelled = true; };
+      // Re-run when the attachment set changes (upload/delete).
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [atts.map(function (a) { return `${a.id}:${a.size}`; }).join("|")]);
+    // Lightbox: Escape closes, ←/→ keys step through images (wrapping),
+    // backdrop click closes.
+    function lightboxStep(delta) {
+      if (!lightbox || images.length < 2) return;
+      const idx = images.findIndex(function (a) { return a.id === lightbox.id; });
+      if (idx < 0) return;
+      setLightbox(images[(idx + delta + images.length) % images.length]);
+    }
+    useEffect(function () {
+      if (!lightbox) return undefined;
+      function onKey(e) {
+        if (e.key === "Escape") setLightbox(null);
+        else if (e.key === "ArrowLeft") { e.preventDefault(); lightboxStep(-1); }
+        else if (e.key === "ArrowRight") { e.preventDefault(); lightboxStep(1); }
+      }
+      window.addEventListener("keydown", onKey);
+      return function () { window.removeEventListener("keydown", onKey); };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lightbox, images]);
     // Download via authenticated fetch → blob → synthetic anchor click.
     // A plain <a href> can't carry the auth the dashboard middleware requires,
     // so fetch authenticated and hand the browser a blob URL instead.
@@ -3949,6 +4020,38 @@
       (props.uploadErr || dlErr)
         ? h("div", { className: "text-xs text-destructive mb-2" }, props.uploadErr || dlErr)
         : null,
+      images.length > 0
+        ? h("div", { className: "flex flex-wrap gap-2 mb-2" },
+            images.map(function (a) {
+              const url = thumbs[a.id];
+              return h("button", {
+                key: a.id,
+                type: "button",
+                title: url ? a.filename : `${a.filename} (loading…)`,
+                onClick: function () { if (url) setLightbox(a); },
+                style: {
+                  width: "96px",
+                  height: "72px",
+                  padding: "0",
+                  overflow: "hidden",
+                  cursor: url ? "zoom-in" : "progress",
+                  background: "none",
+                  border: "1px solid var(--ui-stroke-secondary, rgba(128,128,128,0.35))",
+                  borderRadius: "6px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                },
+              }, url
+                ? h("img", {
+                    src: url,
+                    alt: a.filename,
+                    draggable: false,
+                    style: { width: "100%", height: "100%", objectFit: "cover" },
+                  })
+                : h("span", { className: "text-xs text-muted-foreground" }, "…"));
+            }))
+        : null,
       atts.length === 0
         ? h("div", { className: "text-xs text-muted-foreground" },
             tx(i18n, "noAttachments", "— no attachments —"))
@@ -3989,7 +4092,95 @@
               }, "×"),
             );
           }),
-    );
+    lightbox ? h("div", {
+      style: {
+        position: "fixed",
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(0, 0, 0, 0.75)",
+        cursor: "zoom-out",
+      },
+      onClick: function () { setLightbox(null); },
+    },
+      h("img", {
+        src: thumbs[lightbox.id],
+        alt: lightbox.filename,
+        draggable: false,
+        style: { maxWidth: "90vw", maxHeight: "85vh", objectFit: "contain" },
+        onClick: function (e) { e.stopPropagation(); },
+      }),
+      h("div", {
+        style: {
+          position: "fixed",
+          top: "16px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 1001,
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+        },
+        onClick: function (e) { e.stopPropagation(); },
+      },
+        images.length > 1 ? h("button", {
+          type: "button",
+          title: tx(i18n, "prevImage", "Previous image (←)"),
+          onClick: function (e) { e.stopPropagation(); lightboxStep(-1); },
+          style: {
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            border: "1px solid var(--ui-stroke-secondary, rgba(128,128,128,0.35))",
+            background: "rgba(0, 0, 0, 0.55)",
+            color: "#fff",
+            fontSize: "18px",
+            lineHeight: "1",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "0",
+          },
+        }, "‹") : null,
+        h("div", {
+          style: {
+            padding: "4px 10px",
+            borderRadius: "6px",
+            background: "rgba(0, 0, 0, 0.55)",
+            color: "#fff",
+            fontSize: "12px",
+            border: "1px solid var(--ui-stroke-secondary, rgba(128,128,128,0.35))",
+          },
+        }, `${images.findIndex(function (a) { return a.id === lightbox.id; }) + 1} / ${images.length}`),
+        images.length > 1 ? h("button", {
+          type: "button",
+          title: tx(i18n, "nextImage", "Next image (→)"),
+          onClick: function (e) { e.stopPropagation(); lightboxStep(1); },
+          style: {
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            border: "1px solid var(--ui-stroke-secondary, rgba(128,128,128,0.35))",
+            background: "rgba(0, 0, 0, 0.55)",
+            color: "#fff",
+            fontSize: "18px",
+            lineHeight: "1",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "0",
+          },
+        }, "›") : null,
+      ),
+    ) : null,
+  );
   }
 
   function TaskDetail(props) {

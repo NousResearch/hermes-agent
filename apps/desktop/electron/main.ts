@@ -280,7 +280,7 @@ import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
-import { resolveHudWindowing } from './hud-windowing'
+import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -17806,7 +17806,13 @@ const activeWorkByWebContents = new Map<number, ActiveWork>()
 // The same merged picture drives background throttling: chat windows run
 // unthrottled while any turn is in flight (streaming must paint while hidden)
 // and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
-const streamThrottle = createStreamThrottle()
+const streamThrottle = createStreamThrottle(undefined, undefined, {
+  // #94865 is specific to native Wayland fullscreen surfaces. Reuse the same
+  // Ozone resolver as the rest of Desktop so XWayland/macOS/Windows retain the
+  // normal idle throttling contract.
+  keepFullscreenPainting:
+    process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
+})
 
 function updateStreamThrottleFromActiveWork() {
   streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)

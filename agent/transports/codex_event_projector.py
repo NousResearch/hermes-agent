@@ -60,6 +60,10 @@ class CodexEventProjector:
             return ProjectionResult()
         if item_type == "userMessage":
             return self._project_user_message(item)
+        if item_type == "contextCompaction":
+            # The session records this control item in TurnResult.compacted.
+            # It is not assistant content and must not enter persisted replay.
+            return ProjectionResult()
         tool_projection = self._TOOL_PROJECTIONS.get(item_type)
         if tool_projection is not None:
             return self._project_tool_item(item, item_id, tool_projection)

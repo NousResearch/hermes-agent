@@ -28,10 +28,6 @@ pytestmark = [
     pytest.mark.live_system_guard_bypass,
 ]
 
-KNOWN = {
-    "compaction_row": "#121301 native contextCompaction item persisted as a raw-JSON assistant message",
-}
-
 YOLO = ["--yolo"]
 SEED_MARKER = "Prior conversation from this Hermes session"
 
@@ -195,7 +191,6 @@ def test_native_compaction_keeps_thread_and_transcript(runs):
     assert texts == ["C-ONE", "C-TWO", "C-THREE"], f"transcript rewritten or duplicated: {rows}"
 
 
-@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["compaction_row"])
 def test_native_compaction_is_not_persisted_as_assistant_text(runs):
     run = runs["compact"]
     assert [r.returncode for r in run.results] == [0, 0], "\n".join(r.describe() for r in run.results)

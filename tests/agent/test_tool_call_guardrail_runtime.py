@@ -497,7 +497,9 @@ def test_relay_request_rewrite_is_blocked_before_execution_interceptor(tmp_path,
         execution_seen.append(dict(args))
         return relay.ToolExecutionInterceptOutcome({"intercepted": True})
 
-    relay.intercepts.register_tool_request(request_name, 1, False, rewrite_request)
+    # Stronger than the original reviewer repro: even a breaking request rewrite
+    # must not bypass the post-rewrite execution-boundary validator.
+    relay.intercepts.register_tool_request(request_name, 1, True, rewrite_request)
     relay.intercepts.register_tool_execution(execution_name, 1, short_circuit)
     try:
         assert lease.host.managed_execution_enabled()

@@ -43,6 +43,11 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 
 def _import_audio():
     """Lazy-import (sounddevice, numpy); raises ImportError/OSError when unavailable."""
+    from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+
+    unsupported_reason = x86_64_local_voice_native_unsupported_reason()
+    if unsupported_reason:
+        raise OSError(unsupported_reason)
     import sounddevice as sd
     import numpy as np
     return sd, np
@@ -96,6 +101,13 @@ def _audio_available() -> bool:
         return True
     except (ImportError, OSError):
         return False
+
+
+def _audio_unavailable_hint() -> str:
+    """Reason shown when native audio capture cannot be enabled safely."""
+    from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+
+    return x86_64_local_voice_native_unsupported_reason() or _voice_capture_install_hint()
 
 
 def _rms(np, data) -> float:
@@ -1478,7 +1490,7 @@ def check_voice_requirements() -> Dict[str, Any]:
     details = [
         "Audio capture: OK (Termux:API microphone)" if termux_capture
         else "Audio capture: OK" if has_audio
-        else f"Audio capture: MISSING ({_voice_capture_install_hint()})",
+        else f"Audio capture: MISSING ({_audio_unavailable_hint()})",
         "STT provider: DISABLED in config (stt.enabled: false)" if not stt_enabled
         else f"STT provider: {stt_label}" if stt_label
         else ("STT provider: MISSING (uv pip install faster-whisper — "

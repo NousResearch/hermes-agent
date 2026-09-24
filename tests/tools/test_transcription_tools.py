@@ -162,6 +162,24 @@ class TestExplicitProviderRespected:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "groq"
 
+    def test_legacy_x86_disables_faster_whisper_without_importing(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools.x86_64_local_voice_native_unsupported_reason",
+                   return_value="missing sse4_1"), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "groq"
+
+    def test_legacy_x86_keeps_local_command_available(self, monkeypatch):
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._has_local_command", return_value=True), \
+             patch("tools.transcription_tools.x86_64_local_voice_native_unsupported_reason",
+                   return_value="missing sse4_1"):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "local"}) == "local_command"
+
     def test_explicit_local_uses_local_command_fallback(self, monkeypatch):
         """Local-to-local_command fallback is fine — both are local."""
         monkeypatch.setenv(

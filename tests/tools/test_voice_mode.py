@@ -2,6 +2,7 @@
 
 import os
 import struct
+import sys
 import time
 import wave
 from pathlib import Path
@@ -289,6 +290,46 @@ class TestCheckVoiceRequirements:
         result = check_voice_requirements()
         assert result["available"] is True
         assert result["stt_available"] is True
+
+    def test_legacy_x86_audio_check_does_not_import_numpy(self, monkeypatch):
+        original_import = __import__
+
+        def fail_numpy_import():
+            raise AssertionError("numpy must not be imported on unsupported legacy x86")
+
+        monkeypatch.setattr(
+            "tools.native_cpu_compat.x86_64_local_voice_native_unsupported_reason",
+            lambda: "missing sse4_1",
+        )
+        monkeypatch.setitem(sys.modules, "numpy", None)
+        monkeypatch.setattr(
+            "builtins.__import__",
+            lambda name, *args, **kwargs: fail_numpy_import()
+            if name == "numpy"
+            else original_import(name, *args, **kwargs),
+        )
+
+        from tools.voice_mode import _audio_available
+
+        assert _audio_available() is False
+
+    def test_legacy_x86_voice_requirements_reports_cpu_guard(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.native_cpu_compat.x86_64_local_voice_native_unsupported_reason",
+            lambda: "missing sse4_1",
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode.detect_audio_environment",
+            lambda: {"available": True, "warnings": [], "notices": []},
+        )
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "none")
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+
+        assert result["available"] is False
+        assert "Audio capture: MISSING (missing sse4_1)" in result["details"]
 
 # ============================================================================
 # AudioRecorder

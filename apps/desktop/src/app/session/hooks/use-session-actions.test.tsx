@@ -108,6 +108,7 @@ import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
+import { captureSteeringSession } from './use-prompt-actions/steering-session'
 import { useSessionActions } from './use-session-actions'
 import { suppressTranscriptForView, transcriptRowContentKey } from './use-session-actions/transcript-provenance'
 import type { TranscriptViewCutoff } from './use-session-actions/transcript-provenance'
@@ -727,7 +728,7 @@ describe('active stored-session id rotation routing', () => {
     expect($activeSessionStoredIdRotation.get()).toBeNull()
   })
 
-  it('does not follow a rotation when an unrelated tile has focus', async () => {
+  it('keeps rotation proof for steering when focus moves to an unrelated tile', async () => {
     const previousId = 'stored-A'
     const nextId = 'stored-A-next'
     const unrelatedId = 'stored-C'
@@ -764,9 +765,42 @@ describe('active stored-session id rotation routing', () => {
       $activeTreeGroup.set('grp-main')
     })
 
-    await waitFor(() => expect($activeSessionStoredIdRotation.get()).toBeNull())
+    await waitFor(() =>
+      expect($activeSessionStoredIdRotation.get()).toEqual({
+        nextStoredSessionId: nextId,
+        previousStoredSessionId: previousId,
+        runtimeSessionId: runtimeId
+      })
+    )
     expect($selectedStoredSessionId.get()).toBe(previousId)
     expect(navigate).not.toHaveBeenCalled()
+
+    const captured = captureSteeringSession({
+      activeSessionIdRef: cache!.activeSessionIdRef,
+      getRoutedStoredSessionId: () => previousId,
+      requestGateway: async () => ({}) as never,
+      runtimeIdByStoredSessionIdRef: cache!.runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef: cache!.selectedStoredSessionIdRef,
+      updateSessionState: cache!.updateSessionState
+    })
+
+    expect(captured?.sessionId).toBe(runtimeId)
+    expect(captured?.storedSessionId).toBe(nextId)
+
+    act(() => {
+      $sessionTiles.set([{ storedSessionId: nextId } as never])
+      $layoutTree.set(
+        group(['workspace', `session-tile:${nextId}`], {
+          active: `session-tile:${nextId}`,
+          id: 'grp-main'
+        })
+      )
+      $activeTreeGroup.set('grp-main')
+    })
+
+    await waitFor(() => expect($selectedStoredSessionId.get()).toBe(nextId))
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(navigate).toHaveBeenCalledWith(sessionRoute(nextId), { replace: true })
   })
 
   it('keeps draft on the previous tip when the new tip row is not loaded yet', async () => {

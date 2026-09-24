@@ -489,6 +489,9 @@ export function useSessionActions({
   // unconditionally; a fast A → B → C switch could therefore be overwritten
   // by A's delayed session.info event and visibly jump back to A.
   const storedIdRotation = useStore($activeSessionStoredIdRotation)
+  const storedSessions = useStore($sessions)
+  const focusedStoredSessionId = useStore($focusedStoredSessionId)
+  const routedStoredSessionId = getRoutedStoredSessionId()
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -496,33 +499,39 @@ export function useSessionActions({
       return
     }
 
-    // Consume the event even when it is stale. Rotation is an edge, not durable
-    // state; replaying it after a later remount/selection would steal focus.
-    setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
-
-    const selectedStoredSessionId = selectedStoredSessionIdRef.current
-    const routedStoredSessionId = getRoutedStoredSessionId()
+    const selectedAtEffect = selectedStoredSessionIdRef.current
     const previousId = storedIdRotation.previousStoredSessionId
     const nextId = storedIdRotation.nextStoredSessionId
-    const sessions = $sessions.get()
-    const focusedStoredSessionId = $focusedStoredSessionId.get()
 
     // A tile can adopt the exact successor before the refreshed sessions list
     // contains it. The rotation itself proves that this focus is the same live
     // runtime; unrelated focused chats still fail the foreground check.
     const focusedOnRotatedLineage = Boolean(
       focusedStoredSessionId &&
-      (focusedStoredSessionId === nextId || idsShareLineage(focusedStoredSessionId, nextId, sessions))
+      (focusedStoredSessionId === nextId || idsShareLineage(focusedStoredSessionId, nextId, storedSessions))
     )
 
-    if (
+    const rotationIsStale =
       activeSessionIdRef.current !== storedIdRotation.runtimeSessionId ||
-      selectedStoredSessionId !== previousId ||
-      (routedStoredSessionId !== null && routedStoredSessionId !== previousId) ||
-      (!isSessionInForeground(previousId) && !focusedOnRotatedLineage)
-    ) {
+      selectedAtEffect !== previousId ||
+      (routedStoredSessionId !== null && routedStoredSessionId !== previousId)
+
+    if (rotationIsStale) {
+      // The user moved to another conversation, so this proof must not replay.
+      setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
+
       return
     }
+
+    if (!isSessionInForeground(previousId) && !focusedOnRotatedLineage) {
+      // Focus moved to an unrelated tile, but route and selection still name
+      // this conversation. Keep the proof so steering can use it until focus
+      // or the session list catches up.
+      return
+    }
+
+    // Consume only once the successor can safely take over the visible session.
+    setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
 
     // Park unsent draft/queue on the durable lineage key (not the new tip).
     // ChatBar scopes composer state on resolveComposerSessionKey(); migrating
@@ -530,12 +539,12 @@ export function useSessionActions({
     // live editor text on a brief remount. If the new tip row is not in
     // $sessions yet, resolveComposerSessionKey falls back to the tip id — prefer
     // the previous id (usually the lineage root) in that gap.
-    const resolvedNext = resolveComposerSessionKey(nextId, sessions)
+    const resolvedNext = resolveComposerSessionKey(nextId, storedSessions)
 
     const durableKey =
       resolvedNext && resolvedNext !== nextId
         ? resolvedNext
-        : (resolveComposerSessionKey(previousId, sessions) ?? previousId)
+        : (resolveComposerSessionKey(previousId, storedSessions) ?? previousId)
 
     migrateSessionDraft(previousId, durableKey)
     migrateSessionDraft(nextId, durableKey)
@@ -551,7 +560,18 @@ export function useSessionActions({
     if (routedStoredSessionId === previousId) {
       navigate(sessionRoute(nextId), { replace: true })
     }
-  }, [activeSessionIdRef, getRoutedStoredSessionId, navigate, selectedStoredSessionIdRef, storedIdRotation])
+  }, [
+    activeSessionId,
+    activeSessionIdRef,
+    focusedStoredSessionId,
+    getRoutedStoredSessionId,
+    navigate,
+    routedStoredSessionId,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef,
+    storedIdRotation,
+    storedSessions
+  ])
 
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {

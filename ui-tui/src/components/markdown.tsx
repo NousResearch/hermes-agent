@@ -593,7 +593,7 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       // this the inner content is dropped into a single `<Text bold>`
       // verbatim and the math renderer never sees it.
       parts.push(
-        <Text bold key={parts.length}>
+        <Text bold color={t.color.boldText} key={parts.length}>
           <MdInline t={t} text={m[8] ?? m[9]!} />
         </Text>
       )

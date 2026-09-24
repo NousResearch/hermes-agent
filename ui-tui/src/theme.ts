@@ -7,6 +7,8 @@ export interface ThemeColors {
   accent: string
   border: string
   text: string
+  /** Markdown strong text. Falls back to the normal response text color. */
+  boldText: string
   muted: string
   completionBg: string
   completionCurrentBg: string
@@ -297,6 +299,7 @@ export interface ThemeSeeds {
   /** Identity fill override: panel/status surface (derived when omitted). */
   surface?: string
   text: string
+  boldText: string
   warn: string
 }
 
@@ -325,6 +328,7 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     accent: seeds.accent,
     border: seeds.border ?? tones.border,
     text: seeds.text,
+    boldText: seeds.boldText,
     muted,
     completionBg: surface,
     completionCurrentBg: activeRow,
@@ -387,6 +391,7 @@ export const DARK_SEEDS: ThemeSeeds = {
   statusWarn: '#FFD700',
   surface: '#1a1a2e',
   text: '#FFF8DC',
+  boldText: '#FFF8DC',
   warn: '#ffa726'
 }
 
@@ -412,6 +417,7 @@ export const LIGHT_SEEDS: ThemeSeeds = {
   statusGood: '#5C7A5C',
   statusWarn: '#867000',
   text: '#3D2F13',
+  boldText: '#3D2F13',
   warn: '#956115'
 }
 
@@ -879,6 +885,7 @@ export function fromSkin(
     statusGood: c('status_bar_good') ?? c('ui_ok') ?? base.statusGood,
     statusWarn: c('status_bar_warn') ?? c('ui_warn') ?? base.statusWarn,
     text: c('ui_text') ?? c('banner_text') ?? base.text,
+    boldText: c('bold_text') ?? c('banner_text') ?? base.text,
     warn: c('ui_warn') ?? base.warn
   }
 
@@ -903,6 +910,7 @@ export function fromSkin(
   const assembled: ThemeColors = {
     ...derived,
     muted: c('banner_dim') ?? derived.muted,
+    boldText: seeds.boldText,
     label: c('ui_label') ?? derived.label,
     completionBg: surface,
     completionCurrentBg: activeRow,

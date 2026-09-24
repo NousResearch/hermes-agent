@@ -2261,8 +2261,18 @@ class ChatConsole:
 
     def __init__(self):
         from io import StringIO
+        from rich.theme import Theme
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin = get_active_skin()
+            _bold_text = _skin.get_color("bold_text", _skin.get_color("banner_text", "#FFF8DC"))
+        except Exception:
+            _bold_text = "#FFF8DC"
         self._buffer = StringIO()
-        self._inner = Console(file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False)
+        self._inner = Console(
+            file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False,
+            theme=Theme({"markdown.strong": f"bold {_bold_text}"}),
+        )
 
     def print(self, *args, **kwargs):
         self._buffer.seek(0)

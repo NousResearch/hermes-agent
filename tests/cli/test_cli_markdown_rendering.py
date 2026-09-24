@@ -3,13 +3,41 @@ from io import StringIO
 from rich.console import Console
 from rich.markdown import Markdown
 
-from cli import _render_final_assistant_content
+from cli import ChatConsole, _render_final_assistant_content
+from hermes_cli.skin_engine import SkinConfig
 
 
 def _render_to_text(renderable) -> str:
     buf = StringIO()
     Console(file=buf, width=80, force_terminal=False, color_system=None).print(renderable)
     return buf.getvalue()
+
+
+def _render_chat_console(markdown: str, monkeypatch, colors: dict[str, str]) -> str:
+    monkeypatch.setattr(
+        "hermes_cli.skin_engine.get_active_skin",
+        lambda: SkinConfig(name="test", colors=colors),
+    )
+    console = ChatConsole()
+    console._inner.print(Markdown(markdown))
+    return console._buffer.getvalue()
+
+
+def test_chat_console_bold_text_falls_back_to_banner_text(monkeypatch):
+    output = _render_chat_console("normal **bold**", monkeypatch, {"banner_text": "#123456"})
+
+    assert "38;2;18;52;86" in output
+    assert "1;38;2;18;52;86" in output
+
+
+def test_chat_console_uses_bold_text_only_for_markdown_strong(monkeypatch):
+    output = _render_chat_console(
+        "normal **bold**", monkeypatch, {"banner_text": "#123456", "bold_text": "#c4a7e7"}
+    )
+
+    assert "38;2;18;52;86" in output
+    assert "38;2;196;167;231" in output
+    assert "1;38;2;196;167;231" in output
 
 
 def test_final_assistant_content_uses_markdown_renderable():

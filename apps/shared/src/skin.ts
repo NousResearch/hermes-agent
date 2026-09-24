@@ -28,6 +28,7 @@ export const SKIN_COLOR_TOKENS = [
   // Text.
   'ui_text',
   'banner_text',
+  'bold_text',
   'banner_dim',
   // Structure.
   'ui_border',

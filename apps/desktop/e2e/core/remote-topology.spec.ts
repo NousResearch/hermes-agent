@@ -67,7 +67,9 @@ function imageParts(body: any): string[] {
 
 /** The sidebar session row showing `text` (rows own a [data-row-actions] cluster; chat bubbles do not). */
 function sidebarRow(page: Page, text: string) {
-  return page.locator('*:has(> [data-row-actions])').filter({ hasText: text, visible: true }).first()
+  const row = '*:has(> [data-row-actions])'
+
+  return page.locator(`${row}:not(${row} *)`).filter({ hasText: text, visible: true }).first()
 }
 
 async function stubImagePicker(app: Awaited<ReturnType<typeof launchCoreApp>>['app'], filePath: string) {

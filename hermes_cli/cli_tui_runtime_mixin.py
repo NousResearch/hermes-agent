@@ -61,7 +61,12 @@ class CLITuiRuntimeMixin:
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
-        from tools.process_registry_notifications import TimelineNotification
+        from tools.process_registry_notifications import ProcessHeartbeatNotification, TimelineNotification
+        heartbeat_event = user_input.event if isinstance(user_input, ProcessHeartbeatNotification) else None
+        if heartbeat_event is not None:
+            from tools.process_registry import process_registry
+            if not process_registry.heartbeat_is_current(heartbeat_event):
+                return
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -108,6 +113,8 @@ class CLITuiRuntimeMixin:
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
+        if heartbeat_event is not None and not process_registry.heartbeat_is_current(heartbeat_event):
+            return
         _cprint("")
         self._print_user_message_preview(notification_preview or user_input)
 

@@ -23,7 +23,8 @@ class CLIProcessNotificationsMixin:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
         from tools.process_registry_notifications import (
-            ProcessNotificationBatch, TimelineNotification, group_process_notifications)
+            ProcessHeartbeatNotification, ProcessNotificationBatch, TimelineNotification,
+            group_process_notifications)
 
         claimed = []
         for event, text in process_registry.drain_notifications(
@@ -39,7 +40,12 @@ class CLIProcessNotificationsMixin:
             if event.get("type", "completion") == "completion":
                 pending = ProcessNotificationBatch(notifications)
             else:
-                pending = TimelineNotification.for_delegation(text, event) if event.get("type") == "async_delegation" else text
+                if event.get("type") == "async_delegation":
+                    pending = TimelineNotification.for_delegation(text, event)
+                elif event.get("type") == "heartbeat":
+                    pending = ProcessHeartbeatNotification(text, event)
+                else:
+                    pending = text
                 from agent.notification_presentation import diagnostic_process_event
                 if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
                     pending = TimelineNotification(text, text, "internal_notification", "diagnostic")
@@ -64,4 +70,3 @@ class CLIProcessNotificationsMixin:
         if is_seeded_query:
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
         return user_input, is_voice_input, is_seeded_query
-

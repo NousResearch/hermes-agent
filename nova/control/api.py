@@ -254,6 +254,19 @@ class ControlAPI:
             dry_run=dry_run,
         )
         body = {**report.to_dict(), "actor": principal.name, "dry_run": dry_run}
+        if not (report.submitted or dry_run):
+            # The refusal detail is in ``routing``; this is the sentence a client shows. The
+            # dashboard reads ``error.message`` from every failed write, and without it a
+            # refused objective read as a bare "HTTP 409".
+            refusals = "; ".join(
+                f"step {step.step_id}: {step.detail or step.reason}"
+                for step in report.routing.steps if not step.allowed
+            ) or "its routing was refused"
+            body["error"] = {
+                "status": 409,
+                "message": f"Nothing was started: {refusals}. Fix the owner's delegation "
+                           "(may_assign_to) or the step's agent, then start it again.",
+            }
         return Response(200 if report.submitted or dry_run else 409, body)
 
     def _apply_channels(self, principal, payload: Mapping[str, Any]) -> Response:

@@ -10,6 +10,7 @@ import { PanelBody } from "@/components/panel";
 import { TaskDetailPanel } from "./task-detail";
 import { TaskActions, TaskProblem } from "./task-actions";
 import { CapabilityList } from "@/components/capabilities";
+import { ApplyChannels, StartObjective } from "./run-actions";
 import { plural } from "@/lib/api";
 import {
   absolute, absoluteIso, channelLabel, channelState, dayLabel, decisionLabel, decisionState,
@@ -447,6 +448,8 @@ export function ObjectivesScreen({ objectives }: { objectives: Loaded<{ objectiv
                     ))}
                   </ul>
                 ) : null}
+
+                <StartObjective objective={objective} />
               </GlassCard>
             );
           })}
@@ -657,6 +660,12 @@ export function ChannelsScreen({
               </GlassCard>
             );
           })}
+
+          {data.declared && data.channels.length ? (
+            <GlassPanel className="px-5 pb-4 pt-1">
+              <ApplyChannels />
+            </GlassPanel>
+          ) : null}
 
           <ChannelCatalogue
             catalogue={data.catalogue ?? []}

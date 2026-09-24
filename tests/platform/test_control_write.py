@@ -398,3 +398,28 @@ def test_applying_channels_on_a_runtime_that_cannot_deliver_is_501(bundle, audit
     api = ControlAPI(bundle, RecordingRuntime(), audit=audit_log)
     response = api.write("/platform/v1/channels/apply", ADMIN, {})
     assert response.status == 501
+
+
+def test_a_refused_objective_says_why_in_the_field_the_dashboard_reads(tmp_path, runtime, audit):
+    """A refused start came back 409 with the detail only inside ``routing``; the dashboard
+    shows ``error.message`` for every failed write, so the operator saw a bare "HTTP 409"."""
+    import shutil
+
+    from nova.control import ControlAPI
+    from nova.control.auth import Principal
+    from nova.spec import load_bundle
+
+    from .conftest import EXAMPLE_BUNDLE
+
+    root = tmp_path / "bundle"
+    shutil.copytree(EXAMPLE_BUNDLE, root)
+    ops = root / "agents" / "operations.yaml"
+    ops.write_text(ops.read_text().replace("may_assign_to: [customer-support]", "may_assign_to: []"))
+    bundle = load_bundle(root)
+    api = ControlAPI(bundle, runtime, audit=audit)
+    objective = bundle.objectives[0].id
+    response = api.write(f"/platform/v1/objectives/{objective}/submit",
+                         Principal(name="admin", role="admin"), {})
+    assert response.status == 409
+    message = response.body["error"]["message"]
+    assert message.startswith("Nothing was started") and "may_assign_to" in message

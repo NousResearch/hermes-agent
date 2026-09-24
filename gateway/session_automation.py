@@ -56,6 +56,13 @@ def _owner(runner, event):
     return entry
 
 
+def automation_notification_metadata(metadata):
+    """Validate trusted producer category; omit the default from old fingerprints."""
+    category = metadata.get('notification_category', 'result')
+    if category not in ('result', 'diagnostic'):
+        raise RuntimeStoreError('invalid_params')
+    return {'notification_category': category} if category == 'diagnostic' else {}
+
 # notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
 # persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
@@ -67,9 +74,9 @@ def snapshot_automation(authority, adapter, event, identity):
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
             or not isinstance(event.text, str) or not identity
             or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
-            or set(event.metadata) - _AUTOMATION_METADATA
-            or event.metadata.get('notification_category', 'diagnostic') != 'diagnostic'):
+            or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
+    notification = automation_notification_metadata(event.metadata)
     entry = _owner(runner, event)
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
@@ -94,13 +101,12 @@ def snapshot_automation(authority, adapter, event, identity):
         'timestamp': datetime.fromtimestamp(0, timezone.utc).isoformat(),
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': entry.session_id}}
+    envelope['automation'].update(notification)
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
     identities = event.metadata.get('automation_identities')
     if identities:
         envelope['automation']['identities'] = sorted(set(identities))
-    if event.metadata.get('notification_category'):
-        envelope['automation']['notification_category'] = 'diagnostic'
     return {'text': event.text, 'native_text_v1': envelope}, entry
 
 
@@ -125,6 +131,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         raise RuntimeStoreError('permission_denied')
     descriptor = {'identity': identity, 'owner': ref.session_id,
                   'route': entry.session_key, 'target': entry.session_id}
+    descriptor.update(automation_notification_metadata(event.metadata))
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
@@ -134,8 +141,6 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         descriptor['identities'] = sorted(set(event.metadata['automation_identities']))
     if getattr(event, '_heartbeat_session_id', None):
         descriptor['heartbeat'] = event._heartbeat_session_id
-    if event.metadata.get('notification_category'):
-        descriptor['notification_category'] = 'diagnostic'
     return {'text': event.text, 'local_automation_v1': descriptor}, entry
 
 
@@ -162,12 +167,11 @@ def restore_local_automation(authority, ref, row):
     event = MessageEvent(text=row['payload']['text'], source=live.source, internal=True,
         message_id=descriptor['identity'], metadata={'gateway_session_key': live.route,
             'gateway_session_id': entry.session_id})
+    event.metadata.update(automation_notification_metadata(descriptor))
     if descriptor.get('turn_author') is not None:
         event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
     if descriptor.get('heartbeat'):
         event._heartbeat_session_id = descriptor['heartbeat']
-    if descriptor.get('notification_category') == 'diagnostic':
-        event.metadata['notification_category'] = 'diagnostic'
     return event
 
 

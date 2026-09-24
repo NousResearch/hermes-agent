@@ -282,4 +282,3 @@ def test_pty_chat_turn_reconnect_and_profile_scoped_keepalive(dash_env) -> None:
     assert not _main_requests(default), "the DEFAULT profile's provider saw traffic from profile-scoped chats"
     assert not _user_rows(default, "canary-"), "a profile-scoped prompt landed in the DEFAULT profile's state.db"
     assert dash.proc.poll() is None, f"dashboard died:\n{dash.log_tail()}"
-

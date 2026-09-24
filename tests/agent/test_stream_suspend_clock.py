@@ -23,7 +23,7 @@ def test_chat_monitor_ignores_sleep_for_stale_and_wait_notice(monkeypatch):
 
     class Done:
         def is_set(self):
-            return awake[0] >= 1145
+            return awake[0] >= 1143
 
         def wait(self, timeout):
             # First poll is the immediate host resume (six hours of wall time).
@@ -33,8 +33,8 @@ def test_chat_monitor_ignores_sleep_for_stale_and_wait_notice(monkeypatch):
     call._call_done = Done()
     call._monitor_loop()
     assert kills == []
-    assert any("stream output" in n and "516s" in n for n in notices)
-    assert all("234" not in n for n in notices)
+    assert any("486s waiting for the first stream chunk" in n for n in notices)
+    assert all("23" not in n for n in notices)
 
 
 def test_bedrock_monitor_ignores_sleep_but_times_out_after_awake_budget(monkeypatch):

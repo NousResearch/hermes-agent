@@ -74,6 +74,7 @@ def _system_text(body: dict) -> str:
 @dataclass
 class Attempt:
     role: str  # "impl" | "review"
+    tick: int  # the dispatcher tick that spawned this worker process
     requests: int = 0
     answers: list[str] = field(default_factory=list)
 
@@ -81,11 +82,14 @@ class Attempt:
 class TwoRoleModel:
     """Scripted vendor: implementer attempts 1..``rate_limited_attempts`` get HTTP 429, later ones
     hand off with ``kanban_request_review``; a reviewer approves with ``kanban_complete``. Every
-    request is attributed to the worker attempt (fresh session) that sent it."""
+    request is attributed to the worker PROCESS that sent it: the driver opens a window per tick and
+    waits for that tick's worker to exit before the next one, so in-process retries of one worker
+    are billed to that worker, not mistaken for a new attempt."""
 
     def __init__(self, rate_limited_attempts: int) -> None:
         self.rate_limited_attempts = rate_limited_attempts
         self.attempts: list[Attempt] = []
+        self.tick = 0  # set by ``drive`` before each dispatcher tick
         self._lock = threading.Lock()
 
     def __call__(self, rec: dict[str, Any]) -> Any:
@@ -93,17 +97,17 @@ class TwoRoleModel:
         msgs = body.get("messages", [])
         role = "review" if f'"{REVIEW_SKILL}"' in _system_text(body) else "impl"
         with self._lock:
-            fresh = not any(m.get("role") in ("assistant", "tool") for m in msgs)
-            if fresh or not self.attempts or self.attempts[-1].role != role:
-                self.attempts.append(Attempt(role))
+            last = self.attempts[-1] if self.attempts else None
+            if last is None or (last.tick, last.role) != (self.tick, role):
+                self.attempts.append(Attempt(role, self.tick))
             att = self.attempts[-1]
             att.requests += 1
-            resp = self._answer(role, att, msgs, fresh)
+            resp = self._answer(role, msgs)
             att.answers.append(type(resp).__name__ if not isinstance(resp, ToolCall) else resp.name)
             return resp
 
-    def _answer(self, role: str, att: Attempt, msgs: list, fresh: bool) -> Any:
-        if not fresh and msgs and msgs[-1].get("role") == "tool":
+    def _answer(self, role: str, msgs: list) -> Any:
+        if msgs and msgs[-1].get("role") == "tool":
             return Text("done")
         if role == "review":
             return ToolCall("kanban_complete", {"summary": "review: approved"})
@@ -139,6 +143,7 @@ def drive(board: Board, tid: str, model: TwoRoleModel, max_ticks: int = MAX_TICK
     tick sees its final state (a dead worker is reaped on the tick after it dies)."""
     ticks: list[dict] = []
     for n in range(1, max_ticks + 1):
+        model.tick = n
         res = board.dispatch()
         spawned = [s["task_id"] for s in res.get("spawned", [])]
         if tid in spawned:
@@ -196,8 +201,8 @@ def test_rate_limited_attempt_is_billed_once_and_requeued_without_a_failure(rate
     # Provider-side billing: the 429 attempt is ONE request (api_max_retries: 1, no retry loop and
     # no fallback re-send); the retry is exactly the handoff tool call plus its closing turn.
     impl = f.model.by_role("impl")
-    assert [(a.requests, a.answers) for a in impl] == [
-        (1, ["Error"]), (2, ["kanban_request_review", "Text"]),
+    assert [(a.tick, a.requests, a.answers) for a in impl] == [
+        (1, 1, ["Error"]), (2, 2, ["kanban_request_review", "Text"]),
     ], diag
     assert len(runs) - 2 == len(f.model.by_role("review")), diag
 
@@ -211,7 +216,7 @@ def test_clean_handoff_spawns_the_reviewer_on_the_next_tick(tmp_path: Path) -> N
     assert f.run_outcomes() == ["review_requested", "completed"], diag
     assert [t["spawned"] for t in f.ticks] == [1, 1], diag
     assert not any(t["guarded"] for t in f.ticks), diag
-    assert [(a.role, a.requests) for a in f.model.attempts] == [("impl", 2), ("review", 2)], diag
+    assert [(a.role, a.tick, a.requests) for a in f.model.attempts] == [("impl", 1, 2), ("review", 2, 2)], diag
     assert b.task(tid)["consecutive_failures"] == 0, diag
 
 
@@ -230,6 +235,7 @@ def test_rate_limited_then_review_handoff_reaches_the_reviewer(rate_limited_flow
             f"reviewer attempts={len(reviewers)}, respawn_guarded={guarded}\n{diag}")
     # Once fixed, the whole contract must hold, not just "something spawned".
     assert f.run_outcomes() == ["rate_limited", "review_requested", "completed"], diag
-    assert [(a.requests, a.answers) for a in reviewers] == [(2, ["kanban_complete", "Text"])], diag
+    # The reviewer starts on the tick right after the handoff (cooldown 0), billed one tool turn.
+    assert [(a.tick, a.requests, a.answers) for a in reviewers] == [(3, 2, ["kanban_complete", "Text"])], diag
     assert "blocker_auth" not in guarded, diag
     assert not b.events(tid, "gave_up") and b.task(tid)["consecutive_failures"] == 0, diag

@@ -4,6 +4,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { reconcileActiveTranscript } from '@/app/contrib/hooks/use-background-sync'
 import { getLatestSessionMessages } from '@/hermes'
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
@@ -357,6 +358,42 @@ it('does not paint a cold re-resume read ahead of a replay redialed while REST w
         .join('\n')
         .match(/Finished result\./g)
     ).toHaveLength(1)
+  } finally {
+    client.close()
+  }
+})
+
+it('holds a background active-transcript refresh behind the reconnect replay', async () => {
+  const { result, client, second, request } = await mountWithPendingReplay()
+
+  const { activeSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState } =
+    result.current.cache
+
+  selectedStoredSessionIdRef.current = storedId
+  activeSessionIdRef.current = runtimeId
+
+  try {
+    const refresh = reconcileActiveTranscript({
+      activeSessionIdRef,
+      busyRef: { current: false },
+      requestSequenceRef: { current: 0 },
+      resolveSession: () => ({ profile: 'default' }),
+      selectedStoredSessionIdRef,
+      signatureRef: { current: new Map() },
+      updateSessionState
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+
+    await act(async () => {
+      second.frame({ id: request.id, jsonrpc: '2.0', result: { events: replay } })
+      await refresh
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    const text = sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages.map(chatMessageText).join('\n')
+    expect(text.match(/Finished result\./g)).toHaveLength(1)
   } finally {
     client.close()
   }

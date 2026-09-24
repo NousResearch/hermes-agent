@@ -368,6 +368,124 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  it.each(['timeout', 'unsupported'] as const)(
+    'settles sessions independently and releases fresh frames on replay %s',
+    async fallback => {
+      vi.useFakeTimers()
+      const client = makeClient()
+      const seen: string[] = []
+      client.onEvent(event => seen.push(`${event.session_id}:${event.type}:${event.seq}`))
+
+      try {
+        const first = client.connect('ws://x')
+        sockets[0].open()
+        await first
+
+        sockets[0].serverFrame({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { replay_epoch: 'stable' } }
+        })
+
+        for (const sid of ['slow', 'fast']) {
+          sockets[0].serverFrame({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { type: 'session.info', session_id: sid, seq: 1 }
+          })
+        }
+
+        seen.length = 0
+        client.invalidate()
+        const second = client.connect('ws://x')
+        sockets[1].open()
+        await second
+        const slow = client.sessionReplayBarrier('slow')!
+        const fast = client.sessionReplayBarrier('fast')!
+        expect(slow).toBeInstanceOf(Promise)
+        expect(fast).toBeInstanceOf(Promise)
+        const requests = sockets[1].sent.map(text => JSON.parse(text))
+        const slowRequest = requests.find(request => request.params.session_id === 'slow')
+        const fastRequest = requests.find(request => request.params.session_id === 'fast')
+        const slowSettled = vi.fn()
+        void slow.then(slowSettled)
+
+        // Both ordinary parked starts and wire-marked replayed starts are fresh.
+        for (const [sid, seq] of [
+          ['slow', 2],
+          ['fast', 3]
+        ] as const) {
+          sockets[1].serverFrame({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { type: 'message.start', session_id: sid, seq, replayed: sid === 'fast' }
+          })
+        }
+
+        sockets[1].serverFrame({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'message.start', session_id: 'new', seq: 1 }
+        })
+        expect(seen).toEqual(['new:message.start:1'])
+
+        const fastSettled = fast.then(valid => {
+          expect(valid).toBe(true)
+          expect(seen).toEqual(['new:message.start:1', 'fast:message.complete:2', 'fast:message.start:3'])
+        })
+
+        sockets[1].serverFrame({
+          jsonrpc: '2.0',
+          id: fastRequest.id,
+          result: {
+            epoch: 'stable',
+            events: [{ type: 'message.complete', session_id: 'fast', seq: 2 }]
+          }
+        })
+        await fastSettled
+        expect(client.sessionReplayBarrier('fast')).toBeUndefined()
+        expect(client.sessionReplayBarrier('slow')).toBe(slow)
+        expect(slowSettled).not.toHaveBeenCalled()
+        sockets[1].serverFrame({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'message.delta', session_id: 'fast', seq: 4 }
+        })
+        expect(seen.at(-1)).toBe('fast:message.delta:4')
+
+        if (fallback === 'timeout') {
+          // The replay deadline is bounded independently of the 120s RPC default.
+          await vi.advanceTimersByTimeAsync(9_999)
+          expect(slowSettled).not.toHaveBeenCalled()
+          await vi.advanceTimersByTimeAsync(1)
+        } else {
+          sockets[1].serverFrame({
+            jsonrpc: '2.0',
+            id: slowRequest.id,
+            error: { code: -32601, message: 'method not found' }
+          })
+        }
+
+        await expect(slow).resolves.toBe(true)
+        expect(seen.at(-1)).toBe('slow:message.start:2')
+        expect(client.sessionReplayBarrier('slow')).toBeUndefined()
+        // Late replies after fallback cannot resurrect the old replay window.
+        sockets[1].serverFrame({
+          jsonrpc: '2.0',
+          id: slowRequest.id,
+          result: {
+            events: [{ type: 'message.delta', session_id: 'slow', seq: 99 }]
+          }
+        })
+        await Promise.resolve()
+        expect(client.getSeqWatermarks()).toEqual({ slow: 2, fast: 4, new: 1 })
+      } finally {
+        client.close()
+        vi.useRealTimers()
+      }
+    }
+  )
+
   // A backend restart announces a new epoch over the still-open socket. No
   // replay can cover the old numbering, so waiting history reads must proceed
   // (the reconnect backstop read, #94779) instead of being silently dropped.

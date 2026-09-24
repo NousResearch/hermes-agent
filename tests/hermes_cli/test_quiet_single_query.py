@@ -106,7 +106,8 @@ def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inher
     except SystemExit as exc:
         assert exc.code == 0
     assert seen["env_during_turn"] is None and seen["report_during_turn"] is False
-    assert seen["report_at_linger"] == {"pid": os.getpid(), "exit_code": 0, "error": "", "reply": "ok"}
+    assert seen["report_at_linger"] == {"pid": os.getpid(), "exit_code": 0, "error": "", "reply": "ok",
+                                        "turn_exit_reason": ""}
     # Another process's record is not this child's report.
     assert qsq.read_turn_report(str(report), os.getpid() + 1) is None
 
@@ -144,3 +145,43 @@ def test_a_follow_up_turn_rewrites_the_report_with_the_answer_it_displaces(monke
     assert seen["report_before_follow_up"] == "asking the teammate"
     assert qsq.read_turn_report(str(report), os.getpid())["reply"] == "teammate says: done"
     assert ("teammate says: done",) in printed, "the report and stdout name the same answer"
+
+
+def test_write_turn_report_carries_the_typed_turn_exit_reason(tmp_path):
+    """Budget exhaustion is invisible to a `-q` spawner (the usage-file report is -z-only), so
+    the turn report carries the loop's typed outcome verbatim."""
+    from hermes_cli.quiet_single_query import write_turn_report, read_turn_report
+    report = tmp_path / "turn.json"
+    write_turn_report(str(report), exit_code=1, error="boom", reply="",
+                      turn_exit_reason="max_iterations_reached(60/60)")
+    assert read_turn_report(str(report), os.getpid()) == {
+        "pid": os.getpid(), "exit_code": 1, "error": "boom", "reply": "",
+        "turn_exit_reason": "max_iterations_reached(60/60)"}
+    # A writer that knows nothing about the field still produces a valid record.
+    other = tmp_path / "old.json"
+    write_turn_report(str(other), exit_code=0)
+    assert read_turn_report(str(other), os.getpid())["turn_exit_reason"] == ""
+
+
+def test_the_quiet_run_stamps_the_report_with_the_failing_turns_exit_reason(monkeypatch, tmp_path):
+    """The typed reason survives from the turn result into the report the spawner reads: a
+    max_turns death arrives as failed + max_iterations_reached(...), not bare unknown."""
+    from hermes_cli import quiet_single_query as qsq
+
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    report = tmp_path / "turn.json"
+    monkeypatch.setenv(qsq.TURN_REPORT_FILE_ENV, str(report))
+
+    def run_conversation(**kwargs):
+        return {"final_response": "", "failed": True, "error": "agent turn did not run cleanly",
+                "turn_exit_reason": "max_iterations_reached(3/3)"}
+
+    monkeypatch.setattr("tools.process_registry.process_registry.wait_for_pending_completions",
+                        lambda *a, **k: {"waited": [], "completed": [], "timed_out": []})
+    agent = SimpleNamespace(run_conversation=run_conversation, session_id="s-1")
+    try:
+        cli._run_quiet_single_query(SimpleNamespace(agent=agent, conversation_history=[], session_id="s-1"), "hello")
+    except SystemExit as exc:
+        assert exc.code == 1, "a failed turn still exits 1; the reason is additive"
+    assert qsq.read_turn_report(str(report), os.getpid())["turn_exit_reason"] == "max_iterations_reached(3/3)"

@@ -185,20 +185,16 @@ def _deferrable_in(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _resolve_oauth_wire_alias(name: str, available_names: Optional[Iterable[str]] = None) -> str:
-    """Resolve an Anthropic OAuth wire alias when it cannot shadow a real tool.
+    """Resolve a compatibility wire alias in generic tool-search bridges.
 
-    OAuth aliases are exposed in Anthropic-facing prose and deferred catalogs, but the
-    tool-search bridges dispatch against registered names. Keep registered wire names
-    authoritative, then accept an alias only when its registered target is available in
-    this bridge scope.
+    These bridges recognize the OAuth compatibility aliases regardless of provider. A
+    real registered tool under the requested wire name always wins; otherwise an alias
+    resolves only when its registered target is available in this bridge scope.
     """
     if _registry_entry(name) is not None:
         return name
-    try:
-        from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
-        target = _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(name)
-    except Exception:
-        return name
+    from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
+    target = _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(name)
     if not target:
         return name
     if available_names is not None:

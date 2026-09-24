@@ -393,19 +393,29 @@ class TestBatchedDescribe:
             "name": "chat_history_lookup", "arguments": {"query": "oauth alias"},
         }) == ("session_search", {"query": "oauth alias"}, None)
 
-        # API-key and non-OAuth callers can register this spelling themselves;
-        # that real registration must keep precedence over the OAuth alias.
-        wire_def = _register("chat_history_lookup", "mcp-native-wire-name", "Native wire tool.")
-        result = json.loads(dispatch_tool_describe(
-            {"names": ["chat_history_lookup"]},
-            current_tool_defs=[wire_def],
-            config=ToolSearchConfig.from_raw({}),
-        ))
+    def test_registered_oauth_wire_name_precedes_alias_and_is_cleaned_up(self):
+        """A native wire-name registration wins and cannot leak into later tests."""
+        from tools.registry import registry
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe, resolve_underlying_call
 
-        assert result["tools"]["chat_history_lookup"]["description"] == "Native wire tool."
-        assert resolve_underlying_call({
-            "name": "chat_history_lookup", "arguments": {},
-        }) == ("chat_history_lookup", {}, None)
+        try:
+            # API-key and non-OAuth callers can register this spelling themselves;
+            # that real registration must keep precedence over the OAuth alias.
+            wire_def = _register("chat_history_lookup", "mcp-native-wire-name", "Native wire tool.")
+            result = json.loads(dispatch_tool_describe(
+                {"names": ["chat_history_lookup"]},
+                current_tool_defs=[wire_def],
+                config=ToolSearchConfig.from_raw({}),
+            ))
+
+            assert result["tools"]["chat_history_lookup"]["description"] == "Native wire tool."
+            assert resolve_underlying_call({
+                "name": "chat_history_lookup", "arguments": {},
+            }) == ("chat_history_lookup", {}, None)
+        finally:
+            registry.deregister("chat_history_lookup")
+
+        assert registry.get_entry("chat_history_lookup") is None
 
     def test_map_response_with_not_found(self, issue_defs):
         from tools.tool_search import ToolSearchConfig, dispatch_tool_describe

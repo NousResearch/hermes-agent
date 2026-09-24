@@ -1,7 +1,7 @@
 name: hermes-workbench
 repo: https://github.com/sxuff/hermes-workbench
 sha: f07fb5c90e24c1a396604758feb0fd4ae077760b
-description: The Hermes desktop app in your browser. `hermes workbench` serves the desktop interface through the Hermes dashboard, for headless servers, VPSes and tablets. Disclosure — builds that interface from your Hermes checkout with npm (Hermes's lockfile, install scripts off) and Vite into ~/.hermes/hermes-workbench, and starts `hermes dashboard` on loopback when none is running.
+description: The Hermes desktop app in your browser. `hermes workbench` serves the desktop interface through the Hermes dashboard, for headless servers, VPSes and tablets. Disclosure — community plugin, not a Nous product. On the first `hermes workbench` run and again after each Hermes update it runs `npm install --ignore-scripts` (guided by Hermes's lockfile) and Vite against your Hermes checkout's desktop sources, writing only under ~/.hermes/hermes-workbench and its own plugin dir (the checkout is only read), and starts `hermes dashboard` on loopback when none is running.
 maintainer: sxuff
 tier: community
 category: desktop

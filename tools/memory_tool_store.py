@@ -86,11 +86,17 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
-                 memory_enabled: bool = True, user_profile_enabled: bool = True):
+                 memory_enabled: bool = True, user_profile_enabled: bool = True,
+                 gateway_session_key: Optional[str] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
+        from tools.memory_tool import get_memory_dir, resolve_memory_scope
+        self.scope_id = resolve_memory_scope(gateway_session_key)
+        self._memory_dir = get_memory_dir()
+        if self.scope_id:
+            self._memory_dir = self._memory_dir / "conversations" / self.scope_id
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
@@ -195,8 +201,9 @@ class MemoryStore:
                 with suppress(OSError):
                     _flock(True)
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
+        if self.scope_id:
+            return self._memory_dir / ("USER.md" if target == "user" else "MEMORY.md")
         from tools import memory_tool  # get_memory_dir is monkeypatched there
         return memory_tool.get_memory_dir() / ("USER.md" if target == "user" else "MEMORY.md")
 

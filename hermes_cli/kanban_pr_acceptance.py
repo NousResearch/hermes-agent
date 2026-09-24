@@ -20,7 +20,9 @@ _JOB = re.compile(r"https://github\.com/[^/]+/[^/]+/actions/runs/[0-9]+/job/([0-
 
 def _plan_limited(error: subprocess.CalledProcessError) -> bool:
     # Do not interpret arbitrary 403s (bad credentials, insufficient scopes) as plan limits.
-    return "Upgrade to GitHub Pro or make this repository public to enable this feature." in (error.stderr or "")
+    stderr = error.stderr or ""
+    return ("(HTTP 403)" in stderr and
+            "Upgrade to GitHub Pro or make this repository public to enable this feature." in stderr)
 
 
 def _authorities(repo: str) -> list[str]:

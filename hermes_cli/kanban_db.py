@@ -2151,12 +2151,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2190,24 +2185,31 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
+    """Return whether every ancestor is terminal for dependency gating.
+
+    An archived ancestor may have released a child that completed before the
+    archive was restored. Its done status must not hide the restored blocker.
+    """
     return conn.execute(
-        "SELECT 1 FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
+        "WITH RECURSIVE ancestors(id) AS ("
+        " SELECT parent_id FROM task_links WHERE child_id = ? UNION "
+        " SELECT l.parent_id FROM task_links l JOIN ancestors a ON l.child_id = a.id) "
+        "SELECT 1 FROM ancestors a JOIN tasks p ON p.id = a.id "
+        "WHERE p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
     ).fetchone() is None
 
 
 def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
-    """``(parent_id, status)`` for every direct parent :func:`_parents_satisfied`
+    """``(parent_id, status)`` for every ancestor :func:`_parents_satisfied`
     still counts as open (``done`` / ``archived`` release the child), in id
     order, so a refusal or a board view can name the blockers instead of the
     caller guessing. Read-only."""
     rows = conn.execute(
-        "SELECT p.id, p.status FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+        "WITH RECURSIVE ancestors(id) AS ("
+        " SELECT parent_id FROM task_links WHERE child_id = ? UNION "
+        " SELECT l.parent_id FROM task_links l JOIN ancestors a ON l.child_id = a.id) "
+        "SELECT p.id, p.status FROM ancestors a JOIN tasks p ON p.id = a.id "
+        "WHERE p.status NOT IN ('done', 'archived') "
         "ORDER BY p.id", (task_id,),
     ).fetchall()
     return [(row["id"], row["status"]) for row in rows]
@@ -3956,7 +3958,7 @@ def restore_archived_task(conn: sqlite3.Connection, task_id: str, *, archive_eve
         })
         # Archiving may already have promoted dependency children. Retract only
         # unclaimed ready descendants; in-flight workers retain their own claims
-        # but cannot complete while this parent is blocked (_parents_satisfied).
+        # but cannot complete while this ancestor is blocked (_parents_satisfied).
         ready = conn.execute(
             "WITH RECURSIVE descendants(id) AS ("
             " SELECT child_id FROM task_links WHERE parent_id = ? UNION "

@@ -33,7 +33,7 @@ def github(tmp_path, monkeypatch):
                 value = [[]]
             elif "/protection/required_status_checks" in self.path:
                 if state.get("plan_limited"):
-                    self.send_response(403)
+                    self.send_response(state.get("protection_error_status", 403))
                     self.end_headers()
                     self.wfile.write(b'{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}')
                     return
@@ -102,7 +102,7 @@ def github(tmp_path, monkeypatch):
                   " data=json.loads(urllib.request.urlopen(u).read().decode())\n"
                   " if \"--paginate\" in sys.argv: print(\"\\n\".join(json.dumps(p) for p in data))\n"
                   " else: print(json.dumps(data))\n"
-                  "except urllib.error.HTTPError as e:\n print(e.read().decode(),file=sys.stderr); sys.exit(1)\n")
+                  "except urllib.error.HTTPError as e:\n print(e.read().decode()+f' (HTTP {e.code})',file=sys.stderr); sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -202,6 +202,10 @@ def test_plan_limited_fallback_requires_exact_authority_and_nonexecuted_actions(
         for key in changes:
             github.pop(key)
 
+    github["protection_error_status"] = 401
+    assert receipt()["classification"] == "infra"  # A matching message without HTTP 403 is not a plan limit.
+    github.pop("protection_error_status")
+
     (github["home"] / "config.yaml").write_text("kanban:\n  pr_acceptance_authorities: {}\n")
     assert not receipt()["ok"]
     github.pop("plan_limited")
@@ -230,3 +234,34 @@ def test_archived_pr_restoration_preserves_contract_and_regates_children(github)
                                             completion_contract="acme/repo", reason="duplicate")
         assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='archive_restored'",
                             (parent,)).fetchone()[0] == 1
+
+
+@pytest.mark.linux_only
+def test_restoring_archived_ancestor_fences_done_intermediate_and_running_descendant(github):
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        intermediate = kb.create_task(conn, title="review", parents=[root])
+        unclaimed = kb.create_task(conn, title="release", parents=[intermediate])
+        running = kb.create_task(conn, title="verification", parents=[intermediate])
+        assert kb.archive_task(conn, root)
+        assert kb.complete_task(conn, intermediate, summary="review completed while source archived")
+        claimed = kb.claim_task(conn, running)
+        assert claimed is not None
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
+        ).fetchone()[0]
+        assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                        completion_contract="acme/repo", reason="acceptance missing")
+        assert (unclaimed_task := kb.get_task(conn, unclaimed)) is not None
+        assert (running_task := kb.get_task(conn, running)) is not None
+        assert unclaimed_task.status == "todo"
+        assert running_task.status == "running"
+        assert kb.unsatisfied_parents(conn, unclaimed) == [(root, "blocked")]
+        assert kb.claim_task(conn, unclaimed) is None
+        assert not kb.complete_task(conn, running, summary="cannot bypass source",
+                                    expected_run_id=claimed.current_run_id)
+        kb.recompute_ready(conn)
+        assert (unclaimed_task := kb.get_task(conn, unclaimed)) is not None
+        assert (running_task := kb.get_task(conn, running)) is not None
+        assert unclaimed_task.status == "todo"
+        assert running_task.status == "running"

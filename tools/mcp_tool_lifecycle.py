@@ -242,7 +242,12 @@ def _drop_recycled_pids(pids: Dict[int, str], create_times: Dict[int, float]) ->
             import psutil
             current = psutil.Process(pid).create_time()
         except Exception:
-            continue  # can't verify identity; fall through to the existing kill path
+            # Fail closed: a live pid whose identity can't be verified is treated the same as
+            # a confirmed recycle, never handed to the bare-PID kill path (#122391).
+            owner = pids.pop(pid)
+            logger.warning("MCP orphan pid %d (%s) creation time could not be verified; "
+                           "dropping without signalling it", pid, owner)
+            continue
         if current != recorded:
             owner = pids.pop(pid)
             logger.warning("MCP orphan pid %d (%s) was recycled by an unrelated process since "

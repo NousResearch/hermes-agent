@@ -568,6 +568,33 @@ class TestDeadRootPidRecycleGuard:
             assert fake_pid not in _orphan_stdio_pids
             assert fake_pid not in _stdio_create_times
 
+    def test_unverifiable_create_time_is_dropped_without_signalling(self, monkeypatch):
+        """A live pid whose creation time can't be looked up (psutil raises) must fail
+        closed — same treatment as a confirmed recycle — not fall through to a bare-PID
+        kill (#122391)."""
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_create_times
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909093
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "test-server"
+            _stdio_create_times[fake_pid] = 1000.0  # recorded while the MCP root was still alive
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("psutil.Process", side_effect=OSError("access denied")), \
+             patch("agent.deadline.kill_process_tree") as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._kill_orphaned_mcp_children()
+
+        mock_tree.assert_not_called()
+        mock_kill.assert_not_called()
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+            assert fake_pid not in _stdio_create_times
+
 
 # ---------------------------------------------------------------------------
 # Fix 3: MCP reload timeout (cli.py)

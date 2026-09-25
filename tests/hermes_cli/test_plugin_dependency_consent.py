@@ -86,7 +86,13 @@ def test_yes_deps_carries_consent_through_non_interactive_install(admission_env,
 
     enabled = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8'))['plugins']['enabled']
     output = capsys.readouterr().out
-    assert 'yes-deps-plugin' in enabled
+    # The install publishes into plugins/ and THEN a second PM admission transaction
+    # enables it; that admission catches every exception as a refusal, so an
+    # environment-sensitive failure there leaves the plugin installed-but-disabled
+    # with exit 0. Carry the CLI output in the failure message so the refusal's
+    # cause is visible on any machine instead of a bare `in []`.
+    assert 'yes-deps-plugin' in enabled, (
+        'install completed but the plugin was not enabled; CLI output:\n' + output)
     assert 'dependency install skipped (non-interactive)' not in output
 
 

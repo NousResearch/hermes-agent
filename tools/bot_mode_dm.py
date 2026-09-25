@@ -824,5 +824,15 @@ def _session_title(agent: Any) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root))
+    if sys.argv[1:2] == ["--run-delivery"]:
+        # The terminal sanitizer removes Hermes-owned PYTHONPATH entries. A PM
+        # store interpreter has no dependencies of its own; select the committed
+        # generation before transport imports, without provisioning/relaunching.
+        # --wait-reply stays stdlib-only and can report an already queued reply
+        # even when the installed dependency generation is unavailable.
+        from pm.environments import activate_dependencies
+
+        activate_dependencies(root)
     raise SystemExit(_delivery_main(sys.argv[1:]))

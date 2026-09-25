@@ -54,6 +54,72 @@ def test_foreign_owned_venv_file_refused_before_sync(tmp_path, monkeypatch):
         venv_sync.refuse_foreign_owned_venv(checkout)
 
 
+@pytest.mark.platforms("posix")
+def test_foreign_owned_node_modules_dir_refused_before_sync(tmp_path, monkeypatch):
+    """A root-owned cache entry under an npm workspace must refuse the update
+    before `npm ci` reaches it (the EACCES-rmdir wall: serve+gateway crash-loop,
+    updater completion aborts, and npm's advice is to run as root, which poisons
+    the worktree further)."""
+    from pm import environments
+
+    checkout = tmp_path / "checkout"
+    vitest = checkout / "apps/desktop/node_modules/.vite/vitest"
+    vitest.mkdir(parents=True)
+    (vitest / "results.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(environments, "selected_venv", lambda root: checkout / "venv")
+    original_lstat = Path.lstat
+    foreign_uid = os.geteuid() + 1
+
+    def stat(path, *args, **kwargs):
+        if path == vitest:
+            return SimpleNamespace(st_uid=foreign_uid)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", stat)
+    with pytest.raises(RuntimeError, match=r"\.vite/vitest.*owned by uid"):
+        venv_sync.refuse_foreign_owned_venv(checkout)
+
+
+@pytest.mark.platforms("posix")
+def test_foreign_owned_runtime_tree_refused_before_sync(tmp_path, monkeypatch):
+    """A root-owned generation under the managed runtime tree must refuse the
+    update (root-run installs publish root-owned generation state)."""
+    from pm import environments
+
+    checkout = tmp_path / "checkout"
+    generation = checkout / ".hermes-runtime/python/generation-1"
+    generation.mkdir(parents=True)
+    monkeypatch.setattr(environments, "selected_venv", lambda root: checkout / "venv")
+    original_lstat = Path.lstat
+    foreign_uid = os.geteuid() + 1
+
+    def stat(path, *args, **kwargs):
+        if path == generation:
+            return SimpleNamespace(st_uid=foreign_uid)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", stat)
+    with pytest.raises(RuntimeError, match=r"generation-1.*owned by uid"):
+        venv_sync.refuse_foreign_owned_venv(checkout)
+
+
+@pytest.mark.platforms("posix")
+def test_clean_checkout_passes_ownership_guard(tmp_path, monkeypatch):
+    """A fully hermes-owned checkout (venv + node_modules + runtime trees) must
+    not trip the guard."""
+    from pm import environments
+
+    checkout = tmp_path / "checkout"
+    for sub in ("venv/lib/python3.14/site-packages",
+                "apps/desktop/node_modules/.vite/vitest",
+                ".hermes-runtime/python/generation-1/lib/python3.11"):
+        (checkout / sub).mkdir(parents=True)
+    (checkout / "venv/lib/python3.14/site-packages/pkg.dist-info").mkdir()
+    (checkout / "apps/desktop/node_modules/.vite/vitest/results.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(environments, "selected_venv", lambda root: checkout / "venv")
+    venv_sync.refuse_foreign_owned_venv(checkout)  # must not raise
+
+
 def test_completed_maintenance_survives_stamp_io_error(tmp_path, monkeypatch, capsys):
     from hermes_cli import source_build, source_stamp, update_cmd_maint
 

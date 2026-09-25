@@ -346,9 +346,9 @@ def check_command_security(command: str) -> dict:
     except (json.JSONDecodeError, AttributeError):
         logger.debug("tirith JSON parse failed, using exit code only")
         summary = _NO_DETAILS_SUMMARY.get(action, "")
-    # .app is a legitimate gTLD: a warn consisting solely of lookalike_tld findings for .app is a
-    # known false positive and is downgraded to allow. Any other finding keeps the warn.
-    if action == "warn" and findings and all(_is_app_tld_finding(f) for f in findings):
+    # .app and .dev are legitimate gTLDs: a warn consisting solely of lookalike_tld findings for
+    # them is a known false positive and is downgraded to allow. Any other finding keeps the warn.
+    if action == "warn" and findings and all(_is_benign_tld_finding(f) for f in findings):
         return _verdict("allow")
     # VS16 follows ordinary emoji-capable code points in standard emoji-presentation sequences.
     # Preserve warnings for every other selector, including VS16 after text, because those can
@@ -359,12 +359,15 @@ def check_command_security(command: str) -> dict:
     return _verdict(action, summary, findings)
 
 
-def _is_app_tld_finding(finding: dict) -> bool:
-    """True if this finding is a lookalike_tld warning for the .app TLD only."""
+_BENIGN_TLDS = (".app", ".dev")
+
+
+def _is_benign_tld_finding(finding: dict) -> bool:
+    """True if this finding is a lookalike_tld warning for a benign gTLD (.app, .dev)."""
     if not isinstance(finding, dict) or finding.get("rule_id") != "lookalike_tld":
         return False
     return any(
-        val is not None and ".app" in str(val).lower()
+        val is not None and any(tld in str(val).lower() for tld in _BENIGN_TLDS)
         for val in (finding.get(k) for k in ("value", "tld", "detail", "description", "message")))
 
 

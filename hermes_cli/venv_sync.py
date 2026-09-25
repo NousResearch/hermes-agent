@@ -350,6 +350,25 @@ def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
         (root / name).unlink(missing_ok=True)
 
 
+def _is_python_launcher(target: Path) -> bool:
+    """Shebang-sniff a launcher path: True unless it is demonstrably not Python.
+
+    Historical takeover shims are shell wrappers (see _write_shell in
+    hermes_cli/_launchers.py); feeding one to runpy.run_path() parses shell
+    as Python and raises SyntaxError. Missing, unreadable, or shebang-less
+    paths (plain scripts, distlib exe zips) keep the legacy run_path shape.
+    """
+    try:
+        with open(target, "rb") as handle:
+            head = handle.read(512)
+    except OSError:
+        return True
+    if head.startswith(b"#!"):
+        first_line = head.split(b"\n", 1)[0]
+        return b"python" in first_line.lower()
+    return True
+
+
 def relaunch_command(
     python: Path, root: Path, argv: list[str], original: list[str], module: str | None,
 ) -> list[str]:
@@ -378,7 +397,15 @@ def relaunch_command(
     else:
         # distlib .exe launchers are executable zip files with __main__, not
         # importable modules named '__main__'. run_path handles both shapes.
-        body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"
+        target = Path(argv[0]).absolute()
+        if not _is_python_launcher(target):
+            # A historical takeover shell shim already re-execs its own
+            # interpreter, so run it directly instead of runpy.run_path(),
+            # which would parse shell as Python and die with SyntaxError
+            # before the gateway restarts. Interpreter options cannot cross
+            # the shim boundary, so they are dropped here.
+            return [str(target), *argv[1:]]
+        body = f"runpy.run_path({str(target)!r}, run_name='__main__')"
     return [str(python), *options, "-I", "-c", prefix + body]
 
 

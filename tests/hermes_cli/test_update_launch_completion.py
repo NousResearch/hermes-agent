@@ -248,6 +248,25 @@ def test_relaunch_runs_zip_launchers_and_preserves_interpreter_options(tmp_path)
     assert json.loads(result.stdout) == [["arg with spaces"], True, 1]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell-shim launchers need exec")
+def test_relaunch_execs_shell_shim_directly(tmp_path):
+    import shlex
+    probe = tmp_path / "probe.py"
+    probe.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    shim = tmp_path / "hermes"
+    shim.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(probe)]) + " " + chr(34) + chr(36) + chr(64) + chr(34) + "\n")
+    shim.chmod(0o755)
+    original = [sys.executable, str(shim), "arg with spaces"]
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), tmp_path, [str(shim), "arg with spaces"], original, None
+    )
+    assert command[0] == str(shim), command
+    assert "runpy" not in " ".join(command), command
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["arg with spaces"]
+
+
 def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     import pm
     root = tmp_path / "checkout"

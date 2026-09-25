@@ -216,6 +216,43 @@ model:
         assert _main_model_supports_vision("nonexistent-provider", "nonexistent-model") is True
 
 
+class TestMainModelAliasRouteForAuxiliary:
+    """``provider: auto`` must use the concrete main-model alias route."""
+
+    def test_auto_route_expands_main_model_alias(self, isolated_home, monkeypatch):
+        """A side task must not send a configured alias as an OpenRouter model ID."""
+        _write_config(isolated_home, """
+model:
+  provider: openrouter
+  default: zdr-flash
+model_aliases:
+  zdr-flash:
+    model: z-ai/glm-5.3-flash
+    provider: openrouter
+    base_url: https://router.example/v1
+""")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        _fresh_modules()
+
+        from unittest.mock import MagicMock
+        import agent.auxiliary_client as auxiliary
+
+        resolved = {}
+
+        def resolve_provider_client(provider, model, **kwargs):
+            resolved.update(provider=provider, model=model, **kwargs)
+            return MagicMock(), model
+
+        monkeypatch.setattr(auxiliary, "resolve_provider_client", resolve_provider_client)
+        _client, model, provider = auxiliary._resolve_auto_route(task="vision")
+
+        assert provider == "custom"
+        assert model == "z-ai/glm-5.3-flash"
+        assert resolved["provider"] == "custom"
+        assert resolved["model"] == "z-ai/glm-5.3-flash"
+        assert resolved["explicit_base_url"] == "https://router.example/v1"
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: check_vision_requirements + check_browser_vision_requirements parity
 # ---------------------------------------------------------------------------

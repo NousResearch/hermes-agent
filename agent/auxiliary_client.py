@@ -4512,6 +4512,27 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
+    # ``provider: auto`` inherits the main route, not the user-facing alias.  Cron and
+    # delegation resolve aliases before constructing their agents; auxiliary tasks must
+    # do the same or pass an alias such as ``zdr-flash`` to the provider wire unchanged.
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.model_switch import resolve_startup_model_route
+        aliases = (load_config_readonly().get("model_aliases") or {})
+        is_configured_alias = any(
+            str(name).strip().lower() == main_model.lower() and isinstance(value, dict)
+            for name, value in aliases.items()
+        ) if isinstance(aliases, dict) else False
+        alias_route = (resolve_startup_model_route(main_model, current_provider=main_provider)
+                       if is_configured_alias else None)
+    except Exception:
+        logger.debug("Auxiliary %s: main alias resolution failed", task or "call", exc_info=True)
+        alias_route = None
+    if alias_route is not None:
+        main_model = alias_route.model
+        main_provider = alias_route.provider or main_provider
+        runtime_base_url = alias_route.base_url or runtime_base_url
+        runtime_api_key = alias_route.api_key or runtime_api_key
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:

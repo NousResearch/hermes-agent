@@ -27,6 +27,8 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms.api_server_runs import _drop_run_transport
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
 
@@ -546,6 +548,94 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    @pytest.mark.asyncio
+    async def test_late_subscribe_reattaches_a_live_run(self, adapter):
+        """A subscriber that reconnects mid-run must not get run_not_found (#118138).
+
+        A disconnected subscriber drops the transport while the run keeps executing (the idle
+        sweep expires an unread buffer the same way), and "queue present" used to be the only
+        liveness test — so a reconnect mid-run 404'd for the rest of the run even though
+        ``GET /v1/runs/{id}`` still reported it running. The reconnect now gets a fresh queue.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                assert ready.wait(timeout=5), "run never started"
+
+                # What the first subscriber's disconnect leaves behind (handler finally).
+                _drop_run_transport(adapter, run_id)
+                assert run_id not in adapter._run_streams
+
+                reconnected = await cli.get(f"/v1/runs/{run_id}/events")
+                assert reconnected.status == 200, "live run refused its late subscriber"
+                assert run_id in adapter._run_streams
+                await reconnected.release()
+
+                await cli.post(f"/v1/runs/{run_id}/stop")
+                assert interrupted.wait(timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_stale_non_terminal_status_without_a_task_does_not_reattach(self, adapter):
+        """Execution authority is the live task, not the in-memory status row (#118138 review).
+
+        A non-terminal status whose executor is gone must 404: reattaching there would hand the
+        subscriber a queue no producer ever writes to, so it would hang on keepalives instead of
+        learning the stream is gone. This pins the boundary the reattach predicate must keep.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                for _ in range(200):
+                    if adapter._run_statuses.get(run_id, {}).get("status") in TERMINAL_STATUSES:
+                        break
+                    await asyncio.sleep(0.05)
+
+                # Stale row: the executor is gone, the status still says the run is live.
+                adapter._active_run_tasks.pop(run_id, None)
+                adapter._run_statuses[run_id]["status"] = "running"
+                _drop_run_transport(adapter, run_id)
+
+                stale = await cli.get(f"/v1/runs/{run_id}/events")
+                assert stale.status == 404
+                assert (await stale.json())["error"]["code"] == "run_not_found"
+                assert run_id not in adapter._run_streams, "no queue may be handed to a dead run"
+
+    @pytest.mark.asyncio
+    async def test_events_after_terminal_status_still_404s(self, adapter):
+        """Re-attaching must not resurrect a finished run (#118138)."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                for _ in range(200):
+                    if adapter._run_statuses.get(run_id, {}).get("status") in TERMINAL_STATUSES:
+                        break
+                    await asyncio.sleep(0.05)
+
+                _drop_run_transport(adapter, run_id)
+                stale = await cli.get(f"/v1/runs/{run_id}/events")
+                assert stale.status == 404
+                assert (await stale.json())["error"]["code"] == "run_not_found"
+
     @pytest.mark.asyncio
     async def test_tool_completed_event_includes_redacted_bounded_result_preview(self, adapter):
         loop = asyncio.get_running_loop()

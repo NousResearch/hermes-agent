@@ -186,7 +186,8 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         agent = session.get("agent")
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
-            "project": _project_info_for_cwd(resolved), "lazy": True}
+            "project": _project_info_for_cwd(resolved), "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
         _emit("session.info", sid, info)
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)

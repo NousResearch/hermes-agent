@@ -1376,6 +1376,52 @@ never auto-import Python. This is a security boundary, not an oversight
 (GHSA-mcfc-hp25-cjv7).
 :::
 
+#### Pushing events to your desktop half
+
+Your backend runs inside the gateway process, so it can push an update to your
+own desktop half over the app's global event stream — the same stream
+`host.onEvent` subscribes to:
+
+```python
+from hermes_cli.plugin_events import broadcast_plugin_event
+
+broadcast_plugin_event("rss-reader", "feed.updated", {"count": 3})
+# → event "plugin.rss-reader.feed.updated" reaches every connected desktop client
+```
+
+```javascript
+// register(ctx): the subscription is retired with the plugin
+host.onEvent('plugin.rss-reader.feed.updated', ({ payload }) => refreshFeeds(payload))
+```
+
+`broadcast_plugin_event(plugin_id, event, payload=None)`: the wire name is
+always `plugin.<plugin_id>.<event>`. `plugin_id` is your catalog name
+(`[a-z0-9_-]{1,64}`, no dots — it is the namespace and can't spell another
+plugin's); `event` is the BARE dotted name (`"feed.updated"`, not
+`"plugin.rss-reader.feed.updated"`), segments of `[A-Za-z0-9_-]`, so `""`,
+`"../x"` or `"a..b"` raise `ValueError` instead of stranding the desktop half
+on a name nobody emits. `payload` is a JSON dict (or omitted → `{}`), delivered
+as the event's `payload`; the frame carries `session_id: ""` like every global
+event. Delivery is fire-and-forget (a wedged client is skipped, never stalling
+your handler). Where it lands depends on the process the call runs in:
+
+| Caller runs in | Reaches |
+|---|---|
+| `hermes serve` (the Desktop backend): `plugin_api.py` routers, plugin slash commands, tools and hooks in the agent turn | every connected Desktop window |
+| the `dashboard.turn_isolation` compute-host child (tools/hooks of an isolated turn) | relayed over the host pipe to `hermes serve`, then every window |
+| the stdio TUI (`hermes` in a terminal) | that terminal's client |
+| `hermes gateway run` (messaging platforms), `hermes chat`, cron, `hermes plugins validate` | nobody — no Desktop client is attached to that process; the call is a logged no-op |
+
+Use this instead of importing `tui_gateway.server` internals; for plugin-scoped frames
+with a payload tailored per connection, `ctx.socket('/events')` remains the
+richer door.
+
+Migration (rss-reader): drop the `~/.hermes/rss-reader/commands.jsonl` queue,
+`GET /commands` and the 3 s `ctx.rest('/commands')` poll — the Python side
+calls `broadcast_plugin_event('rss-reader', 'feed.updated', payload)` where it
+used to enqueue, and the desktop side replaces the timer with
+`host.onEvent('plugin.rss-reader.feed.updated', fn)` inside `register(ctx)`.
+
 ### Calling it from the plugin
 
 ```javascript

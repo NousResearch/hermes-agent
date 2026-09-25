@@ -1900,6 +1900,43 @@ def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
     assert agent._interim_content_was_streamed("hello") is False
 
 
+@pytest.mark.parametrize(
+    ("streamed", "expected_already_streamed"),
+    [
+        # Truncated at the text→tool_calls boundary (#88954): prefix only → full-text resend.
+        ("checking the queue to pick it u", False),
+        # Fully streamed → gateway settles the bubble without a duplicate resend.
+        ("checking the queue to pick it up", True),
+    ],
+)
+def test_interim_commentary_already_streamed_requires_exact_match(
+    monkeypatch, streamed, expected_already_streamed
+):
+    """Only an exact stream match may mark commentary already_streamed; a prefix-only match used
+    to finalize the truncated bubble and permanently lose the tail (#88954)."""
+    agent = _build_agent(monkeypatch)
+    observed = {}
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    agent._current_streamed_assistant_text = streamed
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    normalized, finish_reason = _normalize_codex_response(
+        _codex_commentary_final_tool_response("checking the queue to pick it up")
+    )
+    assert finish_reason == "tool_calls"
+    agent._emit_interim_assistant_message(
+        agent._build_assistant_message(normalized, finish_reason)
+    )
+
+    assert observed == {
+        "text": "checking the queue to pick it up",
+        "already_streamed": expected_already_streamed,
+    }
+
+
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):
     agent = _build_agent(monkeypatch)
     observed = []

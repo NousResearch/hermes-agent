@@ -328,8 +328,9 @@ def _read_ledger(what: str, *, quiet_missing: bool = False) -> Optional[bytes]:
     ``quiet_missing`` keeps a merely absent ledger silent — normal for a fresh install."""
     try:
         raw = ledger_path().read_bytes()
-        raw.decode("utf-8")
-        return raw
+        # Windows editors may prepend a UTF-8 BOM. Normalize it away so every
+        # consumer can decode ordinary UTF-8 without treating the first row as malformed.
+        return raw.decode("utf-8-sig").encode("utf-8")
     except (OSError, UnicodeError) as exc:
         if not (quiet_missing and isinstance(exc, FileNotFoundError)):
             logger.warning("skill_ledger: ledger unreadable (%s); %s", exc, what)

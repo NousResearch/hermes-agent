@@ -799,7 +799,7 @@ class TestUpdateCheckEndpoint:
         # Stub the shared checker so the contract is deterministic (no network).
         import hermes_cli.banner as banner
 
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 5)
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
         r = self.client.get("/api/hermes/update/check")
         assert r.status_code == 200

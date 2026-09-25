@@ -10,7 +10,14 @@
 
 import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
-import { $openBotChat, $selectedBot, lastToastedPreview, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
+import {
+  $openBotChat,
+  $pendingBotOpen,
+  $selectedBot,
+  lastToastedPreview,
+  rosterWatermarks,
+  saveSelectedRosterBot
+} from './bot-state'
 import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
@@ -147,6 +154,14 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   })
 }
 
+/** Release the pending-open mark, but only for the flight that set it: a
+ *  superseded flight settling late must not clear its successor's mark. */
+function settlePendingBotOpen(generation: number) {
+  if ($pendingBotOpen.get()?.generation === generation) {
+    $pendingBotOpen.set(null)
+  }
+}
+
 /** Front the bot's canonical Bot Chat when it is ALREADY open as a tab —
  *  presentation only, no registry round-trip. Returns the fronted stored id,
  *  or null when the chat is not on screen (or this shell cannot tell) and the
@@ -274,6 +289,11 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     return true
   }
 
+  // The click missed an already-open tab. Publish the target before the cold
+  // backend start so the row can acknowledge it in this same turn (#120277).
+  // Highlight, routing, drafts, and running turns are unchanged.
+  $pendingBotOpen.set({ generation, key })
+
   try {
     // Activation selects this row's source only. Canonical identity is resolved
     // after that by the owner profile's "Bot Chat" title registry.
@@ -285,10 +305,14 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       notifyBotOpenFailure(error, bot, 'reach')
     }
 
+    settlePendingBotOpen(generation)
+
     return false
   }
 
   if (generation !== getBotOpenGeneration()) {
+    settlePendingBotOpen(generation)
+
     return false
   }
 
@@ -296,6 +320,8 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())
 
     if (generation !== getBotOpenGeneration()) {
+      settlePendingBotOpen(generation)
+
       return false
     }
 
@@ -312,6 +338,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
+      settlePendingBotOpen(generation)
 
       return true
     }
@@ -322,6 +349,8 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       notifyBotOpenFailure(error, bot, 'open', displayName(bot, meta))
     }
 
+    settlePendingBotOpen(generation)
+
     return false
   }
 
@@ -330,6 +359,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   if (typeof host.newChat !== 'function') {
     $openBotChat.set(null)
     restorePreviousGroup()
+    settlePendingBotOpen(generation)
 
     return false
   }
@@ -339,6 +369,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     openedRegistryId: ''
   })
   newBotChat(bot)
+  settlePendingBotOpen(generation)
 
   return true
 }

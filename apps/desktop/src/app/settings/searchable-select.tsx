@@ -85,6 +85,12 @@ export function SearchableSelect({
           className={cn(
             controlVariants(),
             'flex items-center justify-between gap-2 whitespace-nowrap',
+            // Width floor: the settings action cell shrink-wraps to content
+            // (flex + justify-self-end), so a blank value collapses `w-full`
+            // to the "Search…" placeholder (~70px) and the popover, which
+            // floors at the trigger width, inherits the squish (#99751).
+            // Same min-width-floor convention as the model-settings selects.
+            'min-w-44',
             !value && 'text-muted-foreground'
           )}
           data-slot="searchable-select-trigger"

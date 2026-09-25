@@ -194,6 +194,7 @@ describe('ModelPill label providers', () => {
     const label = vi.fn(
       ({ model, reasoningEffort }: ComposerModelPillContext) => `${model} · ${reasoningEffort || 'none'}`
     )
+
     register(label)
 
     const { unmount } = render(

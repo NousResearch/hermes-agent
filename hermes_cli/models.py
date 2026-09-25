@@ -282,13 +282,14 @@ def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, di
     discount first. A sale lives only in ``/v1/models`` ``pricing.original``, so without this the
     picker badges discounts on curated rows but never shows a discounted model the curated list and
     Portal recommendations omit. Free rows stay with ``freeRecommendedModels``; rows the gateway
-    marks tool-less (``"tools": False``) are skipped because Hermes is tool-calling-first."""
+    marks tool-less (``"tools": False``) are skipped because Hermes is tool-calling-first, and
+    image/video generation rows are skipped because they are not chat models."""
     from hermes_cli.models_pricing import compute_sale_discount
 
     seen = set(curated_ids)
     on_sale: list[tuple[int, str]] = []
     for mid, entry in (pricing or {}).items():
-        if mid in seen or not isinstance(entry, dict) or entry.get("tools") is False:
+        if mid in seen or not isinstance(entry, dict) or entry.get("tools") is False or entry.get("generation"):
             continue
         sale = compute_sale_discount(entry.get("prompt", ""), entry.get("completion", ""), entry.get("original"))
         if sale is not None and isinstance(entry.get("original"), dict) and sale[0] < 100:

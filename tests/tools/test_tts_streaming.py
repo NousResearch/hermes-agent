@@ -151,6 +151,39 @@ def test_openai_streamer_forwards_consent_attestation(monkeypatch):
     assert "extra_body" not in captured["create"]
 
 
+@pytest.mark.parametrize("global_config,section,expected", [
+    ({}, {}, None),
+    ({"speed": 1.4}, {}, 1.4),
+    ({"speed": 1.4}, {"speed": 1.2}, 1.2),
+    ({}, {"speed": 0.1}, 0.25),
+    ({}, {"speed": 8}, 4.0),
+    ({}, {"speed": "bad"}, None),
+    ({}, {"speed": None}, None),
+    ({}, {"speed": float("nan")}, None),
+    ({}, {"speed": float("inf")}, None),
+])
+def test_openai_streamer_honors_configured_speed(monkeypatch, global_config, section, expected):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    captured = {}
+
+    @contextmanager
+    def create(**kwargs):
+        captured.update(kwargs)
+        yield SimpleNamespace(headers={}, iter_bytes=lambda: iter([b"\x00\x00"]))
+
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: SimpleNamespace(
+        audio=SimpleNamespace(speech=SimpleNamespace(
+            with_streaming_response=SimpleNamespace(create=create)))))
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda *args: None)
+    streamer = ts.OpenAIStreamer(global_config, {"api_key": "test-only", **section})
+    assert list(streamer.stream("Speak at the configured pace.")) == [b"\x00\x00"]
+    assert captured.get("speed") == expected
+    if expected is None:
+        assert "speed" not in captured
+
+
 def test_openai_streamer_prefers_configured_api_key(monkeypatch):
     captured = {}
 

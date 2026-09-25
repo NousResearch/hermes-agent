@@ -11,6 +11,7 @@ a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver 
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from abc import ABC, abstractmethod
@@ -263,6 +264,14 @@ class OpenAIStreamer(StreamingTTSProvider):
             base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None))
         from tools.tts_tool_openai import _openai_extra_body
         extra = {"extra_body": body} if (body := _openai_extra_body(self.section)) else {}
+        # Match whole-text and client-direct speech: streaming must not silently
+        # reset the user's configured speaking rate to the provider default.
+        try:
+            speed = float(self.section.get("speed", self.tts_config.get("speed", 1.0)))
+        except (TypeError, ValueError):
+            speed = 1.0
+        if math.isfinite(speed) and speed != 1.0:
+            extra["speed"] = max(0.25, min(4.0, speed))
         with client.audio.speech.with_streaming_response.create(
             model=self.section.get("model", "gpt-4o-mini-tts"), voice=self.section.get("voice", "alloy"),
             input=text, response_format="pcm", **extra,
